@@ -1,0 +1,69 @@
+{
+  "expo": {
+    "name": "GEODAILY",
+    "slug": "geodaily-app",
+    "version": "1.0.0",
+    "orientation": "default",
+    "icon": "./assets/images/icon.png",
+    "scheme": "geodaily",
+    "userInterfaceStyle": "automatic",
+    "newArchEnabled": true,
+    "metro": {
+      "port": 8082
+    },
+    "splash": {
+      "image": "./assets/images/fondo_login_geo_daily.png",
+      "resizeMode": "cover",
+      "backgroundColor": "#0D3B0F"
+    },
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.geodaily.app",
+      "infoPlist": {
+        "NSLocationWhenInUseUsageDescription": "GEODAILY necesita acceso a tu ubicación para georreferenciar los puntos de visita.",
+        "NSLocationAlwaysAndWhenInUseUsageDescription": "GEODAILY necesita acceso a tu ubicación en segundo plano para registrar rutas.",
+        "NSCameraUsageDescription": "GEODAILY necesita acceso a la cámara para capturar evidencia fotográfica.",
+        "NSPhotoLibraryUsageDescription": "GEODAILY necesita acceso a la galería para adjuntar imágenes.",
+        "NSFaceIDUsageDescription": "GEODAILY usa Face ID para autenticación biométrica."
+      }
+    },
+    "android": {
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/images/adaptive-icon.png",
+        "backgroundColor": "#1B5E20"
+      },
+      "package": "com.geodaily.app",
+      "permissions": [
+        "ACCESS_FINE_LOCATION",
+        "ACCESS_COARSE_LOCATION",
+        "ACCESS_BACKGROUND_LOCATION",
+        "CAMERA",
+        "READ_EXTERNAL_STORAGE",
+        "WRITE_EXTERNAL_STORAGE",
+        "USE_BIOMETRIC",
+        "INTERNET"
+      ],
+      "config": {
+        "googleMaps": {
+          "apiKey": "GOOGLE_MAPS_API_KEY"
+        }
+      }
+    },
+    "web": {
+      "bundler": "metro",
+      "output": "single",
+      "favicon": "./assets/images/favicon.png"
+    },
+    "plugins": [
+      "expo-location",
+      "expo-camera",
+      "expo-secure-store",
+      "expo-sqlite",
+      "expo-local-authentication",
+      "expo-file-system"
+    ],
+    "experiments": {
+      "typedRoutes": true
+    }
+  }
+}
