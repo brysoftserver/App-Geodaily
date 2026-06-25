@@ -13,8 +13,10 @@ import {
   RefreshControl,
 } from 'react-native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { COLORS, FONTS, SPACING, BORDER_RADIUS, SHADOWS } from '../../theme';
 import { cargarBorradores, eliminarBorrador, FormDraft } from '../../store/FormDraftStore';
+import { useAuth } from '../../store/AuthContext';
 import LoadingSpinner from '../../components/LoadingSpinner';
 
 type FormulariosIncompletosScreenProps = {
@@ -22,6 +24,8 @@ type FormulariosIncompletosScreenProps = {
 };
 
 const FormulariosIncompletosScreen: React.FC<FormulariosIncompletosScreenProps> = ({ navigation }) => {
+  const { user } = useAuth();
+  const insets = useSafeAreaInsets();
   const [drafts, setDrafts] = useState<FormDraft[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -29,14 +33,32 @@ const FormulariosIncompletosScreen: React.FC<FormulariosIncompletosScreenProps> 
   const loadDrafts = useCallback(async () => {
     try {
       const loaded = await cargarBorradores();
-      setDrafts(loaded);
+      // Filtrar solo borradores del técnico actual
+      let userDrafts: FormDraft[];
+      if (user?.id) {
+        userDrafts = loaded.filter((d) => {
+          // 1. Coincidencia por usuario_id (nuevos drafts)
+          if (d.tecnico?.usuario_id && d.tecnico.usuario_id === user.id) {
+            return true;
+          }
+          // 2. Fallback: coincidencia por cédula (drafts viejos sin usuario_id)
+          if (user.cedula && d.tecnico?.cedula === user.cedula) {
+            return true;
+          }
+          return false;
+        });
+        console.log(`[Incompletos] ${loaded.length} borradores totales → ${userDrafts.length} para ${user.id}`);
+      } else {
+        userDrafts = loaded;
+      }
+      setDrafts(userDrafts);
     } catch (error) {
       console.warn('[Incompletos] Error cargando borradores:', error);
     } finally {
       setIsLoading(false);
       setRefreshing(false);
     }
-  }, []);
+  }, [user?.id, user?.cedula]);
 
   useEffect(() => {
     loadDrafts();
@@ -100,8 +122,9 @@ const FormulariosIncompletosScreen: React.FC<FormulariosIncompletosScreenProps> 
   }
 
   return (
+    <SafeAreaView style={styles.safeContainer} edges={['top']}>
     <View style={styles.container}>
-      <View style={styles.header}>
+      <View style={[styles.header, { paddingTop: Math.max(insets.top, SPACING.md) }]}>
         <Text style={styles.title}>Borradores Guardados</Text>
         <Text style={styles.count}>
           {drafts.length} borrador(es)
@@ -129,7 +152,7 @@ const FormulariosIncompletosScreen: React.FC<FormulariosIncompletosScreenProps> 
             >
               <View style={styles.draftHeader}>
                 <Text style={styles.draftType}>
-                  {item.tipo === 'plantacion' ? '🌱 Plantación' : '🔍 Visita Técnica'}
+                  {item.tipo === 'plantacion' ? '🌱 Plantación' : item.tipo === 'caracterizacion' ? '👥 Caracterización' : '🔍 Visita Técnica'}
                 </Text>
                 <Text style={styles.draftStep}>
                   Paso {item.step || 1} de 4
@@ -162,7 +185,7 @@ const FormulariosIncompletosScreen: React.FC<FormulariosIncompletosScreenProps> 
               </View>
             </TouchableOpacity>
           )}
-          contentContainerStyle={styles.listContent}
+          contentContainerStyle={[styles.listContent, { paddingBottom: insets.bottom + SPACING.xxl }]}
           refreshControl={
             <RefreshControl
               refreshing={refreshing}
@@ -174,10 +197,15 @@ const FormulariosIncompletosScreen: React.FC<FormulariosIncompletosScreenProps> 
         />
       )}
     </View>
+    </SafeAreaView>
   );
 };
 
 const styles = StyleSheet.create({
+  safeContainer: {
+    flex: 1,
+    backgroundColor: COLORS.primary,
+  },
   container: {
     flex: 1,
     backgroundColor: COLORS.background,

@@ -11,10 +11,14 @@ import {
   ScrollView,
   Image,
   Alert,
+  ActivityIndicator,
+  StatusBar,
 } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAuth } from '../../store/AuthContext';
+import { useOfflineSync } from '../../hooks/useOfflineSync';
 import { COLORS, FONTS, SPACING, BORDER_RADIUS, SHADOWS } from '../../theme';
 
 type TerrenoMenuProps = {
@@ -32,8 +36,8 @@ const MENU_ITEMS = [
   },
   {
     id: 'mapa',
-    title: 'Mapa Offline',
-    subtitle: 'Navegar mapa con teselas QGIS',
+    title: 'Mapa y Ubicación',
+    subtitle: 'Mapa interactivo con GPS y mediciones',
     icon: '🗺️',
     color: COLORS.success,
     screen: 'TerrenoMapa',
@@ -55,6 +59,22 @@ const MENU_ITEMS = [
     screen: 'TerrenoCalendario',
   },
   {
+    id: 'ruta',
+    title: 'Mi Ruta',
+    subtitle: 'Tracking GPS en tiempo real',
+    icon: '🛣️',
+    color: COLORS.success,
+    screen: 'TerrenoMiRuta',
+  },
+  {
+    id: 'capacitacion',
+    title: 'Capacitaciones',
+    subtitle: 'Guias y material de formación',
+    icon: '📚',
+    color: COLORS.info,
+    screen: 'TerrenoCapacitacion',
+  },
+  {
     id: 'cerrar',
     title: 'Cerrar Sesión',
     subtitle: 'Salir de la aplicación',
@@ -66,6 +86,7 @@ const MENU_ITEMS = [
 
 const TerrenoMenuScreen: React.FC<TerrenoMenuProps> = ({ navigation }) => {
   const { user, logout } = useAuth();
+  const insets = useSafeAreaInsets();
   const [avatarUri, setAvatarUri] = useState<string | null>(null);
 
   // Cargar avatar guardado
@@ -123,10 +144,18 @@ const TerrenoMenuScreen: React.FC<TerrenoMenuProps> = ({ navigation }) => {
   // Obtener cédula del usuario
   const cedula = (user as any)?.cedula || '';
 
+  const { syncNow, status, pendingCount, lastSync } = useOfflineSync();
+  const isSyncing = status === 'syncing';
+
   return (
-    <ScrollView style={styles.container} contentContainerStyle={styles.scrollContent}>
+    <SafeAreaView style={styles.safeContainer} edges={['top']}>
+    <ScrollView
+      style={styles.container}
+      contentContainerStyle={[styles.scrollContent, { paddingBottom: insets.bottom + SPACING.xl }]}
+      showsVerticalScrollIndicator={false}
+    >
       {/* Encabezado */}
-      <View style={styles.header}>
+      <View style={[styles.header, { paddingTop: Math.max(insets.top, SPACING.xxl) }]}>
         <TouchableOpacity onPress={handleAvatarPress} activeOpacity={0.7}>
           <View style={styles.avatar}>
             {avatarUri ? (
@@ -151,6 +180,47 @@ const TerrenoMenuScreen: React.FC<TerrenoMenuProps> = ({ navigation }) => {
         </View>
       </View>
 
+      {/* Estado de sincronización */}
+      <View style={styles.syncCard}>
+        <View style={styles.syncHeader}>
+          <Text style={styles.syncTitle}>
+            {isSyncing ? '🔄 Sincronizando...' : '📤 Sincronización'}
+          </Text>
+          {pendingCount > 0 && (
+            <View style={styles.pendingSyncBadge}>
+              <Text style={styles.pendingSyncText}>{pendingCount}</Text>
+            </View>
+          )}
+        </View>
+        <Text style={styles.syncSubtitle}>
+          {pendingCount === 0
+            ? '✅ No hay formularios pendientes'
+            : `⏳ ${pendingCount} formulario(s) por sincronizar`}
+        </Text>
+        {lastSync && (
+          <Text style={styles.syncLast}>
+            Última sincronización: {new Date(lastSync).toLocaleString('es-CO')}
+          </Text>
+        )}
+        {status === 'error' && (
+          <Text style={styles.syncError}>Error al sincronizar. Reintentando...</Text>
+        )}
+        <TouchableOpacity
+          style={[styles.syncButton, isSyncing && styles.syncButtonDisabled]}
+          onPress={syncNow}
+          disabled={isSyncing}
+          activeOpacity={0.7}
+        >
+          {isSyncing ? (
+            <ActivityIndicator color={COLORS.textOnPrimary} size="small" />
+          ) : (
+            <Text style={styles.syncButtonText}>
+              {pendingCount > 0 ? 'Sincronizar ahora' : 'Verificar'}
+            </Text>
+          )}
+        </TouchableOpacity>
+      </View>
+
       {/* Menú */}
       <View style={styles.menuContainer}>
         {MENU_ITEMS.map((item) => (
@@ -170,10 +240,15 @@ const TerrenoMenuScreen: React.FC<TerrenoMenuProps> = ({ navigation }) => {
         ))}
       </View>
     </ScrollView>
+    </SafeAreaView>
   );
 };
 
 const styles = StyleSheet.create({
+  safeContainer: {
+    flex: 1,
+    backgroundColor: COLORS.primary,
+  },
   container: {
     flex: 1,
     backgroundColor: COLORS.background,
@@ -283,6 +358,71 @@ const styles = StyleSheet.create({
     fontSize: 24,
     color: COLORS.textLight,
     marginLeft: SPACING.sm,
+  },
+
+  // --- Sincronización ---
+  syncCard: {
+    backgroundColor: COLORS.surface,
+    marginHorizontal: SPACING.md,
+    marginTop: SPACING.md,
+    borderRadius: BORDER_RADIUS.lg,
+    padding: SPACING.md,
+    borderLeftWidth: 4,
+    borderLeftColor: COLORS.info,
+    ...SHADOWS.sm,
+  },
+  syncHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  syncTitle: {
+    fontSize: FONTS.sizes.lg,
+    fontWeight: FONTS.weights.semibold,
+    color: COLORS.textPrimary,
+  },
+  pendingSyncBadge: {
+    backgroundColor: COLORS.warning,
+    borderRadius: BORDER_RADIUS.full,
+    width: 26,
+    height: 26,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  pendingSyncText: {
+    color: COLORS.textOnPrimary,
+    fontSize: FONTS.sizes.sm,
+    fontWeight: FONTS.weights.bold,
+  },
+  syncSubtitle: {
+    fontSize: FONTS.sizes.sm,
+    color: COLORS.textSecondary,
+    marginTop: 4,
+  },
+  syncLast: {
+    fontSize: FONTS.sizes.xs,
+    color: COLORS.textLight,
+    marginTop: 4,
+  },
+  syncError: {
+    fontSize: FONTS.sizes.xs,
+    color: COLORS.error,
+    marginTop: 4,
+  },
+  syncButton: {
+    backgroundColor: COLORS.info,
+    borderRadius: BORDER_RADIUS.md,
+    paddingVertical: SPACING.sm,
+    alignItems: 'center',
+    marginTop: SPACING.sm,
+  },
+  syncButtonDisabled: {
+    opacity: 0.6,
+  },
+  syncButtonText: {
+    color: COLORS.textOnPrimary,
+    fontSize: FONTS.sizes.md,
+    fontWeight: FONTS.weights.semibold,
   },
 });
 

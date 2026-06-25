@@ -10,6 +10,7 @@ export interface AuthResult {
   user?: {
     id: string;
     nombre: string;
+    cedula?: string;
     email: string;
     rol: string;
     telefono?: string;
@@ -40,6 +41,7 @@ export const loginUser = async (
         user: {
           id: data.usuario.id,
           nombre: data.usuario.nombre,
+          cedula: data.usuario.cedula,
           email: data.usuario.email || '',
           rol: data.usuario.rol,
           telefono: data.usuario.telefono,

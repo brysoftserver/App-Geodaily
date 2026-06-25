@@ -121,9 +121,9 @@ const LoginScreen: React.FC = () => {
             <View style={styles.testUsers}>
               <Text style={styles.testUsersTitle}>Usuarios de prueba:</Text>
               <Text style={styles.testUser}>Técnico: tecnico1 / 123456</Text>
-              <Text style={styles.testUser}>Técnico: tecnico2 / 123456</Text>
               <Text style={styles.testUser}>Supervisor: supervisor1 / 123456</Text>
-              <Text style={styles.testUser}>Admin: admin / admin123</Text>
+              <Text style={styles.testUser}>Gerente: gerente1 / 123456</Text>
+              <Text style={styles.testUser}>Admin: admin1 / admin123</Text>
             </View>
           )}
         </ScrollView>

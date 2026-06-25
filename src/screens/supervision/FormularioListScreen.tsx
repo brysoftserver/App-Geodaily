@@ -48,9 +48,8 @@ const FormularioListScreen: React.FC<FormularioListScreenProps> = ({ navigation 
   const loadForms = useCallback(async () => {
     try {
       const localForms = await getFormulariosLocales();
-      if (localForms.length > 0) {
-        cargarFormularios(localForms);
-      }
+      // Siempre actualizar contexto (limpia datos si el listado está vacío)
+      cargarFormularios(localForms);
     } catch (error) {
       console.warn('[Supervision Listado] Error cargando:', error);
     } finally {

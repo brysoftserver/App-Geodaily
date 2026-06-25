@@ -9,6 +9,7 @@ import {
   DatosTecnico,
   DatosBeneficiario,
   ActividadRealizada,
+  DatosSociodemograficos,
   Coordenadas,
   FotoGeotag,
 } from '../types';
@@ -27,6 +28,7 @@ type FormAction =
   | { type: 'SET_TECNICO'; data: DatosTecnico }
   | { type: 'SET_BENEFICIARIO'; data: DatosBeneficiario }
   | { type: 'SET_ACTIVIDAD'; data: ActividadRealizada }
+  | { type: 'SET_SOCIODEMOGRAFICO'; data: DatosSociodemograficos }
   | { type: 'SET_COORDENADAS'; data: Coordenadas }
   | { type: 'ADD_FOTO'; foto: FotoGeotag }
   | { type: 'SET_FIRMA_BENEFICIARIO'; firma: string }
@@ -81,6 +83,12 @@ function formReducer(state: FormState, action: FormAction): FormState {
       return {
         ...state,
         formularioActual: { ...state.formularioActual, actividad: action.data },
+      };
+
+    case 'SET_SOCIODEMOGRAFICO':
+      return {
+        ...state,
+        formularioActual: { ...state.formularioActual, sociodemografico: action.data },
       };
 
     case 'SET_COORDENADAS':
@@ -152,6 +160,7 @@ interface FormContextType extends FormState {
   setTecnico: (data: DatosTecnico) => void;
   setBeneficiario: (data: DatosBeneficiario) => void;
   setActividad: (data: ActividadRealizada) => void;
+  setSociodemografico: (data: DatosSociodemograficos) => void;
   setCoordenadas: (data: Coordenadas) => void;
   addFoto: (foto: FotoGeotag) => void;
   setFirmaBeneficiario: (firma: string) => void;
@@ -184,6 +193,10 @@ export const FormProvider: React.FC<{ children: React.ReactNode }> = ({ children
     dispatch({ type: 'SET_ACTIVIDAD', data });
   }, []);
 
+  const setSociodemografico = useCallback((data: DatosSociodemograficos) => {
+    dispatch({ type: 'SET_SOCIODEMOGRAFICO', data });
+  }, []);
+
   const setCoordenadas = useCallback((data: Coordenadas) => {
     dispatch({ type: 'SET_COORDENADAS', data });
   }, []);
@@ -209,13 +222,28 @@ export const FormProvider: React.FC<{ children: React.ReactNode }> = ({ children
     if (!current) return null;
 
     const formCompleto: Formulario = {
-      ...current,
+      id: current.id || '',
+      tipo: current.tipo || 'visita_tecnica',
+      tecnico: current.tecnico || { nombre: '', cedula: '', telefono: '', email: '' },
+      beneficiario: current.beneficiario || { nombre: '', cedula: '', telefono: '', departamento: '', municipio: '', vereda: '', finca: '' },
+      actividad: current.actividad || { descripcion: '', observaciones: '', recomendaciones: '' },
+      sociodemografico: current.sociodemografico,
+      coordenadas: current.coordenadas || { latitud: 0, longitud: 0 },
+      georeferencia: current.georeferencia,
+      clima: current.clima,
+      fotos: current.fotos || [],
+      firma_beneficiario: current.firma_beneficiario || '',
+      firma_tecnico: current.firma_tecnico || '',
+      huella_beneficiario: current.huella_beneficiario || false,
+      pdf_url: current.pdf_url,
+      sincronizado: current.sincronizado || false,
+      created_at: current.created_at || new Date().toISOString(),
       updated_at: new Date().toISOString(),
-    } as Formulario;
+    };
 
-    // Validar que tenga todos los campos requeridos
-    if (!formCompleto.tecnico || !formCompleto.beneficiario || !formCompleto.actividad) {
-      dispatch({ type: 'SET_ERROR', error: 'Faltan campos requeridos' });
+    // Validar que tenga los campos mínimos requeridos
+    if (!formCompleto.tecnico.nombre || !formCompleto.beneficiario.nombre) {
+      dispatch({ type: 'SET_ERROR', error: 'Faltan campos requeridos (técnico y beneficiario)' });
       return null;
     }
 
@@ -239,6 +267,7 @@ export const FormProvider: React.FC<{ children: React.ReactNode }> = ({ children
         setTecnico,
         setBeneficiario,
         setActividad,
+        setSociodemografico,
         setCoordenadas,
         addFoto,
         setFirmaBeneficiario,

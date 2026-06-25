@@ -18,6 +18,7 @@ import {
   Linking,
   Dimensions,
 } from 'react-native';
+import * as FileSystem from 'expo-file-system';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { RouteProp } from '@react-navigation/native';
 import { WebView } from 'react-native-webview';
@@ -51,12 +52,12 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
 
     // Firmas (ya están en base64 data URIs)
     const firmaBenefHtml = f.firma_beneficiario
-      ? `<div class="evidencia-item"><p class="evidencia-label">✍️ Firma del Beneficiario — <strong>${escapeHtml(f.beneficiario.nombre)}</strong></p><img src="${f.firma_beneficiario}" alt="Firma del beneficiario" class="firma-img" /></div>`
-      : `<div class="evidencia-item"><p class="evidencia-label">✍️ Firma del Beneficiario</p><p class="no-data">No registrada</p></div>`;
+      ? `<div class="firma-item"><p class="evidencia-label">✍️ Firma del Beneficiario — <strong>${escapeHtml(f.beneficiario.nombre)}</strong> (C.C. ${escapeHtml(f.beneficiario.cedula || '—')})</p><img src="${f.firma_beneficiario}" alt="Firma del beneficiario" class="firma-img" /></div>`
+      : `<div class="firma-item"><p class="evidencia-label">✍️ Firma del Beneficiario</p><p class="no-data">No registrada</p></div>`;
 
     const firmaTecHtml = f.firma_tecnico
-      ? `<div class="evidencia-item"><p class="evidencia-label">🖊️ Firma del Técnico — <strong>${escapeHtml(f.tecnico.nombre)}</strong></p><img src="${f.firma_tecnico}" alt="Firma del técnico" class="firma-img" /></div>`
-      : `<div class="evidencia-item"><p class="evidencia-label">🖊️ Firma del Técnico</p><p class="no-data">No registrada</p></div>`;
+      ? `<div class="firma-item"><p class="evidencia-label">🖊️ Firma del Técnico — <strong>${escapeHtml(f.tecnico.nombre)}</strong> (C.C. ${escapeHtml(f.tecnico.cedula || '—')})</p><img src="${f.firma_tecnico}" alt="Firma del técnico" class="firma-img" /></div>`
+      : `<div class="firma-item"><p class="evidencia-label">🖊️ Firma del Técnico</p><p class="no-data">No registrada</p></div>`;
 
     // Sello biométrico con gráfico de huella SVG (async-safe)
     const huellaHtml = f.huella_beneficiario
@@ -78,12 +79,14 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
   .label { font-weight: bold; color: #555; min-width: 140px; }
   .value { flex: 1; color: #2d3436; }
   .foto-item { margin: 16px 0; padding: 12px; background: #fff; border-radius: 6px; border: 1px solid #e0e0e0; page-break-inside: avoid; }
-  .foto-img { width: 100%; max-width: 480px; height: auto; border-radius: 4px; margin: 8px 0; display: block; }
+  .foto-img { width: 100%; max-width: 350px; max-height: 240px; height: auto; border-radius: 4px; margin: 8px auto; display: block; object-fit: cover; }
   .foto-coords { font-size: 11px; color: #636e72; font-family: monospace; }
   .foto-heading { font-size: 11px; color: #0984e3; font-family: monospace; }
+  .firma-item { display: inline-block; vertical-align: top; margin: 8px; padding: 12px; background: #fff; border-radius: 6px; border: 1px solid #e0e0e0; page-break-inside: avoid; width: calc(50% - 16px); min-width: 200px; }
+  .firmas-contiguo { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; }
   .evidencia-item { margin: 12px 0; padding: 12px; background: #fff; border-radius: 6px; border: 1px solid #e0e0e0; page-break-inside: avoid; }
   .evidencia-label { font-size: 13px; color: #2d3436; margin-bottom: 8px; }
-  .firma-img { max-width: 320px; max-height: 100px; border: 1px dashed #b2bec3; border-radius: 4px; padding: 8px; background: #fff; }
+  .firma-img { max-width: 100%; max-height: 100px; border: 1px dashed #b2bec3; border-radius: 4px; padding: 8px; background: #fff; }
   /* --- Sello de verificación biométrica --- */
   .huella-sello { margin: 16px 0; page-break-inside: avoid; }
   .huella-sello-inner { background: linear-gradient(135deg, #f0fdf4 0%, #dcfce7 100%); border: 2px solid #1B5E20; border-radius: 12px; padding: 20px; box-shadow: 0 2px 8px rgba(27,94,32,0.15); }
@@ -147,28 +150,32 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
     ${f.coordenadas?.precision_gps ? `<div class="row"><span class="label">Precisión:</span><span class="value">±${f.coordenadas.precision_gps} m</span></div>` : ''}
   </div>
 
-  ${f.clima ? `
+  ${f.clima?.actual ? `
   <div class="section">
     <h2>🌤 Condiciones Ambientales</h2>
-    <div class="row"><span class="label">Ubicación:</span><span class="value">${escapeHtml(f.clima.ubicacion?.nombre || '—')}</span></div>
-    <div class="row"><span class="label">Temperatura:</span><span class="value">${f.clima.temperatura?.actual != null ? Math.round(f.clima.temperatura.actual) + '°C' : '—'}</span></div>
-    <div class="row"><span class="label">Sensación térmica:</span><span class="value">${f.clima.temperatura?.sensacion_termica != null ? Math.round(f.clima.temperatura.sensacion_termica) + '°C' : '—'}</span></div>
-    <div class="row"><span class="label">Humedad:</span><span class="value">${f.clima.humedad != null ? f.clima.humedad + '%' : '—'}</span></div>
-    <div class="row"><span class="label">Viento:</span><span class="value">${f.clima.viento?.velocidad != null ? Math.round(f.clima.viento.velocidad) + ' m/s' : '—'}</span></div>
-    <div class="row"><span class="label">Nubosidad:</span><span class="value">${f.clima.nubosidad != null ? f.clima.nubosidad + '%' : '—'}</span></div>
-    <div class="row"><span class="label">Presión:</span><span class="value">${f.clima.presion != null ? f.clima.presion + ' hPa' : '—'}</span></div>
-    <div class="row"><span class="label">Visibilidad:</span><span class="value">${f.clima.visibilidad != null ? f.clima.visibilidad + ' km' : '—'}</span></div>
+    <div class="row"><span class="label">Ubicación:</span><span class="value">${escapeHtml(f.clima.actual.ubicacion?.nombre || f.clima.ubicacion?.latitud?.toFixed(4) + ', ' + f.clima.ubicacion?.longitud?.toFixed(4) || '—')}</span></div>
+    <div class="row"><span class="label">Temperatura:</span><span class="value">${f.clima.actual.temperatura?.actual != null ? Math.round(f.clima.actual.temperatura.actual) + '°C' : '—'}</span></div>
+    <div class="row"><span class="label">Sensación térmica:</span><span class="value">${f.clima.actual.temperatura?.sensacion_termica != null ? Math.round(f.clima.actual.temperatura.sensacion_termica) + '°C' : '—'}</span></div>
+    <div class="row"><span class="label">Humedad:</span><span class="value">${f.clima.actual.humedad != null ? f.clima.actual.humedad + '%' : '—'}</span></div>
+    <div class="row"><span class="label">Viento:</span><span class="value">${f.clima.actual.viento?.velocidad != null ? Math.round(f.clima.actual.viento.velocidad) + ' m/s' : '—'}</span></div>
+    <div class="row"><span class="label">Nubosidad:</span><span class="value">${f.clima.actual.nubosidad != null ? f.clima.actual.nubosidad + '%' : '—'}</span></div>
+    <div class="row"><span class="label">Presión:</span><span class="value">${f.clima.actual.presion != null ? f.clima.actual.presion + ' hPa' : '—'}</span></div>
+    <div class="row"><span class="label">Visibilidad:</span><span class="value">${f.clima.actual.visibilidad != null ? f.clima.actual.visibilidad + ' km' : '—'}</span></div>
   </div>
   ` : ''}
 
+  <!-- EVIDENCIAS AL FINAL (como documentos oficiales) -->
   <div class="section">
     <h2>📸 Evidencias de Campo</h2>
+
     <h3 style="color:#0984e3;font-size:14px;margin:12px 0 4px;">Fotografías</h3>
     ${fotosHtml}
 
     <h3 style="color:#0984e3;font-size:14px;margin:16px 0 4px;">Firmas</h3>
-    ${firmaBenefHtml}
-    ${firmaTecHtml}
+    <div class="firmas-contiguo">
+      ${firmaBenefHtml}
+      ${firmaTecHtml}
+    </div>
 
     <h3 style="color:#0984e3;font-size:14px;margin:16px 0 4px;">Registro Biométrico</h3>
     ${huellaHtml}
@@ -192,10 +199,21 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
       const url = formulario.pdf_url.startsWith('http')
         ? formulario.pdf_url
         : `http://192.168.1.20:8089${formulario.pdf_url}`;
+      // Descargar PDF remoto para mostrarlo embebido en lugar de abrir navegador
+      setGeneratingPdf(true);
       try {
-        await Linking.openURL(url);
+        const { uri: localUri } = await FileSystem.downloadAsync(url, FileSystem.documentDirectory + 'pdf_preview.pdf');
+        setPdfUri(localUri);
+        setShowPdf(true);
       } catch {
-        Alert.alert('Error', 'No se pudo abrir el PDF');
+        // Fallback: abrir en navegador si no se puede descargar
+        try {
+          await Linking.openURL(url);
+        } catch {
+          Alert.alert('Error', 'No se pudo abrir el PDF');
+        }
+      } finally {
+        setGeneratingPdf(false);
       }
       return;
     }
@@ -287,7 +305,10 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
         <View style={styles.evidenciasSummary}>
           <Text style={styles.evidenciasSummaryTitle}>📸 Evidencias ({evidenciaCount})</Text>
           <Text style={styles.evidenciasSummaryItem}>
-            • {formulario.fotos?.length || 0} foto(s)
+            • {formulario.fotos?.filter(f => f.tipo !== 'video').length || 0} foto(s)
+          </Text>
+          <Text style={styles.evidenciasSummaryItem}>
+            • {formulario.fotos?.filter(f => f.tipo === 'video').length || 0} video(s)
           </Text>
           <Text style={styles.evidenciasSummaryItem}>
             • Firma beneficiario: {formulario.firma_beneficiario ? '✓' : '✗'}
@@ -300,17 +321,27 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
           </Text>
         </View>
 
-        {/* Fotos en miniatura */}
+        {/* Fotos/Videos en miniatura */}
         {formulario.fotos && formulario.fotos.length > 0 && (
           <View style={styles.fotosSection}>
-            <Text style={styles.sectionTitle}>Fotos capturadas</Text>
+            <Text style={styles.sectionTitle}>Evidencias capturadas ({formulario.fotos.length})</Text>
             <ScrollView horizontal showsHorizontalScrollIndicator={false}>
               {formulario.fotos.map((foto) => (
-                <Image
-                  key={foto.id}
-                  source={{ uri: foto.uri }}
-                  style={styles.fotoThumb}
-                />
+                <View key={foto.id} style={styles.fotoThumbContainer}>
+                  {foto.tipo === 'video' ? (
+                    <View style={styles.videoThumb}>
+                      <Text style={styles.videoThumbIcon}>▶️</Text>
+                    </View>
+                  ) : (
+                    <Image
+                      source={{ uri: foto.uri }}
+                      style={styles.fotoThumb}
+                    />
+                  )}
+                  {foto.tipo === 'video' && (
+                    <Text style={styles.videoThumbLabel}>🎥</Text>
+                  )}
+                </View>
               ))}
             </ScrollView>
           </View>
@@ -480,6 +511,27 @@ const styles = StyleSheet.create({
     borderRadius: BORDER_RADIUS.sm,
     marginRight: SPACING.sm,
     backgroundColor: COLORS.surfaceAlt,
+  },
+  fotoThumbContainer: {
+    position: 'relative',
+    marginRight: SPACING.sm,
+  },
+  videoThumb: {
+    width: 100,
+    height: 100,
+    borderRadius: BORDER_RADIUS.sm,
+    backgroundColor: '#1a1a2e',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  videoThumbIcon: {
+    fontSize: 32,
+  },
+  videoThumbLabel: {
+    position: 'absolute',
+    bottom: 2,
+    right: 2,
+    fontSize: 16,
   },
   section: {
     backgroundColor: COLORS.surface,

@@ -15,6 +15,7 @@ import {
 } from 'react-native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { Calendar, DateData, LocaleConfig } from 'react-native-calendars';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { COLORS, FONTS, SPACING, BORDER_RADIUS, SHADOWS } from '../../theme';
 import { useForm } from '../../store/FormContext';
 import { formatFecha } from '../../utils/formatters';
@@ -50,6 +51,7 @@ type CalendarioScreenProps = {
 
 const CalendarioScreen: React.FC<CalendarioScreenProps> = ({ navigation }) => {
   const { formularios } = useForm();
+  const insets = useSafeAreaInsets();
   const [selectedDate, setSelectedDate] = useState<string>(
     new Date().toISOString().split('T')[0]
   );
@@ -200,8 +202,9 @@ const CalendarioScreen: React.FC<CalendarioScreenProps> = ({ navigation }) => {
   const stats = getStats();
 
   return (
+    <SafeAreaView style={styles.safeContainer} edges={['top']}>
     <View style={styles.container}>
-      <ScrollView>
+      <ScrollView contentContainerStyle={{ paddingBottom: insets.bottom + SPACING.xxl }}>
         <Calendar
           onDayPress={onDayPress}
           onDayLongPress={onDayLongPress}
@@ -418,10 +421,15 @@ const CalendarioScreen: React.FC<CalendarioScreenProps> = ({ navigation }) => {
         </View>
       </Modal>
     </View>
+    </SafeAreaView>
   );
 };
 
 const styles = StyleSheet.create({
+  safeContainer: {
+    flex: 1,
+    backgroundColor: COLORS.primary,
+  },
   container: {
     flex: 1,
     backgroundColor: COLORS.background,

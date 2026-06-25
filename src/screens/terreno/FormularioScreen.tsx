@@ -16,6 +16,7 @@ import {
 } from 'react-native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { RouteProp, useFocusEffect } from '@react-navigation/native';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { COLORS, FONTS, SPACING, BORDER_RADIUS, SHADOWS } from '../../theme';
 import { useAuth } from '../../store/AuthContext';
 import { useForm } from '../../store/FormContext';
@@ -29,8 +30,9 @@ import {
   TIPOS_ACTIVIDAD,
 } from '../../utils/constants';
 import { guardarBorrador, getBorrador, FormDraft } from '../../store/FormDraftStore';
-import { TipoFormulario, DatosTecnico, DatosBeneficiario, ActividadRealizada } from '../../types';
+import { TipoFormulario, DatosTecnico, DatosBeneficiario, DatosSociodemograficos, ActividadRealizada } from '../../types';
 import { saveFormularioLocal } from '../../services/database';
+import { buscarBeneficiarioPorCedula } from '../../services/beneficiarios.service';
 import FormField from '../../components/FormField';
 
 type FormularioScreenProps = {
@@ -45,12 +47,14 @@ const FormularioScreen: React.FC<FormularioScreenProps> = ({ navigation, route }
     setTecnico,
     setBeneficiario,
     setActividad,
+    setSociodemografico,
     setCoordenadas,
     finalizarFormulario,
     formularioActual,
   } = useForm();
   const { getCurrentPosition, coordenadas } = useLocation();
   const { fetchClimate } = useClimate();
+  const insets = useSafeAreaInsets();
 
   const tipo = route.params.tipo;
 
@@ -59,8 +63,9 @@ const FormularioScreen: React.FC<FormularioScreenProps> = ({ navigation, route }
   const [isStepSaved, setIsStepSaved] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [tecnico, setTecnicoState] = useState<DatosTecnico>({
+    usuario_id: user?.id,
     nombre: user?.nombre || '',
-    cedula: '',
+    cedula: user?.cedula || '',
     telefono: user?.telefono || '',
     email: user?.email || '',
   });
@@ -84,13 +89,27 @@ const FormularioScreen: React.FC<FormularioScreenProps> = ({ navigation, route }
   const [otraActividadText, setOtraActividadText] = useState('');
   const [descripcionDetallada, setDescripcionDetallada] = useState('');
 
+  // Estado sociodemográfico (Fase 3)
+  const [socioData, setSocioData] = useState<DatosSociodemograficos>({
+    genero: 'masculino',
+    escolaridad: '',
+    etnia: '',
+    personas_cargo: 0,
+    hectareas: 0,
+    vive_en_finca: true,
+    asociado: false,
+    asociacion_nombre: '',
+    telefono_emergencia: '',
+  });
+  const [searchLoading, setSearchLoading] = useState(false);
+
   // Estado de evidencias
   const [fotosCount, setFotosCount] = useState(0);
   const [firmaBeneficiarioOk, setFirmaBeneficiarioOk] = useState(false);
   const [firmaTecnicoOk, setFirmaTecnicoOk] = useState(false);
   const [huellaOk, setHuellaOk] = useState(false);
 
-  const totalSteps = 5;
+  const totalSteps = tipo === 'caracterizacion' ? 5 : 5;
   const draftId = route.params.draftId;
 
   // Inicializar formulario al montar
@@ -119,6 +138,9 @@ const FormularioScreen: React.FC<FormularioScreenProps> = ({ navigation, route }
           if (draft.actividad) {
             setActividadState(draft.actividad);
             setActividad(draft.actividad);
+          }
+          if (draft.socioData) {
+            setSocioData(draft.socioData);
           }
           if (draft.selectedActividad) {
             setSelectedActividad(draft.selectedActividad);
@@ -164,13 +186,19 @@ const FormularioScreen: React.FC<FormularioScreenProps> = ({ navigation, route }
 
   // Guardar paso actual como borrador
   const saveCurrentStep = useCallback(async () => {
+    // Asegurar que el borrador siempre tenga el usuario_id del técnico autenticado
+    const tecnicoConUsuarioId = {
+      ...tecnico,
+      usuario_id: user?.id || tecnico.usuario_id,
+    };
     const draft: FormDraft = {
       id: formularioActual?.id || 'draft-' + Date.now(),
       tipo,
       step,
-      tecnico,
+      tecnico: tecnicoConUsuarioId,
       beneficiario,
       actividad,
+      socioData: tipo === 'caracterizacion' ? socioData : undefined,
       coordenadas: coordenadas || undefined,
       selectedDepartamento,
       selectedActividad,
@@ -181,18 +209,20 @@ const FormularioScreen: React.FC<FormularioScreenProps> = ({ navigation, route }
     await guardarBorrador(draft);
     setIsStepSaved(true);
     Alert.alert('Guardado', 'Progreso guardado correctamente');
-  }, [formularioActual, tipo, step, tecnico, beneficiario, actividad, coordenadas, selectedDepartamento, selectedActividad, otraActividadText, descripcionDetallada]);
+  }, [formularioActual, tipo, step, tecnico, beneficiario, actividad, socioData, coordenadas, selectedDepartamento, selectedActividad, otraActividadText, descripcionDetallada, user?.id]);
 
   // Avanzar paso
   const nextStep = useCallback(() => {
-    if (step === 4) {
-      // Paso 4 (Resumen): solo requiere guardar
+    const resumenStep = totalSteps - 1; // paso 4
+
+    if (step === resumenStep) {
+      // Paso de Resumen: solo requiere guardar
       if (!isStepSaved) {
         Alert.alert('Guardar primero', 'Debes guardar el progreso antes de continuar');
         return;
       }
       setIsStepSaved(false);
-      setStep(5);
+      setStep(step + 1);
       return;
     }
 
@@ -215,7 +245,8 @@ const FormularioScreen: React.FC<FormularioScreenProps> = ({ navigation, route }
         return;
       }
       setBeneficiario(beneficiario);
-    } else if (step === 3) {
+    } else if (step === 3 && tipo !== 'caracterizacion') {
+      // Solo validar actividad en visita_tecnica / plantacion
       if (!actividad.descripcion || !descripcionDetallada.trim()) {
         Alert.alert('Campos requeridos', 'Selecciona el tipo de actividad y escribe una descripción');
         return;
@@ -232,7 +263,7 @@ const FormularioScreen: React.FC<FormularioScreenProps> = ({ navigation, route }
       setIsStepSaved(false);
       setStep(step + 1);
     }
-  }, [step, tecnico, beneficiario, actividad, isStepSaved]);
+  }, [step, tecnico, beneficiario, actividad, isStepSaved, tipo]);
 
   // Paso anterior
   const prevStep = () => {
@@ -247,24 +278,37 @@ const FormularioScreen: React.FC<FormularioScreenProps> = ({ navigation, route }
     navigation.navigate(screen);
   };
 
-  // Completar formulario (desde paso 5)
+  // Completar formulario (desde paso de evidencias)
   const handleCompletar = async () => {
     if (isSubmitting) return; // Evita doble clic
     setIsSubmitting(true);
 
     try {
-      setActividad(actividad);
+      // Guardar datos en contexto según tipo
+      if (tipo !== 'caracterizacion') {
+        setActividad(actividad);
+      }
+      if (tipo === 'caracterizacion') {
+        setSociodemografico(socioData);
+      }
 
-      // ---- PASO 1: Generar PDF LOCAL con evidencias reales (fotos, firmas, huella) ----
+      // ---- PASO 1: Generar PDF LOCAL (protegido contra errores) ----
       let pdfUrl: string | undefined;
       try {
         const { generarPDFLocal } = await import('../../services/pdfLocal.service');
+        // Construir objeto completo con defaults para evitar undefined
         const formData = {
           ...formularioActual,
-          tecnico,
-          beneficiario,
-          actividad,
-          coordenadas: coordenadas || undefined,
+          tecnico: tecnico || formularioActual?.tecnico,
+          beneficiario: beneficiario || formularioActual?.beneficiario,
+          actividad: actividad || formularioActual?.actividad || { descripcion: '', observaciones: '', recomendaciones: '' },
+          sociodemografico: socioData,
+          clima: formularioActual?.clima || undefined,
+          coordenadas: coordenadas || { latitud: 0, longitud: 0 },
+          fotos: formularioActual?.fotos || [],
+          firma_beneficiario: formularioActual?.firma_beneficiario || '',
+          firma_tecnico: formularioActual?.firma_tecnico || '',
+          huella_beneficiario: formularioActual?.huella_beneficiario || false,
         } as any;
         const localUri = await generarPDFLocal(formData);
         if (localUri) {
@@ -272,7 +316,7 @@ const FormularioScreen: React.FC<FormularioScreenProps> = ({ navigation, route }
           console.log('[Formulario] PDF local generado con evidencias:', localUri);
         }
       } catch (e) {
-        console.warn('[Formulario] No se pudo generar PDF local, intentando servidor:', e);
+        console.warn('[Formulario] No se pudo generar PDF local:', e);
         // Fallback: intentar generar PDF en servidor
         try {
           const { generarPDF } = await import('../../services/pdf.service');
@@ -334,6 +378,17 @@ const FormularioScreen: React.FC<FormularioScreenProps> = ({ navigation, route }
   };
 
   const getStepTitle = () => {
+    if (tipo === 'caracterizacion') {
+      switch (step) {
+        case 1: return 'Datos del Técnico';
+        case 2: return 'Datos del Beneficiario';
+        case 3: return 'Caracterización Sociodemográfica';
+        case 4: return 'Resumen del Formulario';
+        case 5: return 'Evidencias';
+        default: return '';
+      }
+    }
+    // visita_tecnica / plantacion
     switch (step) {
       case 1: return 'Datos del Técnico';
       case 2: return 'Datos del Beneficiario';
@@ -417,6 +472,44 @@ const FormularioScreen: React.FC<FormularioScreenProps> = ({ navigation, route }
         placeholder="Número de cédula"
         keyboardType="numeric"
       />
+
+      {/* Botón de búsqueda por cédula */}
+      <TouchableOpacity
+        style={styles.searchCedulaBtn}
+        onPress={async () => {
+          if (!beneficiario.cedula || beneficiario.cedula.length < 5) {
+            Alert.alert('Cédula inválida', 'Ingresa un número de cédula válido para buscar.');
+            return;
+          }
+          setSearchLoading(true);
+          const encontrado = await buscarBeneficiarioPorCedula(beneficiario.cedula);
+          if (encontrado) {
+            setBeneficiarioState({
+              nombre: encontrado.nombre,
+              cedula: encontrado.cedula,
+              telefono: encontrado.telefono,
+              departamento: encontrado.departamento || 'Caquetá',
+              municipio: encontrado.municipio || 'Puerto Rico',
+              vereda: encontrado.vereda || '',
+              finca: encontrado.finca || '',
+            });
+            if (encontrado.sociodemografico) {
+              setSocioData(encontrado.sociodemografico);
+            }
+            Alert.alert('✅ Beneficiario encontrado', `Datos cargados para ${encontrado.nombre}`);
+          } else {
+            Alert.alert('No encontrado', 'El beneficiario no existe en el padrón local. Puedes continuar con los datos manualmente.');
+          }
+          setSearchLoading(false);
+          setIsStepSaved(false);
+        }}
+        disabled={searchLoading}
+      >
+        <Text style={styles.searchCedulaText}>
+          {searchLoading ? '🔍 Buscando...' : '🔍 Buscar por cédula en padrón'}
+        </Text>
+      </TouchableOpacity>
+
       <FormField
         label="Teléfono"
         value={beneficiario.telefono}
@@ -574,8 +667,158 @@ const FormularioScreen: React.FC<FormularioScreenProps> = ({ navigation, route }
     </View>
   );
 
-  // Renderizar paso 4: Resumen Completo
+  // Renderizar paso 4: Datos Sociodemográficos
   const renderStep4 = () => (
+    <View>
+      <Text style={styles.evidenciasTitle}>📊 Datos Sociodemográficos</Text>
+      <Text style={styles.evidenciasDesc}>
+        Información complementaria del beneficiario para caracterización.
+      </Text>
+
+      <Text style={styles.fieldLabel}>Género *</Text>
+      <View style={styles.veredasContainer}>
+        {(['masculino', 'femenino', 'otro'] as const).map((g) => (
+          <TouchableOpacity
+            key={g}
+            style={[styles.veredaChip, socioData.genero === g && styles.veredaChipSelected]}
+            onPress={() => {
+              setSocioData({ ...socioData, genero: g });
+              setIsStepSaved(false);
+            }}
+          >
+            <Text style={[styles.veredaChipText, socioData.genero === g && styles.veredaChipTextSelected]}>
+              {socioData.genero === g ? '✓ ' : ''}{g === 'masculino' ? 'Masculino' : g === 'femenino' ? 'Femenino' : 'Otro'}
+            </Text>
+          </TouchableOpacity>
+        ))}
+      </View>
+
+      <FormField
+        label="Nivel de escolaridad"
+        value={socioData.escolaridad}
+        onChangeText={(t) => {
+          setSocioData({ ...socioData, escolaridad: t });
+          setIsStepSaved(false);
+        }}
+        placeholder="Ej: Primaria, Secundaria, Universitario"
+        autoCapitalize="sentences"
+      />
+
+      <FormField
+        label="Etnia (opcional)"
+        value={socioData.etnia || ''}
+        onChangeText={(t) => {
+          setSocioData({ ...socioData, etnia: t });
+          setIsStepSaved(false);
+        }}
+        placeholder="Ej: Mestizo, Indígena, Afrocolombiano"
+        autoCapitalize="sentences"
+      />
+
+      <FormField
+        label="Personas a cargo"
+        value={String(socioData.personas_cargo)}
+        onChangeText={(t) => {
+          setSocioData({ ...socioData, personas_cargo: parseInt(t) || 0 });
+          setIsStepSaved(false);
+        }}
+        placeholder="0"
+        keyboardType="numeric"
+      />
+
+      <FormField
+        label="Hectáreas del predio"
+        value={String(socioData.hectareas)}
+        onChangeText={(t) => {
+          setSocioData({ ...socioData, hectareas: parseFloat(t) || 0 });
+          setIsStepSaved(false);
+        }}
+        placeholder="0"
+        keyboardType="decimal-pad"
+      />
+
+      {/* Vive en la finca */}
+      <Text style={styles.fieldLabel}>¿Vive en la finca?</Text>
+      <View style={styles.veredasContainer}>
+        <TouchableOpacity
+          style={[styles.veredaChip, socioData.vive_en_finca && styles.veredaChipSelected]}
+          onPress={() => {
+            setSocioData({ ...socioData, vive_en_finca: true });
+            setIsStepSaved(false);
+          }}
+        >
+          <Text style={[styles.veredaChipText, socioData.vive_en_finca && styles.veredaChipTextSelected]}>
+            {socioData.vive_en_finca ? '✓ ' : ''}Sí
+          </Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={[styles.veredaChip, !socioData.vive_en_finca && styles.veredaChipSelected]}
+          onPress={() => {
+            setSocioData({ ...socioData, vive_en_finca: false });
+            setIsStepSaved(false);
+          }}
+        >
+          <Text style={[styles.veredaChipText, !socioData.vive_en_finca && styles.veredaChipTextSelected]}>
+            {!socioData.vive_en_finca ? '✓ ' : ''}No
+          </Text>
+        </TouchableOpacity>
+      </View>
+
+      {/* Asociado */}
+      <Text style={styles.fieldLabel}>¿Está asociado a alguna organización?</Text>
+      <View style={styles.veredasContainer}>
+        <TouchableOpacity
+          style={[styles.veredaChip, socioData.asociado && styles.veredaChipSelected]}
+          onPress={() => {
+            setSocioData({ ...socioData, asociado: true });
+            setIsStepSaved(false);
+          }}
+        >
+          <Text style={[styles.veredaChipText, socioData.asociado && styles.veredaChipTextSelected]}>
+            {socioData.asociado ? '✓ ' : ''}Sí
+          </Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={[styles.veredaChip, !socioData.asociado && styles.veredaChipSelected]}
+          onPress={() => {
+            setSocioData({ ...socioData, asociado: false });
+            setIsStepSaved(false);
+          }}
+        >
+          <Text style={[styles.veredaChipText, !socioData.asociado && styles.veredaChipTextSelected]}>
+            {!socioData.asociado ? '✓ ' : ''}No
+          </Text>
+        </TouchableOpacity>
+      </View>
+
+      {socioData.asociado && (
+        <FormField
+          label="Nombre de la asociación"
+          value={socioData.asociacion_nombre || ''}
+          onChangeText={(t) => {
+            setSocioData({ ...socioData, asociacion_nombre: t });
+            setIsStepSaved(false);
+          }}
+          placeholder="Nombre de la asociación"
+          autoCapitalize="words"
+        />
+      )}
+
+      <FormField
+        label="Teléfono de emergencia (opcional)"
+        value={socioData.telefono_emergencia || ''}
+        onChangeText={(t) => {
+          setSocioData({ ...socioData, telefono_emergencia: t });
+          setIsStepSaved(false);
+        }}
+        placeholder="Teléfono de contacto alterno"
+        keyboardType="phone-pad"
+      />
+    </View>
+  );
+
+  // Renderizar paso 5: Resumen Completo
+  const renderStep5 = () => (
     <View>
       <Text style={styles.resumenTitle}>Resumen del Formulario</Text>
 
@@ -679,8 +922,8 @@ const FormularioScreen: React.FC<FormularioScreenProps> = ({ navigation, route }
     </View>
   );
 
-  // Renderizar paso 5: Evidencias
-  const renderStep5 = () => (
+  // Renderizar paso 6: Evidencias
+  const renderStep6 = () => (
     <View>
       <Text style={styles.evidenciasTitle}>Captura de Evidencias</Text>
       <Text style={styles.evidenciasDesc}>
@@ -784,9 +1027,10 @@ const FormularioScreen: React.FC<FormularioScreenProps> = ({ navigation, route }
   );
 
   return (
+    <SafeAreaView style={styles.safeContainer} edges={['top']}>
     <View style={styles.container}>
       {/* Barra de progreso */}
-      <View style={styles.progressBar}>
+      <View style={[styles.progressBar, { paddingTop: Math.max(insets.top, SPACING.lg) }]}>
         {Array.from({ length: totalSteps }, (_, i) => (
           <View
             key={i}
@@ -805,18 +1049,18 @@ const FormularioScreen: React.FC<FormularioScreenProps> = ({ navigation, route }
 
       <ScrollView
         style={styles.formContainer}
-        contentContainerStyle={styles.formContent}
+        contentContainerStyle={[styles.formContent, { paddingBottom: insets.bottom + SPACING.lg }]}
         keyboardShouldPersistTaps="handled"
       >
         {step === 1 && renderStep1()}
         {step === 2 && renderStep2()}
-        {step === 3 && renderStep3()}
-        {step === 4 && renderStep4()}
-        {step === 5 && renderStep5()}
+        {step === 3 && (tipo === 'caracterizacion' ? renderStep4() : renderStep3())}
+        {step === 4 && renderStep5()}
+        {step === 5 && renderStep6()}
       </ScrollView>
 
       {/* Botones de navegación */}
-      <View style={styles.buttonContainer}>
+      <View style={[styles.buttonContainer, { paddingBottom: insets.bottom + SPACING.md }]}>
         {step > 1 ? (
           <TouchableOpacity style={styles.secondaryButton} onPress={prevStep}>
             <Text style={styles.secondaryButtonText}>Anterior</Text>
@@ -825,8 +1069,8 @@ const FormularioScreen: React.FC<FormularioScreenProps> = ({ navigation, route }
           <View style={styles.buttonPlaceholder} />
         )}
 
-        {/* Botón Guardar — visible en pasos 1-4 */}
-        {step < 5 && step < totalSteps && (
+        {/* Botón Guardar — visible en pasos anteriores a evidencias */}
+        {step < totalSteps && (
           <TouchableOpacity
             style={styles.saveButton}
             onPress={saveCurrentStep}
@@ -835,10 +1079,10 @@ const FormularioScreen: React.FC<FormularioScreenProps> = ({ navigation, route }
           </TouchableOpacity>
         )}
 
-        {step === 5 ? (
+        {step === totalSteps ? (
           <>
             <TouchableOpacity
-              style={[styles.primaryButton, styles.saveButton]}
+              style={[styles.saveButton]}
               onPress={saveCurrentStep}
             >
               <Text style={styles.primaryButtonText}>💾 Guardar</Text>
@@ -876,10 +1120,15 @@ const FormularioScreen: React.FC<FormularioScreenProps> = ({ navigation, route }
         </View>
       )}
     </View>
+    </SafeAreaView>
   );
 };
 
 const styles = StyleSheet.create({
+  safeContainer: {
+    flex: 1,
+    backgroundColor: COLORS.primary,
+  },
   container: {
     flex: 1,
     backgroundColor: COLORS.background,
@@ -1221,6 +1470,24 @@ const styles = StyleSheet.create({
     fontSize: FONTS.sizes.md,
     color: COLORS.textPrimary,
     textAlign: 'center',
+  },
+  // --- Botón búsqueda cédula ---
+  searchCedulaBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: COLORS.info + '15',
+    paddingVertical: SPACING.sm,
+    paddingHorizontal: SPACING.md,
+    borderRadius: BORDER_RADIUS.md,
+    borderWidth: 1,
+    borderColor: COLORS.info + '40',
+    marginBottom: SPACING.sm,
+  },
+  searchCedulaText: {
+    fontSize: FONTS.sizes.sm,
+    fontWeight: FONTS.weights.medium,
+    color: COLORS.info,
   },
 });
 

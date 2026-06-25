@@ -34,6 +34,7 @@ export const COLORS = {
   // Roles
   roleTecnico: '#1565C0',
   roleSupervisor: '#6A1B9A',
+  roleGerente: '#E65100',
   roleAdmin: '#C62828',
 
   // Bordes y dividers
