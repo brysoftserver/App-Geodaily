@@ -5,40 +5,29 @@
 const express = require('express');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
+const path = require('path');
+const fs = require('fs');
 const { authenticateToken, JWT_SECRET } = require('../middleware/auth');
 
 const router = express.Router();
 
-// --- Usuarios mock para desarrollo ---
-const USERS = [
-  {
-    id: 'tec-001',
-    usuario: 'tecnico1',
-    contrasena_hash: bcrypt.hashSync('123456', 10),
-    nombre: 'Carlos Martínez',
-    email: 'carlos@geodaily.app',
-    rol: 'tecnico',
-    telefono: '3151234567',
-  },
-  {
-    id: 'sup-001',
-    usuario: 'supervisor1',
-    contrasena_hash: bcrypt.hashSync('123456', 10),
-    nombre: 'María Gómez',
-    email: 'maria@geodaily.app',
-    rol: 'supervisor',
-    telefono: '3157654321',
-  },
-  {
-    id: 'adm-001',
-    usuario: 'admin1',
-    contrasena_hash: bcrypt.hashSync('admin123', 10),
-    nombre: 'Admin GEODAILY',
-    email: 'admin@geodaily.app',
-    rol: 'admin',
-    telefono: '3150000000',
-  },
-];
+// --- Cargar usuarios desde JSON y hashear contraseñas al arrancar ---
+const usuariosPath = path.join(__dirname, '..', 'data', 'usuarios.json');
+const rawUsers = JSON.parse(fs.readFileSync(usuariosPath, 'utf8'));
+
+// Hashear contraseñas una vez al arrancar
+const USERS = rawUsers.map((u) => ({
+  id: u.id,
+  usuario: u.usuario,
+  contrasena_hash: bcrypt.hashSync(u.contrasena, 10),
+  nombre: u.nombre,
+  cedula: u.cedula || '',
+  email: u.email,
+  rol: u.rol,
+  telefono: u.telefono,
+}));
+
+console.log(`[Auth] ${USERS.length} usuarios cargados (${USERS.filter(u => u.rol === 'tecnico').length} técnicos)`);
 
 // POST /api/auth/login
 router.post('/login', async (req, res) => {
@@ -72,6 +61,7 @@ router.post('/login', async (req, res) => {
       id: user.id,
       usuario: user.usuario,
       nombre: user.nombre,
+      cedula: user.cedula,
       rol: user.rol,
     };
 
@@ -83,6 +73,7 @@ router.post('/login', async (req, res) => {
       usuario: {
         id: user.id,
         nombre: user.nombre,
+        cedula: user.cedula,
         email: user.email,
         rol: user.rol,
         telefono: user.telefono,
@@ -117,6 +108,7 @@ router.get('/me', authenticateToken, (req, res) => {
     usuario: {
       id: user.id,
       nombre: user.nombre,
+      cedula: user.cedula,
       email: user.email,
       rol: user.rol,
       telefono: user.telefono,

@@ -35,6 +35,21 @@ const SeleccionarTipoFormulario: React.FC<SeleccionarTipoProps> = ({ navigation 
       <Text style={styles.title}>Selecciona el tipo de formulario</Text>
 
       <TouchableOpacity
+        style={[styles.card, { borderLeftColor: '#2E7D32' }]}
+        onPress={() => navigation.navigate('Formulario', { tipo: 'caracterizacion' })}
+        activeOpacity={0.7}
+      >
+        <Text style={styles.cardIcon}>👥</Text>
+        <View style={styles.cardContent}>
+          <Text style={styles.cardTitle}>Caracterización Sociodemográfica</Text>
+          <Text style={styles.cardDesc}>
+            Registro completo de datos personales, familiares, educación y condiciones de vida del beneficiario
+          </Text>
+        </View>
+        <Text style={styles.arrow}>›</Text>
+      </TouchableOpacity>
+
+      <TouchableOpacity
         style={[styles.card, { borderLeftColor: COLORS.roleTecnico }]}
         onPress={() => navigation.navigate('Formulario', { tipo: 'visita_tecnica' })}
         activeOpacity={0.7}

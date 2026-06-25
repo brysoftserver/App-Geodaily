@@ -13,8 +13,10 @@ import {
   RefreshControl,
 } from 'react-native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { COLORS, FONTS, SPACING, BORDER_RADIUS, SHADOWS } from '../../theme';
 import { useForm } from '../../store/FormContext';
+import { useAuth } from '../../store/AuthContext';
 import { getFormulariosLocales } from '../../services/database';
 import { Formulario } from '../../types';
 import FormCard from '../../components/FormCard';
@@ -36,12 +38,15 @@ const isValidFormulario = (f: any): f is import('../../types').Formulario => {
 
 const FormularioListScreen: React.FC<FormularioListScreenProps> = ({ navigation }) => {
   const { formularios, cargarFormularios } = useForm();
+  const { user } = useAuth();
+  const insets = useSafeAreaInsets();
   const [isLoading, setIsLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
 
   const loadForms = useCallback(async () => {
     try {
-      const localForms = await getFormulariosLocales();
+      // Técnico solo ve sus propios formularios
+      const localForms = await getFormulariosLocales(user?.id);
       // Filtrar formularios inválidos para evitar white screen
       const validForms = localForms.filter(isValidFormulario);
       if (validForms.length < localForms.length) {
@@ -49,16 +54,15 @@ const FormularioListScreen: React.FC<FormularioListScreenProps> = ({ navigation 
           `[Listado] Se omitieron ${localForms.length - validForms.length} formularios inválidos`
         );
       }
-      if (validForms.length > 0) {
-        cargarFormularios(validForms);
-      }
+      // Siempre actualizar contexto, incluso si está vacío (limpia datos de otro usuario)
+      cargarFormularios(validForms);
     } catch (error) {
       console.warn('[Listado] Error cargando formularios locales:', error);
     } finally {
       setIsLoading(false);
       setRefreshing(false);
     }
-  }, [cargarFormularios]);
+  }, [cargarFormularios, user?.id]);
 
   useEffect(() => {
     loadForms();
@@ -94,8 +98,9 @@ const FormularioListScreen: React.FC<FormularioListScreenProps> = ({ navigation 
   const safeFormularios = formularios.filter(isValidFormulario);
 
   return (
+    <SafeAreaView style={styles.safeContainer} edges={['top']}>
     <View style={styles.container}>
-      <View style={styles.header}>
+      <View style={[styles.header, { paddingTop: Math.max(insets.top, SPACING.md) }]}>
         <Text style={styles.title}>Historial de Formularios</Text>
         <Text style={styles.count}>
           {safeFormularios.length} formulario(s)
@@ -121,7 +126,7 @@ const FormularioListScreen: React.FC<FormularioListScreenProps> = ({ navigation 
               onViewPDF={handleViewPDF}
             />
           )}
-          contentContainerStyle={styles.listContent}
+          contentContainerStyle={[styles.listContent, { paddingBottom: insets.bottom + SPACING.xxl }]}
           refreshControl={
             <RefreshControl
               refreshing={refreshing}
@@ -133,10 +138,15 @@ const FormularioListScreen: React.FC<FormularioListScreenProps> = ({ navigation 
         />
       )}
     </View>
+    </SafeAreaView>
   );
 };
 
 const styles = StyleSheet.create({
+  safeContainer: {
+    flex: 1,
+    backgroundColor: COLORS.primary,
+  },
   container: {
     flex: 1,
     backgroundColor: COLORS.background,

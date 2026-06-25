@@ -17,6 +17,8 @@ import FormularioDetailScreen from '../screens/terreno/FormularioDetailScreen';
 import FormulariosIncompletosScreen from '../screens/terreno/FormulariosIncompletosScreen';
 import CalendarioScreen from '../screens/terreno/CalendarioScreen';
 import MapaScreen from '../screens/terreno/MapaScreen';
+import MiRutaScreen from '../screens/terreno/MiRutaScreen';
+import CapacitacionScreen from '../screens/terreno/CapacitacionScreen';
 import { TipoFormulario } from '../types';
 
 export type TerrenoStackParamList = {
@@ -32,6 +34,8 @@ export type TerrenoStackParamList = {
   FormulariosIncompletos: undefined;
   TerrenoCalendario: undefined;
   TerrenoMapa: undefined;
+  TerrenoMiRuta: undefined;
+  TerrenoCapacitacion: undefined;
 };
 
 const Stack = createNativeStackNavigator<TerrenoStackParamList>();
@@ -112,7 +116,17 @@ const TerrenoNavigator: React.FC = () => {
       <Stack.Screen
         name="TerrenoMapa"
         component={MapaScreen}
-        options={{ title: 'Mapa Offline' }}
+        options={{ title: 'Mapa y Ubicación' }}
+      />
+      <Stack.Screen
+        name="TerrenoMiRuta"
+        component={MiRutaScreen}
+        options={{ title: 'Mi Ruta' }}
+      />
+      <Stack.Screen
+        name="TerrenoCapacitacion"
+        component={CapacitacionScreen}
+        options={{ title: 'Capacitaciones' }}
       />
     </Stack.Navigator>
   );

@@ -32,6 +32,7 @@ const FirmaBeneficiarioScreen: React.FC<Props> = ({ navigation }) => {
 
   const handleFirmaOK = (signature: string) => {
     setFirmaLocal(signature);
+    setFirmaBeneficiario(signature);
     setMostrarPad(false);
   };
 
@@ -44,10 +45,8 @@ const FirmaBeneficiarioScreen: React.FC<Props> = ({ navigation }) => {
 
   const handleVolver = () => {
     if (firma) {
-      Alert.alert('Volver', 'La firma se conservará. ¿Deseas volver?', [
-        { text: 'Cancelar', style: 'cancel' },
-        { text: 'Volver', style: 'destructive', onPress: () => navigation.goBack() },
-      ]);
+      setFirmaBeneficiario(firma);
+      navigation.goBack();
     } else {
       navigation.goBack();
     }
@@ -65,7 +64,7 @@ const FirmaBeneficiarioScreen: React.FC<Props> = ({ navigation }) => {
           )}
         </View>
         <Text style={styles.subtitle}>
-          El beneficiario debe firmar en el recuadro y presionar "Confirmar", luego guarda.
+          El beneficiario debe firmar en el recuadro, presiona "✅ Confirmar" y luego "💾 Guardar".
         </Text>
 
         {mostrarPad && !firma ? (
@@ -78,8 +77,9 @@ const FirmaBeneficiarioScreen: React.FC<Props> = ({ navigation }) => {
             <View style={styles.firmaGuardada}>
               <Text style={styles.firmaGuardadaText}>✓ Firma del beneficiario registrada</Text>
             </View>
+            <Text style={styles.autoSaveHint}>La firma se guardó automáticamente ✅</Text>
             <TouchableOpacity style={styles.contentGuardarBtn} onPress={handleGuardar}>
-              <Text style={styles.contentGuardarBtnText}>💾 Guardar firma</Text>
+              <Text style={styles.contentGuardarBtnText}>💾 Guardar y volver</Text>
             </TouchableOpacity>
           </>
         ) : (
@@ -170,6 +170,13 @@ const styles = StyleSheet.create({
     fontSize: FONTS.sizes.md,
     fontWeight: FONTS.weights.semibold,
     color: COLORS.info,
+  },
+  autoSaveHint: {
+    fontSize: FONTS.sizes.sm,
+    color: COLORS.success,
+    textAlign: 'center',
+    marginBottom: SPACING.sm,
+    fontWeight: FONTS.weights.medium,
   },
   contentGuardarBtn: {
     backgroundColor: COLORS.success,

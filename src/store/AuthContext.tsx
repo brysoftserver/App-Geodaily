@@ -73,6 +73,7 @@ interface AuthContextType extends AuthState {
   getRole: () => UserRole | null;
   isTecnico: boolean;
   isSupervisor: boolean;
+  isGerente: boolean;
   isAdmin: boolean;
 }
 
@@ -117,6 +118,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         const user: Usuario = {
           id: result.user.id,
           nombre: result.user.nombre,
+          cedula: result.user.cedula,
           email: result.user.email,
           rol: result.user.rol as UserRole,
           telefono: result.user.telefono,
@@ -163,6 +165,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     getRole,
     isTecnico: state.user?.rol === 'tecnico',
     isSupervisor: state.user?.rol === 'supervisor',
+    isGerente: state.user?.rol === 'gerente',
     isAdmin: state.user?.rol === 'admin',
   };
 

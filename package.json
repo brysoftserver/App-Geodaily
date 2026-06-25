@@ -24,6 +24,7 @@
     "date-fns": "^3.6.0",
     "expo": "~54.0.0",
     "expo-camera": "~17.0.10",
+    "expo-document-picker": "~14.0.8",
     "expo-file-system": "~19.0.23",
     "expo-image-manipulator": "~14.0.8",
     "expo-image-picker": "~17.0.11",

@@ -6,7 +6,7 @@
 // ============================================================
 
 import * as Print from 'expo-print';
-import * as FileSystem from 'expo-file-system';
+import * as FileSystem from 'expo-file-system/legacy';
 import { manipulateAsync, SaveFormat } from 'expo-image-manipulator';
 import { Formulario, FotoGeotag } from '../types';
 import { formatFecha, formatCoordenadas } from '../utils/formatters';
@@ -23,18 +23,18 @@ export const generarPDFLocal = async (
 
     // 2. Preparar firmas (ya son base64 data URIs)
     const firmaBenefHtml = formulario.firma_beneficiario
-      ? `<div class="evidencia-item">
-           <p class="evidencia-label">✍️ Firma del Beneficiario — <strong>${escapeHtml(formulario.beneficiario.nombre)}</strong></p>
+      ? `<div class="firma-item">
+           <p class="evidencia-label">✍️ Firma del Beneficiario — <strong>${escapeHtml(formulario.beneficiario.nombre)}</strong> (C.C. ${escapeHtml(formulario.beneficiario.cedula || '—')})</p>
            <img src="${formulario.firma_beneficiario}" alt="Firma del beneficiario" class="firma-img" />
          </div>`
-      : `<div class="evidencia-item"><p class="evidencia-label">✍️ Firma del Beneficiario</p><p class="no-data">No registrada</p></div>`;
+      : `<div class="firma-item"><p class="evidencia-label">✍️ Firma del Beneficiario</p><p class="no-data">No registrada</p></div>`;
 
     const firmaTecHtml = formulario.firma_tecnico
-      ? `<div class="evidencia-item">
-           <p class="evidencia-label">🖊️ Firma del Técnico en Terreno — <strong>${escapeHtml(formulario.tecnico.nombre)}</strong></p>
+      ? `<div class="firma-item">
+           <p class="evidencia-label">🖊️ Firma del Técnico en Terreno — <strong>${escapeHtml(formulario.tecnico.nombre)}</strong> (C.C. ${escapeHtml(formulario.tecnico.cedula || '—')})</p>
            <img src="${formulario.firma_tecnico}" alt="Firma del técnico" class="firma-img" />
          </div>`
-      : `<div class="evidencia-item"><p class="evidencia-label">🖊️ Firma del Técnico</p><p class="no-data">No registrada</p></div>`;
+      : `<div class="firma-item"><p class="evidencia-label">🖊️ Firma del Técnico</p><p class="no-data">No registrada</p></div>`;
 
     // 3. Generar sello de verificación biométrica (con gráfico de huella SVG)
     const selloBiometricoHtml = formulario.huella_beneficiario
@@ -51,8 +51,23 @@ export const generarPDFLocal = async (
       height: 841.89, // A4 height
     });
 
-    console.log('[PDF Local] PDF generado:', uri);
-    return uri;
+    // 6. Renombrar PDF con formato: TECNICO-BENEFICIARIO-VEREDA-FECHA.pdf
+    const nombreTecnico = (formulario.tecnico?.nombre || 'tecnico').replace(/[^a-zA-Z0-9áéíóúÁÉÍÓÚñÑ ]/g, '').trim().replace(/\s+/g, '_');
+    const nombreBenef = (formulario.beneficiario?.nombre || 'beneficiario').replace(/[^a-zA-Z0-9áéíóúÁÉÍÓÚñÑ ]/g, '').trim().replace(/\s+/g, '_');
+    const vereda = (formulario.beneficiario?.vereda || 'vereda').replace(/[^a-zA-Z0-9áéíóúÁÉÍÓÚñÑ ]/g, '').trim().replace(/\s+/g, '_');
+    const fechaStr = new Date(formulario.created_at || Date.now()).toISOString().split('T')[0];
+    const pdfName = `${nombreTecnico}-${nombreBenef}-${vereda}-${fechaStr}.pdf`;
+    const pdfDir = uri.substring(0, uri.lastIndexOf('/'));
+    const pdfPath = `${pdfDir}/${pdfName}`;
+
+    try {
+      await FileSystem.moveAsync({ from: uri, to: pdfPath });
+      console.log('[PDF Local] PDF renombrado:', pdfPath);
+      return pdfPath;
+    } catch (moveErr) {
+      console.warn('[PDF Local] No se pudo renombrar, retornando original:', moveErr);
+      return uri;
+    }
   } catch (error) {
     console.error('[PDF Local] Error al generar PDF:', error);
     return null;
@@ -72,6 +87,17 @@ export async function convertirFotosAHTML(fotos: FotoGeotag[]): Promise<string> 
 
   for (let i = 0; i < fotos.length; i++) {
     const foto = fotos[i];
+    // Saltar videos (solo procesar imágenes fijas para el PDF)
+    const ext = foto.uri?.toLowerCase();
+    if (ext?.endsWith('.mp4') || ext?.endsWith('.mov') || ext?.endsWith('.avi') || ext?.endsWith('.mkv') || foto.tipo === 'video') {
+      bloques.push(`
+        <div class="foto-item">
+          <p class="evidencia-label">🎥 Video ${i + 1}</p>
+          <p class="no-data">Video capturado — no disponible en PDF. Consulte la aplicación para reproducirlo.</p>
+        </div>
+      `);
+      continue;
+    }
     try {
       // Redimensionar la foto a 800px de ancho con compresión 0.5
       // para que el base64 sea lo suficientemente pequeño para el PDF
@@ -263,11 +289,13 @@ function construirHTML(
     }
     .foto-img {
       width: 100%;
-      max-width: 480px;
+      max-width: 350px;
+      max-height: 240px;
       height: auto;
       border-radius: 4px;
-      margin: 8px 0;
+      margin: 8px auto;
       display: block;
+      object-fit: cover;
     }
     .foto-coords {
       font-size: 11px;
@@ -292,8 +320,26 @@ function construirHTML(
       color: #2d3436;
       margin-bottom: 8px;
     }
+    .firma-item {
+      display: inline-block;
+      vertical-align: top;
+      margin: 8px;
+      padding: 12px;
+      background: #fff;
+      border-radius: 6px;
+      border: 1px solid #e0e0e0;
+      page-break-inside: avoid;
+      width: calc(50% - 16px);
+      min-width: 200px;
+    }
+    .firmas-contiguo {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      justify-content: center;
+    }
     .firma-img {
-      max-width: 320px;
+      max-width: 100%;
       max-height: 100px;
       border: 1px dashed #b2bec3;
       border-radius: 4px;
@@ -461,21 +507,21 @@ function construirHTML(
   </div>
 
   <!-- DATOS CLIMÁTICOS -->
-  ${form.clima ? `
+  ${form.clima?.actual ? `
   <div class="section">
     <h2>🌤 Condiciones Ambientales</h2>
-    <div class="row"><span class="label">Ubicación:</span><span class="value">${escapeHtml(form.clima.ubicacion?.nombre || '—')}</span></div>
-    <div class="row"><span class="label">Temperatura:</span><span class="value">${form.clima.temperatura?.actual != null ? Math.round(form.clima.temperatura.actual) + '°C' : '—'}</span></div>
-    <div class="row"><span class="label">Sensación térmica:</span><span class="value">${form.clima.temperatura?.sensacion_termica != null ? Math.round(form.clima.temperatura.sensacion_termica) + '°C' : '—'}</span></div>
-    <div class="row"><span class="label">Humedad:</span><span class="value">${form.clima.humedad != null ? form.clima.humedad + '%' : '—'}</span></div>
-    <div class="row"><span class="label">Viento:</span><span class="value">${form.clima.viento?.velocidad != null ? Math.round(form.clima.viento.velocidad) + ' m/s' : '—'}</span></div>
-    <div class="row"><span class="label">Nubosidad:</span><span class="value">${form.clima.nubosidad != null ? form.clima.nubosidad + '%' : '—'}</span></div>
-    <div class="row"><span class="label">Presión:</span><span class="value">${form.clima.presion != null ? form.clima.presion + ' hPa' : '—'}</span></div>
-    <div class="row"><span class="label">Visibilidad:</span><span class="value">${form.clima.visibilidad != null ? form.clima.visibilidad + ' km' : '—'}</span></div>
+    <div class="row"><span class="label">Ubicación:</span><span class="value">${escapeHtml(form.clima.actual.ubicacion?.nombre || form.clima.ubicacion?.latitud?.toFixed(4) + ', ' + form.clima.ubicacion?.longitud?.toFixed(4) || '—')}</span></div>
+    <div class="row"><span class="label">Temperatura:</span><span class="value">${form.clima.actual.temperatura?.actual != null ? Math.round(form.clima.actual.temperatura.actual) + '°C' : '—'}</span></div>
+    <div class="row"><span class="label">Sensación térmica:</span><span class="value">${form.clima.actual.temperatura?.sensacion_termica != null ? Math.round(form.clima.actual.temperatura.sensacion_termica) + '°C' : '—'}</span></div>
+    <div class="row"><span class="label">Humedad:</span><span class="value">${form.clima.actual.humedad != null ? form.clima.actual.humedad + '%' : '—'}</span></div>
+    <div class="row"><span class="label">Viento:</span><span class="value">${form.clima.actual.viento?.velocidad != null ? Math.round(form.clima.actual.viento.velocidad) + ' m/s' : '—'}</span></div>
+    <div class="row"><span class="label">Nubosidad:</span><span class="value">${form.clima.actual.nubosidad != null ? form.clima.actual.nubosidad + '%' : '—'}</span></div>
+    <div class="row"><span class="label">Presión:</span><span class="value">${form.clima.actual.presion != null ? form.clima.actual.presion + ' hPa' : '—'}</span></div>
+    <div class="row"><span class="label">Visibilidad:</span><span class="value">${form.clima.actual.visibilidad != null ? form.clima.actual.visibilidad + ' km' : '—'}</span></div>
   </div>
   ` : ''}
 
-  <!-- EVIDENCIAS -->
+  <!-- EVIDENCIAS AL FINAL (como documentos oficiales) -->
   <div class="section">
     <h2>📸 Evidencias de Campo</h2>
 
@@ -483,12 +529,12 @@ function construirHTML(
     <h3 style="color:#0984e3;font-size:14px;margin:12px 0 4px;">Fotografías</h3>
     ${fotosHtml}
 
-    <!-- FIRMA DEL BENEFICIARIO -->
+    <!-- FIRMAS (contiguas, lado a lado) -->
     <h3 style="color:#0984e3;font-size:14px;margin:16px 0 4px;">Firmas</h3>
-    ${firmaBenefHtml}
-
-    <!-- FIRMA DEL TÉCNICO -->
-    ${firmaTecHtml}
+    <div class="firmas-contiguo">
+      ${firmaBenefHtml}
+      ${firmaTecHtml}
+    </div>
 
     <!-- HUELLA BIOMÉTRICA -->
     <h3 style="color:#0984e3;font-size:14px;margin:16px 0 4px;">Registro Biométrico</h3>

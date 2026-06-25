@@ -1,0 +1,142 @@
+[
+  {
+    "id": "tec-001",
+    "usuario": "rodrigo.zuleta",
+    "contrasena": "GeoDaily2026",
+    "nombre": "Rodrigo Zuleta Velasquez",
+    "cedula": "1006530738",
+    "email": "rozuve2002@gmail.com",
+    "rol": "tecnico",
+    "telefono": "3144210470"
+  },
+  {
+    "id": "tec-002",
+    "usuario": "german.rojas",
+    "contrasena": "GeoDaily2026",
+    "nombre": "German David Rojas Valderrama",
+    "cedula": "1006506887",
+    "email": "rojasvalderramag@gmail.com",
+    "rol": "tecnico",
+    "telefono": "3115546096"
+  },
+  {
+    "id": "tec-003",
+    "usuario": "jose.morales",
+    "contrasena": "GeoDaily2026",
+    "nombre": "Jose Andres Morales Barreto",
+    "cedula": "1075215830",
+    "email": "ingagroecologoandres@gmail.com",
+    "rol": "tecnico",
+    "telefono": "3106132412"
+  },
+  {
+    "id": "tec-004",
+    "usuario": "sergio.malaver",
+    "contrasena": "GeoDaily2026",
+    "nombre": "Sergio Antonio Malaver Ramirez",
+    "cedula": "17636223",
+    "email": "sergiomalaver@gmail.com",
+    "rol": "tecnico",
+    "telefono": "3212348056"
+  },
+  {
+    "id": "tec-005",
+    "usuario": "alejandro.garcia",
+    "contrasena": "GeoDaily2026",
+    "nombre": "Alejandro Garcia Barrera",
+    "cedula": "12258325",
+    "email": "ingagroecologoandres@gmail.com",
+    "rol": "tecnico",
+    "telefono": "3115403798"
+  },
+  {
+    "id": "tec-006",
+    "usuario": "miller.camacho",
+    "contrasena": "GeoDaily2026",
+    "nombre": "Miller Eugenio Camacho Endo",
+    "cedula": "96355140",
+    "email": "millercamachoendo2025@gmail.com",
+    "rol": "tecnico",
+    "telefono": "3222938062"
+  },
+  {
+    "id": "tec-007",
+    "usuario": "deily.torres",
+    "contrasena": "GeoDaily2026",
+    "nombre": "Deily Lorena Torres Barreto",
+    "cedula": "1006458953",
+    "email": "deilytorres1910@gmail.com",
+    "rol": "tecnico",
+    "telefono": "3112081673"
+  },
+  {
+    "id": "tec-008",
+    "usuario": "albenis.quintero",
+    "contrasena": "GeoDaily2026",
+    "nombre": "Albenis Quintero Segura",
+    "cedula": "1116918281",
+    "email": "Albenisq4@gmail.com",
+    "rol": "tecnico",
+    "telefono": "3229524201"
+  },
+  {
+    "id": "tec-009",
+    "usuario": "estefania.molano",
+    "contrasena": "GeoDaily2026",
+    "nombre": "Estefania Molano Rojas",
+    "cedula": "1117529305",
+    "email": "estefaniamolanorojas@gmail.com",
+    "rol": "tecnico",
+    "telefono": "3123742791"
+  },
+  {
+    "id": "tec-010",
+    "usuario": "alejandro.otavo",
+    "contrasena": "GeoDaily2026",
+    "nombre": "Alejandro Otavo Rojas",
+    "cedula": "1117541110",
+    "email": "Kaimer1995@hotmail.com",
+    "rol": "tecnico",
+    "telefono": "3229146170"
+  },
+  {
+    "id": "tec-011",
+    "usuario": "tecnico1",
+    "contrasena": "123456",
+    "nombre": "Técnico de Prueba",
+    "cedula": "0000000001",
+    "email": "tecnico1@geodaily.app",
+    "rol": "tecnico",
+    "telefono": "3150000000"
+  },
+  {
+    "id": "sup-001",
+    "usuario": "supervisor1",
+    "contrasena": "123456",
+    "nombre": "María Gómez Garcia",
+    "cedula": "1000000001",
+    "email": "maria@geodaily.app",
+    "rol": "supervisor",
+    "telefono": "3157654321"
+  },
+  {
+    "id": "ger-001",
+    "usuario": "gerente1",
+    "contrasena": "123456",
+    "nombre": "Carlos Andrés Ríos",
+    "cedula": "1000000002",
+    "email": "gerente@geodaily.app",
+    "rol": "gerente",
+    "telefono": "3160000001"
+  },
+  {
+    "id": "adm-001",
+    "usuario": "admin1",
+    "contrasena": "admin123",
+    "nombre": "Admin GEODAILY",
+    "cedula": "1000000000",
+    "email": "admin@geodaily.app",
+    "rol": "admin",
+    "telefono": "3150000000"
+  }
+]

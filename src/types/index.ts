@@ -3,12 +3,13 @@
 // ============================================================
 
 // --- Roles de usuario ---
-export type UserRole = 'tecnico' | 'supervisor' | 'admin';
+export type UserRole = 'tecnico' | 'supervisor' | 'gerente' | 'admin';
 
 // --- Usuario autenticado ---
 export interface Usuario {
   id: string;
   nombre: string;
+  cedula?: string;
   email: string;
   rol: UserRole;
   telefono?: string;
@@ -84,10 +85,11 @@ export interface ResumenClimatico {
   historico: ClimaHistorico[] | null;
 }
 
-// --- Información de foto geotaggeada ---
+// --- Información de foto/video geotaggeado ---
 export interface FotoGeotag {
   id: string;
   uri: string;
+  tipo?: 'foto' | 'video';
   coordenadas: Coordenadas;
   timestamp: string;
   metadata?: Record<string, unknown>;
@@ -95,6 +97,7 @@ export interface FotoGeotag {
 
 // --- Interface base para formularios de terreno ---
 export interface DatosTecnico {
+  usuario_id?: string;
   nombre: string;
   cedula: string;
   telefono: string;
@@ -118,7 +121,7 @@ export interface ActividadRealizada {
   recomendaciones: string;
 }
 
-export type TipoFormulario = 'visita_tecnica' | 'plantacion';
+export type TipoFormulario = 'caracterizacion' | 'visita_tecnica' | 'plantacion';
 
 // --- Estado de un formulario ---
 export interface FormularioBase {
@@ -127,6 +130,7 @@ export interface FormularioBase {
   tecnico: DatosTecnico;
   beneficiario: DatosBeneficiario;
   actividad: ActividadRealizada;
+  sociodemografico?: DatosSociodemograficos;
   coordenadas: Coordenadas;
   georeferencia?: GeoReferencia;
   clima?: ResumenClimatico;
@@ -174,4 +178,109 @@ export interface MetricasDashboard {
   formularios_por_tipo: { tipo: string; count: number }[];
   visitas_por_municipio: { municipio: string; count: number }[];
   ultimas_visitas: Formulario[];
+}
+
+// ============================================================
+// INTERFACES — Módulo de Mapas y SIG (Fase 1)
+// ============================================================
+
+/** Medición de terreno (Shoelace) */
+export interface MedicionTerreno {
+  id: string;
+  formulario_id: string;
+  area_hectareas: number;
+  area_metros2: number;
+  perimetro_metros: number;
+  puntos: { latitud: number; longitud: number }[];
+  created_at: string;
+}
+
+/** Conteo de plantas por especie */
+export interface ConteoPlantas {
+  id: string;
+  formulario_id: string;
+  especie: string;
+  cantidad: number;
+  observaciones?: string;
+  created_at: string;
+}
+
+/** Posición de tracking GPS */
+export interface PosicionTracking {
+  id: string;
+  usuario_id: string;
+  latitud: number;
+  longitud: number;
+  altitud?: number;
+  precision_gps?: number;
+  velocidad?: number;
+  heading?: number;
+  timestamp: string;
+  sincronizado: boolean;
+}
+
+/** Documento digital de finca */
+export interface DocumentoFinca {
+  id: string;
+  formulario_id: string;
+  tipo: 'foto' | 'pdf' | 'kml' | 'otro';
+  uri: string;
+  nombre: string;
+  descripcion?: string;
+  created_at: string;
+}
+
+// ============================================================
+// INTERFACES — Capacitaciones (Fase 4)
+// ============================================================
+
+/** Capacitación a beneficiarios */
+export interface Capacitacion {
+  id: string;
+  tema: string;
+  descripcion: string;
+  material_url?: string;
+  material_nombre?: string;
+  fecha: string;
+  duracion_minutos: number;
+  beneficiarios_asistentes: number;
+  tecnico_id: string;
+  lugar: string;
+  observaciones?: string;
+  fotos: string[];
+  created_at: string;
+  updated_at: string;
+}
+
+// ============================================================
+// INTERFACES — Formulario Mejorado (Fase 3)
+// ============================================================
+
+/** Datos sociodemográficos del beneficiario */
+export interface DatosSociodemograficos {
+  genero: 'masculino' | 'femenino' | 'otro';
+  escolaridad: string;
+  etnia?: string;
+  personas_cargo: number;
+  hectareas: number;
+  vive_en_finca: boolean;
+  asociado: boolean;
+  asociacion_nombre?: string;
+  telefono_emergencia?: string;
+}
+
+/** Datos completos de beneficiario con sociodemográfico */
+export interface DatosBeneficiarioCompleto extends DatosBeneficiario {
+  sociodemografico?: DatosSociodemograficos;
+  documentos?: DocumentoFinca[];
+}
+
+/** Filtros para consolidado gerencial */
+export interface FiltrosConsolidado {
+  fecha_desde?: string;
+  fecha_hasta?: string;
+  municipio?: string;
+  vereda?: string;
+  tecnico_id?: string;
+  tipo_formulario?: TipoFormulario | 'all';
 }

@@ -11,6 +11,7 @@ import {
   DatosTecnico,
   DatosBeneficiario,
   ActividadRealizada,
+  DatosSociodemograficos,
   Coordenadas,
   TipoFormulario,
 } from '../types';
@@ -22,6 +23,7 @@ export interface FormDraft {
   tecnico: DatosTecnico;
   beneficiario: DatosBeneficiario;
   actividad: ActividadRealizada;
+  socioData?: DatosSociodemograficos;
   coordenadas?: Coordenadas;
   selectedDepartamento: string;
   selectedActividad: string;
