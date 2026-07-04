@@ -13,6 +13,7 @@ import CronogramaScreen from '../screens/gerente/CronogramaScreen';
 import ProyeccionScreen from '../screens/gerente/ProyeccionScreen';
 import CapacitacionScreen from '../screens/gerente/CapacitacionScreen';
 import MapaTecnicosScreen from '../screens/gerente/MapaTecnicosScreen';
+import MapaGeneralScreen from '../screens/MapaGeneralScreen';
 
 export type GerenteStackParamList = {
   GerenteMenu: undefined;
@@ -23,6 +24,7 @@ export type GerenteStackParamList = {
   Proyeccion: undefined;
   CapacitacionGerente: undefined;
   MapaTecnicos: undefined;
+  MapaGeneral: undefined;
 };
 
 const Stack = createNativeStackNavigator<GerenteStackParamList>();
@@ -84,6 +86,11 @@ const GerenteNavigator: React.FC = () => {
         name="MapaTecnicos"
         component={MapaTecnicosScreen}
         options={{ title: 'Mapa de Técnicos' }}
+      />
+      <Stack.Screen
+        name="MapaGeneral"
+        component={MapaGeneralScreen}
+        options={{ title: 'Mapa General del Proyecto' }}
       />
     </Stack.Navigator>
   );

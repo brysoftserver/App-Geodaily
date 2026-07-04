@@ -41,8 +41,13 @@ export const generarPDFLocal = async (
       ? generarSelloBiometrico(formulario.beneficiario.nombre)
       : `<div class="evidencia-item"><p class="evidencia-label">🖐️ Huella Biométrica</p><p class="no-data">No registrada</p></div>`;
 
-    // 4. Construir HTML completo
-    const html = construirHTML(formulario, fotosHtml, firmaBenefHtml, firmaTecHtml, selloBiometricoHtml);
+    // 4. Construir HTML completo según el tipo de formulario
+    let html: string;
+    if (formulario.tipo === 'caracterizacion' && (formulario as any).caracterizacion_nueva) {
+      html = construirHTMLCaracterizacion(formulario, fotosHtml, firmaBenefHtml, firmaTecHtml, selloBiometricoHtml);
+    } else {
+      html = construirHTML(formulario, fotosHtml, firmaBenefHtml, firmaTecHtml, selloBiometricoHtml);
+    }
 
     // 5. Generar PDF con expo-print
     const { uri } = await Print.printToFileAsync({
@@ -537,6 +542,256 @@ function construirHTML(
     </div>
 
     <!-- HUELLA BIOMÉTRICA -->
+    <h3 style="color:#0984e3;font-size:14px;margin:16px 0 4px;">Registro Biométrico</h3>
+    ${huellaHtml}
+  </div>
+
+  <div class="footer">
+    <p>Documento generado por GEODAILY — ${new Date().toISOString()}</p>
+    <p>Este es un documento digital válido como evidencia de campo.</p>
+  </div>
+</body>
+</html>`;
+}
+
+/**
+ * Construir HTML del PDF para el formulario de Caracterización Sociodemográfica (Nuevo)
+ */
+function construirHTMLCaracterizacion(
+  form: Formulario,
+  fotosHtml: string,
+  firmaBenefHtml: string,
+  firmaTecHtml: string,
+  huellaHtml: string
+): string {
+  const c = (form as any).caracterizacion_nueva || {};
+
+  const row = (label: string, val: string | undefined | null) =>
+    val ? `<div class="row"><span class="label">${label}:</span><span class="value">${escapeHtml(val)}</span></div>` : '';
+
+  const section = (title: string, icon: string, rows: string) =>
+    rows ? `
+    <div class="section">
+      <h2>${icon} ${title}</h2>
+      ${rows}
+    </div>` : '';
+
+  // ---- Datos Generales ----
+  const datosGenerales = `
+    <div class="row"><span class="label">Municipio:</span><span class="value">${escapeHtml(c.municipio || '—')}</span></div>
+    <div class="row"><span class="label">Fecha:</span><span class="value">${escapeHtml(c.fecha || '—')}</span></div>
+    <div class="row"><span class="label">Vereda:</span><span class="value">${escapeHtml(c.vereda || '—')}</span></div>
+    <div class="row"><span class="label">N° Encuesta:</span><span class="value">${escapeHtml(c.numero_encuesta || '—')}</span></div>
+    <div class="row"><span class="label">Productor:</span><span class="value">${escapeHtml(c.productor || '—')}</span></div>
+    <div class="row"><span class="label">Documento:</span><span class="value">${escapeHtml(c.documento || '—')}</span></div>
+    <div class="row"><span class="label">Teléfono:</span><span class="value">${escapeHtml(c.telefono || '—')}</span></div>
+    <div class="row"><span class="label">Técnico:</span><span class="value">${escapeHtml(c.tecnico || '—')}</span></div>
+  `;
+
+  // ---- Componente Social ----
+  const socialRows = [
+    row('Nivel educativo', c.nivel_educativo),
+    row('Personas en el núcleo familiar', c.personas_nucleo),
+    row('Fuente de ingresos', c.fuente_ingresos),
+    row('Acceso a servicios públicos', c.servicios_publicos),
+    row('Participa en asociaciones', c.participa_asociaciones),
+    row('Recibe asistencia técnica', c.asistencia_tecnica),
+  ].join('');
+  const componenteSocial = section('Componente Social', '🤝', socialRows);
+
+  // ---- Componente Productivo ----
+  const prodRows = [
+    row('Actividad productiva principal', c.actividad_productiva),
+    row('Cuenta con mano de obra', c.mano_obra),
+    row('Asistencia técnica agropecuaria', c.asistencia_agropecuaria),
+    row('Recibe crédito o financiación', c.credito_financiacion),
+  ].join('');
+  const componenteProductivo = section('Componente Productivo', '🌾', prodRows);
+
+  // ---- Componente Agroambiental ----
+  const agroRows = [
+    row('Procesos de erosión', c.procesos_erosion),
+    row('Fuentes hídricas en la finca', c.fuentes_hidricas),
+    row('Prácticas de conservación', c.practicas_conservacion),
+    row('Manejo de residuos sólidos', c.manejo_residuos),
+    row('Participa en proyectos ambientales', c.proyectos_ambientales),
+  ].join('');
+  const componenteAgro = section('Componente Agroambiental', '🌿', agroRows);
+
+  // ---- Análisis de Suelo ----
+  const sueloRows = [
+    row('Textura del suelo', c.textura_suelo),
+    row('Color del suelo', c.color_suelo),
+    row('Drenaje', c.drenaje),
+    row('Profundidad efectiva', c.profundidad),
+    row('Presencia de piedras', c.presencia_piedras),
+    row('Compactación', c.compactacion),
+    row('Cobertura del suelo', c.cobertura_suelo),
+    row('Evidencia de erosión', c.evidencia_erosion),
+    row('pH del suelo', c.ph_suelo),
+  ].join('');
+  const analisisSuelo = section('Análisis de Suelo', '🧪', sueloRows);
+
+  // ---- Recomendaciones ----
+  const recomendacionesHtml = (c.recomendacion_tecnica || c.observaciones_finales) ? `
+    <div class="section">
+      <h2>📋 Recomendaciones</h2>
+      ${c.recomendacion_tecnica ? `
+      <div class="row" style="margin-bottom:4px;"><span class="label">Recomendación técnica:</span></div>
+      <div class="desc-detallada">${escapeHtml(c.recomendacion_tecnica)}</div>
+      ` : ''}
+      ${c.observaciones_finales ? `
+      <div class="row" style="margin-top:12px;margin-bottom:4px;"><span class="label">Observaciones finales:</span></div>
+      <div class="desc-detallada">${escapeHtml(c.observaciones_finales)}</div>
+      ` : ''}
+    </div>` : '';
+
+  // ---- Ubicación GPS ----
+  const ubicacionHtml = form.coordenadas ? `
+    <div class="section">
+      <h2>📍 Ubicación Geográfica</h2>
+      <div class="row"><span class="label">Latitud:</span><span class="value">${form.coordenadas.latitud?.toFixed(6) || '—'}</span></div>
+      <div class="row"><span class="label">Longitud:</span><span class="value">${form.coordenadas.longitud?.toFixed(6) || '—'}</span></div>
+      ${form.coordenadas.altitud ? `<div class="row"><span class="label">Altitud:</span><span class="value">${form.coordenadas.altitud.toFixed(1)} m</span></div>` : ''}
+      ${form.coordenadas.precision_gps ? `<div class="row"><span class="label">Precisión:</span><span class="value">±${form.coordenadas.precision_gps} m</span></div>` : ''}
+    </div>` : '';
+
+  return `<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <title>Caracterización Sociodemográfica — ${escapeHtml(c.productor || form.id)}</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: 'Helvetica Neue', Arial, sans-serif;
+      margin: 40px;
+      color: #2d3436;
+      line-height: 1.6;
+    }
+    .header {
+      text-align: center;
+      border-bottom: 3px solid #1B5E20;
+      padding-bottom: 16px;
+      margin-bottom: 24px;
+    }
+    .header h1 { color: #1B5E20; font-size: 22px; margin-bottom: 4px; }
+    .header p { color: #636e72; font-size: 13px; }
+    .section {
+      margin: 20px 0;
+      padding: 16px 20px;
+      background: #f8f9fa;
+      border-radius: 8px;
+      border-left: 4px solid #1B5E20;
+    }
+    .section h2 {
+      color: #1B5E20;
+      font-size: 16px;
+      margin-bottom: 12px;
+      border-bottom: 1px solid #e0e0e0;
+      padding-bottom: 6px;
+    }
+    .row { display: flex; margin: 3px 0; font-size: 13px; }
+    .label { font-weight: bold; color: #555; min-width: 160px; }
+    .value { flex: 1; color: #2d3436; }
+    .desc-detallada {
+      font-size: 13px;
+      color: #2d3436;
+      background: #fff;
+      padding: 10px;
+      border-radius: 4px;
+      border: 1px solid #e0e0e0;
+      margin-top: 6px;
+      line-height: 1.5;
+    }
+    .foto-item {
+      margin: 16px 0; padding: 12px; background: #fff;
+      border-radius: 6px; border: 1px solid #e0e0e0; page-break-inside: avoid;
+    }
+    .foto-img {
+      width: 100%; max-width: 350px; max-height: 240px; height: auto;
+      border-radius: 4px; margin: 8px auto; display: block; object-fit: cover;
+    }
+    .foto-coords { font-size: 11px; color: #636e72; font-family: monospace; }
+    .foto-heading { font-size: 11px; color: #0984e3; font-family: monospace; }
+    .evidencia-item { margin: 12px 0; padding: 12px; background: #fff; border-radius: 6px; border: 1px solid #e0e0e0; page-break-inside: avoid; }
+    .evidencia-label { font-size: 13px; color: #2d3436; margin-bottom: 8px; }
+    .firma-item {
+      display: inline-block; vertical-align: top; margin: 8px; padding: 12px;
+      background: #fff; border-radius: 6px; border: 1px solid #e0e0e0;
+      page-break-inside: avoid; width: calc(50% - 16px); min-width: 200px;
+    }
+    .firmas-contiguo { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; }
+    .firma-img { max-width: 100%; max-height: 100px; border: 1px dashed #b2bec3; border-radius: 4px; padding: 8px; background: #fff; }
+    .huella-sello { margin: 16px 0; page-break-inside: avoid; }
+    .huella-sello-inner {
+      background: linear-gradient(135deg, #f0fdf4 0%, #dcfce7 100%);
+      border: 2px solid #1B5E20; border-radius: 12px; padding: 20px;
+      box-shadow: 0 2px 8px rgba(27, 94, 32, 0.15);
+    }
+    .huella-sello-header { display: flex; align-items: center; gap: 16px; border-bottom: 1px solid #bbf7d0; padding-bottom: 14px; margin-bottom: 14px; }
+    .huella-sello-img { width: 64px; height: 64px; flex-shrink: 0; }
+    .huella-sello-titles { flex: 1; }
+    .huella-sello-verificado { font-size: 20px; font-weight: bold; color: #15803d; }
+    .huella-sello-label { font-size: 13px; color: #16a34a; }
+    .huella-sello-body { margin-bottom: 14px; }
+    .huella-sello-table { width: 100%; border-collapse: collapse; }
+    .huella-sello-table td { padding: 4px 8px; font-size: 13px; }
+    .huella-sello-label-cell { color: #555; font-weight: bold; width: 120px; }
+    .huella-sello-value-cell { color: #2d3436; }
+    .huella-sello-exitoso { display: inline-block; background: #15803d; color: #fff; font-size: 12px; font-weight: bold; padding: 2px 12px; border-radius: 10px; }
+    .huella-sello-footer { text-align: center; border-top: 1px solid #bbf7d0; padding-top: 12px; }
+    .huella-sello-stamp { display: inline-block; font-size: 14px; font-weight: bold; color: #15803d; letter-spacing: 1px; border: 2px solid #15803d; border-radius: 6px; padding: 4px 16px; transform: rotate(-2deg); }
+    .no-data { font-size: 12px; color: #b2bec3; font-style: italic; padding: 8px 0; }
+    .footer { margin-top: 40px; padding-top: 16px; border-top: 1px solid #e0e0e0; text-align: center; font-size: 11px; color: #b2bec3; }
+    @media print { .foto-img { max-width: 100%; } .section { break-inside: avoid; } }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h1>🌱 GEODAILY — Caracterización Sociodemográfica</h1>
+    <p><strong>ID:</strong> ${escapeHtml(form.id)} | <strong>Productor:</strong> ${escapeHtml(c.productor || '—')} | <strong>Fecha:</strong> ${escapeHtml(c.fecha || formatFecha(form.created_at))}</p>
+  </div>
+
+  <!-- Datos Generales -->
+  <div class="section">
+    <h2>📋 Datos Generales</h2>
+    ${datosGenerales}
+  </div>
+
+  ${componenteSocial}
+  ${componenteProductivo}
+  ${componenteAgro}
+  ${analisisSuelo}
+  ${recomendacionesHtml}
+  ${ubicacionHtml}
+
+  <!-- Información del Técnico -->
+  <div class="section">
+    <h2>👤 Datos del Técnico</h2>
+    <div class="row"><span class="label">Nombre:</span><span class="value">${escapeHtml(form.tecnico.nombre)}</span></div>
+    <div class="row"><span class="label">Cédula:</span><span class="value">${escapeHtml(form.tecnico.cedula)}</span></div>
+    <div class="row"><span class="label">Teléfono:</span><span class="value">${escapeHtml(form.tecnico.telefono || '—')}</span></div>
+  </div>
+
+  <!-- Datos del Beneficiario -->
+  <div class="section">
+    <h2>👥 Datos del Beneficiario</h2>
+    <div class="row"><span class="label">Nombre:</span><span class="value">${escapeHtml(form.beneficiario.nombre)}</span></div>
+    <div class="row"><span class="label">Cédula:</span><span class="value">${escapeHtml(form.beneficiario.cedula || '—')}</span></div>
+    <div class="row"><span class="label">Teléfono:</span><span class="value">${escapeHtml(form.beneficiario.telefono || '—')}</span></div>
+  </div>
+
+  <!-- EVIDENCIAS -->
+  <div class="section">
+    <h2>📸 Evidencias de Campo</h2>
+    <h3 style="color:#0984e3;font-size:14px;margin:12px 0 4px;">Fotografías</h3>
+    ${fotosHtml}
+    <h3 style="color:#0984e3;font-size:14px;margin:16px 0 4px;">Firmas</h3>
+    <div class="firmas-contiguo">
+      ${firmaBenefHtml}
+      ${firmaTecHtml}
+    </div>
     <h3 style="color:#0984e3;font-size:14px;margin:16px 0 4px;">Registro Biométrico</h3>
     ${huellaHtml}
   </div>

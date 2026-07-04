@@ -14,7 +14,7 @@ import {
   ActivityIndicator,
 } from 'react-native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
-import { CameraView, useCameraPermissions } from 'expo-camera';
+import { Camera, CameraView, useCameraPermissions } from 'expo-camera';
 import * as Location from 'expo-location';
 import { useCamera } from '../../hooks/useCamera';
 import { useClimate } from '../../hooks/useClimate';
@@ -314,9 +314,39 @@ const CamaraScreen: React.FC<CamaraScreenProps> = ({ navigation }) => {
     if (!cameraRef.current) return;
 
     if (isRecording) {
-      // Detener grabación
+      // === DETENER GRABACIÓN ===
       try {
-        const video = await cameraRef.current.stopRecording();
+        // stopRecording() resuelve el promise de recordAsync()
+        // y el video se procesa en el bloque "else" automáticamente
+        await cameraRef.current.stopRecording();
+      } catch (error) {
+        console.error('[Camara] Error al detener grabación:', error);
+        // Si falla, aseguramos limpiar el estado
+        setIsRecording(false);
+        setShowCamera(false);
+      }
+    } else {
+      // === INICIAR GRABACIÓN ===
+      try {
+        // 1. Solicitar permiso de micrófono (obligatorio en Android para video)
+        const micStatus = await Camera.requestMicrophonePermissionsAsync();
+        if (!micStatus.granted) {
+          Alert.alert(
+            'Permiso de micrófono requerido',
+            'Para grabar video necesitamos acceso al micrófono. Puedes habilitarlo en Ajustes del dispositivo.'
+          );
+          return;
+        }
+
+        // 2. Pequeño delay para que la cámara cambie a modo video
+        await new Promise(resolve => setTimeout(resolve, 200));
+
+        setIsRecording(true);
+
+        // 3. Iniciar grabación — se bloquea hasta que se detenga
+        const video = await cameraRef.current.recordAsync({ maxDuration: 60 });
+
+        // 4. Grabación finalizada (por stopRecording o por maxDuration)
         if (video?.uri) {
           const nuevaFoto = await capturarFoto(video.uri);
           if (nuevaFoto) {
@@ -327,22 +357,14 @@ const CamaraScreen: React.FC<CamaraScreenProps> = ({ navigation }) => {
               nuevaFoto.coordenadas.longitud
             );
           }
+        } else {
+          console.warn('[Camara] La grabación no devolvió URI');
         }
       } catch (error) {
-        console.error('[Camara] Error al detener grabación:', error);
+        console.error('[Camara] Error en grabación de video:', error);
       }
       setIsRecording(false);
       setShowCamera(false);
-    } else {
-      // Iniciar grabación
-      try {
-        setIsRecording(true);
-        await cameraRef.current.recordAsync({ maxDuration: 60 });
-        // La grabación continúa hasta que se presione de nuevo
-      } catch (error) {
-        console.error('[Camara] Error al iniciar grabación:', error);
-        setIsRecording(false);
-      }
     }
   };
 

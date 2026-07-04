@@ -9,6 +9,7 @@ import {
   TouchableOpacity,
   StyleSheet,
   ScrollView,
+  ImageBackground,
 } from 'react-native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useAuth } from '../../store/AuthContext';
@@ -36,6 +37,14 @@ const MENU_ITEMS = [
     screen: 'SystemConfig',
   },
   {
+    id: 'mapa',
+    title: 'Mapa General del Proyecto',
+    subtitle: 'Plantaciones, técnicos y mediciones en mapa',
+    icon: '🗺️',
+    color: COLORS.success,
+    screen: 'MapaGeneral',
+  },
+  {
     id: 'supervision',
     title: 'Panel de Supervisión',
     subtitle: 'Ver dashboard y formularios de supervisores',
@@ -48,7 +57,7 @@ const MENU_ITEMS = [
     title: 'Módulo de Terreno',
     subtitle: 'Acceso a herramientas de campo',
     icon: '🌱',
-    color: COLORS.success,
+    color: COLORS.roleTecnico,
     screen: null, // navegación externa
   },
   {
@@ -88,18 +97,18 @@ const AdminMenuScreen: React.FC<AdminMenuProps> = ({ navigation }) => {
   return (
     <ScrollView style={styles.container} contentContainerStyle={styles.scrollContent}>
       {/* Encabezado */}
-      <View style={styles.header}>
-        <View style={[styles.avatar, { backgroundColor: COLORS.roleAdmin }]}>
+      <ImageBackground source={require('../../../Logos_imagenes/fondo_login_geo_daily.png')} style={styles.header}>
+        <ImageBackground source={require('../../../Logos_imagenes/fondo_login_geo_daily.png')} style={[styles.avatar, { overflow: 'hidden' }]} imageStyle={{ borderRadius: 36 }}>
           <Text style={styles.avatarText}>
             {user?.nombre?.charAt(0)?.toUpperCase() || 'A'}
           </Text>
-        </View>
+        </ImageBackground>
         <Text style={styles.welcomeText}>Consola de Administración</Text>
         <Text style={styles.userName}>{user?.nombre || 'Administrador'}</Text>
         <View style={styles.roleBadge}>
           <Text style={styles.roleText}>Administrador</Text>
         </View>
-      </View>
+      </ImageBackground>
 
       {/* Menú */}
       <View style={styles.menuContainer}>
@@ -146,15 +155,16 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.background,
   },
   scrollContent: {
+    flexGrow: 1,
     paddingBottom: SPACING.xl,
   },
   header: {
     alignItems: 'center',
     paddingVertical: SPACING.xl,
     paddingHorizontal: SPACING.lg,
-    backgroundColor: COLORS.surface,
     borderBottomLeftRadius: BORDER_RADIUS.xl,
     borderBottomRightRadius: BORDER_RADIUS.xl,
+    overflow: 'hidden',
     ...SHADOWS.md,
   },
   avatar: {

@@ -8,6 +8,7 @@ import { COLORS, FONTS } from '../theme';
 import TerrenoMenuScreen from '../screens/terreno/TerrenoMenuScreen';
 import SeleccionarTipoFormulario from '../screens/terreno/SeleccionarTipoFormulario';
 import FormularioScreen from '../screens/terreno/FormularioScreen';
+import FormularioCaracterizacionScreen from '../screens/terreno/FormularioCaracterizacionScreen';
 import CamaraScreen from '../screens/terreno/CamaraScreen';
 import FirmaDigitalScreen from '../screens/terreno/FirmaDigitalScreen';
 import FirmaBeneficiarioScreen from '../screens/terreno/FirmaBeneficiarioScreen';
@@ -17,7 +18,6 @@ import FormularioDetailScreen from '../screens/terreno/FormularioDetailScreen';
 import FormulariosIncompletosScreen from '../screens/terreno/FormulariosIncompletosScreen';
 import CalendarioScreen from '../screens/terreno/CalendarioScreen';
 import MapaScreen from '../screens/terreno/MapaScreen';
-import MiRutaScreen from '../screens/terreno/MiRutaScreen';
 import CapacitacionScreen from '../screens/terreno/CapacitacionScreen';
 import { TipoFormulario } from '../types';
 
@@ -25,6 +25,7 @@ export type TerrenoStackParamList = {
   TerrenoMenu: undefined;
   SeleccionarTipoFormulario: undefined;
   Formulario: { tipo: TipoFormulario; draftId?: string };
+  FormularioCaracterizacion: { draftId?: string };
   Camara: undefined;
   FirmaDigital: undefined;
   FirmaBeneficiario: undefined;
@@ -34,7 +35,6 @@ export type TerrenoStackParamList = {
   FormulariosIncompletos: undefined;
   TerrenoCalendario: undefined;
   TerrenoMapa: undefined;
-  TerrenoMiRuta: undefined;
   TerrenoCapacitacion: undefined;
 };
 
@@ -72,6 +72,11 @@ const TerrenoNavigator: React.FC = () => {
         name="Formulario"
         component={FormularioScreen as any}
         options={{ title: 'Formulario de Campo' }}
+      />
+      <Stack.Screen
+        name="FormularioCaracterizacion"
+        component={FormularioCaracterizacionScreen as any}
+        options={{ title: 'Caracterización Sociodemográfica' }}
       />
       <Stack.Screen
         name="Camara"
@@ -117,11 +122,6 @@ const TerrenoNavigator: React.FC = () => {
         name="TerrenoMapa"
         component={MapaScreen}
         options={{ title: 'Mapa y Ubicación' }}
-      />
-      <Stack.Screen
-        name="TerrenoMiRuta"
-        component={MiRutaScreen}
-        options={{ title: 'Mi Ruta' }}
       />
       <Stack.Screen
         name="TerrenoCapacitacion"

@@ -104,11 +104,11 @@ const SystemConfigScreen: React.FC = () => {
         </Text>
         {MOCK_TECNICOS.map((tec) => (
           <View key={tec.id} style={styles.tecnicoRow}>
-            <View style={[styles.tecnicoAvatar, { backgroundColor: tec.color }]}>
+            <ImageBackground source={require('../../../Logos_imagenes/fondo_login_geo_daily.png')} style={[styles.tecnicoAvatar, { overflow: 'hidden' }]} imageStyle={{ borderRadius: 18 }}>
               <Text style={styles.tecnicoAvatarText}>
                 {tec.nombre.charAt(0)}
               </Text>
-            </View>
+            </ImageBackground>
             <View style={styles.tecnicoInfo}>
               <Text style={styles.tecnicoName}>{tec.nombre}</Text>
               <Text style={styles.tecnicoStatus}>
@@ -186,6 +186,7 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.background,
   },
   scrollContent: {
+    flexGrow: 1,
     padding: SPACING.lg,
     paddingBottom: SPACING.xl,
   },

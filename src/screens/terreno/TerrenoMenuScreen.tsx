@@ -10,13 +10,13 @@ import {
   StyleSheet,
   ScrollView,
   Image,
+  ImageBackground,
   Alert,
   ActivityIndicator,
-  StatusBar,
 } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
-import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAuth } from '../../store/AuthContext';
 import { useOfflineSync } from '../../hooks/useOfflineSync';
 import { COLORS, FONTS, SPACING, BORDER_RADIUS, SHADOWS } from '../../theme';
@@ -57,14 +57,6 @@ const MENU_ITEMS = [
     icon: '📅',
     color: COLORS.secondary,
     screen: 'TerrenoCalendario',
-  },
-  {
-    id: 'ruta',
-    title: 'Mi Ruta',
-    subtitle: 'Tracking GPS en tiempo real',
-    icon: '🛣️',
-    color: COLORS.success,
-    screen: 'TerrenoMiRuta',
   },
   {
     id: 'capacitacion',
@@ -148,14 +140,13 @@ const TerrenoMenuScreen: React.FC<TerrenoMenuProps> = ({ navigation }) => {
   const isSyncing = status === 'syncing';
 
   return (
-    <SafeAreaView style={styles.safeContainer} edges={['top']}>
     <ScrollView
       style={styles.container}
       contentContainerStyle={[styles.scrollContent, { paddingBottom: insets.bottom + SPACING.xl }]}
       showsVerticalScrollIndicator={false}
     >
       {/* Encabezado */}
-      <View style={[styles.header, { paddingTop: Math.max(insets.top, SPACING.xxl) }]}>
+      <ImageBackground source={require('../../../Logos_imagenes/fondo_login_geo_daily.png')} style={[styles.header, { paddingTop: Math.max(insets.top, SPACING.xxl) }]}>
         <TouchableOpacity onPress={handleAvatarPress} activeOpacity={0.7}>
           <View style={styles.avatar}>
             {avatarUri ? (
@@ -178,7 +169,7 @@ const TerrenoMenuScreen: React.FC<TerrenoMenuProps> = ({ navigation }) => {
         <View style={styles.roleBadge}>
           <Text style={styles.roleText}>Técnico de Campo</Text>
         </View>
-      </View>
+      </ImageBackground>
 
       {/* Estado de sincronización */}
       <View style={styles.syncCard}>
@@ -240,15 +231,10 @@ const TerrenoMenuScreen: React.FC<TerrenoMenuProps> = ({ navigation }) => {
         ))}
       </View>
     </ScrollView>
-    </SafeAreaView>
   );
 };
 
 const styles = StyleSheet.create({
-  safeContainer: {
-    flex: 1,
-    backgroundColor: COLORS.primary,
-  },
   container: {
     flex: 1,
     backgroundColor: COLORS.background,
@@ -257,7 +243,6 @@ const styles = StyleSheet.create({
     paddingBottom: SPACING.xl,
   },
   header: {
-    backgroundColor: COLORS.primary,
     padding: SPACING.lg,
     paddingTop: SPACING.xxl,
     alignItems: 'center',

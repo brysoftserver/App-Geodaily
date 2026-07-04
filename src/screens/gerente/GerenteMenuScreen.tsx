@@ -9,6 +9,7 @@ import {
   TouchableOpacity,
   StyleSheet,
   ScrollView,
+  ImageBackground,
 } from 'react-native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { COLORS, FONTS, SPACING, BORDER_RADIUS, SHADOWS } from '../../theme';
@@ -75,6 +76,14 @@ const MENU_ITEMS = [
     color: COLORS.roleGerente,
     screen: 'MapaTecnicos',
   },
+  {
+    id: 'mapaGeneral',
+    title: 'Mapa General',
+    subtitle: 'Plantaciones, mediciones y tracking',
+    icon: '🗺️',
+    color: COLORS.success,
+    screen: 'MapaGeneral',
+  },
 ];
 
 const GerenteMenuScreen: React.FC<GerenteMenuProps> = ({ navigation }) => {
@@ -87,12 +96,12 @@ const GerenteMenuScreen: React.FC<GerenteMenuProps> = ({ navigation }) => {
   return (
     <ScrollView style={styles.container} contentContainerStyle={styles.content}>
       {/* Header de usuario */}
-      <View style={styles.header}>
-        <View style={[styles.avatar, { backgroundColor: COLORS.roleGerente }]}>
+      <ImageBackground source={require('../../../Logos_imagenes/fondo_login_geo_daily.png')} style={styles.header}>
+        <ImageBackground source={require('../../../Logos_imagenes/fondo_login_geo_daily.png')} style={[styles.avatar, { overflow: 'hidden' }]} imageStyle={{ borderRadius: 24 }}>
           <Text style={styles.avatarText}>
             {user?.nombre?.charAt(0)?.toUpperCase() || 'G'}
           </Text>
-        </View>
+        </ImageBackground>
         <View style={styles.userInfo}>
           <Text style={styles.userName}>{user?.nombre || 'Gerente'}</Text>
           <Text style={styles.userRole}>Gerente de Operaciones</Text>
@@ -100,7 +109,7 @@ const GerenteMenuScreen: React.FC<GerenteMenuProps> = ({ navigation }) => {
         <TouchableOpacity onPress={handleLogout} style={styles.logoutButton}>
           <Text style={styles.logoutText}>Salir</Text>
         </TouchableOpacity>
-      </View>
+      </ImageBackground>
 
       {/* Menú */}
       <View style={styles.menuGrid}>
@@ -129,16 +138,17 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.background,
   },
   content: {
+    flexGrow: 1,
     padding: SPACING.lg,
     paddingBottom: SPACING.xl,
   },
   header: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: COLORS.surface,
     padding: SPACING.md,
     borderRadius: BORDER_RADIUS.md,
     marginBottom: SPACING.lg,
+    overflow: 'hidden',
     ...SHADOWS.sm,
   },
   avatar: {

@@ -10,6 +10,7 @@ import {
   DatosBeneficiario,
   ActividadRealizada,
   DatosSociodemograficos,
+  DatosCaracterizacionNueva,
   Coordenadas,
   FotoGeotag,
 } from '../types';
@@ -29,6 +30,7 @@ type FormAction =
   | { type: 'SET_BENEFICIARIO'; data: DatosBeneficiario }
   | { type: 'SET_ACTIVIDAD'; data: ActividadRealizada }
   | { type: 'SET_SOCIODEMOGRAFICO'; data: DatosSociodemograficos }
+  | { type: 'SET_CARACTERIZACION_NUEVA'; data: DatosCaracterizacionNueva }
   | { type: 'SET_COORDENADAS'; data: Coordenadas }
   | { type: 'ADD_FOTO'; foto: FotoGeotag }
   | { type: 'SET_FIRMA_BENEFICIARIO'; firma: string }
@@ -89,6 +91,12 @@ function formReducer(state: FormState, action: FormAction): FormState {
       return {
         ...state,
         formularioActual: { ...state.formularioActual, sociodemografico: action.data },
+      };
+
+    case 'SET_CARACTERIZACION_NUEVA':
+      return {
+        ...state,
+        formularioActual: { ...state.formularioActual, caracterizacion_nueva: action.data } as any,
       };
 
     case 'SET_COORDENADAS':
@@ -161,6 +169,7 @@ interface FormContextType extends FormState {
   setBeneficiario: (data: DatosBeneficiario) => void;
   setActividad: (data: ActividadRealizada) => void;
   setSociodemografico: (data: DatosSociodemograficos) => void;
+  setCaracterizacionNueva: (data: DatosCaracterizacionNueva) => void;
   setCoordenadas: (data: Coordenadas) => void;
   addFoto: (foto: FotoGeotag) => void;
   setFirmaBeneficiario: (firma: string) => void;
@@ -195,6 +204,10 @@ export const FormProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const setSociodemografico = useCallback((data: DatosSociodemograficos) => {
     dispatch({ type: 'SET_SOCIODEMOGRAFICO', data });
+  }, []);
+
+  const setCaracterizacionNueva = useCallback((data: DatosCaracterizacionNueva) => {
+    dispatch({ type: 'SET_CARACTERIZACION_NUEVA', data });
   }, []);
 
   const setCoordenadas = useCallback((data: Coordenadas) => {
@@ -268,6 +281,7 @@ export const FormProvider: React.FC<{ children: React.ReactNode }> = ({ children
         setBeneficiario,
         setActividad,
         setSociodemografico,
+        setCaracterizacionNueva,
         setCoordenadas,
         addFoto,
         setFirmaBeneficiario,

@@ -8,6 +8,23 @@ import { Formulario, Coordenadas, MedicionTerreno, ConteoPlantas, PosicionTracki
 let db: SQLite.SQLiteDatabase | null = null;
 
 /**
+ * Asegura que la BD esté abierta.
+ * Si `db` es null (ej. tras Fast Refresh), la reabre automáticamente.
+ */
+const ensureDb = async (): Promise<SQLite.SQLiteDatabase | null> => {
+  if (db) return db;
+  try {
+    db = await SQLite.openDatabaseAsync('geodaily.db');
+    await runMigrations();
+    console.log('[DB] Reconexión automática exitosa');
+    return db;
+  } catch (error) {
+    console.error('[DB] Error al reconectar BD:', error);
+    return null;
+  }
+};
+
+/**
  * Inicializar la base de datos local
  */
 export const initDatabase = async (): Promise<void> => {
@@ -23,6 +40,7 @@ export const initDatabase = async (): Promise<void> => {
         beneficiario_json TEXT NOT NULL,
         actividad_json TEXT NOT NULL,
         sociodemografico_json TEXT,
+        caracterizacion_nueva_json TEXT,
         coordenadas_json TEXT NOT NULL,
         georeferencia_json TEXT,
         clima_json TEXT,
@@ -67,6 +85,22 @@ export const initDatabase = async (): Promise<void> => {
       // Ya existe, ignorar
     }
 
+    // Migración: agregar columna sociodemografico_json si no existe
+    try {
+      await db.execAsync('ALTER TABLE formularios ADD COLUMN sociodemografico_json TEXT');
+      console.log('[DB] Columna sociodemografico_json agregada a formularios');
+    } catch {
+      // Ya existe, ignorar
+    }
+
+    // Migración: agregar columna caracterizacion_nueva_json si no existe
+    try {
+      await db.execAsync('ALTER TABLE formularios ADD COLUMN caracterizacion_nueva_json TEXT');
+      console.log('[DB] Columna caracterizacion_nueva_json agregada a formularios');
+    } catch {
+      // Ya existe, ignorar
+    }
+
     // Ejecutar migraciones de nuevas tablas
     await runMigrations();
 
@@ -89,10 +123,10 @@ export const saveFormularioLocal = async (
     await db.runAsync(
       `INSERT OR REPLACE INTO formularios (
         id, tipo, tecnico_json, beneficiario_json, actividad_json,
-        sociodemografico_json, coordenadas_json, georeferencia_json, clima_json, fotos_json,
+        sociodemografico_json, caracterizacion_nueva_json, coordenadas_json, georeferencia_json, clima_json, fotos_json,
         firma_beneficiario, firma_tecnico, huella_beneficiario,
         pdf_url, sincronizado, usuario_id, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         formulario.id,
         formulario.tipo,
@@ -100,6 +134,7 @@ export const saveFormularioLocal = async (
         JSON.stringify(formulario.beneficiario),
         JSON.stringify(formulario.actividad),
         formulario.sociodemografico ? JSON.stringify(formulario.sociodemografico) : null,
+        (formulario as any).caracterizacion_nueva ? JSON.stringify((formulario as any).caracterizacion_nueva) : null,
         formulario.coordenadas ? JSON.stringify(formulario.coordenadas) : null,
         formulario.georeferencia ? JSON.stringify(formulario.georeferencia) : null,
         formulario.clima ? JSON.stringify(formulario.clima) : null,
@@ -344,7 +379,7 @@ const deserializeFormulario = (row: any): Formulario => {
     catch { return fallback; }
   };
 
-  return {
+  const form: any = {
     id: row.id,
     tipo: row.tipo,
     tecnico: safeJsonParse(row.tecnico_json, { nombre: '', cedula: '', telefono: '', email: '' }),
@@ -363,6 +398,12 @@ const deserializeFormulario = (row: any): Formulario => {
     created_at: row.created_at,
     updated_at: row.updated_at,
   };
+
+  if (row.caracterizacion_nueva_json) {
+    form.caracterizacion_nueva = safeJsonParse(row.caracterizacion_nueva_json, undefined);
+  }
+
+  return form as Formulario;
 };
 
 // ============================================================
@@ -446,11 +487,13 @@ export const runMigrations = async (): Promise<void> => {
       CREATE TABLE IF NOT EXISTS mediciones_terreno (
         id TEXT PRIMARY KEY,
         formulario_id TEXT NOT NULL,
+        usuario_id TEXT,
         area_hectareas REAL NOT NULL,
         area_metros2 REAL NOT NULL,
         perimetro_metros REAL NOT NULL,
         puntos_json TEXT NOT NULL,
         created_at TEXT NOT NULL,
+        sincronizado INTEGER DEFAULT 0,
         FOREIGN KEY (formulario_id) REFERENCES formularios(id)
       );
 
@@ -464,7 +507,51 @@ export const runMigrations = async (): Promise<void> => {
         created_at TEXT NOT NULL,
         FOREIGN KEY (formulario_id) REFERENCES formularios(id)
       );
+
+      -- Plantaciones marcadas en el mapa (Fase B)
+      CREATE TABLE IF NOT EXISTS plantaciones (
+        id TEXT PRIMARY KEY,
+        usuario_id TEXT NOT NULL,
+        latitud REAL NOT NULL,
+        longitud REAL NOT NULL,
+        especie TEXT NOT NULL,
+        cantidad INTEGER NOT NULL,
+        timestamp TEXT NOT NULL,
+        sincronizado INTEGER DEFAULT 0,
+        icono TEXT DEFAULT '🌱'
+      );
     `);
+
+    // Migración: agregar columna icono si no existe (BDs previas a Fase B+)
+    try {
+      await db.runAsync('ALTER TABLE plantaciones ADD COLUMN icono TEXT DEFAULT \'🌱\'');
+    } catch {
+      // La columna ya existe, ignorar
+    }
+
+    // Migración: agregar columna sincronizado a mediciones_terreno si no existe
+    try {
+      await db.runAsync('ALTER TABLE mediciones_terreno ADD COLUMN sincronizado INTEGER DEFAULT 0');
+      console.log('[DB] Columna sincronizado agregada a mediciones_terreno');
+    } catch {
+      // Ya existe, ignorar
+    }
+
+    // Migración: agregar columna sincronizado a plantaciones si no existe (BDs antiguas)
+    try {
+      await db.runAsync('ALTER TABLE plantaciones ADD COLUMN sincronizado INTEGER DEFAULT 0');
+      console.log('[DB] Columna sincronizado agregada a plantaciones');
+    } catch {
+      // Ya existe, ignorar
+    }
+
+    // Migración: agregar columna sincronizado a tracking_posiciones si no existe
+    try {
+      await db.runAsync('ALTER TABLE tracking_posiciones ADD COLUMN sincronizado INTEGER DEFAULT 0');
+      console.log('[DB] Columna sincronizado agregada a tracking_posiciones');
+    } catch {
+      // Ya existe, ignorar
+    }
 
     console.log('[DB] Migraciones ejecutadas correctamente');
   } catch (error) {
@@ -481,9 +568,10 @@ export const getDb = (): SQLite.SQLiteDatabase | null => db;
  * Obtener la última posición conocida de cada técnico
  */
 export const getUltimasPosicionesTecnicos = async (): Promise<any[]> => {
-  if (!db) return [];
+  const database = await ensureDb();
+  if (!database) return [];
   try {
-    return await db.getAllAsync<any>(
+    return await database.getAllAsync<any>(
       `SELECT t1.* FROM tracking_posiciones t1
        INNER JOIN (
          SELECT usuario_id, MAX(timestamp) as max_ts
@@ -506,7 +594,8 @@ export const getPosicionesTecnico = async (
   desde?: string,
   hasta?: string
 ): Promise<any[]> => {
-  if (!db) return [];
+  const database = await ensureDb();
+  if (!database) return [];
   try {
     let query = 'SELECT * FROM tracking_posiciones WHERE usuario_id = ?';
     const params: any[] = [usuarioId];
@@ -519,9 +608,215 @@ export const getPosicionesTecnico = async (
       params.push(hasta);
     }
     query += ' ORDER BY timestamp ASC';
-    return await db.getAllAsync<any>(query, params);
+    return await database.getAllAsync<any>(query, params);
   } catch (error) {
     console.error('[DB] Error al obtener posiciones:', error);
+    return [];
+  }
+};
+
+// === Funciones para Plantaciones (Fase B) ===
+
+/**
+ * Guardar una plantación marcada en el mapa
+ */
+export const savePlantacion = async (
+  plantacion: import('../types').Plantacion
+): Promise<void> => {
+  const database = await ensureDb();
+  if (!database) return;
+  try {
+    await database.runAsync(
+      `INSERT OR REPLACE INTO plantaciones (id, usuario_id, latitud, longitud, especie, cantidad, timestamp, sincronizado, icono)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        plantacion.id,
+        plantacion.usuario_id,
+        plantacion.latitud,
+        plantacion.longitud,
+        plantacion.especie,
+        plantacion.cantidad,
+        plantacion.timestamp,
+        plantacion.sincronizado ? 1 : 0,
+        plantacion.icono || '🌱',
+      ]
+    );
+  } catch (error) {
+    console.error('[DB] Error al guardar plantación:', error);
+    throw error;
+  }
+};
+
+/**
+ * Obtener plantaciones de un usuario
+ */
+export const getPlantaciones = async (
+  usuarioId?: string
+): Promise<import('../types').Plantacion[]> => {
+  const database = await ensureDb();
+  if (!database) return [];
+  try {
+    let rows: any[];
+    if (usuarioId) {
+      rows = await database.getAllAsync<any>(
+        'SELECT * FROM plantaciones WHERE usuario_id = ? ORDER BY timestamp DESC',
+        [usuarioId]
+      );
+    } else {
+      rows = await database.getAllAsync<any>(
+        'SELECT * FROM plantaciones ORDER BY timestamp DESC'
+      );
+    }
+    return rows.filter(Boolean).map((r: any) => ({
+      id: r.id,
+      usuario_id: r.usuario_id,
+      latitud: r.latitud,
+      longitud: r.longitud,
+      especie: r.especie,
+      cantidad: r.cantidad,
+      timestamp: r.timestamp,
+      sincronizado: r.sincronizado === 1,
+      icono: r.icono || '🌱',
+    }));
+  } catch (error) {
+    console.error('[DB] Error al obtener plantaciones:', error);
+    return [];
+  }
+};
+
+// === Nuevas funciones para sincronización de mapas ===
+
+/**
+ * Obtener plantaciones pendientes de sincronizar
+ */
+export const getPlantacionesNoSincronizadas = async (): Promise<import('../types').Plantacion[]> => {
+  const database = await ensureDb();
+  if (!database) return [];
+  try {
+    const rows = await database.getAllAsync<any>(
+      'SELECT * FROM plantaciones WHERE sincronizado = 0 ORDER BY timestamp ASC'
+    );
+    return rows.filter(Boolean).map((r: any) => ({
+      id: r.id,
+      usuario_id: r.usuario_id,
+      latitud: r.latitud,
+      longitud: r.longitud,
+      especie: r.especie,
+      cantidad: r.cantidad,
+      timestamp: r.timestamp,
+      sincronizado: false,
+      icono: r.icono || '🌱',
+    }));
+  } catch (error) {
+    console.error('[DB] Error al obtener plantaciones no sincronizadas:', error);
+    return [];
+  }
+};
+
+/**
+ * Obtener posiciones de tracking pendientes de sincronizar
+ */
+export const getTrackingNoSincronizado = async (): Promise<any[]> => {
+  const database = await ensureDb();
+  if (!database) return [];
+  try {
+    return await database.getAllAsync<any>(
+      'SELECT * FROM tracking_posiciones WHERE sincronizado = 0 ORDER BY timestamp ASC'
+    );
+  } catch (error) {
+    console.error('[DB] Error al obtener tracking no sincronizado:', error);
+    return [];
+  }
+};
+
+/**
+ * Obtener mediciones de terreno pendientes de sincronizar
+ */
+export const getMedicionesNoSincronizadas = async (): Promise<any[]> => {
+  const database = await ensureDb();
+  if (!database) return [];
+  try {
+    return await database.getAllAsync<any>(
+      'SELECT * FROM mediciones_terreno WHERE sincronizado = 0 ORDER BY created_at ASC'
+    );
+  } catch (error) {
+    console.error('[DB] Error al obtener mediciones no sincronizadas:', error);
+    return [];
+  }
+};
+
+/**
+ * Marcar un registro como sincronizado por tabla e ID
+ */
+export const marcarSincronizado = async (
+  tabla: string,
+  id: string
+): Promise<void> => {
+  const database = await ensureDb();
+  if (!database) return;
+  try {
+    await database.runAsync(
+      `UPDATE ${tabla} SET sincronizado = 1 WHERE id = ?`,
+      [id]
+    );
+  } catch (error) {
+    console.error(`[DB] Error al marcar ${tabla}/${id} como sincronizado:`, error);
+  }
+};
+
+/**
+ * Eliminar una plantación local por ID
+ */
+export const deletePlantacionLocal = async (id: string): Promise<void> => {
+  const database = await ensureDb();
+  if (!database) return;
+  try {
+    await database.runAsync('DELETE FROM plantaciones WHERE id = ?', [id]);
+    console.log('[DB] Plantación local eliminada:', id);
+  } catch (error) {
+    console.error('[DB] Error al eliminar plantación local:', error);
+    throw error;
+  }
+};
+
+/**
+ * Eliminar una medición local por ID
+ */
+export const deleteMedicionLocal = async (id: string): Promise<void> => {
+  const database = await ensureDb();
+  if (!database) return;
+  try {
+    await database.runAsync('DELETE FROM mediciones_terreno WHERE id = ?', [id]);
+    console.log('[DB] Medición local eliminada:', id);
+  } catch (error) {
+    console.error('[DB] Error al eliminar medición local:', error);
+    throw error;
+  }
+};
+
+/**
+ * Obtener todas las mediciones de terreno
+ */
+export const getMediciones = async (): Promise<any[]> => {
+  const database = await ensureDb();
+  if (!database) return [];
+  try {
+    const rows = await database.getAllAsync<any>(
+      'SELECT * FROM mediciones_terreno ORDER BY created_at DESC'
+    );
+    return rows.filter(Boolean).map((r: any) => ({
+      id: r.id,
+      formulario_id: r.formulario_id,
+      usuario_id: r.usuario_id,
+      area_hectareas: r.area_hectareas,
+      area_metros2: r.area_metros2,
+      perimetro_metros: r.perimetro_metros,
+      puntos: r.puntos_json ? JSON.parse(r.puntos_json) : [],
+      created_at: r.created_at,
+      sincronizado: r.sincronizado === 1,
+    }));
+  } catch (error) {
+    console.error('[DB] Error al obtener mediciones:', error);
     return [];
   }
 };

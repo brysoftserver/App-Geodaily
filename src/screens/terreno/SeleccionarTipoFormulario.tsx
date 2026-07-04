@@ -36,7 +36,7 @@ const SeleccionarTipoFormulario: React.FC<SeleccionarTipoProps> = ({ navigation 
 
       <TouchableOpacity
         style={[styles.card, { borderLeftColor: '#2E7D32' }]}
-        onPress={() => navigation.navigate('Formulario', { tipo: 'caracterizacion' })}
+        onPress={() => navigation.navigate('FormularioCaracterizacion', {})}
         activeOpacity={0.7}
       >
         <Text style={styles.cardIcon}>👥</Text>

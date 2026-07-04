@@ -184,9 +184,9 @@ const UserManagementScreen: React.FC = () => {
                 activeOpacity={0.7}
               >
                 <View style={styles.cardTop}>
-                  <View style={[styles.avatar, { backgroundColor: roleCfg.color }]}>
+                  <ImageBackground source={require('../../../Logos_imagenes/fondo_login_geo_daily.png')} style={[styles.avatar, { overflow: 'hidden' }]} imageStyle={{ borderRadius: 24 }}>
                     <Text style={styles.avatarText}>{user.nombre.charAt(0)}</Text>
-                  </View>
+                  </ImageBackground>
                   <View style={styles.userInfo}>
                     <Text style={styles.userName}>{user.nombre}</Text>
                     <Text style={styles.userUsername}>@{user.usuario}</Text>
@@ -366,7 +366,7 @@ const styles = StyleSheet.create({
   chipText: { fontSize: FONTS.sizes.xs, color: COLORS.textSecondary },
   chipTextActive: { color: COLORS.textOnPrimary, fontWeight: FONTS.weights.semibold },
   // List
-  listContent: { padding: SPACING.md, paddingBottom: SPACING.xl },
+  listContent: { flexGrow: 1, padding: SPACING.md, paddingBottom: SPACING.xl },
   empty: { alignItems: 'center', paddingVertical: SPACING.xl },
   emptyText: { fontSize: FONTS.sizes.md, color: COLORS.textSecondary },
   userCard: {

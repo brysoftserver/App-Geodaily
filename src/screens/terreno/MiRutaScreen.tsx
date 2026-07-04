@@ -16,7 +16,8 @@ import {
 import { WebView } from 'react-native-webview';
 import { COLORS, FONTS, SPACING, BORDER_RADIUS, SHADOWS } from '../../theme';
 import { useAuth } from '../../store/AuthContext';
-import { useTracking } from '../../hooks/useTracking';
+import { useTrackingContext } from '../../store/TrackingContext';
+import { getUltimasPosicionesTecnicos as getPosicionesHoyDB } from '../../services/database';
 
 const MiRutaScreen: React.FC = () => {
   const { user } = useAuth();
@@ -27,9 +28,7 @@ const MiRutaScreen: React.FC = () => {
     inicio,
     iniciarTracking,
     detenerTracking,
-    posicionesHoy,
-    limpiarHistorial,
-  } = useTracking(user?.id || 'unknown');
+  } = useTrackingContext();
 
   const [historial, setHistorial] = useState<{
     count: number;
@@ -60,13 +59,19 @@ const MiRutaScreen: React.FC = () => {
 
   const handleCargarHistorial = useCallback(async () => {
     setCargandoHistorial(true);
-    const hoy = await posicionesHoy();
-    setHistorial({
-      count: hoy.length,
-      desde: hoy.length > 0 ? hoy[0].timestamp : undefined,
-    });
+    try {
+      const hoy = await getPosicionesHoyDB();
+      const hoyFiltrado = hoy.filter(
+        p => p.usuario_id === user?.id &&
+        p.timestamp?.startsWith(new Date().toISOString().split('T')[0])
+      );
+      setHistorial({
+        count: hoyFiltrado.length,
+        desde: hoyFiltrado.length > 0 ? hoyFiltrado[0].timestamp : undefined,
+      });
+    } catch {}
     setCargandoHistorial(false);
-  }, [posicionesHoy]);
+  }, [user?.id]);
 
   const handleLimpiar = useCallback(() => {
     Alert.alert(
@@ -77,11 +82,16 @@ const MiRutaScreen: React.FC = () => {
         {
           text: 'Limpiar',
           style: 'destructive',
-          onPress: limpiarHistorial,
+          onPress: async () => {
+            try {
+              const database = await (await import('expo-sqlite')).openDatabaseAsync('geodaily.db');
+              await database.runAsync('DELETE FROM tracking_posiciones');
+            } catch {}
+          },
         },
       ]
     );
-  }, [limpiarHistorial]);
+  }, []);
 
   const formatTiempo = (iso?: string): string => {
     if (!iso) return '—';

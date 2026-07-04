@@ -9,6 +9,7 @@ import { NavigationContainer } from '@react-navigation/native';
 import { AuthProvider } from './src/store/AuthContext';
 import { FormProvider } from './src/store/FormContext';
 import { SyncProvider } from './src/store/SyncContext';
+import { TrackingProvider } from './src/store/TrackingContext';
 import AppNavigator from './src/navigation/AppNavigator';
 import { initDatabase } from './src/services/database';
 import { COLORS } from './src/theme';
@@ -41,8 +42,10 @@ export default function App() {
         <AuthProvider>
           <FormProvider>
             <SyncProvider>
-              <StatusBar style="dark" />
-              <AppNavigator />
+              <TrackingProvider>
+                <StatusBar style="dark" />
+                <AppNavigator />
+              </TrackingProvider>
             </SyncProvider>
           </FormProvider>
         </AuthProvider>

@@ -362,6 +362,29 @@ export const TIPOS_ACTIVIDAD = [
   'Otra',
 ] as const;
 
+// ============================================================
+// Opciones para formulario de caracterización (Fase 2)
+// ============================================================
+export const NIVEL_EDUCATIVO_OPTS = ['Ninguno', 'Primaria', 'Secundaria', 'Técnico', 'Tecnólogo', 'Profesional'];
+export const PERSONAS_NUCLEO_OPTS = ['1 a 3 personas', '4 a 6 personas', '7 a 9 personas', 'Más de 9 personas'];
+export const FUENTE_INGRESOS_OPTS = ['Agricultura', 'Ganadería', 'Comercio', 'Empleo formal', 'Otra actividad'];
+export const SINO_OPTS = ['Sí', 'No'];
+export const SERVICIOS_PUBLICOS_OPTS = ['Todos los servicios', 'Algunos servicios', 'Ningún servicio'];
+export const MANO_OBRA_OPTS = ['Familiar', 'Contratada', 'Mixta'];
+export const ACTIVIDAD_PRODUCTIVA_OPTS = ['Agricultura', 'Ganadería', 'Sistemas agroforestales', 'Especies menores', 'Mixta'];
+export const PROCESOS_EROSION_OPTS = ['Severa', 'Moderada', 'Leve', 'No presenta'];
+export const FUENTES_HIDRICAS_OPTS = ['Nacimiento', 'Quebrada', 'Río', 'Ninguna'];
+export const PRACTICAS_CONSERVACION_OPTS = ['Barreras vivas', 'Cobertura vegetal', 'Terrazas', 'Ninguna'];
+export const MANEJO_RESIDUOS_OPTS = ['Triple lavado y disposición adecuada', 'Los almacena', 'Los quema', 'Los desecha en el campo'];
+export const TEXTURA_SUELO_OPTS = ['Arenoso', 'Franco', 'Arcilloso', 'Franco-arcilloso'];
+export const COLOR_SUELO_OPTS = ['Negro', 'Café oscuro', 'Café claro', 'Rojizo'];
+export const DRENAJE_OPTS = ['Bueno', 'Regular', 'Deficiente'];
+export const PROFUNDIDAD_OPTS = ['Menor de 20 cm', 'Entre 20 y 50 cm', 'Entre 50 y 100 cm', 'Mayor de 100 cm'];
+export const PRESENCIA_PIEDRAS_OPTS = ['Alta', 'Media', 'Baja', 'No presenta'];
+export const COMPACTACION_OPTS = ['Alta compactación', 'Moderada compactación', 'Baja compactación', 'Sin evidencia de compactación'];
+export const COBERTURA_SUELO_OPTS = ['Suelo desnudo', 'Rastrojos o residuos vegetales', 'Cobertura herbácea o pastos', 'Cobertura arbórea o arbustiva'];
+export const EVIDENCIA_EROSION_OPTS = ['Severa', 'Moderada', 'Leve', 'No presenta'];
+
 export const ERROR_MESSAGES = {
   NETWORK: 'Sin conexión a internet. Los datos se guardarán localmente.',
   GPS: 'No se pudo obtener la ubicación GPS. Verifica que esté activado.',

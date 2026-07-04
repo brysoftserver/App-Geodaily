@@ -170,6 +170,19 @@ export interface FiltrosFormulario {
 }
 
 // --- Métricas del dashboard ---
+// --- Plantación marcada en mapa ---
+export interface Plantacion {
+  id: string;
+  usuario_id: string;
+  latitud: number;
+  longitud: number;
+  especie: string;
+  cantidad: number;
+  timestamp: string;
+  sincronizado: boolean;
+  icono: string;
+}
+
 export interface MetricasDashboard {
   total_visitas: number;
   visitas_hoy: number;
@@ -283,4 +296,71 @@ export interface FiltrosConsolidado {
   vereda?: string;
   tecnico_id?: string;
   tipo_formulario?: TipoFormulario | 'all';
+}
+
+// ============================================================
+// INTERFACES — Nuevo Formulario de Caracterización (Fase 2)
+// ============================================================
+
+export interface ComponenteSocial {
+  nivel_educativo: string;
+  personas_nucleo: string;
+  fuente_ingresos: string;
+  participa_organizacion: string; // 'Sí' | 'No'
+  servicios_publicos: string;    // 'Todos los servicios' | 'Algunos servicios' | 'Ningún servicio'
+  mano_obra: string;
+}
+
+export interface ComponenteProductivo {
+  actividad_productiva: string;
+  acceso_agua: string;       // 'Sí' | 'No'
+  sistemas_riego: string;    // 'Sí' | 'No'
+  asistencia_tecnica: string; // 'Sí' | 'No'
+}
+
+export interface ComponenteAgroambiental {
+  procesos_erosion: string;
+  fuentes_hidricas: string;
+  areas_conservacion: string;   // 'Sí' | 'No'
+  practicas_conservacion: string;
+  manejo_residuos: string;
+}
+
+export interface AnalisisSueloCaracterizacion {
+  observacion_suelo: string;     // 'Sí' | 'No'
+  textura: string;
+  color: string;
+  drenaje: string;
+  profundidad: string;
+  piedras: string;
+  compactacion: string;
+  cobertura: string;
+  evidencia_erosion: string;
+}
+
+export interface RecomendacionesCaracterizacion {
+  recomendaciones_tecnicas: string;
+  recomendaciones_ambientales: string;
+}
+
+/** Datos completos del nuevo formulario de caracterización */
+export interface DatosCaracterizacionNueva {
+  // Datos generales / header
+  municipio: string;
+  fecha: string;
+  vereda: string;
+  encuesta_numero: string;
+  productor_nombre: string;
+  documento: string;
+  telefono: string;
+  tecnico_responsable: string;
+  tecnico_cedula: string;
+  finca: string;
+
+  // Componentes
+  componente_social: ComponenteSocial;
+  componente_productivo: ComponenteProductivo;
+  componente_agroambiental: ComponenteAgroambiental;
+  analisis_suelo: AnalisisSueloCaracterizacion;
+  recomendaciones: RecomendacionesCaracterizacion;
 }

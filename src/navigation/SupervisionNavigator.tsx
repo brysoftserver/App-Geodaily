@@ -9,12 +9,14 @@ import SupervisionMenuScreen from '../screens/supervision/SupervisionMenuScreen'
 import DashboardScreen from '../screens/supervision/DashboardScreen';
 import FormularioListScreen from '../screens/supervision/FormularioListScreen';
 import CalendarioScreen from '../screens/supervision/CalendarioScreen';
+import MapaGeneralScreen from '../screens/MapaGeneralScreen';
 
 export type SupervisionStackParamList = {
   SupervisionMenu: undefined;
   Dashboard: undefined;
   SupervisionFormularioList: undefined;
   SupervisionCalendario: undefined;
+  MapaGeneral: undefined;
 };
 
 const Stack = createNativeStackNavigator<SupervisionStackParamList>();
@@ -56,6 +58,11 @@ const SupervisionNavigator: React.FC = () => {
         name="SupervisionCalendario"
         component={CalendarioScreen}
         options={{ title: 'Calendario General' }}
+      />
+      <Stack.Screen
+        name="MapaGeneral"
+        component={MapaGeneralScreen}
+        options={{ title: 'Mapa General del Proyecto' }}
       />
     </Stack.Navigator>
   );

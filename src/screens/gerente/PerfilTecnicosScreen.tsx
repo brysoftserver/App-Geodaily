@@ -10,6 +10,7 @@ import {
   ScrollView,
   TouchableOpacity,
   FlatList,
+  ImageBackground,
 } from 'react-native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { COLORS, FONTS, SPACING, BORDER_RADIUS, SHADOWS } from '../../theme';
@@ -58,9 +59,9 @@ const PerfilTecnicosScreen: React.FC<PerfilTecnicosProps> = ({ navigation }) => 
         </TouchableOpacity>
 
         <View style={styles.perfilHeader}>
-          <View style={[styles.avatar, { backgroundColor: COLORS.roleTecnico }]}>
+          <ImageBackground source={require('../../../Logos_imagenes/fondo_login_geo_daily.png')} style={[styles.avatar, { overflow: 'hidden' }]} imageStyle={{ borderRadius: 24 }}>
             <Text style={styles.avatarText}>{selectedTecnico.charAt(0).toUpperCase()}</Text>
-          </View>
+          </ImageBackground>
           <Text style={styles.perfilNombre}>{selectedTecnico}</Text>
           <Text style={styles.perfilRole}>Técnico de Campo</Text>
         </View>
@@ -117,9 +118,9 @@ const PerfilTecnicosScreen: React.FC<PerfilTecnicosProps> = ({ navigation }) => 
           onPress={() => setSelectedTecnico(tecnico.nombre)}
           activeOpacity={0.7}
         >
-          <View style={[styles.avatar, { backgroundColor: COLORS.roleTecnico }]}>
+          <ImageBackground source={require('../../../Logos_imagenes/fondo_login_geo_daily.png')} style={[styles.avatar, { overflow: 'hidden' }]} imageStyle={{ borderRadius: 24 }}>
             <Text style={styles.avatarText}>{tecnico.nombre.charAt(0).toUpperCase()}</Text>
-          </View>
+          </ImageBackground>
           <View style={styles.tecnicoInfo}>
             <Text style={styles.tecnicoNombre}>{tecnico.nombre}</Text>
             <Text style={styles.tecnicoStats}>
@@ -146,7 +147,7 @@ const PerfilTecnicosScreen: React.FC<PerfilTecnicosProps> = ({ navigation }) => 
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: COLORS.background },
-  content: { padding: SPACING.lg, paddingBottom: SPACING.xl },
+  content: { flexGrow: 1, padding: SPACING.lg, paddingBottom: SPACING.xl },
   title: { fontSize: FONTS.sizes.xxl, fontWeight: FONTS.weights.bold, color: COLORS.textPrimary },
   subtitle: { fontSize: FONTS.sizes.sm, color: COLORS.textSecondary, marginBottom: SPACING.md },
   backRow: { marginBottom: SPACING.md },

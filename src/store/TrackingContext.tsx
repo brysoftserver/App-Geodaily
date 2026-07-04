@@ -1,15 +1,33 @@
 // ============================================================
-// GEODAILY — Hook de Tracking GPS en Tiempo Real
+// GEODAILY — Contexto Global de Tracking GPS
+// ============================================================
+// Vive al nivel del provider — NO se detiene al cambiar de screen.
+// Solo se detiene explícitamente con detenerTracking().
 // ============================================================
 
-import { useState, useEffect, useRef, useCallback } from 'react';
+import React, { createContext, useContext, useState, useRef, useCallback, useEffect } from 'react';
 import * as Location from 'expo-location';
 import * as SQLite from 'expo-sqlite';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { useAuth } from './AuthContext';
 import { PosicionTracking } from '../types';
 
 const STORAGE_KEY = '@geodaily/tracking_active';
 const TRACKING_INTERVAL_MS = 15000; // 15 segundos
+
+interface TrackingState {
+  activo: boolean;
+  posiciones: PosicionTracking[];
+  inicio?: string;
+  distanceKm: number;
+}
+
+interface TrackingContextType extends TrackingState {
+  iniciarTracking: () => Promise<void>;
+  detenerTracking: () => Promise<PosicionTracking[]>;
+}
+
+const TrackingContext = createContext<TrackingContextType | undefined>(undefined);
 
 let db: SQLite.SQLiteDatabase | null = null;
 
@@ -20,29 +38,10 @@ const initDb = async (): Promise<SQLite.SQLiteDatabase> => {
   return db;
 };
 
-interface TrackingState {
-  activo: boolean;
-  posiciones: PosicionTracking[];
-  inicio?: string;
-  distanceKm: number;
-}
+export const TrackingProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const { user } = useAuth();
+  const usuarioId = user?.id;
 
-interface UseTrackingOptions {
-  autoResume?: boolean;
-}
-
-interface UseTrackingReturn extends TrackingState {
-  iniciarTracking: () => Promise<void>;
-  detenerTracking: () => Promise<PosicionTracking[]>;
-  posicionesHoy: () => Promise<PosicionTracking[]>;
-  limpiarHistorial: () => Promise<void>;
-}
-
-export const useTracking = (
-  usuarioId: string,
-  options?: UseTrackingOptions
-): UseTrackingReturn => {
-  const { autoResume = true } = options || {};
   const [state, setState] = useState<TrackingState>({
     activo: false,
     posiciones: [],
@@ -51,46 +50,58 @@ export const useTracking = (
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const posicionesRef = useRef<PosicionTracking[]>([]);
   const lastPosRef = useRef<{ lat: number; lon: number } | null>(null);
+  const usuarioIdRef = useRef(usuarioId);
 
-  // Cargar estado persistido al montar (solo si autoResume=true)
+  // Mantener ref actualizada del usuario
   useEffect(() => {
-    if (!autoResume) return;
+    usuarioIdRef.current = usuarioId;
+  }, [usuarioId]);
 
-    const loadState = async () => {
+  // Restaurar tracking activo al arrancar la app
+  useEffect(() => {
+    const checkSavedState = async () => {
       try {
         const saved = await AsyncStorage.getItem(STORAGE_KEY);
-        if (saved === 'true') {
-          iniciarTrackingInterno();
+        if (saved === 'true' && usuarioIdRef.current) {
+          console.log('[TrackingContext] Restaurando tracking persistido...');
+          await iniciarTrackingInterno();
         }
       } catch {}
     };
-    loadState();
+    checkSavedState();
+  }, []); // Solo al montar
 
+  // Limpiar al desmontar el provider (cierre de app)
+  useEffect(() => {
     return () => {
       if (intervalRef.current) {
         clearInterval(intervalRef.current);
         intervalRef.current = null;
       }
     };
-  }, [autoResume]);
+  }, []);
 
   const iniciarTrackingInterno = useCallback(async () => {
-    // Solicitar permisos
-    const { status } = await Location.requestForegroundPermissionsAsync();
-    if (status !== 'granted') {
-      console.warn('[Tracking] Permiso denegado');
+    if (!usuarioIdRef.current) {
+      console.warn('[TrackingContext] Sin usuario — no se inicia tracking');
       return;
     }
 
-    // Iniciar suscripción a ubicación
+    // Solicitar permisos
+    const { status } = await Location.requestForegroundPermissionsAsync();
+    if (status !== 'granted') {
+      console.warn('[TrackingContext] Permiso denegado');
+      return;
+    }
+
+    // Primera posición
     const pos = await Location.getCurrentPositionAsync({
       accuracy: Location.Accuracy.High,
     });
 
-    // Guardar primera posición
     const primeraPos: PosicionTracking = {
       id: `track_${Date.now()}`,
-      usuario_id: usuarioId,
+      usuario_id: usuarioIdRef.current,
       latitud: pos.coords.latitude,
       longitud: pos.coords.longitude,
       altitud: pos.coords.altitude ?? undefined,
@@ -113,23 +124,18 @@ export const useTracking = (
           velocidad, heading, timestamp, sincronizado
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
-          primeraPos.id,
-          primeraPos.usuario_id,
-          primeraPos.latitud,
-          primeraPos.longitud,
-          primeraPos.altitud ?? null,
-          primeraPos.precision_gps ?? null,
-          primeraPos.velocidad ?? null,
-          primeraPos.heading ?? null,
-          primeraPos.timestamp,
+          primeraPos.id, primeraPos.usuario_id, primeraPos.latitud,
+          primeraPos.longitud, primeraPos.altitud ?? null,
+          primeraPos.precision_gps ?? null, primeraPos.velocidad ?? null,
+          primeraPos.heading ?? null, primeraPos.timestamp,
           primeraPos.sincronizado ? 1 : 0,
         ]
       );
     } catch (e) {
-      console.warn('[Tracking] Error al persistir:', e);
+      console.warn('[TrackingContext] Error al persistir:', e);
     }
 
-    setState((prev) => ({
+    setState(prev => ({
       ...prev,
       activo: true,
       posiciones: [primeraPos],
@@ -138,6 +144,7 @@ export const useTracking = (
 
     // Intervalo periódico
     intervalRef.current = setInterval(async () => {
+      if (!usuarioIdRef.current) return;
       try {
         const newPos = await Location.getCurrentPositionAsync({
           accuracy: Location.Accuracy.High,
@@ -145,7 +152,7 @@ export const useTracking = (
 
         const posicion: PosicionTracking = {
           id: `track_${Date.now()}`,
-          usuario_id: usuarioId,
+          usuario_id: usuarioIdRef.current,
           latitud: newPos.coords.latitude,
           longitud: newPos.coords.longitude,
           altitud: newPos.coords.altitude ?? undefined,
@@ -168,9 +175,9 @@ export const useTracking = (
               Math.cos((posicion.latitud * Math.PI) / 180) *
               Math.sin(dlon / 2) ** 2;
           const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-          const dist = 6371 * c; // km
+          const dist = 6371 * c;
 
-          setState((prev) => ({
+          setState(prev => ({
             ...prev,
             posiciones: posicionesRef.current,
             distanceKm: prev.distanceKm + dist,
@@ -187,28 +194,23 @@ export const useTracking = (
               velocidad, heading, timestamp, sincronizado
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
             [
-              posicion.id,
-              posicion.usuario_id,
-              posicion.latitud,
-              posicion.longitud,
-              posicion.altitud ?? null,
-              posicion.precision_gps ?? null,
-              posicion.velocidad ?? null,
-              posicion.heading ?? null,
-              posicion.timestamp,
+              posicion.id, posicion.usuario_id, posicion.latitud,
+              posicion.longitud, posicion.altitud ?? null,
+              posicion.precision_gps ?? null, posicion.velocidad ?? null,
+              posicion.heading ?? null, posicion.timestamp,
               posicion.sincronizado ? 1 : 0,
             ]
           );
         } catch (e) {
-          console.warn('[Tracking] Error al persistir:', e);
+          console.warn('[TrackingContext] Error al persistir:', e);
         }
       } catch (error) {
-        console.warn('[Tracking] Error en intervalo:', error);
+        console.warn('[TrackingContext] Error en intervalo:', error);
       }
     }, TRACKING_INTERVAL_MS);
 
     await AsyncStorage.setItem(STORAGE_KEY, 'true');
-  }, [usuarioId]);
+  }, []);
 
   const iniciarTracking = useCallback(async () => {
     await iniciarTrackingInterno();
@@ -222,7 +224,7 @@ export const useTracking = (
 
     await AsyncStorage.setItem(STORAGE_KEY, 'false');
 
-    setState((prev) => ({
+    setState(prev => ({
       ...prev,
       activo: false,
     }));
@@ -230,53 +232,24 @@ export const useTracking = (
     return posicionesRef.current;
   }, []);
 
-  const posicionesHoy = useCallback(async (): Promise<PosicionTracking[]> => {
-    try {
-      const database = await initDb();
-      const hoy = new Date().toISOString().split('T')[0];
-      const rows = await database.getAllAsync<any>(
-        `SELECT * FROM tracking_posiciones
-         WHERE usuario_id = ? AND timestamp >= ?
-         ORDER BY timestamp ASC`,
-        [usuarioId, hoy]
-      );
-      return rows.map((r: any) => ({
-        id: r.id,
-        usuario_id: r.usuario_id,
-        latitud: r.latitud,
-        longitud: r.longitud,
-        altitud: r.altitud ?? undefined,
-        precision_gps: r.precision_gps ?? undefined,
-        velocidad: r.velocidad ?? undefined,
-        heading: r.heading ?? undefined,
-        timestamp: r.timestamp,
-        sincronizado: r.sincronizado === 1,
-      }));
-    } catch (error) {
-      console.error('[Tracking] Error al obtener historial:', error);
-      return [];
-    }
-  }, [usuarioId]);
+  return (
+    <TrackingContext.Provider
+      value={{
+        activo: state.activo,
+        posiciones: state.posiciones,
+        inicio: state.inicio,
+        distanceKm: state.distanceKm,
+        iniciarTracking,
+        detenerTracking,
+      }}
+    >
+      {children}
+    </TrackingContext.Provider>
+  );
+};
 
-  const limpiarHistorial = useCallback(async () => {
-    try {
-      const database = await initDb();
-      await database.runAsync(
-        'DELETE FROM tracking_posiciones WHERE usuario_id = ?',
-        [usuarioId]
-      );
-      posicionesRef.current = [];
-      setState((prev) => ({ ...prev, posiciones: [], distanceKm: 0 }));
-    } catch (error) {
-      console.error('[Tracking] Error al limpiar:', error);
-    }
-  }, [usuarioId]);
-
-  return {
-    ...state,
-    iniciarTracking,
-    detenerTracking,
-    posicionesHoy,
-    limpiarHistorial,
-  };
+export const useTrackingContext = (): TrackingContextType => {
+  const ctx = useContext(TrackingContext);
+  if (!ctx) throw new Error('useTrackingContext debe usarse dentro de TrackingProvider');
+  return ctx;
 };

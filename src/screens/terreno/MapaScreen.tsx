@@ -5,7 +5,7 @@
 // (Shoelace), conteo de plantas, importación/exportación KML.
 // ============================================================
 
-import React, { useState, useCallback, useRef } from 'react';
+import React, { useState, useCallback, useEffect, useRef } from 'react';
 import {
   View,
   Text,
@@ -17,13 +17,24 @@ import {
   TextInput,
   Alert,
   Modal,
+  Platform,
 } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useFocusEffect } from '@react-navigation/native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { COLORS, FONTS, SPACING, BORDER_RADIUS, SHADOWS } from '../../theme';
+import * as Location from 'expo-location';
 import { useLocation } from '../../hooks/useLocation';
+import { useTrackingContext } from '../../store/TrackingContext';
+import { useAuth } from '../../store/AuthContext';
 import MapViewOffline from '../../components/MapViewOffline';
 import { calcularArea, exportarKML, importarKML } from '../../services/kml.service';
+import { savePlantacion, getPlantaciones } from '../../services/database';
+import { Plantacion, Coordenadas } from '../../types';
 
-type ModoMapa = 'navegar' | 'medir' | 'contar';
+const STORAGE_KEY_MAP = '@geodaily/mapa_estado';
+
+type ModoMapa = 'navegar' | 'medir' | 'contar' | 'ruta';
 
 interface PuntoPoligono {
   latitud: number;
@@ -37,9 +48,49 @@ interface EspecieConteo {
 }
 
 const MapaScreen: React.FC = () => {
+  const insets = useSafeAreaInsets();
   const { coordenadas, getCurrentPosition, isLoading: gpsLoading } = useLocation();
+  const { user } = useAuth();
+  const tracking = useTrackingContext();
   const [modo, setModo] = useState<ModoMapa>('navegar');
   const [ultimoPunto, setUltimoPunto] = useState<{ lat: number; lon: number } | null>(null);
+
+  // --- Centro del mapa estable (NO se reinicia con GPS) ---
+  const [mapCenter, setMapCenter] = useState<Coordenadas | undefined>(undefined);
+  const mapCenterInitialized = useRef(false);
+  useEffect(() => {
+    if (coordenadas && !mapCenterInitialized.current) {
+      setMapCenter({ latitud: coordenadas.latitud, longitud: coordenadas.longitud } as Coordenadas);
+      mapCenterInitialized.current = true;
+    }
+  }, [coordenadas]);
+
+  // GPS siempre activo: watch continuo desde que monta la pantalla
+  useEffect(() => {
+    (async () => {
+      const { status } = await Location.requestForegroundPermissionsAsync();
+      if (status !== 'granted') return;
+      const sub = await Location.watchPositionAsync(
+        { accuracy: Location.Accuracy.High, timeInterval: 5000, distanceInterval: 5 },
+        (newPos) => {
+          const { latitude, longitude } = newPos.coords;
+          const pos: Coordenadas = { latitud: latitude, longitud: longitude };
+          setUserLocation(pos);
+          // Si estamos en modo siguiendo, actualizar el centro
+          if (siguiendoRef.current) {
+            setMapCenter(pos);
+          }
+        }
+      );
+      watchRef.current = sub;
+    })();
+    return () => {
+      if (watchRef.current) {
+        watchRef.current.remove();
+        watchRef.current = null;
+      }
+    };
+  }, []);
 
   // --- Estado para Medición ---
   const [poligono, setPoligono] = useState<PuntoPoligono[]>([]);
@@ -50,20 +101,127 @@ const MapaScreen: React.FC = () => {
   } | null>(null);
   const [mostrarResultado, setMostrarResultado] = useState(false);
 
-  // --- Estado para Conteo ---
-  const [especies, setEspecies] = useState<EspecieConteo[]>([
-    { nombre: 'Cacao', cantidad: '' },
-  ]);
+  // --- Estado para distancia lineal (2 puntos) ---
+  const [resultadoDistancia, setResultadoDistancia] = useState<{
+    distanciaMetros: number;
+    distanciaKm: number;
+  } | null>(null);
+
+  // --- Estado para Conteo (rediseñado: dropdown + icono por planta) ---
   const [mostrarPanelConteo, setMostrarPanelConteo] = useState(false);
+  const [plantaSeleccionada, setPlantaSeleccionada] = useState<string>('Cacao');
+  const [cantidadInput, setCantidadInput] = useState<string>('');
+  const PLANTAS_OPCIONES = [
+    { nombre: 'Cacao', icono: '🍫' },
+    { nombre: 'Plátano', icono: '🍌' },
+    { nombre: 'Abarco / Cedro / Caucho', icono: '🌳' },
+  ];
+  const getIconoFromNombre = (nombre: string): string =>
+    PLANTAS_OPCIONES.find((p) => p.nombre === nombre)?.icono || '🌱';
+
+  // --- Estado para Plantaciones (Fase B) ---
+  const [plantaciones, setPlantaciones] = useState<Plantacion[]>([]);
 
   // --- Estado para KML ---
   const [mostrarModalKML, setMostrarModalKML] = useState(false);
 
-  // Centrar en ubicación actual
+  // --- Tipo de mapa: relieve (CartoDB) o satélite ---
+  const [tipoMapa, setTipoMapa] = useState<'relieve' | 'satelite'>('relieve');
+
+  // --- Seguimiento GPS continuo ---
+  const [siguiendoGPS, setSiguiendoGPS] = useState(false);
+  const siguiendoRef = useRef(false);
+  const watchRef = useRef<Location.LocationSubscription | null>(null);
+  /** Posición GPS real, siempre actualizada por el watch */
+  const [userLocation, setUserLocation] = useState<Coordenadas | undefined>(undefined);
+
+  // --- Persistencia automática: guardar al salir, restaurar al entrar ---
+  const guardarEstadoMapa = useCallback(async () => {
+    try {
+      const estado = {
+        poligono,
+        resultadoArea,
+        resultadoDistancia,
+        mostrarResultado,
+        ultimoPunto,
+        modo,
+        tipoMapa,
+        mapCenter,
+        ultimasCoords: coordenadas,
+      };
+      await AsyncStorage.setItem(STORAGE_KEY_MAP, JSON.stringify(estado));
+    } catch (e) {
+      console.warn('[Mapa] Error al guardar estado:', e);
+    }
+  }, [poligono, resultadoArea, resultadoDistancia, mostrarResultado, ultimoPunto, modo, tipoMapa, mapCenter, coordenadas]);
+
+  // Cargar plantaciones del usuario desde SQLite
+  const cargarPlantaciones = useCallback(async () => {
+    try {
+      const data = await getPlantaciones(user?.id);
+      setPlantaciones(data);
+    } catch (e) {
+      console.warn('[Mapa] Error al cargar plantaciones:', e);
+    }
+  }, [user?.id]);
+
+  // Usar refs para evitar que useFocusEffect se re-ejecute cuando cambien
+  const guardarEstadoMapaRef = useRef(guardarEstadoMapa);
+  guardarEstadoMapaRef.current = guardarEstadoMapa;
+  const cargarPlantacionesRef = useRef(cargarPlantaciones);
+  cargarPlantacionesRef.current = cargarPlantaciones;
+
+  useFocusEffect(
+    useCallback(() => {
+      let activo = true;
+      const cargarEstado = async () => {
+        try {
+          const json = await AsyncStorage.getItem(STORAGE_KEY_MAP);
+          if (json && activo) {
+            const estado = JSON.parse(json);
+            if (estado.poligono) setPoligono(estado.poligono);
+            if (estado.resultadoArea) {
+              setResultadoArea(estado.resultadoArea);
+              if (estado.mostrarResultado) setMostrarResultado(true);
+            }
+            if (estado.resultadoDistancia) {
+              setResultadoDistancia(estado.resultadoDistancia);
+              if (estado.mostrarResultado) setMostrarResultado(true);
+            }
+            if (estado.ultimoPunto) setUltimoPunto(estado.ultimoPunto);
+            if (estado.modo) setModo(estado.modo);
+            if (estado.tipoMapa) setTipoMapa(estado.tipoMapa);
+            if (estado.mapCenter) setMapCenter(estado.mapCenter);
+          }
+        } catch (e) {
+          console.warn('[Mapa] Error al cargar estado:', e);
+        }
+        // Cargar plantaciones desde SQLite
+        if (activo) {
+          await cargarPlantacionesRef.current();
+        }
+      };
+      cargarEstado();
+      return () => {
+        activo = false;
+        guardarEstadoMapaRef.current();
+        // NO detener GPS watch — debe seguir vivo al navegar
+      };
+    }, []) // ← Deps vacío: solo corre al obtener/perder foco, estable
+  );
+
+  // Centrar en ubicación actual y seguir en tiempo real
   const centrarEnGPS = useCallback(async () => {
-    await getCurrentPosition();
+    const coords = await getCurrentPosition();
+    if (coords) {
+      setMapCenter({ latitud: coords.latitud, longitud: coords.longitud } as Coordenadas);
+    } else if (userLocation) {
+      setMapCenter(userLocation);
+    }
+    setSiguiendoGPS(true);
+    siguiendoRef.current = true;
     setUltimoPunto(null);
-  }, [getCurrentPosition]);
+  }, [getCurrentPosition, userLocation]);
 
   // Manejar tap en el mapa
   const handleMapPress = useCallback(
@@ -77,68 +235,98 @@ const MapaScreen: React.FC = () => {
         ]);
         setResultadoArea(null);
         setMostrarResultado(false);
+      } else if (modo === 'contar') {
+        // Abre panel con punto seleccionado
+        setPlantaSeleccionada('Cacao');
+        setCantidadInput('');
+        setMostrarPanelConteo(true);
       }
     },
     [modo]
   );
 
   // --- Funciones de Medición ---
+  const calcularDistanciaHaversine = useCallback(
+    (p1: PuntoPoligono, p2: PuntoPoligono): number => {
+      const R = 6371000; // Radio Tierra en metros
+      const toRad = (deg: number) => (deg * Math.PI) / 180;
+      const dLat = toRad(p2.latitud - p1.latitud);
+      const dLon = toRad(p2.longitud - p1.longitud);
+      const a =
+        Math.sin(dLat / 2) ** 2 +
+        Math.cos(toRad(p1.latitud)) *
+          Math.cos(toRad(p2.latitud)) *
+          Math.sin(dLon / 2) ** 2;
+      return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    },
+    []
+  );
+
   const calcularMedicion = useCallback(() => {
-    if (poligono.length < 3) {
-      Alert.alert('Insuficiente', 'Se necesitan al menos 3 puntos para medir un área.');
+    if (poligono.length < 2) {
+      Alert.alert('Insuficiente', 'Se necesitan al menos 2 puntos para medir una distancia.');
       return;
     }
-    const area = calcularArea(poligono);
-    setResultadoArea(area);
+    if (poligono.length === 2) {
+      // Distancia lineal entre 2 puntos
+      const d = calcularDistanciaHaversine(poligono[0], poligono[1]);
+      setResultadoDistancia({ distanciaMetros: d, distanciaKm: d / 1000 });
+      setResultadoArea(null);
+    } else {
+      // Área (3+ puntos)
+      const area = calcularArea(poligono);
+      setResultadoArea(area);
+      setResultadoDistancia(null);
+    }
     setMostrarResultado(true);
-  }, [poligono]);
+  }, [poligono, calcularDistanciaHaversine]);
 
   const limpiarPoligono = useCallback(() => {
     setPoligono([]);
     setResultadoArea(null);
+    setResultadoDistancia(null);
     setMostrarResultado(false);
   }, []);
 
   const deshacerUltimoPunto = useCallback(() => {
     setPoligono((prev) => prev.slice(0, -1));
     setResultadoArea(null);
+    setResultadoDistancia(null);
     setMostrarResultado(false);
   }, []);
 
-  // --- Funciones de Conteo ---
-  const agregarEspecie = useCallback(() => {
-    setEspecies((prev) => [...prev, { nombre: '', cantidad: '' }]);
-  }, []);
-
-  const actualizarEspecie = useCallback(
-    (index: number, field: keyof EspecieConteo, value: string) => {
-      setEspecies((prev) =>
-        prev.map((e, i) => (i === index ? { ...e, [field]: value } : e))
-      );
-    },
-    []
-  );
-
-  const eliminarEspecie = useCallback((index: number) => {
-    setEspecies((prev) => prev.filter((_, i) => i !== index));
-  }, []);
-
-  const guardarConteo = useCallback(() => {
-    const validas = especies.filter(
-      (e) => e.nombre.trim().length > 0 && e.cantidad.trim().length > 0 && parseInt(e.cantidad) > 0
-    );
-    if (validas.length === 0) {
-      Alert.alert('Sin datos', 'Agrega al menos una especie con cantidad válida.');
+  // --- Funciones de Conteo (rediseñado: dropdown + icono por planta) ---
+  const guardarConteo = useCallback(async () => {
+    const cantidad = parseInt(cantidadInput);
+    if (!cantidad || cantidad <= 0) {
+      Alert.alert('Cantidad inválida', 'Ingresa un número válido de plantas.');
       return;
     }
-    Alert.alert(
-      '✅ Conteo guardado',
-      validas
-        .map((e) => `• ${e.nombre}: ${e.cantidad} plantas`)
-        .join('\n')
-    );
+    const latitud = ultimoPunto?.lat ?? coordenadas?.latitud ?? 0;
+    const longitud = ultimoPunto?.lon ?? coordenadas?.longitud ?? 0;
+    if (!latitud || !longitud) {
+      Alert.alert('Sin ubicación', 'Toca el mapa para seleccionar un punto.');
+      return;
+    }
+    const icono = getIconoFromNombre(plantaSeleccionada);
+    const plantacion: Plantacion = {
+      id: `plant_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+      usuario_id: user?.id || 'unknown',
+      latitud,
+      longitud,
+      especie: plantaSeleccionada,
+      cantidad,
+      timestamp: new Date().toISOString(),
+      sincronizado: false,
+      icono,
+    };
+    await savePlantacion(plantacion);
+    setPlantaciones((prev) => [...prev, plantacion]);
+    Alert.alert('✅ Conteo guardado', `${plantaSeleccionada}: ${cantidad} plantas\n${icono} Marcador agregado al mapa`);
+    setCantidadInput('');
     setMostrarPanelConteo(false);
-  }, [especies]);
+    setUltimoPunto(null);
+  }, [plantaSeleccionada, cantidadInput, ultimoPunto, coordenadas, user?.id]);
 
   // --- Funciones KML ---
   const handleExportarKML = useCallback(async () => {
@@ -212,22 +400,45 @@ const MapaScreen: React.FC = () => {
             Conteo
           </Text>
         </TouchableOpacity>
+        <TouchableOpacity
+          style={[styles.modeBtn, modo === 'ruta' && styles.modeBtnActiveRuta]}
+          onPress={() => cambiarModo('ruta')}
+        >
+          <Text style={styles.modeIcon}>🛣️</Text>
+          <Text style={[styles.modeLabel, modo === 'ruta' && styles.modeLabelActive]}>
+            Ruta
+          </Text>
+        </TouchableOpacity>
       </View>
 
       {/* Mapa */}
       <View style={styles.mapContainer}>
         <MapViewOffline
-          center={coordenadas ?? undefined}
+          center={mapCenter ?? coordenadas ?? undefined}
           zoom={15}
           height={'100%'}
-          markers={poligono.map((p) => ({
-            id: `p_${p.orden}`,
-            latitud: p.latitud,
-            longitud: p.longitud,
-            title: `Punto ${p.orden}`,
-            color: modo === 'medir' ? COLORS.secondary : COLORS.primary,
-          }))}
+          mapStyle={tipoMapa}
+          markers={[
+            ...poligono.map((p) => ({
+              id: `p_${p.orden}`,
+              latitud: p.latitud,
+              longitud: p.longitud,
+              title: `Punto ${p.orden}`,
+              color: modo === 'medir' ? COLORS.secondary : COLORS.primary,
+            })),
+            ...plantaciones.map((pl) => ({
+              id: pl.id,
+              latitud: pl.latitud,
+              longitud: pl.longitud,
+              title: `${pl.especie}: ${pl.cantidad} plantas`,
+              icon: (pl.icono || '🌱') as '🌱' | '🍫' | '🍌' | '🌳',
+            })),
+          ]}
+          polyline={modo === 'ruta' ? tracking.posiciones.map(p => ({ latitud: p.latitud, longitud: p.longitud })) : undefined}
+          startMarker={modo === 'ruta' && tracking.posiciones.length > 0 ? { latitud: tracking.posiciones[0].latitud, longitud: tracking.posiciones[0].longitud } : undefined}
+          endMarker={modo === 'ruta' && tracking.posiciones.length > 0 ? { latitud: tracking.posiciones[tracking.posiciones.length - 1].latitud, longitud: tracking.posiciones[tracking.posiciones.length - 1].longitud } : undefined}
           showUserLocation={true}
+          userLocation={userLocation}
           interactive={true}
           onMapPress={handleMapPress}
         />
@@ -246,7 +457,11 @@ const MapaScreen: React.FC = () => {
             </Text>
             {modo === 'medir' && (
               <Text style={styles.coordsHint}>
-                Toca el mapa para agregar puntos al polígono
+                {poligono.length < 2
+                  ? 'Toca el mapa para agregar puntos (2 = distancia, 3+ = área)'
+                  : poligono.length === 2
+                  ? '✅ Toca "Calcular" para ver la distancia lineal'
+                  : 'Toca el mapa para agregar puntos al polígono'}
               </Text>
             )}
           </View>
@@ -291,47 +506,105 @@ const MapaScreen: React.FC = () => {
           </View>
         )}
 
-        {/* Panel de Conteo */}
-        {mostrarPanelConteo && (
+        {/* Resultado de distancia lineal (2 puntos) */}
+        {mostrarResultado && resultadoDistancia && (
+          <View style={styles.resultOverlay}>
+            <Text style={styles.resultTitle}>📏 Distancia</Text>
+            <View style={styles.resultRow}>
+              <Text style={styles.resultLabel}>Distancia:</Text>
+              <Text style={styles.resultValue}>
+                {resultadoDistancia.distanciaKm < 1
+                  ? `${Math.round(resultadoDistancia.distanciaMetros)} m`
+                  : `${resultadoDistancia.distanciaKm.toFixed(3)} km`}
+              </Text>
+            </View>
+            <View style={styles.resultActions}>
+              <TouchableOpacity
+                style={[styles.resultBtn, styles.resultBtnSecondary]}
+                onPress={limpiarPoligono}
+              >
+                <Text style={styles.resultBtnTextSecondary}>Nuevo</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        )}
+
+        {/* Botón toggle tipo de mapa */}
+        <TouchableOpacity
+          style={styles.mapTypeButton}
+          onPress={() =>
+            setTipoMapa((prev) => (prev === 'relieve' ? 'satelite' : 'relieve'))
+          }
+        >
+          <Text style={styles.mapTypeButtonText}>
+            {tipoMapa === 'relieve' ? '🛰️' : '🗺️'}
+          </Text>
+        </TouchableOpacity>
+
+        {/* Panel de Conteo (rediseñado: dropdown + icono por planta) */}
+        {mostrarPanelConteo && ultimoPunto && (
           <View style={styles.conteoPanel}>
             <View style={styles.conteoHeader}>
-              <Text style={styles.conteoTitle}>🌱 Conteo de Plantas</Text>
-              <TouchableOpacity onPress={() => setMostrarPanelConteo(false)}>
+              <View>
+                <Text style={styles.conteoTitle}>🌱 Conteo de Plantas</Text>
+                <Text style={styles.conteoSubtitle}>
+                  📍 {ultimoPunto.lat.toFixed(5)}, {ultimoPunto.lon.toFixed(5)}
+                </Text>
+              </View>
+              <TouchableOpacity onPress={() => { setMostrarPanelConteo(false); setUltimoPunto(null); }}>
                 <Text style={styles.conteoClose}>✕</Text>
               </TouchableOpacity>
             </View>
-            <ScrollView style={styles.conteoList}>
-              {especies.map((esp, index) => (
-                <View key={index} style={styles.conteoRow}>
-                  <TextInput
-                    style={[styles.conteoInput, styles.conteoInputName]}
-                    value={esp.nombre}
-                    onChangeText={(v) => actualizarEspecie(index, 'nombre', v)}
-                    placeholder="Especie"
-                    placeholderTextColor={COLORS.textLight}
-                  />
-                  <TextInput
-                    style={[styles.conteoInput, styles.conteoInputCant]}
-                    value={esp.cantidad}
-                    onChangeText={(v) => actualizarEspecie(index, 'cantidad', v)}
-                    placeholder="Cant."
-                    placeholderTextColor={COLORS.textLight}
-                    keyboardType="numeric"
-                  />
-                  {especies.length > 1 && (
-                    <TouchableOpacity onPress={() => eliminarEspecie(index)}>
-                      <Text style={styles.conteoDelete}>🗑️</Text>
-                    </TouchableOpacity>
-                  )}
-                </View>
+
+            <Text style={styles.conteoLabel}>Selecciona el tipo de planta:</Text>
+            <View style={styles.conteoOptionsRow}>
+              {PLANTAS_OPCIONES.map((op) => (
+                <TouchableOpacity
+                  key={op.nombre}
+                  style={[
+                    styles.conteoOptionBtn,
+                    plantaSeleccionada === op.nombre && styles.conteoOptionBtnActive,
+                  ]}
+                  onPress={() => setPlantaSeleccionada(op.nombre)}
+                >
+                  <Text style={styles.conteoOptionIcon}>{op.icono}</Text>
+                  <Text
+                    style={[
+                      styles.conteoOptionLabel,
+                      plantaSeleccionada === op.nombre && styles.conteoOptionLabelActive,
+                    ]}
+                    numberOfLines={1}
+                  >
+                    {op.nombre === 'Abarco / Cedro / Caucho' ? 'Abarco / Cedro' : op.nombre}
+                  </Text>
+                </TouchableOpacity>
               ))}
-            </ScrollView>
+            </View>
+
+            <View style={styles.conteoInputRow}>
+              <Text style={styles.conteoLabel}>Cantidad de plantas:</Text>
+              <TextInput
+                style={styles.conteoInputCant}
+                value={cantidadInput}
+                onChangeText={setCantidadInput}
+                placeholder="Ej: 50"
+                placeholderTextColor={COLORS.textLight}
+                keyboardType="numeric"
+              />
+            </View>
+
+            <View style={styles.conteoPreview}>
+              <Text style={styles.conteoPreviewText}>
+                Vista previa: {getIconoFromNombre(plantaSeleccionada)} {plantaSeleccionada}
+              </Text>
+            </View>
+
             <View style={styles.conteoActions}>
-              <TouchableOpacity style={styles.conteoAddBtn} onPress={agregarEspecie}>
-                <Text style={styles.conteoAddText}>+ Agregar especie</Text>
-              </TouchableOpacity>
-              <TouchableOpacity style={styles.conteoSaveBtn} onPress={guardarConteo}>
-                <Text style={styles.conteoSaveText}>Guardar</Text>
+              <TouchableOpacity
+                style={[styles.conteoSaveBtn, (!cantidadInput || parseInt(cantidadInput) <= 0) && styles.toolBtnDisabled]}
+                onPress={guardarConteo}
+              >
+                <Text style={styles.conteoSaveText}>Guardar en este punto</Text>
               </TouchableOpacity>
             </View>
           </View>
@@ -339,17 +612,17 @@ const MapaScreen: React.FC = () => {
       </View>
 
       {/* Barra de herramientas inferior */}
-      <View style={styles.toolbar}>
+      <View style={[styles.toolbar, { paddingBottom: insets.bottom + SPACING.sm }]}>
         {modo === 'navegar' && (
           <>
             <TouchableOpacity
-              style={[styles.toolBtn, gpsLoading && styles.toolBtnDisabled]}
+              style={[styles.toolBtn, siguiendoGPS && styles.toolBtnActive, gpsLoading && styles.toolBtnDisabled]}
               onPress={centrarEnGPS}
               disabled={gpsLoading}
             >
               <Text style={styles.toolBtnIcon}>📍</Text>
               <Text style={styles.toolBtnLabel}>
-                {gpsLoading ? 'GPS...' : 'Mi Ubicación'}
+                {gpsLoading ? 'GPS...' : siguiendoGPS ? '🟢 Siguiendo' : 'Mi Ubicación'}
               </Text>
             </TouchableOpacity>
             <TouchableOpacity
@@ -392,17 +665,56 @@ const MapaScreen: React.FC = () => {
           <>
             <View style={styles.toolInfo}>
               <Text style={styles.toolInfoText}>
-                {especies.length} especie(s)
+                {plantaciones.length} registro(s) guardados
               </Text>
             </View>
-            <TouchableOpacity
-              style={[styles.toolBtn, styles.toolBtnPrimary]}
-              onPress={() => setMostrarPanelConteo(true)}
-            >
-              <Text style={styles.toolBtnLabelPrimary}>
-                {mostrarPanelConteo ? 'Ocultar' : 'Panel'}
+            {!mostrarPanelConteo && (
+              <TouchableOpacity
+                style={[styles.toolBtn, styles.toolBtnPrimary]}
+                onPress={() => Alert.alert('🌱 Modo Conteo', 'Toca el mapa en el lugar donde quieras registrar las plantas.' )}
+              >
+                <Text style={styles.toolBtnLabelPrimary}>📍 Toca el mapa</Text>
+              </TouchableOpacity>
+            )}
+          </>
+        )}
+
+        {modo === 'ruta' && (
+          <>
+            <View style={styles.toolInfo}>
+              <Text style={styles.toolInfoText}>
+                {tracking.activo
+                  ? `🟢 ${tracking.posiciones.length} pts · ${tracking.distanceKm.toFixed(2)} km`
+                  : '⏹ Tracking detenido'}
               </Text>
-            </TouchableOpacity>
+            </View>
+            {!tracking.activo ? (
+              <TouchableOpacity
+                style={[styles.toolBtn, styles.toolBtnPrimary]}
+                onPress={tracking.iniciarTracking}
+              >
+                <Text style={styles.toolBtnLabelPrimary}>▶ Iniciar Ruta</Text>
+              </TouchableOpacity>
+            ) : (
+              <>
+                {tracking.inicio && (
+                  <View style={styles.toolInfoSmall}>
+                    <Text style={styles.toolInfoTextSmall}>
+                      {Math.floor(
+                        (Date.now() - new Date(tracking.inicio).getTime()) / 60000
+                      )}{' '}
+                      min
+                    </Text>
+                  </View>
+                )}
+                <TouchableOpacity
+                  style={[styles.toolBtn, { backgroundColor: COLORS.error }]}
+                  onPress={tracking.detenerTracking}
+                >
+                  <Text style={styles.toolBtnLabelPrimary}>⏹ Detener</Text>
+                </TouchableOpacity>
+              </>
+            )}
           </>
         )}
       </View>
@@ -471,6 +783,11 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.success + '20',
     borderWidth: 1,
     borderColor: COLORS.success,
+  },
+  modeBtnActiveRuta: {
+    backgroundColor: '#1B5E20' + '20',
+    borderWidth: 1,
+    borderColor: '#1B5E20',
   },
   modeIcon: {
     fontSize: 14,
@@ -590,7 +907,7 @@ const styles = StyleSheet.create({
   conteoHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    alignItems: 'center',
+    alignItems: 'flex-start',
     marginBottom: SPACING.sm,
   },
   conteoTitle: {
@@ -598,61 +915,96 @@ const styles = StyleSheet.create({
     fontWeight: FONTS.weights.bold,
     color: COLORS.success,
   },
+  conteoSubtitle: {
+    fontSize: FONTS.sizes.xs,
+    color: COLORS.textSecondary,
+    marginTop: 2,
+  },
   conteoClose: {
     fontSize: 18,
     color: COLORS.textSecondary,
     padding: SPACING.xs,
   },
-  conteoList: {
-    maxHeight: 160,
+  conteoLabel: {
+    fontSize: FONTS.sizes.sm,
+    fontWeight: FONTS.weights.medium,
+    color: COLORS.textSecondary,
+    marginBottom: SPACING.xs,
   },
-  conteoRow: {
+  conteoOptionsRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    gap: SPACING.xs,
+    marginBottom: SPACING.md,
+  },
+  conteoOptionBtn: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: SPACING.sm,
+    paddingHorizontal: SPACING.xs,
+    borderRadius: BORDER_RADIUS.md,
+    borderWidth: 1.5,
+    borderColor: COLORS.border,
+    backgroundColor: COLORS.background,
+  },
+  conteoOptionBtnActive: {
+    borderColor: COLORS.success,
+    backgroundColor: COLORS.success + '15',
+  },
+  conteoOptionIcon: {
+    fontSize: 24,
+    marginBottom: 4,
+  },
+  conteoOptionLabel: {
+    fontSize: FONTS.sizes.xs,
+    fontWeight: FONTS.weights.medium,
+    color: COLORS.textSecondary,
+    textAlign: 'center',
+  },
+  conteoOptionLabelActive: {
+    color: COLORS.success,
+    fontWeight: FONTS.weights.bold,
+  },
+  conteoInputRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginBottom: SPACING.sm,
     gap: SPACING.sm,
-  },
-  conteoInput: {
-    backgroundColor: COLORS.background,
-    borderRadius: BORDER_RADIUS.sm,
-    paddingHorizontal: SPACING.sm,
-    paddingVertical: SPACING.xs,
-    fontSize: FONTS.sizes.sm,
-    color: COLORS.textPrimary,
-  },
-  conteoInputName: {
-    flex: 2,
+    marginBottom: SPACING.sm,
   },
   conteoInputCant: {
     flex: 1,
+    backgroundColor: COLORS.background,
+    borderRadius: BORDER_RADIUS.sm,
+    paddingHorizontal: SPACING.md,
+    paddingVertical: SPACING.sm,
+    fontSize: FONTS.sizes.lg,
+    fontWeight: FONTS.weights.bold,
+    color: COLORS.textPrimary,
+    textAlign: 'center',
   },
-  conteoDelete: {
-    fontSize: 16,
+  conteoPreview: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: COLORS.success + '10',
+    borderRadius: BORDER_RADIUS.md,
+    paddingVertical: SPACING.sm,
+    marginBottom: SPACING.sm,
+  },
+  conteoPreviewText: {
+    fontSize: FONTS.sizes.md,
+    color: COLORS.success,
+    fontWeight: FONTS.weights.semibold,
   },
   conteoActions: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
-    marginTop: SPACING.sm,
     gap: SPACING.sm,
-  },
-  conteoAddBtn: {
-    flex: 1,
-    paddingVertical: SPACING.sm,
-    alignItems: 'center',
-    borderRadius: BORDER_RADIUS.md,
-    borderWidth: 1,
-    borderColor: COLORS.success,
-    borderStyle: 'dashed',
-  },
-  conteoAddText: {
-    fontSize: FONTS.sizes.sm,
-    color: COLORS.success,
-    fontWeight: FONTS.weights.medium,
   },
   conteoSaveBtn: {
     flex: 1,
     backgroundColor: COLORS.success,
-    paddingVertical: SPACING.sm,
+    paddingVertical: SPACING.sm + 2,
     borderRadius: BORDER_RADIUS.md,
     alignItems: 'center',
   },
@@ -684,6 +1036,9 @@ const styles = StyleSheet.create({
   toolBtnDisabled: {
     opacity: 0.5,
   },
+  toolBtnActive: {
+    backgroundColor: COLORS.success || '#2E7D32',
+  },
   toolBtnPrimary: {
     backgroundColor: COLORS.primary,
   },
@@ -707,6 +1062,14 @@ const styles = StyleSheet.create({
   toolInfoText: {
     fontSize: FONTS.sizes.xs,
     color: COLORS.textSecondary,
+  },
+  toolInfoSmall: {
+    marginRight: SPACING.sm,
+  },
+  toolInfoTextSmall: {
+    fontSize: FONTS.sizes.xs,
+    fontWeight: FONTS.weights.semibold,
+    color: COLORS.textPrimary,
   },
   // --- Modal ---
   modalOverlay: {
@@ -756,6 +1119,24 @@ const styles = StyleSheet.create({
   modalBtnTextCancel: {
     fontSize: FONTS.sizes.md,
     color: COLORS.textSecondary,
+  },
+  // --- Botón tipo de mapa ---
+  mapTypeButton: {
+    position: 'absolute',
+    right: SPACING.sm,
+    top: SPACING.xl,
+    width: 44,
+    height: 44,
+    borderRadius: BORDER_RADIUS.full,
+    backgroundColor: COLORS.surface,
+    alignItems: 'center',
+    justifyContent: 'center',
+    ...SHADOWS.md,
+    elevation: 6,
+    zIndex: 10,
+  },
+  mapTypeButtonText: {
+    fontSize: 22,
   },
 });
 

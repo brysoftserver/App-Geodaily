@@ -64,6 +64,75 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
       ? generarSelloBiometrico(f.beneficiario.nombre)
       : `<div class="evidencia-item"><p class="evidencia-label">🖐️ Huella Biométrica</p><p class="no-data">No registrada</p></div>`;
 
+    const c = (f as any).caracterizacion_nueva;
+
+    const row2 = (label: string, val: string | undefined | null) =>
+      val ? `<div class="row"><span class="label">${label}:</span><span class="value">${escapeHtml(val)}</span></div>` : '';
+
+    const section2 = (title: string, icon: string, rows: string) =>
+      rows ? `<div class="section"><h2>${icon} ${title}</h2>${rows}</div>` : '';
+
+    // Caracterización sections (if applicable)
+    let caracterizacionHtml = '';
+    if (c) {
+      const datosGenerales = `
+        <div class="row"><span class="label">Municipio:</span><span class="value">${escapeHtml(c.municipio || '—')}</span></div>
+        <div class="row"><span class="label">Fecha:</span><span class="value">${escapeHtml(c.fecha || '—')}</span></div>
+        <div class="row"><span class="label">Vereda:</span><span class="value">${escapeHtml(c.vereda || '—')}</span></div>
+        <div class="row"><span class="label">N° Encuesta:</span><span class="value">${escapeHtml(c.numero_encuesta || '—')}</span></div>
+        <div class="row"><span class="label">Productor:</span><span class="value">${escapeHtml(c.productor || '—')}</span></div>
+        <div class="row"><span class="label">Documento:</span><span class="value">${escapeHtml(c.documento || '—')}</span></div>
+        <div class="row"><span class="label">Teléfono:</span><span class="value">${escapeHtml(c.telefono || '—')}</span></div>
+        <div class="row"><span class="label">Técnico:</span><span class="value">${escapeHtml(c.tecnico || '—')}</span></div>
+      `;
+      const socialRows = [
+        row2('Nivel educativo', c.nivel_educativo),
+        row2('Personas en el núcleo familiar', c.personas_nucleo),
+        row2('Fuente de ingresos', c.fuente_ingresos),
+        row2('Acceso a servicios públicos', c.servicios_publicos),
+        row2('Participa en asociaciones', c.participa_asociaciones),
+        row2('Recibe asistencia técnica', c.asistencia_tecnica),
+      ].join('');
+      const prodRows = [
+        row2('Actividad productiva principal', c.actividad_productiva),
+        row2('Cuenta con mano de obra', c.mano_obra),
+        row2('Asistencia técnica agropecuaria', c.asistencia_agropecuaria),
+        row2('Recibe crédito o financiación', c.credito_financiacion),
+      ].join('');
+      const agroRows = [
+        row2('Procesos de erosión', c.procesos_erosion),
+        row2('Fuentes hídricas en la finca', c.fuentes_hidricas),
+        row2('Prácticas de conservación', c.practicas_conservacion),
+        row2('Manejo de residuos sólidos', c.manejo_residuos),
+        row2('Participa en proyectos ambientales', c.proyectos_ambientales),
+      ].join('');
+      const sueloRows = [
+        row2('Textura del suelo', c.textura_suelo),
+        row2('Color del suelo', c.color_suelo),
+        row2('Drenaje', c.drenaje),
+        row2('Profundidad efectiva', c.profundidad),
+        row2('Presencia de piedras', c.presencia_piedras),
+        row2('Compactación', c.compactacion),
+        row2('Cobertura del suelo', c.cobertura_suelo),
+        row2('Evidencia de erosión', c.evidencia_erosion),
+        row2('pH del suelo', c.ph_suelo),
+      ].join('');
+      const recomHtml = (c.recomendacion_tecnica || c.observaciones_finales) ? `
+        <div class="section"><h2>📋 Recomendaciones</h2>
+        ${c.recomendacion_tecnica ? `<div class="row" style="margin-bottom:4px;"><span class="label">Recomendación técnica:</span></div><div class="desc-detallada">${escapeHtml(c.recomendacion_tecnica)}</div>` : ''}
+        ${c.observaciones_finales ? `<div class="row" style="margin-top:12px;margin-bottom:4px;"><span class="label">Observaciones finales:</span></div><div class="desc-detallada">${escapeHtml(c.observaciones_finales)}</div>` : ''}
+        </div>` : '';
+
+      caracterizacionHtml = `
+        <div class="section"><h2>📋 Datos Generales</h2>${datosGenerales}</div>
+        ${section2('Componente Social', '🤝', socialRows)}
+        ${section2('Componente Productivo', '🌾', prodRows)}
+        ${section2('Componente Agroambiental', '🌿', agroRows)}
+        ${section2('Análisis de Suelo', '🧪', sueloRows)}
+        ${recomHtml}
+      `;
+    }
+
     return `<!DOCTYPE html>
 <html lang="es">
 <head><meta charset="utf-8"><title>Formulario ${f.id}</title>
@@ -76,7 +145,7 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
   .section { margin: 20px 0; padding: 16px 20px; background: #f8f9fa; border-radius: 8px; border-left: 4px solid #1B5E20; }
   .section h2 { color: #1B5E20; font-size: 16px; margin-bottom: 12px; border-bottom: 1px solid #e0e0e0; padding-bottom: 6px; }
   .row { display: flex; margin: 3px 0; font-size: 13px; }
-  .label { font-weight: bold; color: #555; min-width: 140px; }
+  .label { font-weight: bold; color: #555; min-width: 160px; }
   .value { flex: 1; color: #2d3436; }
   .foto-item { margin: 16px 0; padding: 12px; background: #fff; border-radius: 6px; border: 1px solid #e0e0e0; page-break-inside: avoid; }
   .foto-img { width: 100%; max-width: 350px; max-height: 240px; height: auto; border-radius: 4px; margin: 8px auto; display: block; object-fit: cover; }
@@ -87,6 +156,7 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
   .evidencia-item { margin: 12px 0; padding: 12px; background: #fff; border-radius: 6px; border: 1px solid #e0e0e0; page-break-inside: avoid; }
   .evidencia-label { font-size: 13px; color: #2d3436; margin-bottom: 8px; }
   .firma-img { max-width: 100%; max-height: 100px; border: 1px dashed #b2bec3; border-radius: 4px; padding: 8px; background: #fff; }
+  .desc-detallada { font-size: 13px; color: #2d3436; background: #fff; padding: 10px; border-radius: 4px; border: 1px solid #e0e0e0; margin-top: 6px; line-height: 1.5; }
   /* --- Sello de verificación biométrica --- */
   .huella-sello { margin: 16px 0; page-break-inside: avoid; }
   .huella-sello-inner { background: linear-gradient(135deg, #f0fdf4 0%, #dcfce7 100%); border: 2px solid #1B5E20; border-radius: 12px; padding: 20px; box-shadow: 0 2px 8px rgba(27,94,32,0.15); }
@@ -111,9 +181,11 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
 </style></head>
 <body>
   <div class="header">
-    <h1>🌱 GEODAILY — Formulario de Campo</h1>
-    <p><strong>ID:</strong> ${escapeHtml(f.id)} | <strong>Tipo:</strong> ${f.tipo === 'visita_tecnica' ? 'Visita Técnica' : 'Plantación'} | <strong>Fecha:</strong> ${formatFecha(f.created_at)}</p>
+    <h1>🌱 GEODAILY — ${c ? 'Caracterización Sociodemográfica' : 'Formulario de Campo'}</h1>
+    <p><strong>ID:</strong> ${escapeHtml(f.id)} | <strong>Tipo:</strong> ${c ? 'Caracterización' : (f.tipo === 'visita_tecnica' ? 'Visita Técnica' : 'Plantación')} | <strong>Fecha:</strong> ${c?.fecha || formatFecha(f.created_at)}</p>
   </div>
+
+  ${caracterizacionHtml}
 
   <div class="section">
     <h2>👤 Datos del Técnico</h2>
@@ -294,12 +366,105 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
         {/* Estado del formulario */}
         <View style={styles.statusBar}>
           <Text style={styles.statusTipo}>
-            {formulario.tipo === 'visita_tecnica' ? 'Visita Técnica' : 'Plantación'}
+            {(formulario as any).caracterizacion_nueva
+              ? 'Caracterización Sociodemográfica'
+              : formulario.tipo === 'visita_tecnica'
+              ? 'Visita Técnica'
+              : 'Plantación'}
           </Text>
           <Text style={[styles.statusSync, formulario.sincronizado && styles.statusSyncOk]}>
             {formulario.sincronizado ? '✓ Sincronizado' : '⏳ Pendiente'}
           </Text>
         </View>
+
+        {/* Caracterización Sociodemográfica (nuevo formato) */}
+        {(formulario as any).caracterizacion_nueva && (() => {
+          const c = (formulario as any).caracterizacion_nueva;
+          const Field = ({ label, value }: { label: string; value?: string }) =>
+            value ? <View style={styles.row}><Text style={styles.label}>{label}:</Text><Text style={styles.value}>{value}</Text></View> : null;
+
+          return (
+            <>
+              {/* Datos Generales */}
+              <View style={styles.section}>
+                <Text style={styles.sectionTitle}>📋 Datos Generales</Text>
+                <Field label="Municipio" value={c.municipio} />
+                <Field label="Fecha" value={c.fecha} />
+                <Field label="Vereda" value={c.vereda} />
+                <Field label="N° Encuesta" value={c.numero_encuesta} />
+                <Field label="Productor" value={c.productor} />
+                <Field label="Documento" value={c.documento} />
+                <Field label="Teléfono" value={c.telefono} />
+                <Field label="Técnico" value={c.tecnico} />
+              </View>
+
+              {/* Componente Social */}
+              {['nivel_educativo','personas_nucleo','fuente_ingresos','servicios_publicos','participa_asociaciones','asistencia_tecnica'].some(k => c[k]) && (
+                <View style={styles.section}>
+                  <Text style={styles.sectionTitle}>🤝 Componente Social</Text>
+                  <Field label="Nivel educativo" value={c.nivel_educativo} />
+                  <Field label="Personas en el núcleo familiar" value={c.personas_nucleo} />
+                  <Field label="Fuente de ingresos" value={c.fuente_ingresos} />
+                  <Field label="Acceso a servicios públicos" value={c.servicios_publicos} />
+                  <Field label="Participa en asociaciones" value={c.participa_asociaciones} />
+                  <Field label="Recibe asistencia técnica" value={c.asistencia_tecnica} />
+                </View>
+              )}
+
+              {/* Componente Productivo */}
+              {['actividad_productiva','mano_obra','asistencia_agropecuaria','credito_financiacion'].some(k => c[k]) && (
+                <View style={styles.section}>
+                  <Text style={styles.sectionTitle}>🌾 Componente Productivo</Text>
+                  <Field label="Actividad productiva principal" value={c.actividad_productiva} />
+                  <Field label="Cuenta con mano de obra" value={c.mano_obra} />
+                  <Field label="Asistencia técnica agropecuaria" value={c.asistencia_agropecuaria} />
+                  <Field label="Recibe crédito o financiación" value={c.credito_financiacion} />
+                </View>
+              )}
+
+              {/* Componente Agroambiental */}
+              {['procesos_erosion','fuentes_hidricas','practicas_conservacion','manejo_residuos','proyectos_ambientales'].some(k => c[k]) && (
+                <View style={styles.section}>
+                  <Text style={styles.sectionTitle}>🌿 Componente Agroambiental</Text>
+                  <Field label="Procesos de erosión" value={c.procesos_erosion} />
+                  <Field label="Fuentes hídricas en la finca" value={c.fuentes_hidricas} />
+                  <Field label="Prácticas de conservación" value={c.practicas_conservacion} />
+                  <Field label="Manejo de residuos sólidos" value={c.manejo_residuos} />
+                  <Field label="Participa en proyectos ambientales" value={c.proyectos_ambientales} />
+                </View>
+              )}
+
+              {/* Análisis de Suelo */}
+              {['textura_suelo','color_suelo','drenaje','profundidad','presencia_piedras','compactacion','cobertura_suelo','evidencia_erosion','ph_suelo'].some(k => c[k]) && (
+                <View style={styles.section}>
+                  <Text style={styles.sectionTitle}>🧪 Análisis de Suelo</Text>
+                  <Field label="Textura del suelo" value={c.textura_suelo} />
+                  <Field label="Color del suelo" value={c.color_suelo} />
+                  <Field label="Drenaje" value={c.drenaje} />
+                  <Field label="Profundidad efectiva" value={c.profundidad} />
+                  <Field label="Presencia de piedras" value={c.presencia_piedras} />
+                  <Field label="Compactación" value={c.compactacion} />
+                  <Field label="Cobertura del suelo" value={c.cobertura_suelo} />
+                  <Field label="Evidencia de erosión" value={c.evidencia_erosion} />
+                  <Field label="pH del suelo" value={c.ph_suelo} />
+                </View>
+              )}
+
+              {/* Recomendaciones */}
+              {(c.recomendacion_tecnica || c.observaciones_finales) && (
+                <View style={styles.section}>
+                  <Text style={styles.sectionTitle}>📋 Recomendaciones</Text>
+                  {c.recomendacion_tecnica && (
+                    <View style={styles.row}><Text style={styles.value}>{c.recomendacion_tecnica}</Text></View>
+                  )}
+                  {c.observaciones_finales && (
+                    <View style={styles.row}><Text style={styles.value}>{c.observaciones_finales}</Text></View>
+                  )}
+                </View>
+              )}
+            </>
+          );
+        })()}
 
         {/* Resumen de evidencias */}
         <View style={styles.evidenciasSummary}>
@@ -368,13 +533,15 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
           <View style={styles.row}><Text style={styles.label}>Finca:</Text><Text style={styles.value}>{formulario.beneficiario.finca || '—'}</Text></View>
         </View>
 
-        {/* Actividad */}
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>📋 Actividad Realizada</Text>
-          <View style={styles.row}><Text style={styles.label}>Descripción:</Text><Text style={styles.value}>{formulario.actividad.descripcion || '—'}</Text></View>
-          <View style={styles.row}><Text style={styles.label}>Observaciones:</Text><Text style={styles.value}>{formulario.actividad.observaciones || '—'}</Text></View>
-          <View style={styles.row}><Text style={styles.label}>Recomendaciones:</Text><Text style={styles.value}>{formulario.actividad.recomendaciones || '—'}</Text></View>
-        </View>
+        {/* Actividad (solo para formularios tradicionales) */}
+        {!(formulario as any).caracterizacion_nueva && (
+          <View style={styles.section}>
+            <Text style={styles.sectionTitle}>📋 Actividad Realizada</Text>
+            <View style={styles.row}><Text style={styles.label}>Descripción:</Text><Text style={styles.value}>{formulario.actividad.descripcion || '—'}</Text></View>
+            <View style={styles.row}><Text style={styles.label}>Observaciones:</Text><Text style={styles.value}>{formulario.actividad.observaciones || '—'}</Text></View>
+            <View style={styles.row}><Text style={styles.label}>Recomendaciones:</Text><Text style={styles.value}>{formulario.actividad.recomendaciones || '—'}</Text></View>
+          </View>
+        )}
 
         {/* Coordenadas */}
         {formulario.coordenadas && (

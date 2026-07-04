@@ -9,6 +9,7 @@ import {
   TouchableOpacity,
   StyleSheet,
   ScrollView,
+  ImageBackground,
 } from 'react-native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { COLORS, FONTS, SPACING, BORDER_RADIUS, SHADOWS } from '../../theme';
@@ -43,6 +44,14 @@ const MENU_ITEMS = [
     color: COLORS.secondary,
     screen: 'SupervisionCalendario',
   },
+  {
+    id: 'mapa',
+    title: 'Mapa General',
+    subtitle: 'Plantaciones, técnicos y mediciones',
+    icon: '🗺️',
+    color: COLORS.success,
+    screen: 'MapaGeneral',
+  },
 ];
 
 const SupervisionMenuScreen: React.FC<SupervisionMenuScreenProps> = ({ navigation }) => {
@@ -55,12 +64,12 @@ const SupervisionMenuScreen: React.FC<SupervisionMenuScreenProps> = ({ navigatio
   return (
     <ScrollView style={styles.container} contentContainerStyle={styles.content}>
       {/* Header de usuario */}
-      <View style={styles.userHeader}>
-        <View style={styles.avatar}>
+      <ImageBackground source={require('../../../Logos_imagenes/fondo_login_geo_daily.png')} style={styles.userHeader}>
+        <ImageBackground source={require('../../../Logos_imagenes/fondo_login_geo_daily.png')} style={[styles.avatar, { overflow: 'hidden' }]} imageStyle={{ borderRadius: 24 }}>
           <Text style={styles.avatarText}>
             {user?.nombre?.charAt(0)?.toUpperCase() || 'S'}
           </Text>
-        </View>
+        </ImageBackground>
         <View style={styles.userInfo}>
           <Text style={styles.userName}>{user?.nombre || 'Supervisor'}</Text>
           <Text style={styles.userRole}>Supervisor a Terreno</Text>
@@ -68,7 +77,7 @@ const SupervisionMenuScreen: React.FC<SupervisionMenuScreenProps> = ({ navigatio
         <TouchableOpacity onPress={handleLogout} style={styles.logoutButton}>
           <Text style={styles.logoutText}>Salir</Text>
         </TouchableOpacity>
-      </View>
+      </ImageBackground>
 
       {/* Menú */}
       <View style={styles.menuGrid}>
@@ -96,15 +105,17 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.background,
   },
   content: {
+    flexGrow: 1,
     padding: SPACING.lg,
+    paddingBottom: SPACING.xl,
   },
   userHeader: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: COLORS.surface,
     padding: SPACING.md,
     borderRadius: BORDER_RADIUS.md,
     marginBottom: SPACING.lg,
+    overflow: 'hidden',
     ...SHADOWS.sm,
   },
   avatar: {

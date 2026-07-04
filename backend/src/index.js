@@ -42,6 +42,10 @@ app.use('/api/climate', require('./routes/climate'));
 app.use('/api/formularios', require('./routes/forms'));
 app.use('/api/photos', require('./routes/photos'));
 app.use('/api/pdfs', require('./routes/pdfs'));
+app.use('/api/plantaciones', require('./routes/plantaciones'));
+app.use('/api/tracking', require('./routes/tracking'));
+app.use('/api/mediciones', require('./routes/mediciones'));
+app.use('/api/maps', require('./routes/maps'));
 
 // --- 404 handler ---
 app.use((_req, res) => {
@@ -62,5 +66,9 @@ app.listen(PORT, () => {
   console.log(`  Forms:   http://192.168.1.20:${PORT}/api/formularios`);
   console.log(`  Photos:  http://192.168.1.20:${PORT}/api/photos`);
   console.log(`  PDFs:    http://192.168.1.20:${PORT}/api/pdfs`);
+  console.log(`  Plantac: http://192.168.1.20:${PORT}/api/plantaciones`);
+  console.log(`  Track:   http://192.168.1.20:${PORT}/api/tracking`);
+  console.log(`  Medic:   http://192.168.1.20:${PORT}/api/mediciones`);
+  console.log(`  Maps:    http://192.168.1.20:${PORT}/api/maps`);
   console.log(`========================================\n`);
 });

@@ -8,11 +8,13 @@ import { COLORS, FONTS } from '../theme';
 import AdminMenuScreen from '../screens/admin/AdminMenuScreen';
 import UserManagementScreen from '../screens/admin/UserManagementScreen';
 import SystemConfigScreen from '../screens/admin/SystemConfigScreen';
+import MapaGeneralScreen from '../screens/MapaGeneralScreen';
 
 export type AdminStackParamList = {
   AdminMenu: undefined;
   UserManagement: undefined;
   SystemConfig: undefined;
+  MapaGeneral: undefined;
 };
 
 const Stack = createNativeStackNavigator<AdminStackParamList>();
@@ -49,6 +51,11 @@ const AdminNavigator: React.FC = () => {
         name="SystemConfig"
         component={SystemConfigScreen}
         options={{ title: 'Configuración del Sistema' }}
+      />
+      <Stack.Screen
+        name="MapaGeneral"
+        component={MapaGeneralScreen}
+        options={{ title: 'Mapa General del Proyecto' }}
       />
     </Stack.Navigator>
   );
