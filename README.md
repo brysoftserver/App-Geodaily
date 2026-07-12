@@ -189,6 +189,57 @@ que Node 22 no puede procesar nativamente. Se requieren dos hooks:
 
 ---
 
+---
+
+## 🚀 Despliegue en Producción
+
+### Infraestructura (`api.geodaily.brysoftsas.com`)
+
+| Componente | Tecnología | Puerto |
+|------------|-----------|--------|
+| **Backend API** | Express.js | `:8089` |
+| **Almacenamiento** | MinIO (Docker) | `:9000` (API), `:9001` (Console) |
+| **Base de Datos** | PostgreSQL | `:5432` |
+| **Dominio** | `api.geodaily.brysoftsas.com` | Cloudflare Tunnel (sin puertos abiertos) |
+| **HTTPS** | Cloudflare (automático) | — |
+
+### Configuración de Producción
+
+```bash
+# .env — backend
+PROD_DOMAIN=api.geodaily.brysoftsas.com
+MINIO_ENDPOINT=localhost
+MINIO_PORT=9000
+MINIO_USE_SSL=false
+MINIO_ACCESS_KEY=geodaily_admin
+MINIO_BUCKET=geodaily-archivos
+
+# eas.json — production profile
+BACKEND_URL=https://api.geodaily.brysoftsas.com
+```
+
+### Servicios
+
+| Comando | Descripción |
+|---------|-------------|
+| `docker restart geodaily-minio` | Reiniciar MinIO |
+| `node src/index.js` (en `backend/`) | Iniciar backend Express |
+| `python3 -m http.server 9090` | QR server (alternativo, no usa `:9000`) |
+
+### Puertos (sin conflictos)
+
+| Puerto | Servicio | Nota |
+|--------|----------|------|
+| `8082` | Expo dev server | Desarrollo |
+| `8088` | QGIS Server (nginx) | — |
+| `8089` | Backend Express | Principal |
+| `9000` | MinIO API | No ocupar |
+| `9001` | MinIO Console | No ocupar |
+| `9090` | QR server alternativo | Para compartir QR dev |
+| `5432` | PostgreSQL | — |
+
+---
+
 ## 📄 Licencia
 
 Uso interno — Proyecto Cacao.

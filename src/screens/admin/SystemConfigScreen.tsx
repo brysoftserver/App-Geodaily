@@ -10,8 +10,9 @@ import {
   ScrollView,
   TouchableOpacity,
   Alert,
+  ImageBackground,
 } from 'react-native';
-import { COLORS, FONTS, SPACING, BORDER_RADIUS, SHADOWS } from '../../theme';
+import { COLORS, FONTS, SPACING, BORDER_RADIUS, SHADOWS, API_CONFIG } from '../../theme';
 
 interface ServiceStatus {
   id: string;
@@ -24,8 +25,8 @@ interface ServiceStatus {
 
 const INITIAL_SERVICES: ServiceStatus[] = [
   { id: 'version', title: 'Versión de la App', value: 'GEODAILY v2.0.0', icon: '📱', online: true },
-  { id: 'api', title: 'API Backend', value: 'http://192.168.1.20:8089/api', icon: '🔌', online: true, lastCheck: 'hace 2 min' },
-  { id: 'qgis', title: 'Servidor QGIS', value: 'http://192.168.1.20:8081', icon: '🗺️', online: true, lastCheck: 'hace 5 min' },
+  { id: 'api', title: 'API Backend', value: `${API_CONFIG.BASE_URL}/api`, icon: '🔌', online: true, lastCheck: 'hace 2 min' },
+  { id: 'qgis', title: 'Servidor QGIS', value: `http://192.168.1.20:8081`, icon: '🗺️', online: true, lastCheck: 'hace 5 min' },
   { id: 'database', title: 'Base de Datos', value: 'PostgreSQL / PostGIS', icon: '🗄️', online: true, lastCheck: 'hace 1 min' },
   { id: 'auth', title: 'Autenticación', value: 'JWT (bcrypt + jsonwebtoken)', icon: '🔐', online: true },
 ];

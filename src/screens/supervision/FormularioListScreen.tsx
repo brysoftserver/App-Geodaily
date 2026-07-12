@@ -10,6 +10,7 @@ import {
   StyleSheet,
   Alert,
   RefreshControl,
+  ImageBackground,
 } from 'react-native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { COLORS, FONTS, SPACING, BORDER_RADIUS, SHADOWS } from '../../theme';
@@ -27,7 +28,6 @@ type FormularioListScreenProps = {
 const TIPO_FILTERS = [
   { value: 'all', label: 'Todos' },
   { value: 'visita_tecnica', label: 'Visitas Técnicas' },
-  { value: 'plantacion', label: 'Plantaciones' },
 ];
 
 const SYNC_FILTERS = [
@@ -94,7 +94,7 @@ const FormularioListScreen: React.FC<FormularioListScreenProps> = ({ navigation 
   const handleFormPress = (form: Formulario) => {
     Alert.alert(
       form.beneficiario.nombre,
-      `Tipo: ${form.tipo === 'visita_tecnica' ? 'Visita Técnica' : 'Plantación'}\n` +
+      `Tipo: ${form.tipo === 'visita_tecnica' ? 'Visita Técnica' : form.tipo === 'caracterizacion' ? 'Caracterización' : 'Plantación'}\n` +
         `Técnico: ${form.tecnico.nombre}\n` +
         `Municipio: ${form.beneficiario.municipio}\n` +
         `Actividad: ${form.actividad.descripcion}\n` +
@@ -121,6 +121,11 @@ const FormularioListScreen: React.FC<FormularioListScreenProps> = ({ navigation 
   }
 
   return (
+    <ImageBackground
+      source={require('../../../Logos_imagenes/fondo_login_geo_daily.png')}
+      style={styles.backgroundImage}
+      resizeMode="cover"
+    >
     <View style={styles.container}>
       <View style={styles.header}>
         <Text style={styles.title}>Formularios</Text>
@@ -183,10 +188,16 @@ const FormularioListScreen: React.FC<FormularioListScreenProps> = ({ navigation 
         />
       )}
     </View>
+    </ImageBackground>
   );
 };
 
 const styles = StyleSheet.create({
+  backgroundImage: {
+    flex: 1,
+    width: '100%',
+    height: '100%',
+  },
   container: {
     flex: 1,
     backgroundColor: COLORS.background,

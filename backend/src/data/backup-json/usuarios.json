@@ -120,6 +120,16 @@
     "telefono": "3157654321"
   },
   {
+    "id": "int-001",
+    "usuario": "interventor1",
+    "contrasena": "123456",
+    "nombre": "Interventor de Prueba",
+    "cedula": "1000000003",
+    "email": "interventor@geodaily.app",
+    "rol": "interventor",
+    "telefono": "3160000002"
+  },
+  {
     "id": "ger-001",
     "usuario": "gerente1",
     "contrasena": "123456",

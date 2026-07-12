@@ -1,54 +1,52 @@
 // ============================================================
 // Mediciones Routes — Sync + CRUD de mediciones de terreno
+// Persistencia: PostgreSQL
 // ============================================================
 
 const express = require('express');
 const { authenticateToken } = require('../middleware/auth');
-const { createPersistentStore } = require('../persistence');
+const db = require('../database');
 const router = express.Router();
 
-// Almacenamiento persistente en JSON
-const store = createPersistentStore('mediciones');
-
-// Cache de usuarios para enriquecer respuestas
-let usuariosCache = null;
-function getUsuarios() {
-  if (usuariosCache) return usuariosCache;
-  try {
-    const fs = require('fs');
-    const path = require('path');
-    const raw = fs.readFileSync(path.join(__dirname, '..', 'data', 'usuarios.json'), 'utf8');
-    usuariosCache = JSON.parse(raw);
-    return usuariosCache;
-  } catch { return []; }
-}
-function enriquecerConNombre(items) {
-  const usuarios = getUsuarios();
-  const map = new Map(usuarios.map(u => [u.id, u.nombre || u.usuario]));
-  return items.map(item => ({ ...item, usuario_nombre: map.get(item.usuario_id) || item.usuario_id }));
-}
-
 // POST /api/mediciones/sync — Recibir mediciones del técnico
-router.post('/sync', authenticateToken, (req, res) => {
+router.post('/sync', authenticateToken, async (req, res) => {
   try {
     const { mediciones } = req.body;
     if (!Array.isArray(mediciones)) {
       return res.status(400).json({ estado: 'error', mensaje: 'Se requiere un arreglo de mediciones' });
     }
 
-    const enriched = mediciones.map(m => ({
-      ...m,
-      sincronizado: true,
-      server_timestamp: new Date().toISOString(),
-    }));
+    let sincronizadas = 0;
+    for (const m of mediciones) {
+      const id = m.id || `med-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+      await db.query(
+        `INSERT INTO mediciones (id, usuario_id, formulario_id, tipo_medicion, valor, unidad, latitud, longitud, metadata_json, timestamp)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+         ON CONFLICT (id) DO UPDATE SET
+           valor = EXCLUDED.valor,
+           metadata_json = EXCLUDED.metadata_json,
+           timestamp = EXCLUDED.timestamp`,
+        [
+          id,
+          m.usuario_id || req.user.id,
+          m.formulario_id || null,
+          m.tipo_medicion || m.tipo || 'general',
+          m.valor || 0,
+          m.unidad || '',
+          m.latitud || null,
+          m.longitud || null,
+          JSON.stringify(m.metadata_json || m.datos || {}),
+          m.timestamp || m.timestamp_dispositivo || new Date().toISOString(),
+        ]
+      );
+      sincronizadas++;
+    }
 
-    store.setMany(enriched);
-
-    console.log(`[Mediciones] ${enriched.length} mediciones sincronizadas (${store.getAll().length} totales)`);
+    console.log(`[Mediciones] ${sincronizadas} mediciones sincronizadas por ${req.user.usuario}`);
     res.json({
       estado: 'ok',
-      mensaje: `${enriched.length} mediciones sincronizadas`,
-      sincronizadas: enriched.length,
+      mensaje: `${sincronizadas} mediciones sincronizadas`,
+      sincronizadas,
     });
   } catch (error) {
     console.error('[Mediciones] Error en sync:', error);
@@ -57,20 +55,31 @@ router.post('/sync', authenticateToken, (req, res) => {
 });
 
 // GET /api/mediciones — Obtener todas las mediciones
-router.get('/', authenticateToken, (req, res) => {
+router.get('/', authenticateToken, async (req, res) => {
   try {
-    const { rol, usuario_id } = req.user;
-    let lista = store.getAll();
+    const { rol, id: usuario_id } = req.user;
+    let sql = `
+      SELECT m.id, m.usuario_id, m.formulario_id, m.tipo_medicion, m.valor,
+        m.unidad, m.latitud, m.longitud, m.metadata_json, m.timestamp, m.sincronizado, m.created_at,
+        u.nombre AS usuario_nombre
+      FROM mediciones m
+      JOIN usuarios u ON u.id = m.usuario_id
+    `;
+    const params = [];
 
-    // Técnicos solo ven sus propias mediciones
     if (rol === 'tecnico') {
-      lista = lista.filter(m => m.usuario_id === usuario_id);
+      sql += ' WHERE m.usuario_id = $1';
+      params.push(usuario_id);
     }
+
+    sql += ' ORDER BY m.created_at DESC';
+
+    const lista = await db.queryAll(sql, params);
 
     res.json({
       estado: 'ok',
       total: lista.length,
-      mediciones: enriquecerConNombre(lista),
+      mediciones: lista,
     });
   } catch (error) {
     console.error('[Mediciones] Error al listar:', error);
@@ -79,19 +88,23 @@ router.get('/', authenticateToken, (req, res) => {
 });
 
 // DELETE /api/mediciones/:id — Solo admin puede eliminar
-router.delete('/:id', authenticateToken, (req, res) => {
+router.delete('/:id', authenticateToken, async (req, res) => {
   try {
     if (req.user.rol !== 'admin') {
       return res.status(403).json({ estado: 'error', mensaje: 'Solo administradores pueden eliminar mediciones' });
     }
 
-    const { id } = req.params;
-    if (!store.get(id)) {
+    const result = await db.remove('mediciones', 'id', req.params.id);
+    if (!result) {
       return res.status(404).json({ estado: 'error', mensaje: 'Medición no encontrada' });
     }
 
-    store.delete(id);
-    console.log(`[Mediciones] Eliminada: ${id} por admin ${req.user.usuario_id}`);
+    await db.query(
+      'INSERT INTO actividad_log (usuario_id, accion, detalle_json) VALUES ($1, $2, $3)',
+      [req.user.id, 'eliminar_medicion', JSON.stringify({ medicion_id: req.params.id })]
+    );
+
+    console.log(`[Mediciones] Eliminada: ${req.params.id} por admin ${req.user.usuario}`);
     res.json({ estado: 'ok', mensaje: 'Medición eliminada correctamente' });
   } catch (error) {
     console.error('[Mediciones] Error al eliminar:', error);

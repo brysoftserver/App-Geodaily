@@ -39,10 +39,26 @@ const MENU_ITEMS = [
   {
     id: 'mapa',
     title: 'Mapa General del Proyecto',
-    subtitle: 'Plantaciones, técnicos y mediciones en mapa',
+    subtitle: 'Mapas, técnicos y mediciones en terreno',
     icon: '🗺️',
     color: COLORS.success,
     screen: 'MapaGeneral',
+  },
+  {
+    id: 'dashboard',
+    title: 'Dashboard General',
+    subtitle: 'Métricas globales de todas las visitas',
+    icon: '📊',
+    color: COLORS.primary,
+    screen: 'AdminDashboard',
+  },
+  {
+    id: 'visitas',
+    title: 'Listado de técnicos y visitas',
+    subtitle: 'Visitas jerárquicas por técnico y beneficiario',
+    icon: '👷',
+    color: COLORS.roleTecnico,
+    screen: 'AdminVisitasJerarquicas',
   },
   {
     id: 'supervision',

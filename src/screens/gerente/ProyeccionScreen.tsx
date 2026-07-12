@@ -30,20 +30,17 @@ const ProyeccionScreen: React.FC<ProyeccionProps> = ({ navigation }) => {
   const { formularios } = useForm();
   const [periodo, setPeriodo] = useState<'3m' | '6m' | '12m'>('12m');
 
-  // Solo formularios de plantación
-  const plantaciones = useMemo(() =>
-    formularios.filter(f => f.tipo === 'plantacion'),
-  [formularios]);
-
-  // Área estimada (asumiendo 1 visita = 1 ha para demo)
-  const areaHa = plantaciones.length;
-  const arbolesEstimados = areaHa * ARBOLES_POR_HA;
-  const produccionAnualKg = areaHa * ESTIMACION_KG_HA;
+  // Este módulo de proyección estaba basado en el formulario de Plantación
+  // que ha sido eliminado. Se muestra información informativa.
+  const plantacionesCount = 0;
+  const areaHa = 0;
+  const arbolesEstimados = 0;
+  const produccionAnualKg = 0;
 
   const factorPeriodo = periodo === '3m' ? 0.25 : periodo === '6m' ? 0.5 : 1;
   const produccionPeriodo = produccionAnualKg * factorPeriodo;
 
-  // Proyección mensual
+  // Proyección mensual (sin datos)
   const proyeccionMensual = useMemo(() => {
     const meses = ['Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic'];
     const actual = new Date().getMonth();
@@ -52,12 +49,10 @@ const ProyeccionScreen: React.FC<ProyeccionProps> = ({ navigation }) => {
     for (let i = 0; i < 12; i++) {
       const idx = (actual + i) % 12;
       labels.push(meses[idx]);
-      // Producción con variación estacional simulada
-      const estacional = 1 + Math.sin((idx / 12) * Math.PI * 2) * 0.3;
-      datos.push(Math.round((ESTIMACION_KG_HA / 12) * areaHa * estacional));
+      datos.push(0);
     }
     return { labels, datos };
-  }, [areaHa]);
+  }, []);
 
   const chartConfig = {
     backgroundColor: COLORS.surface,
@@ -73,7 +68,7 @@ const ProyeccionScreen: React.FC<ProyeccionProps> = ({ navigation }) => {
   return (
     <ScrollView style={styles.container} contentContainerStyle={styles.content}>
       <Text style={styles.title}>Proyección de Producción</Text>
-      <Text style={styles.subtitle}>Basada en {plantaciones.length} registro(s) de plantación</Text>
+      <Text style={styles.subtitle}>El formulario de Plantación ha sido eliminado. Esta sección está en desuso.</Text>
 
       {/* Selector de período */}
       <View style={styles.periodRow}>

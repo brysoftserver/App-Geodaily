@@ -1,54 +1,52 @@
 // ============================================================
 // Plantaciones Routes — Sync + CRUD de plantaciones en mapa
+// Persistencia: PostgreSQL
 // ============================================================
 
 const express = require('express');
 const { authenticateToken } = require('../middleware/auth');
-const { createPersistentStore } = require('../persistence');
+const db = require('../database');
 const router = express.Router();
 
-// Almacenamiento persistente en JSON
-const store = createPersistentStore('plantaciones');
-
-// Cache de usuarios para enriquecer respuestas
-let usuariosCache = null;
-function getUsuarios() {
-  if (usuariosCache) return usuariosCache;
-  try {
-    const fs = require('fs');
-    const path = require('path');
-    const raw = fs.readFileSync(path.join(__dirname, '..', 'data', 'usuarios.json'), 'utf8');
-    usuariosCache = JSON.parse(raw);
-    return usuariosCache;
-  } catch { return []; }
-}
-function enriquecerConNombre(items) {
-  const usuarios = getUsuarios();
-  const map = new Map(usuarios.map(u => [u.id, u.nombre || u.usuario]));
-  return items.map(item => ({ ...item, usuario_nombre: map.get(item.usuario_id) || item.usuario_id }));
-}
-
 // POST /api/plantaciones/sync — Recibir plantaciones del técnico
-router.post('/sync', authenticateToken, (req, res) => {
+router.post('/sync', authenticateToken, async (req, res) => {
   try {
     const { plantaciones } = req.body;
     if (!Array.isArray(plantaciones)) {
       return res.status(400).json({ estado: 'error', mensaje: 'Se requiere un arreglo de plantaciones' });
     }
 
-    const enriched = plantaciones.map(p => ({
-      ...p,
-      sincronizado: true,
-      server_timestamp: new Date().toISOString(),
-    }));
+    let sincronizadas = 0;
+    for (const p of plantaciones) {
+      const id = p.id || `plant-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+      await db.query(
+        `INSERT INTO plantaciones (id, usuario_id, formulario_id, especie, cantidad, latitud, longitud, altitud, metadata_json, timestamp)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+         ON CONFLICT (id) DO UPDATE SET
+           cantidad = EXCLUDED.cantidad,
+           metadata_json = EXCLUDED.metadata_json,
+           timestamp = EXCLUDED.timestamp`,
+        [
+          id,
+          p.usuario_id || req.user.id,
+          p.formulario_id || null,
+          p.especie || 'Desconocida',
+          p.cantidad || 1,
+          p.latitud || 0,
+          p.longitud || 0,
+          p.altitud || null,
+          JSON.stringify(p.metadata_json || p.datos || {}),
+          p.timestamp || p.timestamp_dispositivo || new Date().toISOString(),
+        ]
+      );
+      sincronizadas++;
+    }
 
-    store.setMany(enriched);
-
-    console.log(`[Plantaciones] ${enriched.length} plantaciones sincronizadas (${store.getAll().length} totales)`);
+    console.log(`[Plantaciones] ${sincronizadas} plantaciones sincronizadas por ${req.user.usuario}`);
     res.json({
       estado: 'ok',
-      mensaje: `${enriched.length} plantaciones sincronizadas`,
-      sincronizadas: enriched.length,
+      mensaje: `${sincronizadas} plantaciones sincronizadas`,
+      sincronizadas,
     });
   } catch (error) {
     console.error('[Plantaciones] Error en sync:', error);
@@ -56,21 +54,32 @@ router.post('/sync', authenticateToken, (req, res) => {
   }
 });
 
-// GET /api/plantaciones — Obtener todas las plantaciones (supervisor/gerente/admin)
-router.get('/', authenticateToken, (req, res) => {
+// GET /api/plantaciones — Obtener todas las plantaciones
+router.get('/', authenticateToken, async (req, res) => {
   try {
-    const { rol, usuario_id } = req.user;
-    let lista = store.getAll();
+    const { rol, id: usuario_id } = req.user;
+    let sql = `
+      SELECT p.id, p.usuario_id, p.formulario_id, p.especie, p.cantidad,
+        p.latitud, p.longitud, p.altitud, p.metadata_json, p.timestamp, p.sincronizado, p.created_at,
+        u.nombre AS usuario_nombre
+      FROM plantaciones p
+      JOIN usuarios u ON u.id = p.usuario_id
+    `;
+    const params = [];
 
-    // Técnicos solo ven sus propias plantaciones
     if (rol === 'tecnico') {
-      lista = lista.filter(p => p.usuario_id === usuario_id);
+      sql += ' WHERE p.usuario_id = $1';
+      params.push(usuario_id);
     }
+
+    sql += ' ORDER BY p.created_at DESC';
+
+    const lista = await db.queryAll(sql, params);
 
     res.json({
       estado: 'ok',
       total: lista.length,
-      plantaciones: enriquecerConNombre(lista),
+      plantaciones: lista,
     });
   } catch (error) {
     console.error('[Plantaciones] Error al listar:', error);
@@ -79,19 +88,23 @@ router.get('/', authenticateToken, (req, res) => {
 });
 
 // DELETE /api/plantaciones/:id — Solo admin puede eliminar
-router.delete('/:id', authenticateToken, (req, res) => {
+router.delete('/:id', authenticateToken, async (req, res) => {
   try {
     if (req.user.rol !== 'admin') {
       return res.status(403).json({ estado: 'error', mensaje: 'Solo administradores pueden eliminar plantaciones' });
     }
 
-    const { id } = req.params;
-    if (!store.get(id)) {
+    const result = await db.remove('plantaciones', 'id', req.params.id);
+    if (!result) {
       return res.status(404).json({ estado: 'error', mensaje: 'Plantación no encontrada' });
     }
 
-    store.delete(id);
-    console.log(`[Plantaciones] Eliminada: ${id} por admin ${req.user.usuario_id}`);
+    await db.query(
+      'INSERT INTO actividad_log (usuario_id, accion, detalle_json) VALUES ($1, $2, $3)',
+      [req.user.id, 'eliminar_plantacion', JSON.stringify({ plantacion_id: req.params.id })]
+    );
+
+    console.log(`[Plantaciones] Eliminada: ${req.params.id} por admin ${req.user.usuario}`);
     res.json({ estado: 'ok', mensaje: 'Plantación eliminada correctamente' });
   } catch (error) {
     console.error('[Plantaciones] Error al eliminar:', error);
@@ -100,26 +113,19 @@ router.delete('/:id', authenticateToken, (req, res) => {
 });
 
 // GET /api/plantaciones/resumen — Resumen agrupado por especie
-router.get('/resumen', authenticateToken, (req, res) => {
+router.get('/resumen', authenticateToken, async (req, res) => {
   try {
-    const lista = store.getAll();
-    const resumen = {};
-
-    for (const p of lista) {
-      if (!resumen[p.especie]) {
-        resumen[p.especie] = { total: 0, conteo: 0 };
-      }
-      resumen[p.especie].total += p.cantidad || 1;
-      resumen[p.especie].conteo += 1;
-    }
+    const resumen = await db.queryAll(`
+      SELECT COALESCE(NULLIF(especie, ''), 'Desconocida') AS especie,
+        SUM(cantidad) AS total, COUNT(*) AS conteo
+      FROM plantaciones
+      GROUP BY especie
+      ORDER BY total DESC
+    `);
 
     res.json({
       estado: 'ok',
-      resumen: Object.entries(resumen).map(([especie, data]) => ({
-        especie,
-        total: data.total,
-        conteo: data.conteo,
-      })),
+      resumen,
     });
   } catch (error) {
     console.error('[Plantaciones] Error en resumen:', error);

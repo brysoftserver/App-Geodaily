@@ -1,6 +1,8 @@
 // ============================================================
 // GEODAILY — Contexto Global de Tracking GPS
 // ============================================================
+// OPTIMIZADO: usa GPSContext como fuente única de posición GPS
+// en lugar de llamar getCurrentPositionAsync cada 15s.
 // Vive al nivel del provider — NO se detiene al cambiar de screen.
 // Solo se detiene explícitamente con detenerTracking().
 // ============================================================
@@ -10,7 +12,8 @@ import * as Location from 'expo-location';
 import * as SQLite from 'expo-sqlite';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useAuth } from './AuthContext';
-import { PosicionTracking } from '../types';
+import { useGPS } from './GPSContext';
+import { PosicionTracking, Coordenadas } from '../types';
 
 const STORAGE_KEY = '@geodaily/tracking_active';
 const TRACKING_INTERVAL_MS = 15000; // 15 segundos
@@ -41,6 +44,7 @@ const initDb = async (): Promise<SQLite.SQLiteDatabase> => {
 export const TrackingProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const { user } = useAuth();
   const usuarioId = user?.id;
+  const { userLocation: gpsPosition } = useGPS();
 
   const [state, setState] = useState<TrackingState>({
     activo: false,
@@ -51,6 +55,12 @@ export const TrackingProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   const posicionesRef = useRef<PosicionTracking[]>([]);
   const lastPosRef = useRef<{ lat: number; lon: number } | null>(null);
   const usuarioIdRef = useRef(usuarioId);
+  const gpsPositionRef = useRef<Coordenadas | undefined>(undefined);
+
+  // Sincronizar GPSContext → ref para usar en el intervalo sin llamar GPS cada vez
+  useEffect(() => {
+    gpsPositionRef.current = gpsPosition;
+  }, [gpsPosition]);
 
   // Mantener ref actualizada del usuario
   useEffect(() => {
@@ -87,27 +97,44 @@ export const TrackingProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       return;
     }
 
-    // Solicitar permisos
+    // Solicitar permisos (necesario aunque GPSContext ya lo tenga)
     const { status } = await Location.requestForegroundPermissionsAsync();
     if (status !== 'granted') {
       console.warn('[TrackingContext] Permiso denegado');
       return;
     }
 
-    // Primera posición
-    const pos = await Location.getCurrentPositionAsync({
-      accuracy: Location.Accuracy.High,
-    });
+    // Primera posición: usar GPSContext (watch continuo) o fallback a getCurrentPositionAsync
+    let latitud: number, longitud: number, altitud: number | undefined, precision: number | undefined, heading: number | undefined;
+    if (gpsPositionRef.current) {
+      latitud = gpsPositionRef.current.latitud;
+      longitud = gpsPositionRef.current.longitud;
+      altitud = gpsPositionRef.current.altitud;
+      precision = gpsPositionRef.current.precision_gps;
+      heading = gpsPositionRef.current.heading;
+    } else {
+      try {
+        const pos = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.High });
+        latitud = pos.coords.latitude;
+        longitud = pos.coords.longitude;
+        altitud = pos.coords.altitude ?? undefined;
+        precision = pos.coords.accuracy ?? undefined;
+        heading = pos.coords.heading ?? undefined;
+      } catch (err) {
+        console.warn('[TrackingContext] No se pudo obtener posición inicial:', err);
+        return;
+      }
+    }
 
     const primeraPos: PosicionTracking = {
       id: `track_${Date.now()}`,
       usuario_id: usuarioIdRef.current,
-      latitud: pos.coords.latitude,
-      longitud: pos.coords.longitude,
-      altitud: pos.coords.altitude ?? undefined,
-      precision_gps: pos.coords.accuracy ?? undefined,
-      heading: pos.coords.heading ?? undefined,
-      velocidad: pos.coords.speed ?? undefined,
+      latitud,
+      longitud,
+      altitud,
+      precision_gps: precision,
+      heading,
+      velocidad: undefined,
       timestamp: new Date().toISOString(),
       sincronizado: false,
     };
@@ -142,48 +169,45 @@ export const TrackingProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       inicio: new Date().toISOString(),
     }));
 
-    // Intervalo periódico
+    // Intervalo periódico: leer de GPSContext en vez de llamar getCurrentPositionAsync
     intervalRef.current = setInterval(async () => {
       if (!usuarioIdRef.current) return;
-      try {
-        const newPos = await Location.getCurrentPositionAsync({
-          accuracy: Location.Accuracy.High,
-        });
+      const currentGps = gpsPositionRef.current;
+      if (!currentGps) return; // Sin GPS aún, esperar próxima iteración
 
-        const posicion: PosicionTracking = {
-          id: `track_${Date.now()}`,
-          usuario_id: usuarioIdRef.current,
-          latitud: newPos.coords.latitude,
-          longitud: newPos.coords.longitude,
-          altitud: newPos.coords.altitude ?? undefined,
-          precision_gps: newPos.coords.accuracy ?? undefined,
-          heading: newPos.coords.heading ?? undefined,
-          velocidad: newPos.coords.speed ?? undefined,
-          timestamp: new Date().toISOString(),
-          sincronizado: false,
-        };
+      const posicion: PosicionTracking = {
+        id: `track_${Date.now()}`,
+        usuario_id: usuarioIdRef.current,
+        latitud: currentGps.latitud,
+        longitud: currentGps.longitud,
+        altitud: currentGps.altitud,
+        precision_gps: currentGps.precision_gps,
+        heading: currentGps.heading,
+        velocidad: undefined,
+        timestamp: new Date().toISOString(),
+        sincronizado: false,
+      };
+
+      // Calcular distancia incremental (Haversine)
+      if (lastPosRef.current) {
+        const dlat = ((posicion.latitud - lastPosRef.current.lat) * Math.PI) / 180;
+        const dlon = ((posicion.longitud - lastPosRef.current.lon) * Math.PI) / 180;
+        const a =
+          Math.sin(dlat / 2) ** 2 +
+          Math.cos((lastPosRef.current.lat * Math.PI) / 180) *
+            Math.cos((posicion.latitud * Math.PI) / 180) *
+            Math.sin(dlon / 2) ** 2;
+        const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+        const dist = 6371 * c;
 
         posicionesRef.current = [...posicionesRef.current, posicion];
-
-        // Calcular distancia incremental
-        if (lastPosRef.current) {
-          const dlat = ((posicion.latitud - lastPosRef.current.lat) * Math.PI) / 180;
-          const dlon = ((posicion.longitud - lastPosRef.current.lon) * Math.PI) / 180;
-          const a =
-            Math.sin(dlat / 2) ** 2 +
-            Math.cos((lastPosRef.current.lat * Math.PI) / 180) *
-              Math.cos((posicion.latitud * Math.PI) / 180) *
-              Math.sin(dlon / 2) ** 2;
-          const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-          const dist = 6371 * c;
-
-          setState(prev => ({
-            ...prev,
-            posiciones: posicionesRef.current,
-            distanceKm: prev.distanceKm + dist,
-          }));
-        }
         lastPosRef.current = { lat: posicion.latitud, lon: posicion.longitud };
+
+        setState(prev => ({
+          ...prev,
+          posiciones: posicionesRef.current,
+          distanceKm: prev.distanceKm + dist,
+        }));
 
         // Persistir en SQLite
         try {
@@ -204,8 +228,6 @@ export const TrackingProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         } catch (e) {
           console.warn('[TrackingContext] Error al persistir:', e);
         }
-      } catch (error) {
-        console.warn('[TrackingContext] Error en intervalo:', error);
       }
     }, TRACKING_INTERVAL_MS);
 

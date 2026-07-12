@@ -3,7 +3,7 @@
 // ============================================================
 
 // --- Roles de usuario ---
-export type UserRole = 'tecnico' | 'supervisor' | 'gerente' | 'admin';
+export type UserRole = 'tecnico' | 'supervisor' | 'interventor' | 'gerente' | 'admin';
 
 // --- Usuario autenticado ---
 export interface Usuario {
@@ -121,7 +121,7 @@ export interface ActividadRealizada {
   recomendaciones: string;
 }
 
-export type TipoFormulario = 'caracterizacion' | 'visita_tecnica' | 'plantacion';
+export type TipoFormulario = 'caracterizacion' | 'visita_tecnica';
 
 // --- Estado de un formulario ---
 export interface FormularioBase {

@@ -1,6 +1,13 @@
 // ============================================================
 // GEODAILY — Hook de Tracking GPS en Tiempo Real
+// ⚠️  DEPRECADO — Usar TrackingContext en su lugar
 // ============================================================
+// Razón: TrackingContext.tsx provee la misma funcionalidad a
+// nivel de contexto global con gestión de persistencia.
+// useTracking.ts es un hook independiente que duplica toda
+// la lógica (getCurrentPositionAsync cada 15s, SQLite, etc.).
+// Mantenido temporalmente para compatibilidad, pero sin uso
+// activo en la aplicación.
 
 import { useState, useEffect, useRef, useCallback } from 'react';
 import * as Location from 'expo-location';

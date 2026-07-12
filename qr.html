@@ -100,7 +100,9 @@
     <h1>GEODAILY</h1>
     <p class="subtitle">App Móvil — Escanea con Expo Go</p>
     <div class="port-badge">🚀 Puerto 8082</div>
-    <div id="qrcode"></div>
+    <div id="qrcode">
+      <img src="qr_expo.png" alt="QR Expo Go" width="250" height="250" style="image-rendering:pixelated;border-radius:8px;"/>
+    </div>
     <div class="url" id="expourl">exp://192.168.1.20:8082</div>
     <p class="instructions">
       1. Instala <strong>Expo Go</strong> en tu celular<br/>
@@ -110,7 +112,5 @@
     <button class="refresh-btn" onclick="location.reload()">⟳ Actualizar QR</button>
   </div>
 
-  <!-- QR Code generado localmente -->
-  <img src="qr_code.png" alt="QR Expo" width="250" height="250" style="image-rendering:pixelated;border-radius:8px;"/>
 </body>
 </html>

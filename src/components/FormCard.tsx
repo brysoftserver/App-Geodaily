@@ -32,7 +32,7 @@ const FormCard: React.FC<FormCardProps> = ({ formulario, onPress, onViewPDF }) =
     >
       <View style={[styles.tipoBadge, { backgroundColor: getTipoColor() }]}>
         <Text style={styles.tipoText}>
-          {formulario.tipo === 'visita_tecnica' ? 'Visita Técnica' : 'Plantación'}
+          {formulario.tipo === 'caracterizacion' ? 'Caracterización' : 'Visita Técnica'}
         </Text>
       </View>
 

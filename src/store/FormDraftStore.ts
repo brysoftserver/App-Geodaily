@@ -15,6 +15,7 @@ import {
   DatosCaracterizacionNueva,
   Coordenadas,
   TipoFormulario,
+  FotoGeotag,
 } from '../types';
 
 export interface FormDraft {
@@ -31,6 +32,10 @@ export interface FormDraft {
   selectedActividad: string;
   otraActividadText: string;
   descripcionDetallada?: string;
+  fotos?: FotoGeotag[];
+  firma_beneficiario?: string;
+  firma_tecnico?: string;
+  huella_beneficiario?: boolean;
   updated_at: string;
 }
 

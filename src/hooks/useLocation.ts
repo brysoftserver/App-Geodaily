@@ -53,9 +53,22 @@ export const useLocation = () => {
         return null;
       }
 
-      const position = await Location.getCurrentPositionAsync({
-        accuracy: Location.Accuracy.High,
-      });
+      // 1. Intentar GPS con alta precisión
+      let position;
+      try {
+        position = await Location.getCurrentPositionAsync({
+          accuracy: Location.Accuracy.High,
+        });
+      } catch (gpsError) {
+        // 2. Fallback: última posición conocida (últimos 60 segundos)
+        console.warn('[useLocation] GPS falló, intentando última conocida:', gpsError);
+        const last = await Location.getLastKnownPositionAsync({ maxAge: 60000 });
+        if (last) {
+          position = last;
+        } else {
+          throw new Error('GPS no disponible y sin última posición conocida');
+        }
+      }
 
       const coords: Coordenadas = {
         latitud: position.coords.latitude,
@@ -83,11 +96,11 @@ export const useLocation = () => {
 
       return coords;
     } catch (err) {
-      const errorMsg = 'No se pudo obtener la ubicación GPS';
+      const mensaje = err instanceof Error ? err.message : 'No se pudo obtener la ubicación GPS';
       setState((prev) => ({
         ...prev,
         isLoading: false,
-        error: errorMsg,
+        error: mensaje,
       }));
       return null;
     }

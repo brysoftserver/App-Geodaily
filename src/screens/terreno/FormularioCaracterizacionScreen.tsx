@@ -18,6 +18,7 @@ import {
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { RouteProp, useFocusEffect } from '@react-navigation/native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
+import AppBackground from '../../components/AppBackground';
 import { format } from 'date-fns';
 import { es } from 'date-fns/locale/es';
 import { COLORS, FONTS, SPACING, BORDER_RADIUS, SHADOWS } from '../../theme';
@@ -57,7 +58,7 @@ import {
   RecomendacionesCaracterizacion,
   Formulario,
 } from '../../types';
-import { saveFormularioLocal } from '../../services/database';
+import { saveFormularioLocal, getDb } from '../../services/database';
 import DropdownPicker from '../../components/DropdownPicker';
 
 type Props = {
@@ -156,13 +157,13 @@ const FormularioCaracterizacionScreen: React.FC<Props> = ({ navigation, route })
   const [firmaBeneficiarioOk, setFirmaBeneficiarioOk] = useState(false);
   const [firmaTecnicoOk, setFirmaTecnicoOk] = useState(false);
   const [huellaOk, setHuellaOk] = useState(false);
+  const [documentosCount, setDocumentosCount] = useState(0);
 
   const formIdRef = useRef<string>('');
 
   // ─── Inicializar ──────────────────────────────────────────
   useEffect(() => {
     iniciarFormulario('caracterizacion');
-    formIdRef.current = formularioActual?.id || 'carac-' + Date.now();
 
     // Autocompletar técnico desde el usuario autenticado
     if (user) {
@@ -195,6 +196,13 @@ const FormularioCaracterizacionScreen: React.FC<Props> = ({ navigation, route })
     init();
   }, []);
 
+  // Sincronizar formIdRef con el ID real del contexto cuando esté disponible
+  useEffect(() => {
+    if (formularioActual?.id) {
+      formIdRef.current = formularioActual.id;
+    }
+  }, [formularioActual?.id]);
+
   // Refrescar evidencias al volver de pantallas
   useFocusEffect(
     useCallback(() => {
@@ -204,6 +212,27 @@ const FormularioCaracterizacionScreen: React.FC<Props> = ({ navigation, route })
         setFirmaTecnicoOk(!!formularioActual.firma_tecnico);
         setHuellaOk(!!formularioActual.huella_beneficiario);
       }
+      // Cargar documentos vinculados desde SQLite
+      const cargarDocs = async () => {
+        const formId = formularioActual?.id || formIdRef.current;
+        if (formId) {
+          try {
+            const db = getDb();
+            if (db) {
+              const rows = await db.getAllAsync<any>(
+                'SELECT COUNT(*) as cnt FROM documentos_finca WHERE formulario_id = ?',
+                [formId]
+              );
+              if (rows && rows.length > 0) {
+                setDocumentosCount(rows[0].cnt || 0);
+              }
+            }
+          } catch (e) {
+            // Ignorar
+          }
+        }
+      };
+      cargarDocs();
     }, [formularioActual])
   );
 
@@ -256,13 +285,15 @@ const FormularioCaracterizacionScreen: React.FC<Props> = ({ navigation, route })
   const guardarBorradorHandler = useCallback(async () => {
     setIsSaving(true);
     try {
+      const draftIdActual = formIdRef.current || formularioActual?.id || 'draft-' + Date.now();
       const draft: FormDraft = {
-        id: formIdRef.current || 'draft-' + Date.now(),
+        id: draftIdActual,
         tipo: 'caracterizacion',
         step: 0,
         tecnico: {
+          usuario_id: user?.id || '',
           nombre: data.tecnico_responsable,
-          cedula: data.tecnico_cedula || data.documento,
+          cedula: user?.cedula || '',
           telefono: data.telefono,
           email: user?.email || '',
         },
@@ -335,8 +366,9 @@ const FormularioCaracterizacionScreen: React.FC<Props> = ({ navigation, route })
           id: formIdRef.current || 'carac-' + Date.now(),
           tipo: 'caracterizacion',
           tecnico: {
+            usuario_id: user?.id || '',
             nombre: data.tecnico_responsable,
-            cedula: data.tecnico_cedula || data.documento,
+            cedula: user?.cedula || '',
             telefono: data.telefono,
             email: user?.email || '',
           },
@@ -388,7 +420,31 @@ const FormularioCaracterizacionScreen: React.FC<Props> = ({ navigation, route })
         console.error('[Carac] Error al guardar en SQLite:', dbError);
       }
 
-      // 5. Eliminar borrador
+      // 5. Actualizar documentos vinculados: si se guardaron con 'sin-formulario',
+      //    reasignarlos al ID real del formulario completado
+      try {
+        const db = getDb();
+        if (db) {
+          const formRealId = form.id;
+          // Actualizar docs guardados con ID temporal
+          await db.runAsync(
+            "UPDATE documentos_finca SET formulario_id = ? WHERE formulario_id = ?",
+            [formRealId, formularioActual?.id || 'sin-formulario']
+          );
+          // También los que tengan el formIdRef anterior si es distinto
+          const refId = formIdRef.current;
+          if (refId && refId !== formRealId && refId !== 'sin-formulario') {
+            await db.runAsync(
+              "UPDATE documentos_finca SET formulario_id = ? WHERE formulario_id = ?",
+              [formRealId, refId]
+            );
+          }
+        }
+      } catch (e) {
+        console.warn('[Carac] No se pudieron actualizar documentos:', e);
+      }
+
+      // 6. Eliminar borrador
       if (draftId) {
         try {
           const { eliminarBorrador } = await import('../../store/FormDraftStore');
@@ -477,18 +533,8 @@ const FormularioCaracterizacionScreen: React.FC<Props> = ({ navigation, route })
 
   return (
     <SafeAreaView style={styles.safeContainer} edges={['top']}>
+      <AppBackground overlay={0.35}>
       <View style={styles.container}>
-        {/* Header con navegación */}
-        <View style={[styles.headerBar, { paddingTop: Math.max(insets.top, SPACING.sm) }]}>
-          <TouchableOpacity onPress={() => navigation.goBack()} style={styles.headerBack}>
-            <Text style={styles.headerBackText}>← Volver</Text>
-          </TouchableOpacity>
-          <Text style={styles.headerTitle}>📋 Caracterización</Text>
-          <TouchableOpacity onPress={guardarBorradorHandler} style={styles.headerSave} disabled={isSaving}>
-            <Text style={styles.headerSaveText}>{isSaving ? '💾...' : '💾 Guardar'}</Text>
-          </TouchableOpacity>
-        </View>
-
         <ScrollView
           style={styles.scrollView}
           contentContainerStyle={[styles.scrollContent, { paddingBottom: insets.bottom + 100 }]}
@@ -844,8 +890,25 @@ const FormularioCaracterizacionScreen: React.FC<Props> = ({ navigation, route })
                 <Text style={styles.evidenciaArrow}>›</Text>
               </TouchableOpacity>
 
+              <TouchableOpacity
+                style={[styles.evidenciaCard, documentosCount > 0 && styles.evidenciaCardOk]}
+                onPress={() => goToEvidencia('Camara')}
+                activeOpacity={0.7}
+              >
+                <View style={styles.evidenciaIcon}>
+                  <Text style={styles.evidenciaIconText}>📄</Text>
+                </View>
+                <View style={styles.evidenciaContent}>
+                  <Text style={styles.evidenciaCardTitle}>Documentos de la Finca</Text>
+                  <Text style={styles.evidenciaCardDesc}>
+                    {documentosCount > 0 ? `${documentosCount} documento(s) vinculado(s) ✓` : 'Subir PDF, fotos, KML...'}
+                  </Text>
+                </View>
+                <Text style={styles.evidenciaArrow}>›</Text>
+              </TouchableOpacity>
+
               <Text style={styles.evidenciasProgress}>
-                {[fotosCount > 0, firmaBeneficiarioOk, firmaTecnicoOk, huellaOk].filter(Boolean).length} de 4 evidencias completadas
+                {[fotosCount > 0, firmaBeneficiarioOk, firmaTecnicoOk, huellaOk, documentosCount > 0].filter(Boolean).length} de 5 evidencias completadas
               </Text>
             </>
           ))}
@@ -894,6 +957,7 @@ const FormularioCaracterizacionScreen: React.FC<Props> = ({ navigation, route })
           </View>
         )}
       </View>
+      </AppBackground>
     </SafeAreaView>
   );
 };
@@ -902,45 +966,11 @@ const FormularioCaracterizacionScreen: React.FC<Props> = ({ navigation, route })
 const styles = StyleSheet.create({
   safeContainer: {
     flex: 1,
-    backgroundColor: COLORS.primary,
+    backgroundColor: 'transparent',
   },
   container: {
     flex: 1,
     backgroundColor: COLORS.background,
-  },
-  // Header
-  headerBar: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: SPACING.md,
-    paddingBottom: SPACING.sm,
-    backgroundColor: COLORS.primary,
-  },
-  headerBack: {
-    paddingVertical: SPACING.xs,
-    paddingRight: SPACING.sm,
-  },
-  headerBackText: {
-    color: COLORS.textOnPrimary,
-    fontSize: FONTS.sizes.md,
-    fontWeight: FONTS.weights.medium,
-  },
-  headerTitle: {
-    fontSize: FONTS.sizes.lg,
-    fontWeight: FONTS.weights.bold,
-    color: COLORS.textOnPrimary,
-    flex: 1,
-    textAlign: 'center',
-  },
-  headerSave: {
-    paddingVertical: SPACING.xs,
-    paddingLeft: SPACING.sm,
-  },
-  headerSaveText: {
-    color: COLORS.textOnPrimary,
-    fontSize: FONTS.sizes.md,
-    fontWeight: FONTS.weights.bold,
   },
   // Scroll
   scrollView: {

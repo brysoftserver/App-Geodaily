@@ -193,10 +193,9 @@ const CalendarioScreen: React.FC<CalendarioScreenProps> = ({ navigation }) => {
   const getStats = () => {
     const total = formularios.length;
     const tecnicas = formularios.filter((f) => f.tipo === 'visita_tecnica').length;
-    const plantaciones = formularios.filter((f) => f.tipo === 'plantacion').length;
     const sincronizadas = formularios.filter((f) => f.sincronizado).length;
     const planificadas = visitasPlanificadas.length;
-    return { total, tecnicas, plantaciones, sincronizadas, planificadas };
+    return { total, tecnicas, sincronizadas, planificadas };
   };
 
   const stats = getStats();
@@ -254,12 +253,6 @@ const CalendarioScreen: React.FC<CalendarioScreenProps> = ({ navigation }) => {
               {stats.tecnicas}
             </Text>
             <Text style={styles.statLabel}>Visitas</Text>
-          </View>
-          <View style={styles.statCard}>
-            <Text style={[styles.statValue, { color: COLORS.primary }]}>
-              {stats.plantaciones}
-            </Text>
-            <Text style={styles.statLabel}>Plantac.</Text>
           </View>
           <View style={styles.statCard}>
             <Text style={[styles.statValue, { color: COLORS.success }]}>
@@ -428,7 +421,7 @@ const CalendarioScreen: React.FC<CalendarioScreenProps> = ({ navigation }) => {
 const styles = StyleSheet.create({
   safeContainer: {
     flex: 1,
-    backgroundColor: COLORS.primary,
+    backgroundColor: COLORS.surface,
   },
   container: {
     flex: 1,

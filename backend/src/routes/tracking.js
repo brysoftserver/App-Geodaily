@@ -1,63 +1,45 @@
 // ============================================================
 // Tracking Routes — Sync de posiciones GPS de técnicos
+// Persistencia: PostgreSQL
 // ============================================================
 
 const express = require('express');
 const { authenticateToken } = require('../middleware/auth');
-const { createPersistentStore } = require('../persistence');
+const db = require('../database');
 const router = express.Router();
 
-// Almacenamiento persistente en JSON
-const store = createPersistentStore('tracking');
-
-// Cache de usuarios para enriquecer respuestas con nombre real
-let usuariosCache = null;
-function getUsuarios() {
-  if (usuariosCache) return usuariosCache;
-  try {
-    const fs = require('fs');
-    const path = require('path');
-    const raw = fs.readFileSync(path.join(__dirname, '..', 'data', 'usuarios.json'), 'utf8');
-    usuariosCache = JSON.parse(raw);
-    return usuariosCache;
-  } catch {
-    return [];
-  }
-}
-
-/**
- * Enriquecer posiciones con nombre real del técnico
- */
-function enriquecerConNombre(posiciones) {
-  const usuarios = getUsuarios();
-  const map = new Map(usuarios.map(u => [u.id, u.nombre || u.usuario]));
-  return posiciones.map(pos => ({
-    ...pos,
-    usuario_nombre: map.get(pos.usuario_id) || pos.usuario_id,
-  }));
-}
-
 // POST /api/tracking/sync — Recibir posiciones del técnico
-router.post('/sync', authenticateToken, (req, res) => {
+router.post('/sync', authenticateToken, async (req, res) => {
   try {
     const { posiciones } = req.body;
     if (!Array.isArray(posiciones)) {
       return res.status(400).json({ estado: 'error', mensaje: 'Se requiere un arreglo de posiciones' });
     }
 
-    const enriched = posiciones.map(p => ({
-      ...p,
-      sincronizado: true,
-      server_timestamp: new Date().toISOString(),
-    }));
+    let sincronizadas = 0;
+    for (const p of posiciones) {
+      await db.query(
+        `INSERT INTO tracking (usuario_id, latitud, longitud, altitud, precision_metros,
+          velocidad, timestamp)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+        [
+          p.usuario_id || req.user.id,
+          p.latitud,
+          p.longitud,
+          p.altitud || null,
+          p.precision_metros || p.precision_gps || p.precision || null,
+          p.velocidad || null,
+          p.timestamp || p.timestamp_dispositivo || new Date().toISOString(),
+        ]
+      );
+      sincronizadas++;
+    }
 
-    store.setMany(enriched);
-
-    console.log(`[Tracking] ${enriched.length} posiciones sincronizadas (${store.getAll().length} totales)`);
+    console.log(`[Tracking] ${sincronizadas} posiciones sincronizadas por ${req.user.usuario}`);
     res.json({
       estado: 'ok',
-      mensaje: `${enriched.length} posiciones sincronizadas`,
-      sincronizadas: enriched.length,
+      mensaje: `${sincronizadas} posiciones sincronizadas`,
+      sincronizadas,
     });
   } catch (error) {
     console.error('[Tracking] Error en sync:', error);
@@ -66,24 +48,22 @@ router.post('/sync', authenticateToken, (req, res) => {
 });
 
 // GET /api/tracking/ultimas — Última posición de cada técnico
-router.get('/ultimas', authenticateToken, (req, res) => {
+router.get('/ultimas', authenticateToken, async (req, res) => {
   try {
-    const todas = store.getAll();
+    const posiciones = await db.queryAll(`
+      SELECT DISTINCT ON (t.usuario_id)
+        t.id, t.usuario_id, t.latitud, t.longitud, t.altitud,
+        t.precision_metros, t.velocidad, t.timestamp, t.created_at,
+        u.nombre AS usuario_nombre, u.usuario AS usuario_login
+      FROM tracking t
+      JOIN usuarios u ON u.id = t.usuario_id
+      ORDER BY t.usuario_id, t.created_at DESC
+    `);
 
-    // Agrupar por usuario_id y tomar la más reciente
-    const ultimasMap = new Map();
-    for (const pos of todas) {
-      const existente = ultimasMap.get(pos.usuario_id);
-      if (!existente || new Date(pos.timestamp) > new Date(existente.timestamp)) {
-        ultimasMap.set(pos.usuario_id, pos);
-      }
-    }
-
-    const ultimas = Array.from(ultimasMap.values());
     res.json({
       estado: 'ok',
-      total: ultimas.length,
-      posiciones: enriquecerConNombre(ultimas),
+      total: posiciones.length,
+      posiciones,
     });
   } catch (error) {
     console.error('[Tracking] Error al obtener últimas:', error);
@@ -92,18 +72,28 @@ router.get('/ultimas', authenticateToken, (req, res) => {
 });
 
 // GET /api/tracking/historial/:usuarioId — Historial de un técnico
-router.get('/historial/:usuarioId', authenticateToken, (req, res) => {
+router.get('/historial/:usuarioId', authenticateToken, async (req, res) => {
   try {
     const { usuarioId } = req.params;
-    const todas = store.getAll();
-    const historial = todas
-      .filter(p => p.usuario_id === usuarioId)
-      .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+
+    // Verificar permisos: técnico solo ve su propio historial
+    if (req.user.rol === 'tecnico' && req.user.id !== usuarioId) {
+      return res.status(403).json({ estado: 'error', mensaje: 'No tienes permiso para ver este historial' });
+    }
+
+    const posiciones = await db.queryAll(
+      `SELECT t.*, u.nombre AS usuario_nombre
+       FROM tracking t
+       JOIN usuarios u ON u.id = t.usuario_id
+       WHERE t.usuario_id = $1
+       ORDER BY t.created_at ASC`,
+      [usuarioId]
+    );
 
     res.json({
       estado: 'ok',
-      total: historial.length,
-      posiciones: historial,
+      total: posiciones.length,
+      posiciones,
     });
   } catch (error) {
     console.error('[Tracking] Error al obtener historial:', error);

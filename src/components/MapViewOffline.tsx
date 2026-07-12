@@ -8,31 +8,24 @@
 // ============================================================
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { View, Text, StyleSheet, ActivityIndicator, NativeModules } from 'react-native';
+import { View, Text, StyleSheet, ActivityIndicator, NativeModules, Platform } from 'react-native';
 import { WebView } from 'react-native-webview';
 import { COLORS, FONTS, SPACING, BORDER_RADIUS, SHADOWS } from '../theme';
 import { API_CONFIG } from '../theme';
 import { Coordenadas } from '../types';
 
 // Carga condicional de MapLibre (fallback si no hay módulo nativo)
-// En Expo Go, el módulo JS se carga pero el native module no está registrado,
-// lo que produce un console.error interno de la librería.
+// En Expo Go, el módulo JS se carga pero el native module no está registrado.
+// Usamos NativeModules para verificar limpiamente, sin mutar console.error.
 let MapLibreGL: any = null;
 try {
-  // Suprimir console.error temporalmente para evitar que la librería
-  // emita el warning "Native module not registered properly" en Expo Go.
-  // El JS se carga pero el native module no está disponible.
-  const origError = console.error;
-  console.error = () => {};
-  const mod = require('@maplibre/maplibre-react-native');
-  console.error = origError;
-
-  // Verificar si el módulo nativo está realmente registrado
   if (NativeModules.MLRNModule) {
-    MapLibreGL = mod;
+    MapLibreGL = require('@maplibre/maplibre-react-native');
+  } else {
+    console.log('[MapView] MapLibre native module no disponible — usando WebView fallback');
   }
 } catch {
-  // Módulo nativo no disponible (Expo Go)
+  // Módulo nativo no disponible (Expo Go / web)
 }
 
 interface MarkerData {
@@ -104,8 +97,19 @@ const MAP_STYLE_RELIEVE = {
       maxzoom: 14,
       attribution: '© OpenStreetMap contributors | GEODAILY',
     },
+    // Fallback online: CartoDB Positron (raster) se muestra si las teselas vectoriales fallan
+    'carto-positron': {
+      type: 'raster' as const,
+      tiles: ['https://a.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png'],
+      tileSize: 256,
+      minzoom: 0,
+      maxzoom: 19,
+      attribution: '© OpenStreetMap contributors, © CARTO',
+    },
   },
   layers: [
+    // Capa raster de respaldo (online) — se ve siempre como base
+    { id: 'carto-bg', source: 'carto-positron', type: 'raster', paint: { 'raster-opacity': 1 } },
     { id: 'background', type: 'background', paint: { 'background-color': '#f8f4f0' } },
     { id: 'landuse', source: 'geodaily-vector', 'source-layer': 'landuse', type: 'fill', minzoom: 4, paint: { 'fill-color': ['match', ['get', 'class'], 'residential', '#e8ddd3', 'commercial', '#e8ddd3', 'industrial', '#e8ddd3', 'cemetery', '#c3d9b7', 'military', '#e8ddd3', 'park', '#b6d9a8', 'hospital', '#f0d0d0', 'school', '#f0e8d0', 'wood', '#b6d9a8', 'grass', '#cde5c1', 'forest', '#a8cfa0', 'farmland', '#e5e8c3', 'orchard', '#dce5b6', 'quarry', '#d0d0d0', 'beach', '#f0e8d0', 'glacier', '#e8f0f8', /* default */ '#e8ddd3'], 'fill-opacity': 0.7 } },
     { id: 'landcover', source: 'geodaily-vector', 'source-layer': 'landcover', type: 'fill', minzoom: 0, paint: { 'fill-color': ['match', ['get', 'class'], 'wood', '#b6d9a8', 'forest', '#a8cfa0', 'grass', '#cde5c1', 'wetland', '#b6cfe0', 'snow', '#f0f4f8', 'sand', '#f0e8d0', 'bare_rock', '#d8d0c8', 'scrub', '#d0dcc0', /* default */ '#dce5d0'], 'fill-opacity': 0.5 } },
@@ -193,6 +197,85 @@ const MapViewOffline: React.FC<MapViewOfflineProps> = ({
   // ========================================================
   const webViewRef = useRef<WebView>(null);
   const [webViewReady, setWebViewReady] = useState(false);
+
+  // Web: iframe ref + ready state
+  const webIframeRef = useRef<HTMLIFrameElement>(null);
+  const [webIframeReady, setWebIframeReady] = useState(false);
+
+  // Web: comunicación con el iframe vía postMessage
+  const postMsg = useCallback((data: any) => {
+    try {
+      webIframeRef.current?.contentWindow?.postMessage(data, '*');
+    } catch { /* iframe no disponible */ }
+  }, []);
+
+  // Web: listener de mensajes desde el iframe
+  useEffect(() => {
+    if (Platform.OS !== 'web') return;
+    const handler = (event: MessageEvent) => {
+      try {
+        const msg = typeof event.data === 'string' ? JSON.parse(event.data) : event.data;
+        if (msg.type === 'mapReady') {
+          setWebIframeReady(true);
+        } else if (msg.type === 'mapPress' && onMapPress) {
+          onMapPress(msg.latitud, msg.longitud);
+        }
+      } catch { /* ignorar mensajes no JSON */ }
+    };
+    window.addEventListener('message', handler);
+    return () => window.removeEventListener('message', handler);
+  }, [onMapPress]);
+
+  // Web: sincronizar marcadores
+  useEffect(() => {
+    if (Platform.OS !== 'web' || !webIframeReady) return;
+    postMsg({ type: 'setMarkers', markers: markers.map(m => ({ id: m.id, lat: m.latitud, lng: m.longitud, title: m.title, color: m.color, icon: m.icon })) });
+  }, [webIframeReady, markers, postMsg]);
+
+  // Web: sincronizar polyline
+  useEffect(() => {
+    if (Platform.OS !== 'web' || !webIframeReady) return;
+    postMsg({ type: 'setPolyline', polyline: polyline?.map(p => ({ lat: p.latitud, lng: p.longitud })) || [] });
+  }, [webIframeReady, polyline, postMsg]);
+
+  // Web: sincronizar marcador inicio
+  useEffect(() => {
+    if (Platform.OS !== 'web' || !webIframeReady) return;
+    postMsg({ type: 'setStartMarker', data: startMarker ? { lat: startMarker.latitud, lng: startMarker.longitud } : null });
+  }, [webIframeReady, startMarker, postMsg]);
+
+  // Web: sincronizar marcador final
+  useEffect(() => {
+    if (Platform.OS !== 'web' || !webIframeReady) return;
+    postMsg({ type: 'setEndMarker', data: endMarker ? { lat: endMarker.latitud, lng: endMarker.longitud } : null });
+  }, [webIframeReady, endMarker, postMsg]);
+
+  // Web: sincronizar centro/zoom
+  useEffect(() => {
+    if (Platform.OS !== 'web' || !webIframeReady || !center) return;
+    postMsg({ type: 'setView', lat: center.latitud, lng: center.longitud, zoom });
+  }, [webIframeReady, center, zoom, postMsg]);
+
+  // Web: sincronizar ubicación usuario
+  useEffect(() => {
+    if (Platform.OS !== 'web' || !webIframeReady) return;
+    const loc = userLocation || center;
+    if (loc) postMsg({ type: 'setUserLocation', data: { lat: loc.latitud, lng: loc.longitud } });
+  }, [webIframeReady, userLocation, center, postMsg]);
+
+  // Web: sincronizar capas GeoJSON
+  useEffect(() => {
+    if (Platform.OS !== 'web' || !webIframeReady) return;
+    postMsg({ type: 'setGeoJSONLayers', layers: (geojsonLayers || []).map(l => ({
+      id: l.id,
+      fillColor: l.fillColor || '#1B5E20',
+      fillOpacity: l.fillOpacity ?? 0.15,
+      strokeColor: l.strokeColor || '#1B5E20',
+      strokeWidth: l.strokeWidth || 2,
+      strokeOpacity: l.strokeOpacity ?? 0.6,
+      features: l.features,
+    })) });
+  }, [webIframeReady, geojsonLayers, postMsg]);
 
   // HTML base del mapa — SOLO con valores estáticos. 
   // El centro/zoom se actualiza via injectJS para NO recargar el WebView.
@@ -482,8 +565,55 @@ const MapViewOffline: React.FC<MapViewOfflineProps> = ({
     [onMapPress]
   );
 
-  // Si no hay módulo nativo, usar WebView con Leaflet + OpenStreetMap
+  // Si no hay módulo nativo, usar WebView (nativo) o iframe (web) con Leaflet + OpenStreetMap
   if (!hasNativeModule) {
+    if (Platform.OS === 'web') {
+      // Web: usar iframe con postMessage (WebView no soportado en web)
+      // Hooks ya declarados arriba: webIframeRef, webIframeReady, postMsg, webSyncEffects
+
+      // Nota: los efectos de sincronización están declarados arriba (postMsg, webSyncEffects)
+      // junto con el listener de mensajes
+
+      // Agregar listener en el HTML para recibir postMessage
+      const webHtmlWithListener = webMapHtml.replace(
+        '</script>',
+        `
+    window.addEventListener('message', function(e) {
+      var data = e.data;
+      if (!data || !data.type) return;
+      switch(data.type) {
+        case 'setMarkers': window._setMarkers(data.markers); break;
+        case 'setPolyline': window._setPolyline(data.polyline); break;
+        case 'setStartMarker': window._setStartMarker(data.data); break;
+        case 'setEndMarker': window._setEndMarker(data.data); break;
+        case 'setUserLocation': window._setUserLocation(data.data); break;
+        case 'setView': window._setView(data.lat, data.lng, data.zoom); break;
+        case 'setGeoJSONLayers': window._setGeoJSONLayers(data.layers); break;
+        case 'fitBounds': window._fitBounds(data.points); break;
+      }
+    });
+    window.addEventListener('load', function() {
+      window.parent.postMessage(JSON.stringify({ type: 'mapReady' }), '*');
+    });
+    if (document.readyState === 'complete') {
+      window.parent.postMessage(JSON.stringify({ type: 'mapReady' }), '*');
+    }
+  </script>`
+      );
+
+      return (
+        <View style={containerStyle}>
+          <iframe
+            ref={webIframeRef}
+            srcDoc={webHtmlWithListener}
+            style={{ width: '100%', height: '100%', border: 'none' }}
+            title="Mapa GEODAILY"
+          />
+        </View>
+      );
+    }
+
+    // Nativo: WebView con Leaflet + OpenStreetMap
     return (
       <View style={containerStyle}>
         <WebView

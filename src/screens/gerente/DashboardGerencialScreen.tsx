@@ -2,7 +2,7 @@
 // GEODAILY — Dashboard Gerencial
 // ============================================================
 
-import React, { useMemo } from 'react';
+import React, { useMemo, useState, useCallback, useEffect } from 'react';
 import {
   View,
   Text,
@@ -10,12 +10,17 @@ import {
   ScrollView,
   TouchableOpacity,
   Dimensions,
+  RefreshControl,
 } from 'react-native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
+import { useFocusEffect } from '@react-navigation/native';
 import { LineChart } from 'react-native-chart-kit';
-import { COLORS, FONTS, SPACING, BORDER_RADIUS, SHADOWS } from '../../theme';
+import { COLORS, FONTS, SPACING, BORDER_RADIUS, SHADOWS, API_CONFIG } from '../../theme';
 import { useForm } from '../../store/FormContext';
+import { getFormulariosLocales } from '../../services/database';
+import { fetchFormulariosDelServidor } from '../../services/formularios.service';
 import MetricCard from '../../components/MetricCard';
+import LoadingSpinner from '../../components/LoadingSpinner';
 
 type DashboardGerencialProps = {
   navigation: NativeStackNavigationProp<any>;
@@ -24,7 +29,43 @@ type DashboardGerencialProps = {
 const screenWidth = Dimensions.get('window').width;
 
 const DashboardGerencialScreen: React.FC<DashboardGerencialProps> = ({ navigation }) => {
-  const { formularios } = useForm();
+  const { formularios, cargarFormularios } = useForm();
+  const [loadingGerencial, setLoadingGerencial] = useState(true);
+  const [refreshingGerencial, setRefreshingGerencial] = useState(false);
+  const [gerencialError, setGerencialError] = useState<string | null>(null);
+
+  // Cargar datos del servidor + local
+  const loadGerencialData = useCallback(async () => {
+    setGerencialError(null);
+    try {
+      const [locales, servidor] = await Promise.all([
+        getFormulariosLocales(),
+        fetchFormulariosDelServidor(),
+      ]);
+      const mapa = new Map<string, any>();
+      for (const f of locales) mapa.set(f.id, f);
+      for (const f of servidor) mapa.set(f.id, { ...f, sincronizado: true });
+      const fusionados = Array.from(mapa.values());
+      cargarFormularios(fusionados);
+      console.log(`[DashboardGerencial] ${fusionados.length} formularios (${locales.length} locales + ${servidor.length} servidor)`);
+      if (fusionados.length === 0) {
+        setGerencialError(
+          servidor.length === 0 && locales.length === 0
+            ? 'No se encontraron formularios. Verifica que el backend esté activo.'
+            : 'No hay formularios disponibles.'
+        );
+      }
+    } catch (error: any) {
+      console.warn('[DashboardGerencial] Error:', error?.message || error);
+      setGerencialError(`Error de conexión: verifica que el backend esté activo en ${API_CONFIG.BASE_URL}`);
+    } finally {
+      setLoadingGerencial(false);
+      setRefreshingGerencial(false);
+    }
+  }, [cargarFormularios]);
+
+  useEffect(() => { loadGerencialData(); }, [loadGerencialData]);
+  useFocusEffect(useCallback(() => { loadGerencialData(); }, [loadGerencialData]));
 
   const metrics = useMemo(() => {
     const total = formularios.length;
@@ -61,8 +102,23 @@ const DashboardGerencialScreen: React.FC<DashboardGerencialProps> = ({ navigatio
     propsForDots: { r: '4', strokeWidth: '2', stroke: COLORS.roleGerente },
   };
 
+  if (loadingGerencial && formularios.length === 0) {
+    return <LoadingSpinner message="Cargando dashboard gerencial..." fullScreen />;
+  }
+
   return (
-    <ScrollView style={styles.container} contentContainerStyle={styles.content}>
+    <ScrollView
+      style={styles.container}
+      contentContainerStyle={styles.content}
+      refreshControl={
+        <RefreshControl
+          refreshing={refreshingGerencial}
+          onRefresh={() => { setRefreshingGerencial(true); loadGerencialData(); }}
+          colors={[COLORS.roleGerente]}
+          tintColor={COLORS.roleGerente}
+        />
+      }
+    >
       <Text style={styles.title}>Dashboard Gerencial</Text>
       <Text style={styles.subtitle}>Resumen ejecutivo de operaciones</Text>
 
@@ -100,6 +156,16 @@ const DashboardGerencialScreen: React.FC<DashboardGerencialProps> = ({ navigatio
         </TouchableOpacity>
       </View>
 
+      {/* Mensaje de error */}
+      {gerencialError && (
+        <View style={[styles.chartCard, { borderLeftWidth: 4, borderLeftColor: COLORS.error }]}>
+          <Text style={{ fontSize: FONTS.sizes.md, fontWeight: 'bold', color: COLORS.error }}>⚠️ Error</Text>
+          <Text style={{ fontSize: FONTS.sizes.sm, color: COLORS.textSecondary, marginTop: 4, lineHeight: 18 }}>
+            {gerencialError}
+          </Text>
+        </View>
+      )}
+
       {/* Gráfico de tendencia */}
       {chartData.labels.length > 0 && (
         <View style={styles.chartCard}>
@@ -126,12 +192,17 @@ const DashboardGerencialScreen: React.FC<DashboardGerencialProps> = ({ navigatio
             <Text style={styles.recentName}>{form.beneficiario.nombre}</Text>
             <Text style={styles.recentMeta}>
               {form.beneficiario.municipio} · {form.tecnico.nombre} ·{' '}
-              {form.tipo === 'visita_tecnica' ? 'Visita' : 'Plantación'}
+              {form.tipo === 'visita_tecnica' ? 'Visita' : form.tipo === 'caracterizacion' ? 'Caracterización' : 'Plantación'}
             </Text>
           </View>
         ))}
-        {formularios.length === 0 && (
-          <Text style={styles.emptyText}>No hay visitas registradas aún.</Text>
+        {formularios.length === 0 && !loadingGerencial && (
+          <View style={{ alignItems: 'center', paddingVertical: 24 }}>
+            <Text style={{ fontSize: 48, marginBottom: 12 }}>📭</Text>
+            <Text style={styles.emptyText}>
+              No hay formularios disponibles.{'\n'}Tira hacia abajo para refrescar o verifica la conexión con el servidor.
+            </Text>
+          </View>
         )}
       </View>
     </ScrollView>

@@ -66,14 +66,7 @@ const MENU_ITEMS = [
     color: COLORS.info,
     screen: 'TerrenoCapacitacion',
   },
-  {
-    id: 'cerrar',
-    title: 'Cerrar Sesión',
-    subtitle: 'Salir de la aplicación',
-    icon: '🚪',
-    color: COLORS.error,
-    screen: null,
-  },
+  // cerrar se renderiza por separado (después del panel de sincronización)
 ];
 
 const TerrenoMenuScreen: React.FC<TerrenoMenuProps> = ({ navigation }) => {
@@ -126,11 +119,7 @@ const TerrenoMenuScreen: React.FC<TerrenoMenuProps> = ({ navigation }) => {
   };
 
   const handlePress = (item: (typeof MENU_ITEMS)[0]) => {
-    if (item.id === 'cerrar') {
-      logout();
-    } else {
-      navigation.navigate(item.screen as string);
-    }
+    navigation.navigate(item.screen as string);
   };
 
   // Obtener cédula del usuario
@@ -171,6 +160,25 @@ const TerrenoMenuScreen: React.FC<TerrenoMenuProps> = ({ navigation }) => {
         </View>
       </ImageBackground>
 
+      {/* Menú */}
+      <View style={styles.menuContainer}>
+        {MENU_ITEMS.map((item) => (
+          <TouchableOpacity
+            key={item.id}
+            style={[styles.menuItem, { borderLeftColor: item.color }]}
+            onPress={() => handlePress(item)}
+            activeOpacity={0.7}
+          >
+            <Text style={styles.menuIcon}>{item.icon}</Text>
+            <View style={styles.menuContent}>
+              <Text style={styles.menuTitle}>{item.title}</Text>
+              <Text style={styles.menuSubtitle}>{item.subtitle}</Text>
+            </View>
+            <Text style={styles.menuArrow}>›</Text>
+          </TouchableOpacity>
+        ))}
+      </View>
+
       {/* Estado de sincronización */}
       <View style={styles.syncCard}>
         <View style={styles.syncHeader}>
@@ -185,8 +193,8 @@ const TerrenoMenuScreen: React.FC<TerrenoMenuProps> = ({ navigation }) => {
         </View>
         <Text style={styles.syncSubtitle}>
           {pendingCount === 0
-            ? '✅ No hay formularios pendientes'
-            : `⏳ ${pendingCount} formulario(s) por sincronizar`}
+            ? '✅ Todo sincronizado'
+            : `⏳ ${pendingCount} registro(s) pendiente(s)`}
         </Text>
         {lastSync && (
           <Text style={styles.syncLast}>
@@ -212,24 +220,19 @@ const TerrenoMenuScreen: React.FC<TerrenoMenuProps> = ({ navigation }) => {
         </TouchableOpacity>
       </View>
 
-      {/* Menú */}
-      <View style={styles.menuContainer}>
-        {MENU_ITEMS.map((item) => (
-          <TouchableOpacity
-            key={item.id}
-            style={[styles.menuItem, { borderLeftColor: item.color }]}
-            onPress={() => handlePress(item)}
-            activeOpacity={0.7}
-          >
-            <Text style={styles.menuIcon}>{item.icon}</Text>
-            <View style={styles.menuContent}>
-              <Text style={styles.menuTitle}>{item.title}</Text>
-              <Text style={styles.menuSubtitle}>{item.subtitle}</Text>
-            </View>
-            <Text style={styles.menuArrow}>›</Text>
-          </TouchableOpacity>
-        ))}
-      </View>
+      {/* Cerrar Sesión */}
+      <TouchableOpacity
+        style={[styles.menuItem, styles.logoutItem]}
+        onPress={logout}
+        activeOpacity={0.7}
+      >
+        <Text style={styles.menuIcon}>🚪</Text>
+        <View style={styles.menuContent}>
+          <Text style={styles.menuTitle}>Cerrar Sesión</Text>
+          <Text style={styles.menuSubtitle}>Salir de la aplicación</Text>
+        </View>
+        <Text style={styles.menuArrow}>›</Text>
+      </TouchableOpacity>
     </ScrollView>
   );
 };
@@ -343,6 +346,11 @@ const styles = StyleSheet.create({
     fontSize: 24,
     color: COLORS.textLight,
     marginLeft: SPACING.sm,
+  },
+  logoutItem: {
+    borderLeftColor: COLORS.error,
+    marginHorizontal: SPACING.md,
+    marginTop: SPACING.sm,
   },
 
   // --- Sincronización ---

@@ -4,6 +4,7 @@
 
 import * as SQLite from 'expo-sqlite';
 import { DatosBeneficiario, DatosSociodemograficos, DatosBeneficiarioCompleto } from '../types';
+import { API_CONFIG } from '../theme';
 
 let db: SQLite.SQLiteDatabase | null = null;
 
@@ -88,7 +89,7 @@ export const buscarEnPadron = async (
 ): Promise<DatosBeneficiario | null> => {
   try {
     const response = await fetch(
-      `http://192.168.1.20:8089/api/beneficiarios/padron/${cedula}`,
+      `${API_CONFIG.BASE_URL}/api/beneficiarios/padron/${cedula}`,
       {
         method: 'GET',
         headers: { 'Content-Type': 'application/json' },
@@ -169,7 +170,7 @@ export const guardarBeneficiario = async (
 export const sincronizarPadron = async (): Promise<number> => {
   try {
     const response = await fetch(
-      'http://192.168.1.20:8089/api/beneficiarios/padron',
+      `${API_CONFIG.BASE_URL}/api/beneficiarios/padron`,
       { method: 'GET', headers: { 'Content-Type': 'application/json' } }
     );
 

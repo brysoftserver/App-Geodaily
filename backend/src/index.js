@@ -28,8 +28,43 @@ try {
 const app = express();
 const PORT = parseInt(process.env.PORT || '8089', 10);
 
+// ============================================================
+// INICIALIZAR BASE DE DATOS
+// ============================================================
+const db = require('./database');
+const storage = require('./storage');
+db.initSchema()
+  .then(async () => {
+    console.log('[Server] ✅ Base de datos inicializada');
+
+    // Crear carpetas en MinIO para todos los usuarios existentes
+    try {
+      const usuarios = await db.queryAll('SELECT id, usuario, rol FROM usuarios WHERE activo = TRUE');
+      for (const u of usuarios) {
+        await storage.createUserFolders(u.rol, u.usuario);
+      }
+      console.log(`[Storage] ✅ Carpetas verificadas para ${usuarios.length} usuarios en MinIO`);
+    } catch (err) {
+      console.warn('[Storage] ⚠️ No se pudieron verificar carpetas de usuarios:', err.message);
+    }
+  })
+  .catch(err => console.error('[Server] ❌ Error inicializando DB:', err.message));
+
 // --- Middleware global ---
-app.use(cors());
+const PROD_DOMAIN = process.env.PROD_DOMAIN || 'https://api.geodaily.brysoftsas.com';
+const corsOptions = {
+  origin: [
+    'http://192.168.1.20:8082',
+    'http://localhost:8082',
+    'http://localhost:8081',
+    PROD_DOMAIN,
+    PROD_DOMAIN.replace('api.', 'app.'),
+    /\.brysoftsas\.com$/,
+    /\.cloudflare\.dev$/,
+  ],
+  credentials: true,
+};
+app.use(cors(corsOptions));
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 app.use('/uploads', express.static(path.join(__dirname, '..', process.env.UPLOAD_DIR || './uploads')));
@@ -45,7 +80,10 @@ app.use('/api/pdfs', require('./routes/pdfs'));
 app.use('/api/plantaciones', require('./routes/plantaciones'));
 app.use('/api/tracking', require('./routes/tracking'));
 app.use('/api/mediciones', require('./routes/mediciones'));
+app.use('/api/videos', require('./routes/videos'));
 app.use('/api/maps', require('./routes/maps'));
+app.use('/api/firmas', require('./routes/firmas'));
+app.use('/api/documentos', require('./routes/documentos'));
 
 // --- 404 handler ---
 app.use((_req, res) => {
@@ -58,17 +96,23 @@ app.use((err, _req, res, _next) => {
   res.status(500).json({ estado: 'error', mensaje: err.message || 'Error interno del servidor' });
 });
 
+const HOST = process.env.HOST || `http://192.168.1.20:${PORT}`;
 app.listen(PORT, () => {
   console.log(`\n========================================`);
   console.log(`  🌱 GEODAILY API — Puerto ${PORT}`);
-  console.log(`  Health:  http://192.168.1.20:${PORT}/health`);
-  console.log(`  Auth:    http://192.168.1.20:${PORT}/api/auth`);
-  console.log(`  Forms:   http://192.168.1.20:${PORT}/api/formularios`);
-  console.log(`  Photos:  http://192.168.1.20:${PORT}/api/photos`);
-  console.log(`  PDFs:    http://192.168.1.20:${PORT}/api/pdfs`);
-  console.log(`  Plantac: http://192.168.1.20:${PORT}/api/plantaciones`);
-  console.log(`  Track:   http://192.168.1.20:${PORT}/api/tracking`);
-  console.log(`  Medic:   http://192.168.1.20:${PORT}/api/mediciones`);
-  console.log(`  Maps:    http://192.168.1.20:${PORT}/api/maps`);
+  console.log(`  ${HOST}/health`);
+  console.log(`  ${HOST}/api/auth`);
+  console.log(`  ${HOST}/api/formularios`);
+  console.log(`  ${HOST}/api/photos`);
+  console.log(`  ${HOST}/api/pdfs`);
+  console.log(`  ${HOST}/api/plantaciones`);
+  console.log(`  ${HOST}/api/tracking`);
+  console.log(`  ${HOST}/api/mediciones`);
+  console.log(`  ${HOST}/api/videos`);
+  console.log(`  ${HOST}/api/maps`);
+  console.log(`  ${HOST}/api/firmas`);
+  console.log(`  ${HOST}/api/documentos`);
+  console.log(`  DB:      PostgreSQL ${process.env.PG_HOST}:${process.env.PG_PORT}/${process.env.PG_DB}`);
+  console.log(`  MinIO:   ${process.env.MINIO_ENDPOINT}:${process.env.MINIO_PORT} (bucket: ${process.env.MINIO_BUCKET || 'geodaily-archivos'})`);
   console.log(`========================================\n`);
 });

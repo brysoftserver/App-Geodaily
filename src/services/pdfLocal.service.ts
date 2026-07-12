@@ -104,12 +104,13 @@ export async function convertirFotosAHTML(fotos: FotoGeotag[]): Promise<string> 
       continue;
     }
     try {
-      // Redimensionar la foto a 800px de ancho con compresión 0.5
-      // para que el base64 sea lo suficientemente pequeño para el PDF
+      // Leer la foto a máxima calidad — el espacio no es problema
+      // Se redimensiona solo a 1200px para evitar PDFs monstruosos,
+      // pero con calidad 0.9 para mantener nitidez
       const resultado = await manipulateAsync(
         foto.uri,
-        [{ resize: { width: 800 } }],
-        { compress: 0.5, format: SaveFormat.JPEG, base64: true }
+        [{ resize: { width: 1200 } }],
+        { compress: 0.9, format: SaveFormat.JPEG, base64: true }
       );
 
       if (!resultado.base64) {
@@ -466,7 +467,7 @@ function construirHTML(
 <body>
   <div class="header">
     <h1>🌱 GEODAILY — Formulario de Campo</h1>
-    <p><strong>ID:</strong> ${escapeHtml(form.id)} | <strong>Tipo:</strong> ${form.tipo === 'visita_tecnica' ? 'Visita Técnica' : 'Plantación'} | <strong>Fecha:</strong> ${formatFecha(form.created_at)}</p>
+    <p><strong>ID:</strong> ${escapeHtml(form.id)} | <strong>Tipo:</strong> ${form.tipo === 'visita_tecnica' ? 'Visita Técnica' : form.tipo === 'caracterizacion' ? 'Caracterización' : 'Plantación'} | <strong>Fecha:</strong> ${formatFecha(form.created_at)}</p>
   </div>
 
   <!-- Datos del Técnico -->
@@ -566,6 +567,13 @@ function construirHTMLCaracterizacion(
 ): string {
   const c = (form as any).caracterizacion_nueva || {};
 
+  // Extraer sub-componentes con shorthand seguro
+  const cs = c.componente_social || {};
+  const cp = c.componente_productivo || {};
+  const ca = c.componente_agroambiental || {};
+  const asuelo = c.analisis_suelo || {};
+  const rec = c.recomendaciones || {};
+
   const row = (label: string, val: string | undefined | null) =>
     val ? `<div class="row"><span class="label">${label}:</span><span class="value">${escapeHtml(val)}</span></div>` : '';
 
@@ -576,73 +584,75 @@ function construirHTMLCaracterizacion(
       ${rows}
     </div>` : '';
 
-  // ---- Datos Generales ----
+  // ---- Datos Generales (mapeo correcto según DatosCaracterizacionNueva) ----
   const datosGenerales = `
     <div class="row"><span class="label">Municipio:</span><span class="value">${escapeHtml(c.municipio || '—')}</span></div>
     <div class="row"><span class="label">Fecha:</span><span class="value">${escapeHtml(c.fecha || '—')}</span></div>
     <div class="row"><span class="label">Vereda:</span><span class="value">${escapeHtml(c.vereda || '—')}</span></div>
-    <div class="row"><span class="label">N° Encuesta:</span><span class="value">${escapeHtml(c.numero_encuesta || '—')}</span></div>
-    <div class="row"><span class="label">Productor:</span><span class="value">${escapeHtml(c.productor || '—')}</span></div>
+    <div class="row"><span class="label">N° Encuesta:</span><span class="value">${escapeHtml(c.encuesta_numero || '—')}</span></div>
+    <div class="row"><span class="label">Productor:</span><span class="value">${escapeHtml(c.productor_nombre || '—')}</span></div>
     <div class="row"><span class="label">Documento:</span><span class="value">${escapeHtml(c.documento || '—')}</span></div>
     <div class="row"><span class="label">Teléfono:</span><span class="value">${escapeHtml(c.telefono || '—')}</span></div>
-    <div class="row"><span class="label">Técnico:</span><span class="value">${escapeHtml(c.tecnico || '—')}</span></div>
+    <div class="row"><span class="label">Técnico:</span><span class="value">${escapeHtml(c.tecnico_responsable || '—')}</span></div>
+    <div class="row"><span class="label">Cédula del Técnico:</span><span class="value">${escapeHtml(c.tecnico_cedula || '—')}</span></div>
+    <div class="row"><span class="label">Finca / Predio:</span><span class="value">${escapeHtml(c.finca || '—')}</span></div>
   `;
 
-  // ---- Componente Social ----
+  // ---- Componente Social (cs = c.componente_social) ----
   const socialRows = [
-    row('Nivel educativo', c.nivel_educativo),
-    row('Personas en el núcleo familiar', c.personas_nucleo),
-    row('Fuente de ingresos', c.fuente_ingresos),
-    row('Acceso a servicios públicos', c.servicios_publicos),
-    row('Participa en asociaciones', c.participa_asociaciones),
-    row('Recibe asistencia técnica', c.asistencia_tecnica),
+    row('Nivel educativo', cs.nivel_educativo),
+    row('Personas en el núcleo familiar', cs.personas_nucleo),
+    row('Fuente de ingresos', cs.fuente_ingresos),
+    row('Participa en organización', cs.participa_organizacion),
+    row('Servicios públicos', cs.servicios_publicos),
+    row('Mano de obra', cs.mano_obra),
   ].join('');
   const componenteSocial = section('Componente Social', '🤝', socialRows);
 
-  // ---- Componente Productivo ----
+  // ---- Componente Productivo (cp = c.componente_productivo) ----
   const prodRows = [
-    row('Actividad productiva principal', c.actividad_productiva),
-    row('Cuenta con mano de obra', c.mano_obra),
-    row('Asistencia técnica agropecuaria', c.asistencia_agropecuaria),
-    row('Recibe crédito o financiación', c.credito_financiacion),
+    row('Actividad productiva principal', cp.actividad_productiva),
+    row('Acceso al agua', cp.acceso_agua),
+    row('Sistemas de riego', cp.sistemas_riego),
+    row('Asistencia técnica', cp.asistencia_tecnica),
   ].join('');
   const componenteProductivo = section('Componente Productivo', '🌾', prodRows);
 
-  // ---- Componente Agroambiental ----
+  // ---- Componente Agroambiental (ca = c.componente_agroambiental) ----
   const agroRows = [
-    row('Procesos de erosión', c.procesos_erosion),
-    row('Fuentes hídricas en la finca', c.fuentes_hidricas),
-    row('Prácticas de conservación', c.practicas_conservacion),
-    row('Manejo de residuos sólidos', c.manejo_residuos),
-    row('Participa en proyectos ambientales', c.proyectos_ambientales),
+    row('Procesos de erosión', ca.procesos_erosion),
+    row('Fuentes hídricas', ca.fuentes_hidricas),
+    row('Áreas de conservación', ca.areas_conservacion),
+    row('Prácticas de conservación', ca.practicas_conservacion),
+    row('Manejo de residuos', ca.manejo_residuos),
   ].join('');
   const componenteAgro = section('Componente Agroambiental', '🌿', agroRows);
 
-  // ---- Análisis de Suelo ----
+  // ---- Análisis de Suelo (asuelo = c.analisis_suelo) ----
   const sueloRows = [
-    row('Textura del suelo', c.textura_suelo),
-    row('Color del suelo', c.color_suelo),
-    row('Drenaje', c.drenaje),
-    row('Profundidad efectiva', c.profundidad),
-    row('Presencia de piedras', c.presencia_piedras),
-    row('Compactación', c.compactacion),
-    row('Cobertura del suelo', c.cobertura_suelo),
-    row('Evidencia de erosión', c.evidencia_erosion),
-    row('pH del suelo', c.ph_suelo),
+    row('Observación del suelo', asuelo.observacion_suelo),
+    row('Textura', asuelo.textura),
+    row('Color', asuelo.color),
+    row('Drenaje', asuelo.drenaje),
+    row('Profundidad efectiva', asuelo.profundidad),
+    row('Presencia de piedras', asuelo.piedras),
+    row('Compactación', asuelo.compactacion),
+    row('Cobertura', asuelo.cobertura),
+    row('Evidencia de erosión', asuelo.evidencia_erosion),
   ].join('');
   const analisisSuelo = section('Análisis de Suelo', '🧪', sueloRows);
 
-  // ---- Recomendaciones ----
-  const recomendacionesHtml = (c.recomendacion_tecnica || c.observaciones_finales) ? `
+  // ---- Recomendaciones (rec = c.recomendaciones) ----
+  const recomendacionesHtml = (rec.recomendaciones_tecnicas || rec.recomendaciones_ambientales) ? `
     <div class="section">
-      <h2>📋 Recomendaciones</h2>
-      ${c.recomendacion_tecnica ? `
-      <div class="row" style="margin-bottom:4px;"><span class="label">Recomendación técnica:</span></div>
-      <div class="desc-detallada">${escapeHtml(c.recomendacion_tecnica)}</div>
+      <h2>📋 Recomendaciones del Técnico</h2>
+      ${rec.recomendaciones_tecnicas ? `
+      <div class="row" style="margin-bottom:4px;"><span class="label">Recomendaciones técnicas:</span></div>
+      <div class="desc-detallada">${escapeHtml(rec.recomendaciones_tecnicas)}</div>
       ` : ''}
-      ${c.observaciones_finales ? `
-      <div class="row" style="margin-top:12px;margin-bottom:4px;"><span class="label">Observaciones finales:</span></div>
-      <div class="desc-detallada">${escapeHtml(c.observaciones_finales)}</div>
+      ${rec.recomendaciones_ambientales ? `
+      <div class="row" style="margin-top:12px;margin-bottom:4px;"><span class="label">Recomendaciones ambientales:</span></div>
+      <div class="desc-detallada">${escapeHtml(rec.recomendaciones_ambientales)}</div>
       ` : ''}
     </div>` : '';
 
@@ -660,7 +670,7 @@ function construirHTMLCaracterizacion(
 <html lang="es">
 <head>
   <meta charset="utf-8" />
-  <title>Caracterización Sociodemográfica — ${escapeHtml(c.productor || form.id)}</title>
+  <title>Caracterización Sociodemográfica — ${escapeHtml(c.productor_nombre || form.id)}</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body {
@@ -750,7 +760,7 @@ function construirHTMLCaracterizacion(
 <body>
   <div class="header">
     <h1>🌱 GEODAILY — Caracterización Sociodemográfica</h1>
-    <p><strong>ID:</strong> ${escapeHtml(form.id)} | <strong>Productor:</strong> ${escapeHtml(c.productor || '—')} | <strong>Fecha:</strong> ${escapeHtml(c.fecha || formatFecha(form.created_at))}</p>
+    <p><strong>ID:</strong> ${escapeHtml(form.id)} | <strong>Productor:</strong> ${escapeHtml(c.productor_nombre || '—')} | <strong>Fecha:</strong> ${escapeHtml(c.fecha || formatFecha(form.created_at))}</p>
   </div>
 
   <!-- Datos Generales -->

@@ -81,10 +81,20 @@ export const useCamera = () => {
     });
   }, []);
 
+  const setFotos = useCallback((fotosArray: FotoGeotag[]) => {
+    setState({
+      fotoActual: null,
+      fotos: fotosArray,
+      isLoading: false,
+      error: null,
+    });
+  }, []);
+
   return {
     ...state,
     capturarFoto,
     removeFoto,
     clearFotos,
+    setFotos,
   };
 };

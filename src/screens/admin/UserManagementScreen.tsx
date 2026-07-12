@@ -12,6 +12,7 @@ import {
   TextInput,
   Alert,
   Modal,
+  ImageBackground,
 } from 'react-native';
 import { COLORS, FONTS, SPACING, BORDER_RADIUS, SHADOWS } from '../../theme';
 
@@ -19,7 +20,7 @@ interface UserItem {
   id: string;
   nombre: string;
   usuario: string;
-  rol: 'tecnico' | 'supervisor' | 'gerente' | 'admin';
+  rol: 'tecnico' | 'supervisor' | 'interventor' | 'gerente' | 'admin';
   email: string;
   telefono: string;
   estado: 'Activo' | 'Inactivo';
@@ -28,6 +29,7 @@ interface UserItem {
 const ROLE_CONFIG: Record<string, { label: string; color: string }> = {
   tecnico: { label: 'Técnico de Campo', color: COLORS.roleTecnico },
   supervisor: { label: 'Supervisor', color: COLORS.roleSupervisor },
+  interventor: { label: 'Interventor', color: COLORS.roleInterventor },
   gerente: { label: 'Gerente', color: COLORS.roleGerente },
   admin: { label: 'Administrador', color: COLORS.roleAdmin },
 };
@@ -153,7 +155,7 @@ const UserManagementScreen: React.FC = () => {
         />
       </View>
       <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.chipRow}>
-        {['todos', 'tecnico', 'supervisor', 'gerente', 'admin'].map((r) => (
+        {['todos', 'tecnico', 'supervisor', 'interventor', 'gerente', 'admin'].map((r) => (
           <TouchableOpacity
             key={r}
             style={[styles.chip, filterRol === r && styles.chipActive]}

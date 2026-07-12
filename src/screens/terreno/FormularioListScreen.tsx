@@ -11,6 +11,7 @@ import {
   StyleSheet,
   Alert,
   RefreshControl,
+  ImageBackground,
 } from 'react-native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -98,6 +99,11 @@ const FormularioListScreen: React.FC<FormularioListScreenProps> = ({ navigation 
   const safeFormularios = formularios.filter(isValidFormulario);
 
   return (
+    <ImageBackground
+      source={require('../../../Logos_imagenes/fondo_login_geo_daily.png')}
+      style={styles.backgroundImage}
+      resizeMode="cover"
+    >
     <SafeAreaView style={styles.safeContainer} edges={['top']}>
     <View style={styles.container}>
       <View style={[styles.header, { paddingTop: Math.max(insets.top, SPACING.md) }]}>
@@ -139,13 +145,19 @@ const FormularioListScreen: React.FC<FormularioListScreenProps> = ({ navigation 
       )}
     </View>
     </SafeAreaView>
+    </ImageBackground>
   );
 };
 
 const styles = StyleSheet.create({
+  backgroundImage: {
+    flex: 1,
+    width: '100%',
+    height: '100%',
+  },
   safeContainer: {
     flex: 1,
-    backgroundColor: COLORS.primary,
+    backgroundColor: 'transparent',
   },
   container: {
     flex: 1,

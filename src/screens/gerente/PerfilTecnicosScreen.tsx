@@ -2,7 +2,7 @@
 // GEODAILY — Perfil de Técnicos (Gerencia)
 // ============================================================
 
-import React, { useMemo, useState } from 'react';
+import React, { useMemo, useState, useCallback, useEffect } from 'react';
 import {
   View,
   Text,
@@ -11,20 +11,60 @@ import {
   TouchableOpacity,
   FlatList,
   ImageBackground,
+  RefreshControl,
 } from 'react-native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
-import { COLORS, FONTS, SPACING, BORDER_RADIUS, SHADOWS } from '../../theme';
+import { useFocusEffect } from '@react-navigation/native';
+import { COLORS, FONTS, SPACING, BORDER_RADIUS, SHADOWS, API_CONFIG } from '../../theme';
 import { useForm } from '../../store/FormContext';
+import { getFormulariosLocales } from '../../services/database';
+import { fetchFormulariosDelServidor } from '../../services/formularios.service';
 import { Formulario } from '../../types';
 import { formatFecha } from '../../utils/formatters';
+import LoadingSpinner from '../../components/LoadingSpinner';
 
 type PerfilTecnicosProps = {
   navigation: NativeStackNavigationProp<any>;
 };
 
 const PerfilTecnicosScreen: React.FC<PerfilTecnicosProps> = ({ navigation }) => {
-  const { formularios } = useForm();
+  const { formularios, cargarFormularios } = useForm();
   const [selectedTecnico, setSelectedTecnico] = useState<string | null>(null);
+  const [loadingPerfil, setLoadingPerfil] = useState(true);
+  const [refreshingPerfil, setRefreshingPerfil] = useState(false);
+  const [perfilError, setPerfilError] = useState<string | null>(null);
+
+  // Cargar datos del servidor + local
+  const loadPerfilData = useCallback(async () => {
+    setPerfilError(null);
+    try {
+      const [servidor, locales] = await Promise.all([
+        fetchFormulariosDelServidor(),
+        getFormulariosLocales(),
+      ]);
+      const mapa = new Map<string, any>();
+      for (const f of locales) mapa.set(f.id, f);
+      for (const f of servidor) mapa.set(f.id, { ...f, sincronizado: true });
+      const fusionados = Array.from(mapa.values());
+      cargarFormularios(fusionados);
+      if (fusionados.length === 0) {
+        setPerfilError(
+          servidor.length === 0 && locales.length === 0
+            ? 'No se encontraron formularios. Verifica que el backend esté activo.'
+            : 'No hay formularios disponibles.'
+        );
+      }
+    } catch (error: any) {
+      console.warn('[PerfilTecnicos] Error:', error?.message || error);
+      setPerfilError(`Error de conexión: verifica que el backend esté activo en ${API_CONFIG.BASE_URL}`);
+    } finally {
+      setLoadingPerfil(false);
+      setRefreshingPerfil(false);
+    }
+  }, [cargarFormularios]);
+
+  useEffect(() => { loadPerfilData(); }, [loadPerfilData]);
+  useFocusEffect(useCallback(() => { loadPerfilData(); }, [loadPerfilData]));
 
   // Agrupar por técnico
   const tecnicosMap = useMemo(() => {
@@ -44,7 +84,6 @@ const PerfilTecnicosScreen: React.FC<PerfilTecnicosProps> = ({ navigation }) => 
       ultimaVisita: forms.sort((a, b) => b.created_at.localeCompare(a.created_at))[0],
       sincronizadas: forms.filter(f => f.sincronizado).length,
       tecnicas: forms.filter(f => f.tipo === 'visita_tecnica').length,
-      plantaciones: forms.filter(f => f.tipo === 'plantacion').length,
       forms,
     }));
   }, [tecnicosMap]);
@@ -76,10 +115,6 @@ const PerfilTecnicosScreen: React.FC<PerfilTecnicosProps> = ({ navigation }) => 
             <Text style={styles.statLabel}>Visitas</Text>
           </View>
           <View style={styles.statCard}>
-            <Text style={[styles.statValor, { color: COLORS.primary }]}>{selectedData.plantaciones}</Text>
-            <Text style={styles.statLabel}>Plantaciones</Text>
-          </View>
-          <View style={styles.statCard}>
             <Text style={[styles.statValor, { color: COLORS.success }]}>{selectedData.sincronizadas}</Text>
             <Text style={styles.statLabel}>Sinc.</Text>
           </View>
@@ -107,7 +142,18 @@ const PerfilTecnicosScreen: React.FC<PerfilTecnicosProps> = ({ navigation }) => 
   }
 
   return (
-    <ScrollView style={styles.container} contentContainerStyle={styles.content}>
+    <ScrollView
+      style={styles.container}
+      contentContainerStyle={styles.content}
+      refreshControl={
+        <RefreshControl
+          refreshing={refreshingPerfil}
+          onRefresh={() => { setRefreshingPerfil(true); loadPerfilData(); }}
+          colors={[COLORS.roleGerente]}
+          tintColor={COLORS.roleGerente}
+        />
+      }
+    >
       <Text style={styles.title}>Equipo de Campo</Text>
       <Text style={styles.subtitle}>{tecnicosList.length} técnico(s) activo(s)</Text>
 
@@ -134,11 +180,18 @@ const PerfilTecnicosScreen: React.FC<PerfilTecnicosProps> = ({ navigation }) => 
         </TouchableOpacity>
       ))}
 
-      {tecnicosList.length === 0 && (
+      {tecnicosList.length === 0 && !loadingPerfil && (
         <View style={styles.emptyState}>
           <Text style={styles.emptyIcon}>👥</Text>
           <Text style={styles.emptyText}>No hay datos de técnicos aún.</Text>
-          <Text style={styles.emptySubtext}>Completa formularios en campo para ver estadísticas.</Text>
+          {perfilError && (
+            <Text style={[styles.emptySubtext, { color: COLORS.error, marginTop: 8 }]}>
+              ⚠️ {perfilError}
+            </Text>
+          )}
+          <Text style={styles.emptySubtext}>
+            Tira hacia abajo para refrescar o verifica la conexión con el servidor.
+          </Text>
         </View>
       )}
     </ScrollView>

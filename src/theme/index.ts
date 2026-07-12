@@ -14,7 +14,7 @@ export const COLORS = {
   secondaryDark: '#C17900',
 
   // Colores de fondo
-  background: '#F5F5F5',
+  background: 'transparent',
   surface: '#FFFFFF',
   surfaceAlt: '#E8F5E9',
 
@@ -34,6 +34,7 @@ export const COLORS = {
   // Roles
   roleTecnico: '#1565C0',
   roleSupervisor: '#6A1B9A',
+  roleInterventor: '#00695C',
   roleGerente: '#E65100',
   roleAdmin: '#C62828',
 
@@ -127,5 +128,11 @@ export const API_CONFIG = {
     PDF: '/api/pdfs',
     FORMS: '/api/formularios',
     AUTH: '/api/auth',
+    PLANTACIONES: '/api/plantaciones',
+    MEDICIONES: '/api/mediciones',
+    TRACKING: '/api/tracking',
+    FIRMAS: '/api/firmas',
+    DOCUMENTOS: '/api/documentos',
+    VIDEOS: '/api/videos',
   },
 };

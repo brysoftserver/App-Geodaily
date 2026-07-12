@@ -6,6 +6,7 @@ import * as SQLite from 'expo-sqlite';
 import { Formulario, Coordenadas, MedicionTerreno, ConteoPlantas, PosicionTracking, Capacitacion } from '../types';
 
 let db: SQLite.SQLiteDatabase | null = null;
+let dbFailedOnce = false; // evita reintentar si ya falló (web)
 
 /**
  * Asegura que la BD esté abierta.
@@ -13,69 +14,97 @@ let db: SQLite.SQLiteDatabase | null = null;
  */
 const ensureDb = async (): Promise<SQLite.SQLiteDatabase | null> => {
   if (db) return db;
+  if (dbFailedOnce) return null; // no reintentar si ya falló
   try {
-    db = await SQLite.openDatabaseAsync('geodaily.db');
-    await runMigrations();
+    db = await withTimeout(
+      SQLite.openDatabaseAsync('geodaily.db'),
+      3000,
+      'ensureDb openDatabaseAsync'
+    );
+    await withTimeout(runMigrations(), 3000, 'ensureDb runMigrations');
     console.log('[DB] Reconexión automática exitosa');
     return db;
   } catch (error) {
     console.error('[DB] Error al reconectar BD:', error);
+    dbFailedOnce = true;
     return null;
   }
 };
 
 /**
+ * Timeout promisificado para evitar que SQLite cuelgue en web
+ */
+const withTimeout = <T>(promise: Promise<T>, ms: number, label: string): Promise<T> => {
+  return Promise.race([
+    promise,
+    new Promise<T>((_, reject) =>
+      setTimeout(() => reject(new Error(`[DB] Timeout (${ms}ms): ${label}`)), ms)
+    ),
+  ]);
+};
+
+/**
  * Inicializar la base de datos local
+ * NOTA: En web, expo-sqlite requiere WASM que Metro no resuelve.
+ * Si falla o expira, se ignora para que la app cargue igual.
  */
 export const initDatabase = async (): Promise<void> => {
   try {
-    db = await SQLite.openDatabaseAsync('geodaily.db');
+    db = await withTimeout(
+      SQLite.openDatabaseAsync('geodaily.db'),
+      5000,
+      'openDatabaseAsync'
+    );
 
     // Crear tablas
-    await db.execAsync(`
-      CREATE TABLE IF NOT EXISTS formularios (
-        id TEXT PRIMARY KEY,
-        tipo TEXT NOT NULL,
-        tecnico_json TEXT NOT NULL,
-        beneficiario_json TEXT NOT NULL,
-        actividad_json TEXT NOT NULL,
-        sociodemografico_json TEXT,
-        caracterizacion_nueva_json TEXT,
-        coordenadas_json TEXT NOT NULL,
-        georeferencia_json TEXT,
-        clima_json TEXT,
-        fotos_json TEXT,
-        firma_beneficiario TEXT,
-        firma_tecnico TEXT,
-        huella_beneficiario INTEGER DEFAULT 0,
-        pdf_url TEXT,
-        sincronizado INTEGER DEFAULT 0,
-        created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL
-      );
+    await withTimeout(
+      db.execAsync(`
+        CREATE TABLE IF NOT EXISTS formularios (
+          id TEXT PRIMARY KEY,
+          tipo TEXT NOT NULL,
+          tecnico_json TEXT NOT NULL,
+          beneficiario_json TEXT NOT NULL,
+          actividad_json TEXT NOT NULL,
+          sociodemografico_json TEXT,
+          caracterizacion_nueva_json TEXT,
+          coordenadas_json TEXT NOT NULL,
+          georeferencia_json TEXT,
+          clima_json TEXT,
+          fotos_json TEXT,
+          firma_beneficiario TEXT,
+          firma_tecnico TEXT,
+          huella_beneficiario INTEGER DEFAULT 0,
+          pdf_url TEXT,
+          sincronizado INTEGER DEFAULT 0,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
 
-      CREATE TABLE IF NOT EXISTS sync_queue (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        formulario_id TEXT NOT NULL,
-        accion TEXT NOT NULL,
-        payload_json TEXT NOT NULL,
-        created_at TEXT NOT NULL,
-        intentos INTEGER DEFAULT 0,
-        FOREIGN KEY (formulario_id) REFERENCES formularios(id)
-      );
+        CREATE TABLE IF NOT EXISTS sync_queue (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          formulario_id TEXT NOT NULL,
+          accion TEXT NOT NULL,
+          payload_json TEXT NOT NULL,
+          created_at TEXT NOT NULL,
+          intentos INTEGER DEFAULT 0,
+          FOREIGN KEY (formulario_id) REFERENCES formularios(id)
+        );
 
-      CREATE TABLE IF NOT EXISTS fotos_locales (
-        id TEXT PRIMARY KEY,
-        formulario_id TEXT NOT NULL,
-        uri TEXT NOT NULL,
-        latitud REAL,
-        longitud REAL,
-        altitud REAL,
-        timestamp TEXT NOT NULL,
-        sincronizada INTEGER DEFAULT 0,
-        FOREIGN KEY (formulario_id) REFERENCES formularios(id)
-      );
-    `);
+        CREATE TABLE IF NOT EXISTS fotos_locales (
+          id TEXT PRIMARY KEY,
+          formulario_id TEXT NOT NULL,
+          uri TEXT NOT NULL,
+          latitud REAL,
+          longitud REAL,
+          altitud REAL,
+          timestamp TEXT NOT NULL,
+          sincronizada INTEGER DEFAULT 0,
+          FOREIGN KEY (formulario_id) REFERENCES formularios(id)
+        );
+      `),
+      5000,
+      'Crear tablas'
+    );
 
     // Migración: agregar columna usuario_id si no existe
     try {
@@ -102,12 +131,12 @@ export const initDatabase = async (): Promise<void> => {
     }
 
     // Ejecutar migraciones de nuevas tablas
-    await runMigrations();
+    await withTimeout(runMigrations(), 5000, 'runMigrations');
 
     console.log('[DB] Base de datos local inicializada');
   } catch (error) {
-    console.error('[DB] Error de inicialización:', error);
-    throw error;
+    console.warn('[DB] SQLite no disponible en este entorno — la app funciona sin persistencia local:', (error as Error)?.message);
+    db = null; // asegurar que db quede null
   }
 };
 
@@ -117,10 +146,14 @@ export const initDatabase = async (): Promise<void> => {
 export const saveFormularioLocal = async (
   formulario: Formulario
 ): Promise<void> => {
-  if (!db) throw new Error('Base de datos no inicializada');
+  const database = await ensureDb();
+  if (!database) {
+    console.warn('[DB] BD local no disponible — no se guardó el formulario localmente');
+    return;
+  }
 
   try {
-    await db.runAsync(
+    await database.runAsync(
       `INSERT OR REPLACE INTO formularios (
         id, tipo, tecnico_json, beneficiario_json, actividad_json,
         sociodemografico_json, caracterizacion_nueva_json, coordenadas_json, georeferencia_json, clima_json, fotos_json,
@@ -168,17 +201,21 @@ export const saveFormularioLocal = async (
  * Si no, devuelve todos (para supervisores/gerentes/admin).
  */
 export const getFormulariosLocales = async (usuarioId?: string): Promise<Formulario[]> => {
-  if (!db) throw new Error('Base de datos no inicializada');
+  const database = await ensureDb();
+  if (!database) {
+    console.warn('[DB] BD local no disponible — devolviendo lista vacía');
+    return [];
+  }
 
   try {
     let rows: any[];
     if (usuarioId) {
-      rows = await db.getAllAsync<any>(
+      rows = await database.getAllAsync<any>(
         'SELECT * FROM formularios WHERE usuario_id = ? ORDER BY created_at DESC',
         [usuarioId]
       );
     } else {
-      rows = await db.getAllAsync<any>(
+      rows = await database.getAllAsync<any>(
         'SELECT * FROM formularios ORDER BY created_at DESC'
       );
     }
@@ -203,10 +240,14 @@ export const getFormulariosLocales = async (usuarioId?: string): Promise<Formula
 export const getFormularioById = async (
   id: string
 ): Promise<Formulario | null> => {
-  if (!db) throw new Error('Base de datos no inicializada');
+  const database = await ensureDb();
+  if (!database) {
+    console.warn('[DB] BD local no disponible — getFormularioById retorna null');
+    return null;
+  }
 
   try {
-    const row = await db.getFirstAsync<any>(
+    const row = await database.getFirstAsync<any>(
       'SELECT * FROM formularios WHERE id = ?',
       [id]
     );
@@ -221,16 +262,24 @@ export const getFormularioById = async (
  * Eliminar formulario local
  */
 export const deleteFormularioLocal = async (id: string): Promise<void> => {
-  if (!db) throw new Error('Base de datos no inicializada');
-  await db.runAsync('DELETE FROM formularios WHERE id = ?', [id]);
+  const database = await ensureDb();
+  if (!database) {
+    console.warn('[DB] BD local no disponible — no se eliminó el formulario local');
+    return;
+  }
+  await database.runAsync('DELETE FROM formularios WHERE id = ?', [id]);
 };
 
 /**
  * Marcar formulario como sincronizado
  */
 export const markAsSynced = async (id: string): Promise<void> => {
-  if (!db) throw new Error('Base de datos no inicializada');
-  await db.runAsync(
+  const database = await ensureDb();
+  if (!database) {
+    console.warn('[DB] BD local no disponible — markAsSynced ignorado');
+    return;
+  }
+  await database.runAsync(
     'UPDATE formularios SET sincronizado = 1 WHERE id = ?',
     [id]
   );
@@ -240,8 +289,12 @@ export const markAsSynced = async (id: string): Promise<void> => {
  * Obtener formularios pendientes de sincronización
  */
 export const getPendingSyncForms = async (): Promise<Formulario[]> => {
-  if (!db) throw new Error('Base de datos no inicializada');
-  const rows = await db.getAllAsync<any>(
+  const database = await ensureDb();
+  if (!database) {
+    console.warn('[DB] BD local no disponible — getPendingSyncForms retorna vacío');
+    return [];
+  }
+  const rows = await database.getAllAsync<any>(
     'SELECT * FROM formularios WHERE sincronizado = 0 ORDER BY created_at ASC'
   );
   const validRows: Formulario[] = [];
@@ -519,6 +572,16 @@ export const runMigrations = async (): Promise<void> => {
         timestamp TEXT NOT NULL,
         sincronizado INTEGER DEFAULT 0,
         icono TEXT DEFAULT '🌱'
+      );
+
+      -- Cache local de geometrías de veredas (se descarga una vez)
+      CREATE TABLE IF NOT EXISTS veredas_cache (
+        id TEXT PRIMARY KEY,
+        nombre TEXT NOT NULL,
+        geometry_json TEXT NOT NULL,
+        properties_json TEXT,
+        cached_at TEXT NOT NULL,
+        fuente TEXT DEFAULT 'overpass'
       );
     `);
 
@@ -818,5 +881,141 @@ export const getMediciones = async (): Promise<any[]> => {
   } catch (error) {
     console.error('[DB] Error al obtener mediciones:', error);
     return [];
+  }
+};
+
+/**
+ * Guardar una medición de terreno en SQLite (desde MapaScreen)
+ */
+export const saveMedicion = async (
+  data: {
+    id: string;
+    formulario_id?: string;
+    usuario_id?: string;
+    area_hectareas: number;
+    area_metros2: number;
+    perimetro_metros: number;
+    puntos: { latitud: number; longitud: number }[];
+    sincronizado?: boolean;
+  }
+): Promise<void> => {
+  const database = await ensureDb();
+  if (!database) return;
+  try {
+    await database.runAsync(
+      `INSERT OR REPLACE INTO mediciones_terreno (
+        id, formulario_id, usuario_id, area_hectareas, area_metros2,
+        perimetro_metros, puntos_json, created_at, sincronizado
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        data.id,
+        data.formulario_id || 'mapa_directo',
+        data.usuario_id || null,
+        data.area_hectareas,
+        data.area_metros2,
+        data.perimetro_metros,
+        JSON.stringify(data.puntos),
+        new Date().toISOString(),
+        data.sincronizado ? 1 : 0,
+      ]
+    );
+    console.log('[DB] Medición guardada localmente:', data.id);
+  } catch (error) {
+    console.error('[DB] Error al guardar medición:', error);
+    throw error;
+  }
+};
+
+// ============================================================
+// Cache local de veredas (offline-first)
+// ============================================================
+
+/**
+ * Guardar veredas en caché local (SQLite)
+ */
+export const saveVeredasCache = async (
+  veredas: Array<{
+    id: string;
+    nombre: string;
+    type: string;
+    properties: any;
+    geometry: any;
+  }>,
+  fuente: string = 'overpass'
+): Promise<void> => {
+  const database = await ensureDb();
+  if (!database) return;
+  try {
+    // Limpiar cache anterior
+    await database.runAsync('DELETE FROM veredas_cache');
+    // Insertar nuevas
+    const stmt = 'INSERT INTO veredas_cache (id, nombre, geometry_json, properties_json, cached_at, fuente) VALUES (?, ?, ?, ?, ?, ?)';
+    const now = new Date().toISOString();
+    for (const v of veredas) {
+      await database.runAsync(stmt, [
+        v.id,
+        v.nombre,
+        JSON.stringify(v.geometry),
+        JSON.stringify(v.properties || {}),
+        now,
+        fuente,
+      ]);
+    }
+    console.log(`[DB] Veredas cacheadas: ${veredas.length} (fuente: ${fuente})`);
+  } catch (error) {
+    console.error('[DB] Error al cachear veredas:', error);
+  }
+};
+
+/**
+ * Obtener veredas desde caché local
+ */
+export const getVeredasCache = async (): Promise<{
+  veredas: any[];
+  cached_at: string | null;
+  fuente: string | null;
+}> => {
+  const database = await ensureDb();
+  if (!database) return { veredas: [], cached_at: null, fuente: null };
+  try {
+    const rows = await database.getAllAsync<any>(
+      'SELECT * FROM veredas_cache ORDER BY nombre ASC'
+    );
+    if (rows.length === 0) return { veredas: [], cached_at: null, fuente: null };
+
+    const veredas = rows.map((r: any) => ({
+      id: r.id,
+      nombre: r.nombre,
+      type: 'Feature',
+      properties: r.properties_json ? JSON.parse(r.properties_json) : { id: r.id, nombre: r.nombre },
+      geometry: r.geometry_json ? JSON.parse(r.geometry_json) : { type: 'MultiPolygon', coordinates: [] },
+    }));
+
+    return {
+      veredas,
+      cached_at: rows[0]?.cached_at || null,
+      fuente: rows[0]?.fuente || null,
+    };
+  } catch (error) {
+    console.error('[DB] Error al leer cache de veredas:', error);
+    return { veredas: [], cached_at: null, fuente: null };
+  }
+};
+
+/**
+ * Verificar si el cache de veredas está vigente (menos de 24h)
+ */
+export const isVeredasCacheFresh = async (maxAgeMs: number = 86400000): Promise<boolean> => {
+  const database = await ensureDb();
+  if (!database) return false;
+  try {
+    const row = await database.getFirstAsync<any>(
+      'SELECT cached_at FROM veredas_cache LIMIT 1'
+    );
+    if (!row?.cached_at) return false;
+    const age = Date.now() - new Date(row.cached_at).getTime();
+    return age < maxAgeMs;
+  } catch {
+    return false;
   }
 };

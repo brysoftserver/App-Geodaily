@@ -4,7 +4,8 @@
     "slug": "geodaily-app",
     "version": "1.0.0",
     "orientation": "default",
-    "icon": "./assets/images/icon.png",
+    "icon": "./assets/images/logo_geo_daily.png",
+    "iconBackground": "#0D3B0F",
     "scheme": "geodaily",
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
@@ -29,8 +30,8 @@
     },
     "android": {
       "adaptiveIcon": {
-        "foregroundImage": "./assets/images/adaptive-icon.png",
-        "backgroundColor": "#1B5E20"
+        "foregroundImage": "./assets/images/logo_geo_daily.png",
+        "backgroundColor": "#0D3B0F"
       },
       "package": "com.geodaily.app",
       "permissions": [
@@ -41,7 +42,16 @@
         "READ_EXTERNAL_STORAGE",
         "WRITE_EXTERNAL_STORAGE",
         "USE_BIOMETRIC",
-        "INTERNET"
+        "INTERNET",
+        "android.permission.ACCESS_COARSE_LOCATION",
+        "android.permission.ACCESS_FINE_LOCATION",
+        "android.permission.CAMERA",
+        "android.permission.RECORD_AUDIO",
+        "android.permission.USE_BIOMETRIC",
+        "android.permission.USE_FINGERPRINT",
+        "android.permission.READ_EXTERNAL_STORAGE",
+        "android.permission.WRITE_EXTERNAL_STORAGE",
+        "android.permission.INTERNET"
       ],
       "config": {
         "googleMaps": {
@@ -60,10 +70,30 @@
       "expo-secure-store",
       "expo-sqlite",
       "expo-local-authentication",
-      "expo-file-system"
+      "expo-file-system",
+      "expo-updates",
+      [
+        "expo-build-properties",
+        {
+          "android": {
+            "usesCleartextTraffic": true
+          }
+        }
+      ]
     ],
+    "updates": {
+      "url": "https://u.expo.dev/geodaily-app",
+      "enabled": true,
+      "checkAutomatically": "ON_LOAD",
+      "fallbackToCacheTimeout": 10000
+    },
     "experiments": {
       "typedRoutes": true
+    },
+    "extra": {
+      "eas": {
+        "projectId": "f5fc7c36-3f1f-4f73-9265-7f7df5024f54"
+      }
     }
   }
 }

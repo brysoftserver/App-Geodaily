@@ -79,7 +79,7 @@ const MENU_ITEMS = [
   {
     id: 'mapaGeneral',
     title: 'Mapa General',
-    subtitle: 'Plantaciones, mediciones y tracking',
+    subtitle: 'Mapas, mediciones y tracking',
     icon: '🗺️',
     color: COLORS.success,
     screen: 'MapaGeneral',

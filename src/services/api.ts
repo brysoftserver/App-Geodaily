@@ -7,6 +7,17 @@ import * as SecureStore from 'expo-secure-store';
 import { API_CONFIG } from '../theme';
 import { STORAGE_KEYS } from '../utils/constants';
 
+// --- Token en memoria como fallback cuando SecureStore no está disponible ---
+let _inMemoryToken: string | null = null;
+
+/**
+ * Establecer el token JWT en memoria (además de SecureStore).
+ * Útil en entornos donde SecureStore no está disponible (Expo Go, web).
+ */
+export const setApiAuthToken = (token: string | null) => {
+  _inMemoryToken = token;
+};
+
 // Crear instancia Axios
 const apiClient: AxiosInstance = axios.create({
   baseURL: API_CONFIG.BASE_URL,
@@ -17,19 +28,30 @@ const apiClient: AxiosInstance = axios.create({
   },
 });
 
-// Interceptor de peticiones — añade token JWT real desde SecureStore
+// Interceptor de peticiones — añade token JWT
 apiClient.interceptors.request.use(
   async (config: InternalAxiosRequestConfig) => {
+    let token: string | null = null;
+
+    // 1. Intentar desde SecureStore (persistente)
     try {
-      const token = await SecureStore.getItemAsync(STORAGE_KEYS.AUTH_TOKEN);
-      if (token) {
-        config.headers.Authorization = `Bearer ${token}`;
-      } else {
-        console.warn(`[API] Token no encontrado en SecureStore para: ${config.url}`);
-      }
+      token = await SecureStore.getItemAsync(STORAGE_KEYS.AUTH_TOKEN);
     } catch (err) {
-      console.warn(`[API] Error al leer token de SecureStore: ${err}`);
+      // SecureStore no disponible en este entorno, continuar con memoria
     }
+
+    // 2. Fallback a token en memoria
+    if (!token) {
+      token = _inMemoryToken;
+    }
+
+    if (token) {
+      config.headers.Authorization = `Bearer ${token}`;
+      console.log(`[API] Token añadido para: ${config.url}`);
+    } else {
+      console.warn(`[API] No hay token disponible para: ${config.url}`);
+    }
+
     return config;
   },
   (error: AxiosError) => {

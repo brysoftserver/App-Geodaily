@@ -10,6 +10,7 @@ import { useAuth } from '../store/AuthContext';
 import LoginScreen from '../screens/auth/LoginScreen';
 import TerrenoNavigator from './TerrenoNavigator';
 import SupervisionNavigator from './SupervisionNavigator';
+import InterventorNavigator from './InterventorNavigator';
 import GerenteNavigator from './GerenteNavigator';
 import AdminNavigator from './AdminNavigator';
 import LoadingSpinner from '../components/LoadingSpinner';
@@ -19,6 +20,7 @@ export type RootStackParamList = {
   Login: undefined;
   Terreno: undefined;
   Supervision: undefined;
+  Interventor: undefined;
   Gerente: undefined;
   Admin: undefined;
 };
@@ -26,7 +28,7 @@ export type RootStackParamList = {
 const Stack = createNativeStackNavigator<RootStackParamList>();
 
 const AppNavigator: React.FC = () => {
-  const { isAuthenticated, isLoading, isTecnico, isSupervisor, isGerente, isAdmin } = useAuth();
+  const { isAuthenticated, isLoading, isTecnico, isSupervisor, isInterventor, isGerente, isAdmin } = useAuth();
 
   if (isLoading) {
     return <LoadingSpinner branded message="Iniciando sesión..." />;
@@ -67,6 +69,11 @@ const AppNavigator: React.FC = () => {
           <Stack.Screen
             name="Supervision"
             component={SupervisionNavigator}
+          />
+        ) : isInterventor ? (
+          <Stack.Screen
+            name="Interventor"
+            component={InterventorNavigator}
           />
         ) : (
           <Stack.Screen

@@ -6,6 +6,7 @@ import React, { createContext, useContext, useReducer, useCallback, useEffect } 
 import * as SecureStore from 'expo-secure-store';
 import { Usuario, UserRole } from '../types';
 import { loginUser, logoutUser, verifyToken } from '../services/auth';
+import { setApiAuthToken } from '../services/api';
 import { STORAGE_KEYS } from '../utils/constants';
 
 // --- Estado ---
@@ -73,6 +74,7 @@ interface AuthContextType extends AuthState {
   getRole: () => UserRole | null;
   isTecnico: boolean;
   isSupervisor: boolean;
+  isInterventor: boolean;
   isGerente: boolean;
   isAdmin: boolean;
 }
@@ -94,6 +96,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           const isValid = await verifyToken(token);
           if (isValid) {
             const user = JSON.parse(userData) as Usuario;
+            // También establecer en memoria para el cliente API
+            setApiAuthToken(user.token);
             dispatch({ type: 'RESTORE_TOKEN', user });
             return;
           }
@@ -125,6 +129,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           token: result.user.token,
         };
 
+        // Guardar token en API client (memoria) para que funciones en
+        // entornos donde SecureStore no está disponible (Expo Go, web)
+        setApiAuthToken(user.token);
+
         // Guardar sesión en SecureStore — si falla, igual iniciamos sesión
         try {
           await SecureStore.setItemAsync(STORAGE_KEYS.AUTH_TOKEN, user.token);
@@ -150,6 +158,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       await SecureStore.deleteItemAsync(STORAGE_KEYS.AUTH_TOKEN);
       await SecureStore.deleteItemAsync(STORAGE_KEYS.USER_DATA);
     } finally {
+      setApiAuthToken(null);
       dispatch({ type: 'LOGOUT' });
     }
   }, []);
@@ -165,6 +174,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     getRole,
     isTecnico: state.user?.rol === 'tecnico',
     isSupervisor: state.user?.rol === 'supervisor',
+    isInterventor: state.user?.rol === 'interventor',
     isGerente: state.user?.rol === 'gerente',
     isAdmin: state.user?.rol === 'admin',
   };

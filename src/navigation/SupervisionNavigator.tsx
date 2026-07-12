@@ -7,16 +7,18 @@ import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { COLORS, FONTS } from '../theme';
 import SupervisionMenuScreen from '../screens/supervision/SupervisionMenuScreen';
 import DashboardScreen from '../screens/supervision/DashboardScreen';
-import FormularioListScreen from '../screens/supervision/FormularioListScreen';
+import VisitasJerarquicasScreen from '../screens/supervision/VisitasJerarquicasScreen';
 import CalendarioScreen from '../screens/supervision/CalendarioScreen';
 import MapaGeneralScreen from '../screens/MapaGeneralScreen';
+import FormularioDetailScreen from '../screens/terreno/FormularioDetailScreen';
 
 export type SupervisionStackParamList = {
   SupervisionMenu: undefined;
   Dashboard: undefined;
-  SupervisionFormularioList: undefined;
+  SupervisionVisitasJerarquicas: undefined;
   SupervisionCalendario: undefined;
   MapaGeneral: undefined;
+  SupervisionFormularioDetail: { formulario: import('../types').Formulario };
 };
 
 const Stack = createNativeStackNavigator<SupervisionStackParamList>();
@@ -50,9 +52,14 @@ const SupervisionNavigator: React.FC = () => {
         options={{ title: 'Dashboard' }}
       />
       <Stack.Screen
-        name="SupervisionFormularioList"
-        component={FormularioListScreen}
-        options={{ title: 'Listado de Visitas' }}
+        name="SupervisionVisitasJerarquicas"
+        component={VisitasJerarquicasScreen}
+        options={{ title: 'Listado de técnicos y visitas' }}
+      />
+      <Stack.Screen
+        name="SupervisionFormularioDetail"
+        component={FormularioDetailScreen as any}
+        options={{ title: 'Detalle del Formulario' }}
       />
       <Stack.Screen
         name="SupervisionCalendario"

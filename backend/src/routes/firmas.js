@@ -1,0 +1,206 @@
+// ============================================================
+// Firmas Routes — Subida de firmas a MinIO
+// Ruta en MinIO: {rol}s/{usuario}/firmas/{filename}
+// ============================================================
+
+const express = require('express');
+const path = require('path');
+const { authenticateToken } = require('../middleware/auth');
+const db = require('../database');
+const storage = require('../storage');
+
+const router = express.Router();
+
+/**
+ * Convertir base64 a Buffer
+ */
+function base64ToBuffer(dataUri) {
+  const matches = dataUri.match(/^data:([A-Za-z-+/]+);base64,(.+)$/);
+  if (!matches || matches.length !== 3) return null;
+  return {
+    buffer: Buffer.from(matches[2], 'base64'),
+    mimetype: matches[1],
+  };
+}
+
+// POST /api/firmas/subir — Subir una firma (base64) a MinIO
+router.post('/subir', authenticateToken, async (req, res) => {
+  try {
+    const { tipo, data } = req.body; // tipo: 'beneficiario' | 'tecnico'
+
+    if (!data || !tipo) {
+      return res.status(400).json({
+        estado: 'error',
+        mensaje: 'Datos de firma requeridos (data base64 + tipo)',
+      });
+    }
+
+    if (!['beneficiario', 'tecnico'].includes(tipo)) {
+      return res.status(400).json({
+        estado: 'error',
+        mensaje: 'tipo debe ser "beneficiario" o "tecnico"',
+      });
+    }
+
+    const converted = base64ToBuffer(data);
+    if (!converted) {
+      return res.status(400).json({
+        estado: 'error',
+        mensaje: 'Formato base64 inválido. Debe ser data:image/...;base64,...',
+      });
+    }
+
+    const timestamp = Date.now();
+    const filename = `firma_${tipo}_${timestamp}.png`;
+
+    // Subir a MinIO
+    await storage.uploadFile(
+      req.user.rol,
+      req.user.usuario,
+      'firmas',
+      filename,
+      converted.buffer,
+      { contentType: converted.mimetype }
+    );
+
+    // Guardar registro en PostgreSQL
+    const bucket = process.env.MINIO_BUCKET || 'geodaily-archivos';
+    const basePath = storage.getUserBasePath(req.user.rol, req.user.usuario);
+    const minioPath = `${basePath}/firmas/${filename}`;
+    await db.query(
+      `INSERT INTO archivos (usuario_id, tipo, filename, originalname, mimetype, size_bytes, minio_path, minio_bucket, metadata_json)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+      [
+        req.user.id,
+        'firma',
+        filename,
+        `firma_${tipo}.png`,
+        converted.mimetype,
+        converted.buffer.length,
+        minioPath,
+        bucket,
+        JSON.stringify({ tipo_firma: tipo }),
+      ]
+    );
+
+    // Obtener el ID generado
+    const archivo = await db.queryOne(
+      'SELECT id FROM archivos WHERE minio_path = $1 ORDER BY created_at DESC LIMIT 1',
+      [minioPath]
+    );
+    const firmaId = archivo ? archivo.id : `firma-${timestamp}`;
+
+    // Registrar en actividad
+    await db.query(
+      'INSERT INTO actividad_log (usuario_id, accion, detalle_json) VALUES ($1, $2, $3)',
+      [req.user.id, 'subir_firma', JSON.stringify({ archivo_id: firmaId, filename, tipo_firma: tipo })]
+    );
+
+    console.log(`[Firmas] ✍️ Firma subida a MinIO: ${minioPath}`);
+
+    res.json({
+      estado: 'ok',
+      id: firmaId,
+      ruta: minioPath,
+      filename,
+      tipo_firma: tipo,
+      mensaje: 'Firma almacenada correctamente',
+    });
+  } catch (error) {
+    console.error('[Firmas] Error:', error);
+    res.status(500).json({ estado: 'error', mensaje: 'Error al subir firma a MinIO' });
+  }
+});
+
+// POST /api/firmas/guardar-en-formulario — Sube firma Y la asocia a un formulario
+router.post('/guardar-en-formulario', authenticateToken, async (req, res) => {
+  try {
+    const { formulario_id, tipo, data } = req.body;
+
+    if (!formulario_id || !data || !tipo) {
+      return res.status(400).json({
+        estado: 'error',
+        mensaje: 'formulario_id, tipo y data (base64) requeridos',
+      });
+    }
+
+    // Subir firma a MinIO
+    const converted = base64ToBuffer(data);
+    if (!converted) {
+      return res.status(400).json({
+        estado: 'error',
+        mensaje: 'Formato base64 inválido',
+      });
+    }
+
+    const timestamp = Date.now();
+    const filename = `firma_${tipo}_${formulario_id}_${timestamp}.png`;
+
+    await storage.uploadFile(
+      req.user.rol,
+      req.user.usuario,
+      'firmas',
+      filename,
+      converted.buffer,
+      { contentType: converted.mimetype }
+    );
+
+    const basePath = storage.getUserBasePath(req.user.rol, req.user.usuario);
+    const minioPath = `${basePath}/firmas/${filename}`;
+    const bucket = process.env.MINIO_BUCKET || 'geodaily-archivos';
+
+    // Guardar en archivos
+    const archivoResult = await db.queryOne(
+      `INSERT INTO archivos (usuario_id, tipo, filename, originalname, mimetype, size_bytes, minio_path, minio_bucket, metadata_json)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+       RETURNING id`,
+      [
+        req.user.id, 'firma', filename, `firma_${tipo}.png`,
+        converted.mimetype, converted.buffer.length,
+        minioPath, bucket,
+        JSON.stringify({ tipo_firma: tipo, formulario_id }),
+      ]
+    );
+    const firmaId = archivoResult?.id || `firma-${timestamp}`;
+
+    // Actualizar el formulario con la ruta de la firma
+    const campo = tipo === 'beneficiario' ? 'firma_beneficiario' : 'firma_tecnico';
+    await db.query(
+      `UPDATE formularios SET ${campo} = $1, updated_at = NOW() WHERE id = $2`,
+      [minioPath, formulario_id]
+    );
+
+    console.log(`[Firmas] ✍️ Firma ${tipo} asociada a formulario ${formulario_id}: ${minioPath}`);
+
+    res.json({
+      estado: 'ok',
+      id: firmaId,
+      ruta: minioPath,
+      tipo_firma: tipo,
+      formulario_id,
+      mensaje: 'Firma guardada y asociada al formulario',
+    });
+  } catch (error) {
+    console.error('[Firmas] Error:', error);
+    res.status(500).json({ estado: 'error', mensaje: 'Error al guardar firma en formulario' });
+  }
+});
+
+// GET /api/firmas/:id
+router.get('/:id', authenticateToken, async (req, res) => {
+  try {
+    const firma = await db.queryOne(
+      'SELECT * FROM archivos WHERE id = $1 AND tipo = $2',
+      [req.params.id, 'firma']
+    );
+    if (!firma) {
+      return res.status(404).json({ estado: 'error', mensaje: 'Firma no encontrada' });
+    }
+    res.json({ estado: 'ok', firma });
+  } catch (error) {
+    console.error('[Firmas] Get error:', error);
+    res.status(500).json({ estado: 'error', mensaje: 'Error al obtener firma' });
+  }
+});
+
+module.exports = router;

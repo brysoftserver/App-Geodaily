@@ -23,13 +23,13 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useFocusEffect } from '@react-navigation/native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { COLORS, FONTS, SPACING, BORDER_RADIUS, SHADOWS } from '../../theme';
-import * as Location from 'expo-location';
-import { useLocation } from '../../hooks/useLocation';
 import { useTrackingContext } from '../../store/TrackingContext';
 import { useAuth } from '../../store/AuthContext';
+import { useSync } from '../../store/SyncContext';
+import { useGPS } from '../../store/GPSContext';
 import MapViewOffline from '../../components/MapViewOffline';
 import { calcularArea, exportarKML, importarKML } from '../../services/kml.service';
-import { savePlantacion, getPlantaciones } from '../../services/database';
+import { savePlantacion, saveMedicion, getPlantaciones } from '../../services/database';
 import { Plantacion, Coordenadas } from '../../types';
 
 const STORAGE_KEY_MAP = '@geodaily/mapa_estado';
@@ -49,48 +49,34 @@ interface EspecieConteo {
 
 const MapaScreen: React.FC = () => {
   const insets = useSafeAreaInsets();
-  const { coordenadas, getCurrentPosition, isLoading: gpsLoading } = useLocation();
   const { user } = useAuth();
+  const { syncNow } = useSync();
   const tracking = useTrackingContext();
   const [modo, setModo] = useState<ModoMapa>('navegar');
   const [ultimoPunto, setUltimoPunto] = useState<{ lat: number; lon: number } | null>(null);
+  const [locating, setLocating] = useState(false);
 
-  // --- Centro del mapa estable (NO se reinicia con GPS) ---
+  // --- Centro del mapa estable (se inicializa con la primera ubicación GPS) ---
   const [mapCenter, setMapCenter] = useState<Coordenadas | undefined>(undefined);
   const mapCenterInitialized = useRef(false);
+
+  // GPS: consumir el watch único del GPSContext
+  const { userLocation, getCurrentPosition, siguiendo: siguiendoGPS, setSiguiendo: setSiguiendoGPS } = useGPS();
+
+  // Inicializar centro del mapa con la primera posición GPS disponible
   useEffect(() => {
-    if (coordenadas && !mapCenterInitialized.current) {
-      setMapCenter({ latitud: coordenadas.latitud, longitud: coordenadas.longitud } as Coordenadas);
+    if (!mapCenterInitialized.current && userLocation) {
+      setMapCenter(userLocation);
       mapCenterInitialized.current = true;
     }
-  }, [coordenadas]);
+  }, [userLocation]);
 
-  // GPS siempre activo: watch continuo desde que monta la pantalla
+  // Seguir al usuario si el modo siguiendo está activo
   useEffect(() => {
-    (async () => {
-      const { status } = await Location.requestForegroundPermissionsAsync();
-      if (status !== 'granted') return;
-      const sub = await Location.watchPositionAsync(
-        { accuracy: Location.Accuracy.High, timeInterval: 5000, distanceInterval: 5 },
-        (newPos) => {
-          const { latitude, longitude } = newPos.coords;
-          const pos: Coordenadas = { latitud: latitude, longitud: longitude };
-          setUserLocation(pos);
-          // Si estamos en modo siguiendo, actualizar el centro
-          if (siguiendoRef.current) {
-            setMapCenter(pos);
-          }
-        }
-      );
-      watchRef.current = sub;
-    })();
-    return () => {
-      if (watchRef.current) {
-        watchRef.current.remove();
-        watchRef.current = null;
-      }
-    };
-  }, []);
+    if (siguiendoGPS && userLocation && mapCenterInitialized.current) {
+      setMapCenter(userLocation);
+    }
+  }, [siguiendoGPS, userLocation]);
 
   // --- Estado para Medición ---
   const [poligono, setPoligono] = useState<PuntoPoligono[]>([]);
@@ -128,12 +114,7 @@ const MapaScreen: React.FC = () => {
   // --- Tipo de mapa: relieve (CartoDB) o satélite ---
   const [tipoMapa, setTipoMapa] = useState<'relieve' | 'satelite'>('relieve');
 
-  // --- Seguimiento GPS continuo ---
-  const [siguiendoGPS, setSiguiendoGPS] = useState(false);
-  const siguiendoRef = useRef(false);
-  const watchRef = useRef<Location.LocationSubscription | null>(null);
-  /** Posición GPS real, siempre actualizada por el watch */
-  const [userLocation, setUserLocation] = useState<Coordenadas | undefined>(undefined);
+
 
   // --- Persistencia automática: guardar al salir, restaurar al entrar ---
   const guardarEstadoMapa = useCallback(async () => {
@@ -147,13 +128,13 @@ const MapaScreen: React.FC = () => {
         modo,
         tipoMapa,
         mapCenter,
-        ultimasCoords: coordenadas,
+        ultimasCoords: userLocation,
       };
       await AsyncStorage.setItem(STORAGE_KEY_MAP, JSON.stringify(estado));
     } catch (e) {
       console.warn('[Mapa] Error al guardar estado:', e);
     }
-  }, [poligono, resultadoArea, resultadoDistancia, mostrarResultado, ultimoPunto, modo, tipoMapa, mapCenter, coordenadas]);
+  }, [poligono, resultadoArea, resultadoDistancia, mostrarResultado, ultimoPunto, modo, tipoMapa, mapCenter, userLocation]);
 
   // Cargar plantaciones del usuario desde SQLite
   const cargarPlantaciones = useCallback(async () => {
@@ -212,15 +193,34 @@ const MapaScreen: React.FC = () => {
 
   // Centrar en ubicación actual y seguir en tiempo real
   const centrarEnGPS = useCallback(async () => {
-    const coords = await getCurrentPosition();
-    if (coords) {
-      setMapCenter({ latitud: coords.latitud, longitud: coords.longitud } as Coordenadas);
-    } else if (userLocation) {
-      setMapCenter(userLocation);
+    setLocating(true);
+    try {
+      const coords = await getCurrentPosition();
+      if (coords) {
+        setMapCenter({
+          latitud: coords.latitud,
+          longitud: coords.longitud,
+        });
+        setSiguiendoGPS(true);
+        setUltimoPunto(null);
+      } else {
+        // Fallback a última posición del watch si getCurrentPosition falló
+        if (userLocation) {
+          setMapCenter(userLocation);
+          setSiguiendoGPS(true);
+          setUltimoPunto(null);
+        } else {
+          Alert.alert(
+            '📍 Sin ubicación',
+            'No se pudo obtener la ubicación GPS.\n\n' +
+            'Verifica que el GPS esté activado y tengas conexión con los satélites.\n' +
+            'Si estás en interiores, intenta salir a un espacio abierto.'
+          );
+        }
+      }
+    } finally {
+      setLocating(false);
     }
-    setSiguiendoGPS(true);
-    siguiendoRef.current = true;
-    setUltimoPunto(null);
   }, [getCurrentPosition, userLocation]);
 
   // Manejar tap en el mapa
@@ -277,9 +277,22 @@ const MapaScreen: React.FC = () => {
       const area = calcularArea(poligono);
       setResultadoArea(area);
       setResultadoDistancia(null);
+      // Persistir medición en SQLite
+      saveMedicion({
+        id: `med_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+        usuario_id: user?.id,
+        area_hectareas: area.areaHectareas,
+        area_metros2: area.areaMetros2,
+        perimetro_metros: area.perimetroMetros,
+        puntos: poligono.map(p => ({ latitud: p.latitud, longitud: p.longitud })),
+        sincronizado: false,
+      }).then(() => {
+        // Intentar sincronizar al servidor si hay conexión
+        syncNow().catch(() => {});
+      }).catch(err => console.warn('[Mapa] Error al persistir medición:', err));
     }
     setMostrarResultado(true);
-  }, [poligono, calcularDistanciaHaversine]);
+  }, [poligono, calcularDistanciaHaversine, user?.id]);
 
   const limpiarPoligono = useCallback(() => {
     setPoligono([]);
@@ -302,8 +315,8 @@ const MapaScreen: React.FC = () => {
       Alert.alert('Cantidad inválida', 'Ingresa un número válido de plantas.');
       return;
     }
-    const latitud = ultimoPunto?.lat ?? coordenadas?.latitud ?? 0;
-    const longitud = ultimoPunto?.lon ?? coordenadas?.longitud ?? 0;
+    const latitud = ultimoPunto?.lat ?? userLocation?.latitud ?? 0;
+    const longitud = ultimoPunto?.lon ?? userLocation?.longitud ?? 0;
     if (!latitud || !longitud) {
       Alert.alert('Sin ubicación', 'Toca el mapa para seleccionar un punto.');
       return;
@@ -322,11 +335,13 @@ const MapaScreen: React.FC = () => {
     };
     await savePlantacion(plantacion);
     setPlantaciones((prev) => [...prev, plantacion]);
+    // Intentar sincronizar al servidor si hay conexión
+    syncNow().catch(() => {});
     Alert.alert('✅ Conteo guardado', `${plantaSeleccionada}: ${cantidad} plantas\n${icono} Marcador agregado al mapa`);
     setCantidadInput('');
     setMostrarPanelConteo(false);
     setUltimoPunto(null);
-  }, [plantaSeleccionada, cantidadInput, ultimoPunto, coordenadas, user?.id]);
+  }, [plantaSeleccionada, cantidadInput, ultimoPunto, userLocation, user?.id]);
 
   // --- Funciones KML ---
   const handleExportarKML = useCallback(async () => {
@@ -414,7 +429,7 @@ const MapaScreen: React.FC = () => {
       {/* Mapa */}
       <View style={styles.mapContainer}>
         <MapViewOffline
-          center={mapCenter ?? coordenadas ?? undefined}
+          center={mapCenter ?? userLocation ?? undefined}
           zoom={15}
           height={'100%'}
           mapStyle={tipoMapa}
@@ -616,13 +631,13 @@ const MapaScreen: React.FC = () => {
         {modo === 'navegar' && (
           <>
             <TouchableOpacity
-              style={[styles.toolBtn, siguiendoGPS && styles.toolBtnActive, gpsLoading && styles.toolBtnDisabled]}
+              style={[styles.toolBtn, siguiendoGPS && styles.toolBtnActive, locating && styles.toolBtnDisabled]}
               onPress={centrarEnGPS}
-              disabled={gpsLoading}
+              disabled={locating}
             >
               <Text style={styles.toolBtnIcon}>📍</Text>
               <Text style={styles.toolBtnLabel}>
-                {gpsLoading ? 'GPS...' : siguiendoGPS ? '🟢 Siguiendo' : 'Mi Ubicación'}
+                {locating ? 'GPS...' : siguiendoGPS ? '🟢 Siguiendo' : 'Mi Ubicación'}
               </Text>
             </TouchableOpacity>
             <TouchableOpacity

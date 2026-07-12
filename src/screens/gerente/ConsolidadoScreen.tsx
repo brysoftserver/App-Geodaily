@@ -26,7 +26,6 @@ type ConsolidadoProps = {
 const FILTER_OPTIONS = [
   { value: 'all', label: 'Todo' },
   { value: 'visita_tecnica', label: 'Visitas' },
-  { value: 'plantacion', label: 'Plantación' },
 ];
 
 const ConsolidadoScreen: React.FC<ConsolidadoProps> = ({ navigation }) => {
@@ -42,11 +41,10 @@ const ConsolidadoScreen: React.FC<ConsolidadoProps> = ({ navigation }) => {
     const total = filteredForms.length;
     if (total === 0) return null;
     const visitas = filteredForms.filter(f => f.tipo === 'visita_tecnica').length;
-    const plantaciones = filteredForms.filter(f => f.tipo === 'plantacion').length;
     const sincronizadas = filteredForms.filter(f => f.sincronizado).length;
     const municipios = new Set(filteredForms.map(f => f.beneficiario.municipio)).size;
     const tecnicos = new Set(filteredForms.map(f => f.tecnico.nombre)).size;
-    return { total, visitas, plantaciones, sincronizadas, pendientes: total - sincronizadas, municipios, tecnicos };
+    return { total, visitas, sincronizadas, pendientes: total - sincronizadas, municipios, tecnicos };
   }, [filteredForms]);
 
   // Agrupar por municipio
@@ -116,10 +114,6 @@ const ConsolidadoScreen: React.FC<ConsolidadoProps> = ({ navigation }) => {
           <View style={styles.indCard}>
             <Text style={[styles.indValor, { color: COLORS.roleTecnico }]}>{indicadores.visitas}</Text>
             <Text style={styles.indLabel}>Visitas</Text>
-          </View>
-          <View style={styles.indCard}>
-            <Text style={[styles.indValor, { color: COLORS.primary }]}>{indicadores.plantaciones}</Text>
-            <Text style={styles.indLabel}>Plantación</Text>
           </View>
           <View style={styles.indCard}>
             <Text style={[styles.indValor, { color: COLORS.success }]}>{indicadores.sincronizadas}</Text>

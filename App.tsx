@@ -10,6 +10,7 @@ import { AuthProvider } from './src/store/AuthContext';
 import { FormProvider } from './src/store/FormContext';
 import { SyncProvider } from './src/store/SyncContext';
 import { TrackingProvider } from './src/store/TrackingContext';
+import { GPSProvider } from './src/store/GPSContext';
 import AppNavigator from './src/navigation/AppNavigator';
 import { initDatabase } from './src/services/database';
 import { COLORS } from './src/theme';
@@ -42,10 +43,12 @@ export default function App() {
         <AuthProvider>
           <FormProvider>
             <SyncProvider>
-              <TrackingProvider>
-                <StatusBar style="dark" />
-                <AppNavigator />
-              </TrackingProvider>
+              <GPSProvider>
+                <TrackingProvider>
+                  <StatusBar style="dark" />
+                  <AppNavigator />
+                </TrackingProvider>
+              </GPSProvider>
             </SyncProvider>
           </FormProvider>
         </AuthProvider>

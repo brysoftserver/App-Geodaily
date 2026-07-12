@@ -65,21 +65,6 @@ const SeleccionarTipoFormulario: React.FC<SeleccionarTipoProps> = ({ navigation 
       </TouchableOpacity>
 
       <TouchableOpacity
-        style={[styles.card, { borderLeftColor: COLORS.primary }]}
-        onPress={() => navigation.navigate('Formulario', { tipo: 'plantacion' })}
-        activeOpacity={0.7}
-      >
-        <Text style={styles.cardIcon}>🌱</Text>
-        <View style={styles.cardContent}>
-          <Text style={styles.cardTitle}>Plantación</Text>
-          <Text style={styles.cardDesc}>
-            Registro de nuevas plantaciones, monitoreo de crecimiento y producción
-          </Text>
-        </View>
-        <Text style={styles.arrow}>›</Text>
-      </TouchableOpacity>
-
-      <TouchableOpacity
         style={[styles.card, { borderLeftColor: COLORS.warning }]}
         onPress={() => navigation.navigate('FormulariosIncompletos')}
         activeOpacity={0.7}

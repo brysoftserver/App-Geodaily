@@ -184,7 +184,7 @@ const CalendarioScreen: React.FC<CalendarioScreenProps> = ({ navigation }) => {
                       },
                     ]}
                   >
-                    {form.tipo === 'visita_tecnica' ? 'Visita' : 'Plantación'}
+                    {form.tipo === 'visita_tecnica' ? 'Visita' : form.tipo === 'caracterizacion' ? 'Caracterización' : 'Plantación'}
                   </Text>
                 </View>
               </View>

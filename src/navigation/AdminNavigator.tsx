@@ -9,11 +9,15 @@ import AdminMenuScreen from '../screens/admin/AdminMenuScreen';
 import UserManagementScreen from '../screens/admin/UserManagementScreen';
 import SystemConfigScreen from '../screens/admin/SystemConfigScreen';
 import MapaGeneralScreen from '../screens/MapaGeneralScreen';
+import DashboardScreen from '../screens/supervision/DashboardScreen';
+import VisitasJerarquicasScreen from '../screens/supervision/VisitasJerarquicasScreen';
 
 export type AdminStackParamList = {
   AdminMenu: undefined;
   UserManagement: undefined;
   SystemConfig: undefined;
+  AdminDashboard: undefined;
+  AdminVisitasJerarquicas: undefined;
   MapaGeneral: undefined;
 };
 
@@ -51,6 +55,16 @@ const AdminNavigator: React.FC = () => {
         name="SystemConfig"
         component={SystemConfigScreen}
         options={{ title: 'Configuración del Sistema' }}
+      />
+      <Stack.Screen
+        name="AdminDashboard"
+        component={DashboardScreen}
+        options={{ title: 'Dashboard General' }}
+      />
+      <Stack.Screen
+        name="AdminVisitasJerarquicas"
+        component={VisitasJerarquicasScreen}
+        options={{ title: 'Listado de técnicos y visitas' }}
       />
       <Stack.Screen
         name="MapaGeneral"

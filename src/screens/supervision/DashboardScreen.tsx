@@ -2,20 +2,25 @@
 // GEODAILY — Dashboard de Supervisión
 // ============================================================
 
-import React, { useMemo, useState } from 'react';
+import React, { useMemo, useState, useEffect, useCallback } from 'react';
 import {
   View,
   Text,
   StyleSheet,
   ScrollView,
   Dimensions,
+  RefreshControl,
 } from 'react-native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
+import { useFocusEffect } from '@react-navigation/native';
 import { LineChart, BarChart } from 'react-native-chart-kit';
-import { COLORS, FONTS, SPACING, BORDER_RADIUS, SHADOWS } from '../../theme';
+import { COLORS, FONTS, SPACING, BORDER_RADIUS, SHADOWS, API_CONFIG } from '../../theme';
 import { useForm } from '../../store/FormContext';
+import { getFormulariosLocales } from '../../services/database';
+import { fetchFormulariosDelServidor } from '../../services/formularios.service';
 import MetricCard from '../../components/MetricCard';
 import FilterBar from '../../components/FilterBar';
+import LoadingSpinner from '../../components/LoadingSpinner';
 
 type DashboardScreenProps = {
   navigation: NativeStackNavigationProp<any>;
@@ -24,14 +29,67 @@ type DashboardScreenProps = {
 const FILTER_OPTIONS = [
   { value: 'all', label: 'Todo' },
   { value: 'visita_tecnica', label: 'Visitas' },
-  { value: 'plantacion', label: 'Plantación' },
 ];
 
 const screenWidth = Dimensions.get('window').width;
 
 const DashboardScreen: React.FC<DashboardScreenProps> = ({ navigation }) => {
-  const { formularios } = useForm();
+  const { formularios, cargarFormularios } = useForm();
   const [filter, setFilter] = useState('all');
+  const [loadingDashboard, setLoadingDashboard] = useState(true);
+  const [refreshingDashboard, setRefreshingDashboard] = useState(false);
+  const [dashboardError, setDashboardError] = useState<string | null>(null);
+
+  // Cargar datos del servidor + local y fusionar en FormContext
+  const loadDashboardData = useCallback(async () => {
+    setDashboardError(null);
+    let servidorCount = 0;
+    let localesCount = 0;
+    try {
+      const [locales, servidor] = await Promise.all([
+        getFormulariosLocales(),
+        fetchFormulariosDelServidor(),
+      ]);
+      localesCount = locales.length;
+      servidorCount = servidor.length;
+
+      const mapa = new Map<string, any>();
+      for (const f of locales) mapa.set(f.id, f);
+      for (const f of servidor) mapa.set(f.id, { ...f, sincronizado: true });
+
+      const fusionados = Array.from(mapa.values());
+      cargarFormularios(fusionados);
+      console.log(`[Dashboard] ${fusionados.length} formularios (${localesCount} locales + ${servidorCount} servidor)`);
+
+      if (fusionados.length === 0) {
+        setDashboardError(
+          servidorCount === 0 && localesCount === 0
+            ? 'No se encontraron formularios en el servidor. Verifica que el backend esté corriendo.'
+            : 'No hay formularios disponibles.'
+        );
+      }
+    } catch (error: any) {
+      console.warn('[Dashboard] Error cargando datos:', error?.message || error);
+      setDashboardError(
+        `Error de conexión: ${error?.message || 'No se pudo conectar con el servidor'}. Verifica que el backend esté activo en ${API_CONFIG.BASE_URL}`
+      );
+    } finally {
+      setLoadingDashboard(false);
+      setRefreshingDashboard(false);
+    }
+  }, [cargarFormularios]);
+
+  // Cargar al montar
+  useEffect(() => {
+    loadDashboardData();
+  }, [loadDashboardData]);
+
+  // Recargar al enfocar la pantalla
+  useFocusEffect(
+    useCallback(() => {
+      loadDashboardData();
+    }, [loadDashboardData])
+  );
 
   const filteredForms = useMemo(() => {
     if (filter === 'all') return formularios;
@@ -41,26 +99,23 @@ const DashboardScreen: React.FC<DashboardScreenProps> = ({ navigation }) => {
   const metrics = useMemo(() => {
     const total = filteredForms.length;
     const tecnicas = filteredForms.filter((f) => f.tipo === 'visita_tecnica').length;
-    const plantaciones = filteredForms.filter((f) => f.tipo === 'plantacion').length;
     const sincronizadas = filteredForms.filter((f) => f.sincronizado).length;
     const pendientes = total - sincronizadas;
 
-    return { total, tecnicas, plantaciones, sincronizadas, pendientes };
+    return { total, tecnicas, sincronizadas, pendientes };
   }, [filteredForms]);
 
   // Agrupar por fecha para el gráfico
   const chartData = useMemo(() => {
-    const dateMap: Record<string, { visitas: number; plantaciones: number }> = {};
+    const dateMap: Record<string, { visitas: number }> = {};
 
     filteredForms.forEach((f) => {
       const date = f.created_at.split('T')[0];
       if (!dateMap[date]) {
-        dateMap[date] = { visitas: 0, plantaciones: 0 };
+        dateMap[date] = { visitas: 0 };
       }
       if (f.tipo === 'visita_tecnica') {
         dateMap[date].visitas++;
-      } else {
-        dateMap[date].plantaciones++;
       }
     });
 
@@ -68,7 +123,6 @@ const DashboardScreen: React.FC<DashboardScreenProps> = ({ navigation }) => {
     return {
       labels: sortedDates.map((d) => d.slice(5)), // MM-DD
       visitas: sortedDates.map((d) => dateMap[d].visitas),
-      plantaciones: sortedDates.map((d) => dateMap[d].plantaciones),
     };
   }, [filteredForms]);
 
@@ -95,8 +149,26 @@ const DashboardScreen: React.FC<DashboardScreenProps> = ({ navigation }) => {
     propsForDots: { r: '5', strokeWidth: '2', stroke: COLORS.primary },
   };
 
+  if (loadingDashboard && formularios.length === 0) {
+    return <LoadingSpinner message="Cargando dashboard..." fullScreen />;
+  }
+
   return (
-    <ScrollView style={styles.container} contentContainerStyle={styles.content}>
+    <ScrollView
+      style={styles.container}
+      contentContainerStyle={styles.content}
+      refreshControl={
+        <RefreshControl
+          refreshing={refreshingDashboard}
+          onRefresh={() => {
+            setRefreshingDashboard(true);
+            loadDashboardData();
+          }}
+          colors={[COLORS.primary]}
+          tintColor={COLORS.primary}
+        />
+      }
+    >
       <Text style={styles.title}>Dashboard</Text>
       <Text style={styles.subtitle}>Métricas generales de las visitas a terreno</Text>
 
@@ -115,12 +187,6 @@ const DashboardScreen: React.FC<DashboardScreenProps> = ({ navigation }) => {
           valor={metrics.tecnicas}
           color={COLORS.roleTecnico}
           icono="🔧"
-        />
-        <MetricCard
-          titulo="Plantaciones"
-          valor={metrics.plantaciones}
-          color={COLORS.primary}
-          icono="🌱"
         />
         <MetricCard
           titulo="Sincronizadas"
@@ -142,6 +208,26 @@ const DashboardScreen: React.FC<DashboardScreenProps> = ({ navigation }) => {
         />
       </View>
 
+      {/* Mensaje de error */}
+      {dashboardError && (
+        <View style={[styles.chartCard, { borderLeftWidth: 4, borderLeftColor: COLORS.error }]}>
+          <Text style={{ fontSize: FONTS.sizes.md, fontWeight: 'bold', color: COLORS.error }}>⚠️ Error</Text>
+          <Text style={{ fontSize: FONTS.sizes.sm, color: COLORS.textSecondary, marginTop: 4, lineHeight: 18 }}>
+            {dashboardError}
+          </Text>
+        </View>
+      )}
+
+      {/* Mensaje si no hay datos */}
+      {metrics.total === 0 && !loadingDashboard && (
+        <View style={styles.chartCard}>
+          <Text style={styles.chartTitle}>📭 Sin datos</Text>
+          <Text style={styles.chartSubtitle}>
+            No hay formularios disponibles. Usa el menú "Listado de técnicos y visitas" para verificar la conexión con el servidor.
+          </Text>
+        </View>
+      )}
+
       {/* Gráfico de tendencia */}
       {chartData.labels.length > 0 && (
         <View style={styles.chartCard}>
@@ -157,15 +243,8 @@ const DashboardScreen: React.FC<DashboardScreenProps> = ({ navigation }) => {
                   color: (opacity) => `rgba(27, 94, 32, ${opacity})`,
                   strokeWidth: 2,
                 },
-                {
-                  data: chartData.plantaciones.length > 0
-                    ? chartData.plantaciones
-                    : [0],
-                  color: (opacity) => `rgba(249, 168, 37, ${opacity})`,
-                  strokeWidth: 2,
-                },
               ],
-              legend: ['Visitas Técnicas', 'Plantaciones'],
+              legend: ['Visitas Técnicas'],
             }}
             width={screenWidth - SPACING.lg * 2}
             height={220}
@@ -206,7 +285,7 @@ const DashboardScreen: React.FC<DashboardScreenProps> = ({ navigation }) => {
             <Text style={styles.recentName}>{form.beneficiario.nombre}</Text>
             <Text style={styles.recentMeta}>
               {form.beneficiario.municipio} ·{' '}
-              {form.tipo === 'visita_tecnica' ? 'Visita' : 'Plantación'}
+              {form.tipo === 'visita_tecnica' ? 'Visita' : form.tipo === 'caracterizacion' ? 'Caracterización' : 'Plantación'}
             </Text>
           </View>
         ))}
@@ -232,6 +311,12 @@ const styles = StyleSheet.create({
     fontSize: FONTS.sizes.sm,
     color: COLORS.textSecondary,
     marginBottom: SPACING.md,
+  },
+  chartSubtitle: {
+    fontSize: FONTS.sizes.sm,
+    color: COLORS.textSecondary,
+    marginTop: SPACING.sm,
+    lineHeight: 20,
   },
   metricsGrid: {
     flexDirection: 'row',

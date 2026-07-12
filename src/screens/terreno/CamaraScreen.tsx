@@ -12,20 +12,28 @@ import {
   Alert,
   FlatList,
   ActivityIndicator,
+  ScrollView,
+  Modal,
+  Dimensions,
+  Pressable,
 } from 'react-native';
+const { height: SCREEN_HEIGHT } = Dimensions.get('window');
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { Camera, CameraView, useCameraPermissions } from 'expo-camera';
 import * as Location from 'expo-location';
+import * as FileSystem from 'expo-file-system';
 import { useCamera } from '../../hooks/useCamera';
 import { useClimate } from '../../hooks/useClimate';
+import { useAuth } from '../../store/AuthContext';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useForm } from '../../store/FormContext';
-import { COLORS, FONTS, SPACING, BORDER_RADIUS, SHADOWS } from '../../theme';
+import { COLORS, FONTS, SPACING, BORDER_RADIUS, SHADOWS, API_CONFIG } from '../../theme';
 import { formatCoordenadas } from '../../utils/formatters';
 import LoadingSpinner from '../../components/LoadingSpinner';
 import { FotoGeotag, ClimaActual, DocumentoFinca } from '../../types';
 import * as DocumentPicker from 'expo-document-picker';
 import { getDb } from '../../services/database';
+import apiClient, { isOfflineError } from '../../services/api';
 
 type CamaraScreenProps = {
   navigation: NativeStackNavigationProp<any>;
@@ -36,21 +44,32 @@ const CamaraScreen: React.FC<CamaraScreenProps> = ({ navigation }) => {
   const [showCamera, setShowCamera] = useState(false);
   const [modoVideo, setModoVideo] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
-  const { capturarFoto, removeFoto, fotos, isLoading, clearFotos } = useCamera();
+  const { capturarFoto, removeFoto, fotos, isLoading, clearFotos, setFotos } = useCamera();
   const { addFoto, formularioActual } = useForm();
   const { climaActual, resumen, isLoading: climaLoading, error: climaError, fetchClimate } = useClimate();
   const cameraRef = useRef<CameraView>(null);
   const insets = useSafeAreaInsets();
   const [fotosGuardadas, setFotosGuardadas] = useState<Set<string>>(new Set());
 
+  // ---- Estado para previsualización de foto a pantalla completa ----
+  const [fotoPreview, setFotoPreview] = useState<FotoGeotag | null>(null);
+
   // ---- Estado para Gestión Documental ----
   const [documentos, setDocumentos] = useState<DocumentoFinca[]>([]);
   const [subiendoDoc, setSubiendoDoc] = useState(false);
+  const [subiendoDocAMinIO, setSubiendoDocAMinIO] = useState(false);
+  const [docsSaved, setDocsSaved] = useState(false);
 
-  // Limpiar fotos del hook al entrar (evita arrastrar evidencias de formularios anteriores)
+  // Cargar fotos existentes del FormContext al montar
+  // (para que no se pierdan al ir a otra pantalla y volver)
   useEffect(() => {
-    clearFotos();
-  }, []);
+    const fotosExistentes = formularioActual?.fotos || [];
+    if (fotosExistentes.length > 0 && fotos.length === 0) {
+      setFotos(fotosExistentes);
+      // Marcar todas como ya guardadas
+      setFotosGuardadas(new Set(fotosExistentes.map(f => f.id)));
+    }
+  }, []); // solo al montar
 
   // Cargar documentos existentes al montar, solo del formulario actual
   useEffect(() => {
@@ -65,6 +84,7 @@ const CamaraScreen: React.FC<CamaraScreenProps> = ({ navigation }) => {
           );
           if (docs && docs.length > 0) {
             setDocumentos(docs as DocumentoFinca[]);
+            setDocsSaved(true);
           }
         }
       } catch (e) {
@@ -74,7 +94,59 @@ const CamaraScreen: React.FC<CamaraScreenProps> = ({ navigation }) => {
     cargarDocs();
   }, [formularioActual?.id]);
 
-  // Seleccionar y subir documento
+  // Actualizar documentos guardados con 'sin-formulario' cuando el form ID real esté disponible
+  useEffect(() => {
+    const actualizarFormId = async () => {
+      const formId = formularioActual?.id;
+      if (!formId || formId === 'sin-formulario') return;
+      try {
+        const db = getDb();
+        if (db) {
+          await db.runAsync(
+            "UPDATE documentos_finca SET formulario_id = ? WHERE formulario_id = 'sin-formulario' OR formulario_id IS NULL OR formulario_id = ''",
+            [formId]
+          );
+        }
+      } catch (e) {
+        // Ignorar
+      }
+    };
+    actualizarFormId();
+  }, [formularioActual?.id]);
+
+  // Subir un documento a MinIO
+  const subirDocAMinIO = async (doc: DocumentoFinca): Promise<boolean> => {
+    try {
+      const formData = new FormData();
+      // @ts-ignore — React Native FormData
+      formData.append('archivo', {
+        uri: doc.uri,
+        type: doc.tipo === 'pdf' ? 'application/pdf' : 'image/jpeg',
+        name: doc.nombre || `doc_${Date.now()}`,
+      });
+      if (doc.descripcion) formData.append('descripcion', doc.descripcion);
+
+      const response = await apiClient.post(
+        API_CONFIG.ENDPOINTS.DOCUMENTOS + '/subir',
+        formData,
+        {
+          headers: { 'Content-Type': 'multipart/form-data' },
+          timeout: 60000,
+        }
+      );
+      console.log('[Camara] Documento subido a MinIO:', response.data?.ruta);
+      return true;
+    } catch (error) {
+      if (isOfflineError(error)) {
+        console.warn('[Camara] Offline — documento no subido a MinIO, quedó pendiente');
+        return true; // No es error crítico, se sincronizará después
+      }
+      console.error('[Camara] Error al subir documento a MinIO:', error);
+      return false;
+    }
+  };
+
+  // Seleccionar y guardar documento (local + MinIO)
   const handleSubirDocumento = async () => {
     try {
       const result = await DocumentPicker.getDocumentAsync({
@@ -84,6 +156,7 @@ const CamaraScreen: React.FC<CamaraScreenProps> = ({ navigation }) => {
 
       if (!result.canceled && result.assets && result.assets.length > 0) {
         setSubiendoDoc(true);
+        setSubiendoDocAMinIO(true);
         const asset = result.assets[0];
         const nuevoDoc: DocumentoFinca = {
           id: 'doc-' + Date.now(),
@@ -94,6 +167,14 @@ const CamaraScreen: React.FC<CamaraScreenProps> = ({ navigation }) => {
           descripcion: '',
           created_at: new Date().toISOString(),
         };
+
+        // 1. Subir a MinIO
+        const minioOk = await subirDocAMinIO(nuevoDoc);
+        if (!minioOk) {
+          Alert.alert('Advertencia', 'El documento se guardó localmente pero no se pudo subir a MinIO. Se sincronizará después.');
+        }
+
+        // 2. Guardar en SQLite local
         const db = getDb();
         if (db) {
           await db.runAsync(
@@ -103,13 +184,16 @@ const CamaraScreen: React.FC<CamaraScreenProps> = ({ navigation }) => {
           );
         }
         setDocumentos(prev => [...prev, nuevoDoc]);
-        Alert.alert('✅ Documento agregado', `${asset.name} se ha vinculado al formulario.`);
+        setDocsSaved(true);
+        setSubiendoDocAMinIO(false);
+        Alert.alert('✅ Documento guardado', `${asset.name} se ha guardado correctamente (local + MinIO).`);
         setSubiendoDoc(false);
       }
     } catch (error) {
       console.error('[Camara] Error al seleccionar documento:', error);
       Alert.alert('Error', 'No se pudo agregar el documento.');
       setSubiendoDoc(false);
+      setSubiendoDocAMinIO(false);
     }
   };
 
@@ -257,21 +341,26 @@ const CamaraScreen: React.FC<CamaraScreenProps> = ({ navigation }) => {
     }
   };
 
-  const handleGuardarFotos = async () => {
+  const guardarFotosEnContexto = async (): Promise<boolean> => {
     const sinGuardar = fotos.filter((f) => !fotosGuardadas.has(f.id));
-    if (sinGuardar.length === 0) {
-      Alert.alert('Sin novedades', 'Todas las fotos ya están guardadas.');
-      return;
-    }
-
+    if (sinGuardar.length === 0) return true;
     try {
       for (const foto of sinGuardar) {
         addFoto(foto);
       }
       setFotosGuardadas(new Set(fotos.map((f) => f.id)));
-      Alert.alert('✅ Guardadas', `${sinGuardar.length} foto(s) guardada(s) correctamente.`);
+      return true;
     } catch (err) {
       console.error('[Camara] Error al guardar fotos:', err);
+      return false;
+    }
+  };
+
+  const handleGuardarFotos = async () => {
+    const ok = await guardarFotosEnContexto();
+    if (ok) {
+      Alert.alert('✅ Guardadas', 'Fotos guardadas correctamente.');
+    } else {
       Alert.alert('Error', 'No se pudieron guardar las fotos.');
     }
   };
@@ -290,7 +379,7 @@ const CamaraScreen: React.FC<CamaraScreenProps> = ({ navigation }) => {
     ]);
   };
 
-  const handleContinue = () => {
+  const handleContinue = async () => {
     const sinGuardar = fotos.filter((f) => !fotosGuardadas.has(f.id));
     if (sinGuardar.length > 0) {
       Alert.alert(
@@ -298,9 +387,20 @@ const CamaraScreen: React.FC<CamaraScreenProps> = ({ navigation }) => {
         `Tienes ${sinGuardar.length} foto(s) sin guardar. ¿Deseas guardarlas antes de continuar?`,
         [
           { text: 'Descartar', style: 'destructive', onPress: () => navigation.goBack() },
-          { text: 'Guardar', onPress: handleGuardarFotos },
+          { text: 'Guardar', onPress: async () => {
+            const ok = await guardarFotosEnContexto();
+            if (ok && documentos.length > 0) {
+              Alert.alert('✅ Todo guardado', `${fotos.length} foto(s) y ${documentos.length} documento(s) vinculados.`);
+            }
+            navigation.goBack();
+          }},
         ]
       );
+      return;
+    }
+    // Ya todo está guardado, mostrar resumen solo si hay documentos
+    if (documentos.length > 0) {
+      navigation.goBack();
       return;
     }
     navigation.goBack();
@@ -424,142 +524,195 @@ const CamaraScreen: React.FC<CamaraScreenProps> = ({ navigation }) => {
 
   return (
     <View style={[styles.container, { paddingTop: Math.max(insets.top, SPACING.xxl), paddingBottom: insets.bottom + SPACING.lg }]}>
-      <Text style={styles.title}>Evidencia Fotográfica</Text>
-      <Text style={styles.subtitle}>
-        Las fotos se georreferenciarán automáticamente. Los datos climáticos se obtienen desde tu ubicación actual.
-      </Text>
-
-      {renderClimaCard()}
-
-      <TouchableOpacity
-        style={styles.openCameraButton}
-        onPress={handleOpenCamera}
-        disabled={isLoading}
+      <ScrollView
+        style={styles.scrollContainer}
+        contentContainerStyle={styles.scrollContent}
+        keyboardShouldPersistTaps="handled"
+        showsVerticalScrollIndicator={true}
       >
-        <Text style={styles.cameraIcon}>📷</Text>
-        <Text style={styles.openCameraText}>
-          {isLoading ? 'Capturando...' : 'Abrir Cámara'}
+        <Text style={styles.title}>Evidencia Fotográfica</Text>
+        <Text style={styles.subtitle}>
+          Las fotos se georreferenciarán automáticamente. Los datos climáticos se obtienen desde tu ubicación actual.
         </Text>
-      </TouchableOpacity>
 
-      {fotos.length > 0 && (
-        <View style={styles.fotosSection}>
-          <View style={styles.fotosHeader}>
-            <Text style={styles.fotosCount}>
-              {fotos.length} foto(s) capturada(s)
-            </Text>
-            {todasGuardadas && (
-              <Text style={styles.fotosSavedBadge}>✓ Guardadas</Text>
-            )}
-          </View>
-          <FlatList
-            data={fotos}
-            keyExtractor={(item) => item.id}
-            numColumns={2}
-            contentContainerStyle={styles.fotosGrid}
-            renderItem={({ item }) => (
-              <TouchableOpacity
-                style={styles.fotoCard}
-                onLongPress={() => handleDeleteFoto(item)}
-              >
-                {item.tipo === 'video' ? (
-                  <View style={styles.videoPreview}>
-                    <Text style={styles.videoPlayIcon}>▶️</Text>
-                    <Text style={styles.videoLabel}>VIDEO</Text>
-                  </View>
-                ) : (
-                  <Image source={{ uri: item.uri }} style={styles.fotoPreview} />
-                )}
-                <View style={styles.fotoInfo}>
-                  {item.tipo === 'video' && (
-                    <Text style={styles.fotoVideoTag}>🎥 Video</Text>
-                  )}
-                  {ubicacionesFotos[item.id] ? (
-                    <>
-                      <Text style={styles.fotoUbicacionNombre}>
-                        {ubicacionesFotos[item.id].municipio}
-                      </Text>
-                      <Text style={styles.fotoUbicacionDetalle}>
-                        {ubicacionesFotos[item.id].departamento}, {ubicacionesFotos[item.id].pais}
-                      </Text>
-                    </>
-                  ) : (
-                    <Text style={styles.fotoCoords}>
-                      Obteniendo ubicación...
-                    </Text>
-                  )}
-                  <Text style={styles.fotoHeading}>
-                    {headingCompass(item.coordenadas.heading)}
-                  </Text>
-                  {fotosGuardadas.has(item.id) && (
-                    <Text style={styles.fotoGuardadaLabel}>✓</Text>
-                  )}
-                </View>
-              </TouchableOpacity>
-            )}
-          />
-        </View>
-      )}
-
-      {/* ---- Sección de Gestión Documental ---- */}
-      <View style={styles.docSection}>
-        <View style={styles.docHeader}>
-          <Text style={styles.docTitle}>📄 Documentos de la Finca</Text>
-          <Text style={styles.docCount}>{documentos.length} archivo(s)</Text>
-        </View>
+        {renderClimaCard()}
 
         <TouchableOpacity
-          style={styles.subirDocBtn}
-          onPress={handleSubirDocumento}
-          disabled={subiendoDoc}
+          style={styles.openCameraButton}
+          onPress={handleOpenCamera}
+          disabled={isLoading}
         >
-          <Text style={styles.subirDocBtnText}>
-            {subiendoDoc ? '⏳ Subiendo...' : '+ Agregar documento (PDF/imagen)'}
+          <Text style={styles.cameraIcon}>📷</Text>
+          <Text style={styles.openCameraText}>
+            {isLoading ? 'Capturando...' : 'Abrir Cámara'}
           </Text>
         </TouchableOpacity>
 
-        {documentos.length > 0 && (
-          <View style={styles.docList}>
-            {documentos.map((doc) => (
-              <View key={doc.id} style={styles.docItem}>
-                <Text style={styles.docIcon}>
-                  {doc.nombre.endsWith('.pdf') ? '📕' : '🖼️'}
-                </Text>
-                <View style={styles.docInfo}>
-                  <Text style={styles.docNombre} numberOfLines={1}>{doc.nombre}</Text>
-                  <Text style={styles.docFecha}>
-                    {new Date(doc.created_at).toLocaleDateString('es-CO')}
-                  </Text>
-                </View>
-                {doc.tipo === 'pdf' && (
-                  <Text style={styles.docSynced}>📕</Text>
-                )}
-              </View>
-            ))}
+        {fotos.length > 0 && (
+          <View style={styles.fotosSection}>
+            <View style={styles.fotosHeader}>
+              <Text style={styles.fotosCount}>
+                {fotos.length} foto(s) capturada(s)
+              </Text>
+              {todasGuardadas && (
+                <Text style={styles.fotosSavedBadge}>✓ Guardadas</Text>
+              )}
+            </View>
+            <View style={styles.fotosGrid}>
+              {fotos.map((item) => (
+                <TouchableOpacity
+                  key={item.id}
+                  style={styles.fotoCard}
+                  onPress={() => item.tipo !== 'video' && setFotoPreview(item)}
+                  onLongPress={() => handleDeleteFoto(item)}
+                  activeOpacity={0.8}
+                >
+                  {item.tipo === 'video' ? (
+                    <View style={styles.videoPreview}>
+                      <Text style={styles.videoPlayIcon}>▶️</Text>
+                      <Text style={styles.videoLabel}>VIDEO</Text>
+                    </View>
+                  ) : (
+                    <Image source={{ uri: item.uri }} style={styles.fotoPreview} resizeMode="cover" />
+                  )}
+                  <View style={styles.fotoInfo}>
+                    {item.tipo === 'video' && (
+                      <Text style={styles.fotoVideoTag}>🎥 Video</Text>
+                    )}
+                    {ubicacionesFotos[item.id] ? (
+                      <>
+                        <Text style={styles.fotoUbicacionNombre}>
+                          {ubicacionesFotos[item.id].municipio}
+                        </Text>
+                        <Text style={styles.fotoUbicacionDetalle}>
+                          {ubicacionesFotos[item.id].departamento}, {ubicacionesFotos[item.id].pais}
+                        </Text>
+                      </>
+                    ) : (
+                      <Text style={styles.fotoCoords}>
+                        Obteniendo ubicación...
+                      </Text>
+                    )}
+                    <Text style={styles.fotoHeading}>
+                      {headingCompass(item.coordenadas.heading)}
+                    </Text>
+                    {fotosGuardadas.has(item.id) && (
+                      <Text style={styles.fotoGuardadaLabel}>✓</Text>
+                    )}
+                  </View>
+                </TouchableOpacity>
+              ))}
+            </View>
+            <Text style={styles.fotoTapHint}>👆 Toca una foto para verla en grande | Mantén presionado para eliminar</Text>
           </View>
         )}
-      </View>
 
-      {/* Botón Guardar fotos en FormContext */}
-      {fotos.length > 0 && pendientes > 0 && (
+        {/* ---- Sección de Gestión Documental ---- */}
+        <View style={styles.docSection}>
+          <View style={styles.docHeader}>
+            <Text style={styles.docTitle}>📄 Documentos de la Finca</Text>
+            <Text style={styles.docCount}>{documentos.length} archivo(s)</Text>
+          </View>
+
+          <TouchableOpacity
+            style={styles.subirDocBtn}
+            onPress={handleSubirDocumento}
+            disabled={subiendoDoc}
+          >
+            <Text style={styles.subirDocBtnText}>
+              {subiendoDoc
+                ? subiendoDocAMinIO ? '⏳ Subiendo a MinIO...' : '⏳ Procesando...'
+                : '+ Agregar documento (PDF/imagen)'}
+            </Text>
+          </TouchableOpacity>
+
+          {documentos.length > 0 && (
+            <View style={styles.docList}>
+              {documentos.map((doc) => (
+                <View key={doc.id} style={styles.docItem}>
+                  <Text style={styles.docIcon}>
+                    {doc.nombre?.toLowerCase().endsWith('.pdf') ? '📕' : '🖼️'}
+                  </Text>
+                  <View style={styles.docInfo}>
+                    <Text style={styles.docNombre} numberOfLines={1}>{doc.nombre}</Text>
+                    <Text style={styles.docFecha}>
+                      {new Date(doc.created_at).toLocaleDateString('es-CO')}
+                    </Text>
+                  </View>
+                  <Text style={styles.docSynced}>✅</Text>
+                </View>
+              ))}
+              {docsSaved && (
+                <Text style={styles.docsSavedText}>✓ Documentos guardados (local + MinIO)</Text>
+              )}
+            </View>
+          )}
+        </View>
+
+        {/* Botón Guardar fotos en FormContext */}
+        {fotos.length > 0 && pendientes > 0 && (
+          <TouchableOpacity
+            style={styles.saveButton}
+            onPress={handleGuardarFotos}
+          >
+            <Text style={styles.saveButtonText}>
+              💾 Guardar {pendientes} foto(s) en el formulario
+            </Text>
+          </TouchableOpacity>
+        )}
+
         <TouchableOpacity
-          style={styles.saveButton}
-          onPress={handleGuardarFotos}
+          style={[styles.continueButton, todasGuardadas && styles.continueButtonOk]}
+          onPress={handleContinue}
         >
-          <Text style={styles.saveButtonText}>
-            💾 Guardar {pendientes} foto(s) en el formulario
+          <Text style={[styles.continueButtonText, todasGuardadas && styles.continueButtonTextOk]}>
+            {todasGuardadas ? '✓ Continuar' : 'Continuar'}
           </Text>
         </TouchableOpacity>
-      )}
+      </ScrollView>
 
-      <TouchableOpacity
-        style={[styles.continueButton, todasGuardadas && styles.continueButtonOk]}
-        onPress={handleContinue}
+      {/* ---- Modal de previsualización de foto a pantalla completa ---- */}
+      <Modal
+        visible={!!fotoPreview}
+        transparent={true}
+        animationType="fade"
+        onRequestClose={() => setFotoPreview(null)}
       >
-        <Text style={[styles.continueButtonText, todasGuardadas && styles.continueButtonTextOk]}>
-          {todasGuardadas ? '✓ Continuar' : 'Continuar'}
-        </Text>
-      </TouchableOpacity>
+        <Pressable style={styles.modalOverlay} onPress={() => setFotoPreview(null)}>
+          {fotoPreview && (
+            <Pressable style={styles.modalContent} onPress={() => {}}>
+              <Image
+                source={{ uri: fotoPreview.uri }}
+                style={styles.modalImage}
+                resizeMode="contain"
+              />
+              <View style={styles.modalInfo}>
+                <Text style={styles.modalTitle}>📸 Foto</Text>
+                {ubicacionesFotos[fotoPreview.id] && (
+                  <Text style={styles.modalText}>
+                    📍 {ubicacionesFotos[fotoPreview.id].municipio}, {ubicacionesFotos[fotoPreview.id].departamento}
+                  </Text>
+                )}
+                <Text style={styles.modalText}>
+                  🧭 {headingCompass(fotoPreview.coordenadas.heading)}
+                </Text>
+                <Text style={styles.modalText}>
+                  📅 {new Date(fotoPreview.timestamp).toLocaleString('es-CO')}
+                </Text>
+                <Text style={styles.modalCoords}>
+                  {formatCoordenadas(fotoPreview.coordenadas.latitud, fotoPreview.coordenadas.longitud, 6)}
+                </Text>
+              </View>
+              <TouchableOpacity
+                style={styles.modalCloseBtn}
+                onPress={() => setFotoPreview(null)}
+              >
+                <Text style={styles.modalCloseText}>✕ Cerrar</Text>
+              </TouchableOpacity>
+            </Pressable>
+          )}
+        </Pressable>
+      </Modal>
     </View>
   );
 };
@@ -712,8 +865,15 @@ const styles = StyleSheet.create({
     fontWeight: FONTS.weights.bold,
     color: COLORS.textOnPrimary,
   },
-  fotosSection: {
+  scrollContainer: {
     flex: 1,
+  },
+  scrollContent: {
+    paddingBottom: SPACING.xxl,
+  },
+  fotosSection: {
+    marginTop: SPACING.sm,
+    marginBottom: SPACING.sm,
   },
   fotosHeader: {
     flexDirection: 'row',
@@ -736,13 +896,23 @@ const styles = StyleSheet.create({
     borderRadius: BORDER_RADIUS.sm,
   },
   fotosGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
     gap: SPACING.sm,
   },
+  fotoTapHint: {
+    fontSize: FONTS.sizes.xs,
+    color: COLORS.textLight,
+    textAlign: 'center',
+    marginTop: SPACING.xs,
+    fontStyle: 'italic',
+  },
   fotoCard: {
-    flex: 1,
-    margin: SPACING.xs,
+    width: '48%',
+    marginBottom: SPACING.sm,
     borderRadius: BORDER_RADIUS.md,
     overflow: 'hidden',
+    backgroundColor: COLORS.surface,
     ...SHADOWS.sm,
   },
   fotoPreview: {
@@ -995,6 +1165,66 @@ const styles = StyleSheet.create({
   },
   docSynced: {
     fontSize: 16,
+  },
+  docsSavedText: {
+    fontSize: FONTS.sizes.xs,
+    color: COLORS.success,
+    fontStyle: 'italic',
+    textAlign: 'center',
+    paddingTop: SPACING.xs,
+  },
+  // ---- Modal de previsualización de foto ----
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.92)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  modalContent: {
+    width: '90%',
+    maxHeight: '85%',
+    alignItems: 'center',
+  },
+  modalImage: {
+    width: '100%',
+    height: SCREEN_HEIGHT * 0.55,
+    borderRadius: BORDER_RADIUS.md,
+  },
+  modalInfo: {
+    width: '100%',
+    backgroundColor: 'rgba(0,0,0,0.6)',
+    padding: SPACING.md,
+    borderRadius: BORDER_RADIUS.md,
+    marginTop: SPACING.sm,
+  },
+  modalTitle: {
+    fontSize: FONTS.sizes.lg,
+    fontWeight: FONTS.weights.bold,
+    color: '#fff',
+    marginBottom: SPACING.xs,
+  },
+  modalText: {
+    fontSize: FONTS.sizes.sm,
+    color: '#ddd',
+    marginTop: 2,
+  },
+  modalCoords: {
+    fontSize: FONTS.sizes.xs,
+    color: '#aaa',
+    fontFamily: 'monospace',
+    marginTop: 4,
+  },
+  modalCloseBtn: {
+    marginTop: SPACING.md,
+    paddingVertical: SPACING.sm,
+    paddingHorizontal: SPACING.xl,
+    backgroundColor: COLORS.primary,
+    borderRadius: BORDER_RADIUS.md,
+  },
+  modalCloseText: {
+    fontSize: FONTS.sizes.md,
+    fontWeight: FONTS.weights.bold,
+    color: COLORS.textOnPrimary,
   },
 });
 

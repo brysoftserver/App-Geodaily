@@ -30,11 +30,11 @@ const MENU_ITEMS = [
   },
   {
     id: 'listado',
-    title: 'Listado de Visitas',
-    subtitle: 'Todos los formularios registrados',
+    title: 'Listado de técnicos y visitas',
+    subtitle: 'Técnicos, beneficiarios y formularios',
     icon: '📋',
     color: COLORS.primary,
-    screen: 'SupervisionFormularioList',
+    screen: 'SupervisionVisitasJerarquicas',
   },
   {
     id: 'calendario',
@@ -47,7 +47,7 @@ const MENU_ITEMS = [
   {
     id: 'mapa',
     title: 'Mapa General',
-    subtitle: 'Plantaciones, técnicos y mediciones',
+    subtitle: 'Mapas, técnicos y mediciones',
     icon: '🗺️',
     color: COLORS.success,
     screen: 'MapaGeneral',

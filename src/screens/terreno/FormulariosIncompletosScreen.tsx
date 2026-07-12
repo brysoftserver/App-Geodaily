@@ -14,6 +14,7 @@ import {
 } from 'react-native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
+import AppBackground from '../../components/AppBackground';
 import { COLORS, FONTS, SPACING, BORDER_RADIUS, SHADOWS } from '../../theme';
 import { cargarBorradores, eliminarBorrador, FormDraft } from '../../store/FormDraftStore';
 import { useAuth } from '../../store/AuthContext';
@@ -77,10 +78,16 @@ const FormulariosIncompletosScreen: React.FC<FormulariosIncompletosScreenProps> 
   };
 
   const handleContinueDraft = (draft: FormDraft) => {
-    navigation.navigate('Formulario', {
-      tipo: draft.tipo || 'visita_tecnica',
-      draftId: draft.id,
-    });
+    if (draft.tipo === 'caracterizacion') {
+      navigation.navigate('FormularioCaracterizacion', {
+        draftId: draft.id,
+      });
+    } else {
+      navigation.navigate('Formulario', {
+        tipo: draft.tipo || 'visita_tecnica',
+        draftId: draft.id,
+      });
+    }
   };
 
   const handleDeleteDraft = (draft: FormDraft) => {
@@ -123,6 +130,7 @@ const FormulariosIncompletosScreen: React.FC<FormulariosIncompletosScreenProps> 
 
   return (
     <SafeAreaView style={styles.safeContainer} edges={['top']}>
+    <AppBackground overlay={0.35}>
     <View style={styles.container}>
       <View style={[styles.header, { paddingTop: Math.max(insets.top, SPACING.md) }]}>
         <Text style={styles.title}>Borradores Guardados</Text>
@@ -152,10 +160,10 @@ const FormulariosIncompletosScreen: React.FC<FormulariosIncompletosScreenProps> 
             >
               <View style={styles.draftHeader}>
                 <Text style={styles.draftType}>
-                  {item.tipo === 'plantacion' ? '🌱 Plantación' : item.tipo === 'caracterizacion' ? '👥 Caracterización' : '🔍 Visita Técnica'}
+                  {item.tipo === 'caracterizacion' ? '👥 Caracterización Sociodemográfica' : '🔍 Visita Técnica'}
                 </Text>
                 <Text style={styles.draftStep}>
-                  Paso {item.step || 1} de 4
+                  {item.tipo === 'caracterizacion' ? '📋 Formulario completo' : `Paso ${item.step || 1} de 4`}
                 </Text>
               </View>
 
@@ -197,6 +205,7 @@ const FormulariosIncompletosScreen: React.FC<FormulariosIncompletosScreenProps> 
         />
       )}
     </View>
+    </AppBackground>
     </SafeAreaView>
   );
 };
@@ -204,7 +213,7 @@ const FormulariosIncompletosScreen: React.FC<FormulariosIncompletosScreenProps> 
 const styles = StyleSheet.create({
   safeContainer: {
     flex: 1,
-    backgroundColor: COLORS.primary,
+    backgroundColor: 'transparent',
   },
   container: {
     flex: 1,

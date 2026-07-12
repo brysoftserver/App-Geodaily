@@ -24,6 +24,10 @@ import {
   markFotoAsSynced,
   updateSyncAttempts,
   getSyncQueueItemByFormId,
+  getPlantacionesNoSincronizadas,
+  getMedicionesNoSincronizadas,
+  getTrackingNoSincronizado,
+  marcarSincronizado,
 } from '../services/database';
 import { uploadPhoto } from '../services/photos.service';
 import { generarPDF } from '../services/pdf.service';
@@ -283,13 +287,112 @@ export const SyncProvider: React.FC<{ children: React.ReactNode }> = ({
   );
 
   // ------------------------------------------------------------------
-  // checkPending — contar formularios pendientes
+  // Sincronizar plantaciones pendientes
+  // ------------------------------------------------------------------
+
+  const sincronizarPlantaciones = useCallback(async (): Promise<string[]> => {
+    const fallaron: string[] = [];
+    try {
+      const pendientes = await getPlantacionesNoSincronizadas();
+      if (pendientes.length === 0) return fallaron;
+
+      console.log(`[Sync] Subiendo ${pendientes.length} plantaciones...`);
+      const response = await apiClient.post(
+        API_CONFIG.ENDPOINTS.PLANTACIONES + '/sync',
+        { plantaciones: pendientes },
+        { timeout: 15000 }
+      );
+
+      if (response.data?.estado === 'ok') {
+        for (const p of pendientes) {
+          await marcarSincronizado('plantaciones', p.id);
+        }
+        console.log(`[Sync] ${pendientes.length} plantaciones sincronizadas`);
+      } else {
+        pendientes.forEach(p => fallaron.push(p.id));
+      }
+    } catch (err: any) {
+      console.warn('[Sync] Error sincronizando plantaciones:', err?.message);
+    }
+    return fallaron;
+  }, []);
+
+  // ------------------------------------------------------------------
+  // Sincronizar mediciones de terreno pendientes
+  // ------------------------------------------------------------------
+
+  const sincronizarMediciones = useCallback(async (): Promise<string[]> => {
+    const fallaron: string[] = [];
+    try {
+      const pendientes = await getMedicionesNoSincronizadas();
+      if (pendientes.length === 0) return fallaron;
+
+      console.log(`[Sync] Subiendo ${pendientes.length} mediciones...`);
+      const response = await apiClient.post(
+        API_CONFIG.ENDPOINTS.MEDICIONES + '/sync',
+        { mediciones: pendientes },
+        { timeout: 15000 }
+      );
+
+      if (response.data?.estado === 'ok') {
+        for (const m of pendientes) {
+          await marcarSincronizado('mediciones_terreno', m.id);
+        }
+        console.log(`[Sync] ${pendientes.length} mediciones sincronizadas`);
+      } else {
+        pendientes.forEach(m => fallaron.push(m.id));
+      }
+    } catch (err: any) {
+      console.warn('[Sync] Error sincronizando mediciones:', err?.message);
+    }
+    return fallaron;
+  }, []);
+
+  // ------------------------------------------------------------------
+  // Sincronizar posiciones de tracking pendientes
+  // ------------------------------------------------------------------
+
+  const sincronizarTracking = useCallback(async (): Promise<string[]> => {
+    const fallaron: string[] = [];
+    try {
+      const pendientes = await getTrackingNoSincronizado();
+      if (pendientes.length === 0) return fallaron;
+
+      console.log(`[Sync] Subiendo ${pendientes.length} posiciones de tracking...`);
+      const response = await apiClient.post(
+        API_CONFIG.ENDPOINTS.TRACKING + '/sync',
+        { posiciones: pendientes },
+        { timeout: 15000 }
+      );
+
+      if (response.data?.estado === 'ok') {
+        for (const pos of pendientes) {
+          await marcarSincronizado('tracking_posiciones', pos.id);
+        }
+        console.log(`[Sync] ${pendientes.length} posiciones sincronizadas`);
+      } else {
+        pendientes.forEach(pos => fallaron.push(pos.id));
+      }
+    } catch (err: any) {
+      console.warn('[Sync] Error sincronizando tracking:', err?.message);
+    }
+    return fallaron;
+  }, []);
+
+  // ------------------------------------------------------------------
+  // checkPending — contar todos los items pendientes
   // ------------------------------------------------------------------
 
   const checkPending = useCallback(async () => {
     try {
-      const pending = await getPendingSyncForms();
-      dispatch({ type: 'SET_PENDING', count: pending.length });
+      const [forms, plantas, mediciones, tracking] = await Promise.all([
+        getPendingSyncForms(),
+        getPlantacionesNoSincronizadas(),
+        getMedicionesNoSincronizadas(),
+        getTrackingNoSincronizado(),
+      ]);
+      const total = forms.length + plantas.length + mediciones.length + tracking.length;
+      dispatch({ type: 'SET_PENDING', count: total });
     } catch {
       // Ignorar errores al verificar pendientes
     }
@@ -320,7 +423,19 @@ export const SyncProvider: React.FC<{ children: React.ReactNode }> = ({
 
       console.log(`[Sync] Iniciando sync de ${pendingForms.length} formulario(s)`);
 
-      // Sincronizar uno por uno
+      // 1. Sincronizar plantaciones
+      const plantacionesFallidas = await sincronizarPlantaciones();
+      failedIds.push(...plantacionesFallidas.map(id => `plant-${id}`));
+
+      // 2. Sincronizar mediciones de terreno
+      const medicionesFallidas = await sincronizarMediciones();
+      failedIds.push(...medicionesFallidas.map(id => `med-${id}`));
+
+      // 3. Sincronizar tracking
+      const trackingFallido = await sincronizarTracking();
+      failedIds.push(...trackingFallido.map(id => `track-${id}`));
+
+      // 4. Sincronizar formularios (uno por uno con backoff)
       for (const form of pendingForms) {
         // Verificar reintentos
         const queueItem = await getSyncQueueItemByFormId(form.id);
