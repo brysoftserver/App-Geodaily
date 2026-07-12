@@ -3,7 +3,7 @@
 // ============================================================
 
 import * as SQLite from 'expo-sqlite';
-import { Formulario, Coordenadas, MedicionTerreno, ConteoPlantas, PosicionTracking, Capacitacion } from '../types';
+import { Formulario, Coordenadas } from '../types';
 
 let db: SQLite.SQLiteDatabase | null = null;
 let dbFailedOnce = false; // evita reintentar si ya falló (web)
@@ -208,17 +208,12 @@ export const getFormulariosLocales = async (usuarioId?: string): Promise<Formula
   }
 
   try {
-    let rows: any[];
-    if (usuarioId) {
-      rows = await database.getAllAsync<any>(
-        'SELECT * FROM formularios WHERE usuario_id = ? ORDER BY created_at DESC',
-        [usuarioId]
-      );
-    } else {
-      rows = await database.getAllAsync<any>(
-        'SELECT * FROM formularios ORDER BY created_at DESC'
-      );
-    }
+    const rows = await database.getAllAsync<Record<string, any>>(
+      usuarioId
+        ? 'SELECT * FROM formularios WHERE usuario_id = ? ORDER BY created_at DESC'
+        : 'SELECT * FROM formularios ORDER BY created_at DESC',
+      usuarioId ? [usuarioId] : ([] as any)
+    );
     const validRows: Formulario[] = [];
     for (const row of rows) {
       try {
@@ -247,7 +242,7 @@ export const getFormularioById = async (
   }
 
   try {
-    const row = await database.getFirstAsync<any>(
+    const row = await database.getFirstAsync<Record<string, any>>(
       'SELECT * FROM formularios WHERE id = ?',
       [id]
     );
@@ -294,7 +289,7 @@ export const getPendingSyncForms = async (): Promise<Formulario[]> => {
     console.warn('[DB] BD local no disponible — getPendingSyncForms retorna vacío');
     return [];
   }
-  const rows = await database.getAllAsync<any>(
+  const rows = await database.getAllAsync<Record<string, any>>(
     'SELECT * FROM formularios WHERE sincronizado = 0 ORDER BY created_at ASC'
   );
   const validRows: Formulario[] = [];
@@ -323,9 +318,9 @@ const addToSyncQueue = async (
   );
 };
 
-export const getSyncQueue = async (): Promise<any[]> => {
+export const getSyncQueue = async (): Promise<Record<string, any>[]> => {
   if (!db) return [];
-  return await db.getAllAsync<any>(
+  return await db.getAllAsync<Record<string, any>>(
     'SELECT * FROM sync_queue ORDER BY created_at ASC'
   );
 };
@@ -375,9 +370,9 @@ export const markFotoAsSynced = async (id: string): Promise<void> => {
  */
 export const getUnsyncedPhotos = async (
   formularioId: string
-): Promise<any[]> => {
+): Promise<Record<string, any>[]> => {
   if (!db) return [];
-  return await db.getAllAsync<any>(
+  return await db.getAllAsync<Record<string, any>>(
     'SELECT * FROM fotos_locales WHERE formulario_id = ? AND sincronizada = 0',
     [formularioId]
   );
@@ -402,9 +397,9 @@ export const updateSyncAttempts = async (
  */
 export const getSyncQueueItemByFormId = async (
   formularioId: string
-): Promise<any | null> => {
+): Promise<Record<string, any> | null> => {
   if (!db) return null;
-  return await db.getFirstAsync<any>(
+  return await db.getFirstAsync<Record<string, any>>(
     'SELECT * FROM sync_queue WHERE formulario_id = ?',
     [formularioId]
   );
@@ -425,14 +420,14 @@ export const clearSyncQueueByFormId = async (
 
 // --- Utilidades ---
 
-const deserializeFormulario = (row: any): Formulario => {
-  const safeJsonParse = (val: string | null, fallback: any = {}) => {
+const deserializeFormulario = (row: Record<string, any>): Formulario => {
+  const safeJsonParse = (val: string | null, fallback: Record<string, any> = {}) => {
     if (!val) return fallback;
     try { return JSON.parse(val); }
     catch { return fallback; }
   };
 
-  const form: any = {
+  const form: Record<string, any> = {
     id: row.id,
     tipo: row.tipo,
     tecnico: safeJsonParse(row.tecnico_json, { nombre: '', cedula: '', telefono: '', email: '' }),
@@ -623,18 +618,31 @@ export const runMigrations = async (): Promise<void> => {
   }
 };
 
+/**
+ * Obtener la instancia actual de la BD (puede ser null si no está inicializada).
+ * Para uso directo en operaciones que necesitan la BD. Prefiere ensureDb()
+ * si necesitas reconexión automática.
+ */
 export const getDb = (): SQLite.SQLiteDatabase | null => db;
+
+/**
+ * Obtener la BD con reconexión automática. Úsala en lugar de getDb()
+ * cuando necesites garantizar que la BD esté abierta.
+ */
+export const getDbSafe = async (): Promise<SQLite.SQLiteDatabase | null> => {
+  return ensureDb();
+};
 
 // === Funciones para Tracking GPS ===
 
 /**
  * Obtener la última posición conocida de cada técnico
  */
-export const getUltimasPosicionesTecnicos = async (): Promise<any[]> => {
+export const getUltimasPosicionesTecnicos = async (): Promise<Record<string, any>[]> => {
   const database = await ensureDb();
   if (!database) return [];
   try {
-    return await database.getAllAsync<any>(
+    return await database.getAllAsync<Record<string, any>>(
       `SELECT t1.* FROM tracking_posiciones t1
        INNER JOIN (
          SELECT usuario_id, MAX(timestamp) as max_ts
@@ -656,12 +664,12 @@ export const getPosicionesTecnico = async (
   usuarioId: string,
   desde?: string,
   hasta?: string
-): Promise<any[]> => {
+): Promise<Record<string, any>[]> => {
   const database = await ensureDb();
   if (!database) return [];
   try {
     let query = 'SELECT * FROM tracking_posiciones WHERE usuario_id = ?';
-    const params: any[] = [usuarioId];
+    const params: (string | undefined)[] = [usuarioId];
     if (desde) {
       query += ' AND timestamp >= ?';
       params.push(desde);
@@ -671,7 +679,7 @@ export const getPosicionesTecnico = async (
       params.push(hasta);
     }
     query += ' ORDER BY timestamp ASC';
-    return await database.getAllAsync<any>(query, params);
+    return await database.getAllAsync<Record<string, any>>(query, params.filter((p): p is string => p !== undefined));
   } catch (error) {
     console.error('[DB] Error al obtener posiciones:', error);
     return [];
@@ -719,18 +727,14 @@ export const getPlantaciones = async (
   const database = await ensureDb();
   if (!database) return [];
   try {
-    let rows: any[];
-    if (usuarioId) {
-      rows = await database.getAllAsync<any>(
-        'SELECT * FROM plantaciones WHERE usuario_id = ? ORDER BY timestamp DESC',
-        [usuarioId]
-      );
-    } else {
-      rows = await database.getAllAsync<any>(
-        'SELECT * FROM plantaciones ORDER BY timestamp DESC'
-      );
-    }
-    return rows.filter(Boolean).map((r: any) => ({
+    const query = usuarioId
+      ? 'SELECT * FROM plantaciones WHERE usuario_id = ? ORDER BY timestamp DESC'
+      : 'SELECT * FROM plantaciones ORDER BY timestamp DESC';
+    const rows = await database.getAllAsync<Record<string, any>>(
+      query,
+      usuarioId ? [usuarioId] : []
+    );
+    return rows.filter(Boolean).map((r: Record<string, any>) => ({
       id: r.id,
       usuario_id: r.usuario_id,
       latitud: r.latitud,
@@ -756,10 +760,10 @@ export const getPlantacionesNoSincronizadas = async (): Promise<import('../types
   const database = await ensureDb();
   if (!database) return [];
   try {
-    const rows = await database.getAllAsync<any>(
+    const rows = await database.getAllAsync<Record<string, any>>(
       'SELECT * FROM plantaciones WHERE sincronizado = 0 ORDER BY timestamp ASC'
     );
-    return rows.filter(Boolean).map((r: any) => ({
+    return rows.filter(Boolean).map((r: Record<string, any>) => ({
       id: r.id,
       usuario_id: r.usuario_id,
       latitud: r.latitud,
@@ -779,11 +783,11 @@ export const getPlantacionesNoSincronizadas = async (): Promise<import('../types
 /**
  * Obtener posiciones de tracking pendientes de sincronizar
  */
-export const getTrackingNoSincronizado = async (): Promise<any[]> => {
+export const getTrackingNoSincronizado = async (): Promise<Record<string, any>[]> => {
   const database = await ensureDb();
   if (!database) return [];
   try {
-    return await database.getAllAsync<any>(
+    return await database.getAllAsync<Record<string, any>>(
       'SELECT * FROM tracking_posiciones WHERE sincronizado = 0 ORDER BY timestamp ASC'
     );
   } catch (error) {
@@ -795,11 +799,11 @@ export const getTrackingNoSincronizado = async (): Promise<any[]> => {
 /**
  * Obtener mediciones de terreno pendientes de sincronizar
  */
-export const getMedicionesNoSincronizadas = async (): Promise<any[]> => {
+export const getMedicionesNoSincronizadas = async (): Promise<Record<string, any>[]> => {
   const database = await ensureDb();
   if (!database) return [];
   try {
-    return await database.getAllAsync<any>(
+    return await database.getAllAsync<Record<string, any>>(
       'SELECT * FROM mediciones_terreno WHERE sincronizado = 0 ORDER BY created_at ASC'
     );
   } catch (error) {
@@ -860,14 +864,14 @@ export const deleteMedicionLocal = async (id: string): Promise<void> => {
 /**
  * Obtener todas las mediciones de terreno
  */
-export const getMediciones = async (): Promise<any[]> => {
+export const getMediciones = async (): Promise<Record<string, any>[]> => {
   const database = await ensureDb();
   if (!database) return [];
   try {
-    const rows = await database.getAllAsync<any>(
+    const rows = await database.getAllAsync<Record<string, any>>(
       'SELECT * FROM mediciones_terreno ORDER BY created_at DESC'
     );
-    return rows.filter(Boolean).map((r: any) => ({
+    return rows.filter(Boolean).map((r: Record<string, any>) => ({
       id: r.id,
       formulario_id: r.formulario_id,
       usuario_id: r.usuario_id,
@@ -938,8 +942,8 @@ export const saveVeredasCache = async (
     id: string;
     nombre: string;
     type: string;
-    properties: any;
-    geometry: any;
+    properties: Record<string, any>;
+    geometry: Record<string, any>;
   }>,
   fuente: string = 'overpass'
 ): Promise<void> => {
@@ -978,12 +982,12 @@ export const getVeredasCache = async (): Promise<{
   const database = await ensureDb();
   if (!database) return { veredas: [], cached_at: null, fuente: null };
   try {
-    const rows = await database.getAllAsync<any>(
+    const rows = await database.getAllAsync<Record<string, any>>(
       'SELECT * FROM veredas_cache ORDER BY nombre ASC'
     );
     if (rows.length === 0) return { veredas: [], cached_at: null, fuente: null };
 
-    const veredas = rows.map((r: any) => ({
+    const veredas = rows.map((r: Record<string, any>) => ({
       id: r.id,
       nombre: r.nombre,
       type: 'Feature',
@@ -1009,7 +1013,7 @@ export const isVeredasCacheFresh = async (maxAgeMs: number = 86400000): Promise<
   const database = await ensureDb();
   if (!database) return false;
   try {
-    const row = await database.getFirstAsync<any>(
+    const row = await database.getFirstAsync<Record<string, any>>(
       'SELECT cached_at FROM veredas_cache LIMIT 1'
     );
     if (!row?.cached_at) return false;

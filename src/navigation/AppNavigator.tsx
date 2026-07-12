@@ -3,9 +3,7 @@
 // ============================================================
 
 import React from 'react';
-import { View, StyleSheet } from 'react-native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
-import { COLORS, FONTS } from '../theme';
 import { useAuth } from '../store/AuthContext';
 import LoginScreen from '../screens/auth/LoginScreen';
 import TerrenoNavigator from './TerrenoNavigator';

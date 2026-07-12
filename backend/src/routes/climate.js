@@ -6,6 +6,36 @@ const express = require('express');
 const { authenticateToken } = require('../middleware/auth');
 const router = express.Router();
 
+// Resolver nombre de ubicación desde coordenadas (reverse geocode offline)
+function resolverUbicacion(lat, lon) {
+  // Tabla simplificada de ciudades principales de Colombia
+  const zonas = [
+    { nombre: 'Puerto Rico (Caquetá)', latMin: 1.0, latMax: 2.5, lonMin: -76.5, lonMax: -74.5 },
+    { nombre: 'Florencia (Caquetá)', latMin: 1.2, latMax: 2.0, lonMin: -75.8, lonMax: -75.4 },
+    { nombre: 'San Vicente del Caguán', latMin: 1.8, latMax: 3.0, lonMin: -75.0, lonMax: -74.0 },
+    { nombre: 'Cartagena del Chairá', latMin: 0.5, latMax: 1.5, lonMin: -75.5, lonMax: -74.0 },
+    { nombre: 'Puerto Asís (Putumayo)', latMin: 0.2, latMax: 0.8, lonMin: -77.0, lonMax: -76.0 },
+    { nombre: 'Mocoa (Putumayo)', latMin: 0.8, latMax: 1.5, lonMin: -77.0, lonMax: -76.5 },
+    { nombre: 'Bogotá', latMin: 4.3, latMax: 4.9, lonMin: -74.3, lonMax: -73.9 },
+    { nombre: 'Medellín', latMin: 6.0, latMax: 6.5, lonMin: -75.8, lonMax: -75.4 },
+    { nombre: 'Cali', latMin: 3.2, latMax: 3.6, lonMin: -76.7, lonMax: -76.4 },
+    { nombre: 'Barranquilla', latMin: 10.8, latMax: 11.2, lonMin: -75.0, lonMax: -74.7 },
+  ];
+
+  const latNum = parseFloat(lat);
+  const lonNum = parseFloat(lon);
+  let nombreLugar = 'Ubicación actual';
+
+  for (const z of zonas) {
+    if (latNum >= z.latMin && latNum <= z.latMax && lonNum >= z.lonMin && lonNum <= z.lonMax) {
+      nombreLugar = z.nombre;
+      break;
+    }
+  }
+
+  return { latitud: latNum, longitud: lonNum, nombre: nombreLugar };
+}
+
 // GET /api/climate/actual?lat=X&lon=Y
 router.get('/actual', authenticateToken, (req, res) => {
   const { lat, lon } = req.query;
@@ -14,15 +44,13 @@ router.get('/actual', authenticateToken, (req, res) => {
     return res.status(400).json({ estado: 'error', mensaje: 'lat y lon requeridos' });
   }
 
-  // Datos mock — ubicación aproximada desde coordenadas
+  const ubicacion = resolverUbicacion(lat, lon);
+
+  // Datos mock — con ubicación realista según coordenadas
   res.json({
     fuente: 'IDEAM / OpenWeather (mock)',
     timestamp: new Date().toISOString(),
-    ubicacion: {
-      latitud: parseFloat(lat),
-      longitud: parseFloat(lon),
-      nombre: 'Ubicación actual',
-    },
+    ubicacion,
     temperatura: {
       actual: 28.5,
       sensacion_termica: 31.2,
@@ -82,19 +110,14 @@ router.get('/resumen', authenticateToken, (req, res) => {
   const latNum = parseFloat(lat);
   const lonNum = parseFloat(lon);
 
+  const ubicacion = resolverUbicacion(lat, lon);
+
   res.json({
-    ubicacion: {
-      latitud: latNum,
-      longitud: lonNum,
-    },
+    ubicacion,
     actual: {
       fuente: 'IDEAM / OpenWeather (mock)',
       timestamp: new Date().toISOString(),
-      ubicacion: {
-        latitud: latNum,
-        longitud: lonNum,
-        nombre: 'Ubicación actual',
-      },
+      ubicacion,
       temperatura: {
         actual: 28.5,
         sensacion_termica: 31.2,

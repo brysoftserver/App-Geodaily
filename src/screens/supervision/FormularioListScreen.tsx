@@ -13,7 +13,7 @@ import {
   ImageBackground,
 } from 'react-native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
-import { COLORS, FONTS, SPACING, BORDER_RADIUS, SHADOWS } from '../../theme';
+import { COLORS, FONTS, SPACING, BORDER_RADIUS } from '../../theme';
 import { useForm } from '../../store/FormContext';
 import { getFormulariosLocales } from '../../services/database';
 import { Formulario, FiltrosFormulario } from '../../types';
@@ -22,7 +22,7 @@ import FilterBar from '../../components/FilterBar';
 import LoadingSpinner from '../../components/LoadingSpinner';
 
 type FormularioListScreenProps = {
-  navigation: NativeStackNavigationProp<any>;
+  navigation: NativeStackNavigationProp<Record<string, any>>;
 };
 
 const TIPO_FILTERS = [

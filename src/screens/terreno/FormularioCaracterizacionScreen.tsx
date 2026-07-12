@@ -62,8 +62,8 @@ import { saveFormularioLocal, getDb } from '../../services/database';
 import DropdownPicker from '../../components/DropdownPicker';
 
 type Props = {
-  navigation: NativeStackNavigationProp<any>;
-  route: RouteProp<{ params: { draftId?: string } }, 'params'>;
+  navigation: NativeStackNavigationProp<Record<string, any>>;
+  route: RouteProp<Record<string, any> & { params: { draftId?: string } }, 'params'>;
 };
 
 // ─── Estado inicial ───────────────────────────────────────────
@@ -205,6 +205,7 @@ const FormularioCaracterizacionScreen: React.FC<Props> = ({ navigation, route })
       }
     };
     init();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Sincronizar formIdRef con el ID real del contexto cuando esté disponible
@@ -342,6 +343,7 @@ const FormularioCaracterizacionScreen: React.FC<Props> = ({ navigation, route })
     } finally {
       setIsSaving(false);
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [data, coordenadas, user]);
 
   // ─── Navegar a evidencia ─────────────────────────────────
@@ -480,7 +482,9 @@ const FormularioCaracterizacionScreen: React.FC<Props> = ({ navigation, route })
         try {
           const { eliminarBorrador } = await import('../../store/FormDraftStore');
           await eliminarBorrador(draftId);
-        } catch {}
+        } catch {
+          // Ignorar error al eliminar borrador
+        }
       }
 
       setIsSubmitting(false);
@@ -495,6 +499,7 @@ const FormularioCaracterizacionScreen: React.FC<Props> = ({ navigation, route })
       setIsSubmitting(false);
       Alert.alert('Error inesperado', 'Ocurrió un error al completar el formulario');
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     data,
     coordenadas,

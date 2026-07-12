@@ -20,7 +20,7 @@ export const subirDocumento = async (
   try {
     const formData = new FormData();
 
-    // @ts-ignore — React Native FormData
+    // @ts-expect-error — React Native FormData
     formData.append('archivo', {
       uri,
       type: 'application/octet-stream',
@@ -55,12 +55,12 @@ export const subirDocumento = async (
  */
 export const subirMultiplesDocumentos = async (
   archivos: { uri: string; nombre?: string; descripcion?: string }[]
-): Promise<{ estado: string; documentos?: any[] } | null> => {
+): Promise<{ estado: string; documentos?: Record<string, any>[] } | null> => {
   try {
     const formData = new FormData();
 
     for (const archivo of archivos) {
-      // @ts-ignore — React Native FormData
+      // @ts-expect-error — React Native FormData
       formData.append('archivos', {
         uri: archivo.uri,
         type: 'application/octet-stream',
@@ -91,7 +91,7 @@ export const subirMultiplesDocumentos = async (
 /**
  * Obtener lista de documentos del usuario
  */
-export const listarDocumentos = async (): Promise<any[]> => {
+export const listarDocumentos = async (): Promise<Record<string, any>[]> => {
   try {
     const response = await apiClient.get(API_CONFIG.ENDPOINTS.DOCUMENTOS);
     return response.data?.documentos || [];

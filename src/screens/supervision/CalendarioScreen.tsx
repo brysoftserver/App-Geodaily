@@ -9,6 +9,7 @@ import {
   StyleSheet,
   ScrollView,
   TouchableOpacity,
+  ActivityIndicator,
 } from 'react-native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useFocusEffect } from '@react-navigation/native';
@@ -37,7 +38,7 @@ LocaleConfig.locales['es'] = {
 LocaleConfig.defaultLocale = 'es';
 
 type CalendarioScreenProps = {
-  navigation: NativeStackNavigationProp<any>;
+  navigation: NativeStackNavigationProp<Record<string, any>>;
 };
 
 const CalendarioScreen: React.FC<CalendarioScreenProps> = ({ navigation }) => {
@@ -45,8 +46,8 @@ const CalendarioScreen: React.FC<CalendarioScreenProps> = ({ navigation }) => {
   const [selectedDate, setSelectedDate] = useState<string>(
     new Date().toISOString().split('T')[0]
   );
-  const [loadingCal, setLoadingCal] = useState(true);
-  const previousLength = useRef(0);
+  const [loadingCal, setLoadingCal] = useState(true); // eslint-disable-line @typescript-eslint/no-unused-vars
+  const previousLength = useRef(0); // eslint-disable-line @typescript-eslint/no-unused-vars
 
   // Cargar datos del servidor + local para tener visitas sincronizadas
   const loadCalendarData = useCallback(async () => {
@@ -72,6 +73,7 @@ const CalendarioScreen: React.FC<CalendarioScreenProps> = ({ navigation }) => {
   // Cargar al montar
   useEffect(() => {
     loadCalendarData();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Recargar al enfocar
@@ -96,6 +98,7 @@ const CalendarioScreen: React.FC<CalendarioScreenProps> = ({ navigation }) => {
       map[key].push(f);
     });
     return map;
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [formulariosLength]);
 
   // Marcar fechas en el calendario
@@ -126,6 +129,7 @@ const CalendarioScreen: React.FC<CalendarioScreenProps> = ({ navigation }) => {
     };
 
     return marks;
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [formulariosLength, selectedDate]);
 
   // Formularios del día seleccionado
@@ -134,6 +138,7 @@ const CalendarioScreen: React.FC<CalendarioScreenProps> = ({ navigation }) => {
       (formulariosRef.current).filter(
         (f) => (f.created_at || '').split('T')[0] === selectedDate
       ),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     [formulariosLength, selectedDate]
   );
 
@@ -147,6 +152,7 @@ const CalendarioScreen: React.FC<CalendarioScreenProps> = ({ navigation }) => {
     const conFotos = forms.filter((f) => (f.fotos?.length || 0) > 0).length;
     const conFirma = forms.filter((f) => f.firma_beneficiario).length;
     return { total, conFotos, conFirma };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [formulariosLength]);
 
   const insets = useSafeAreaInsets();
@@ -154,20 +160,28 @@ const CalendarioScreen: React.FC<CalendarioScreenProps> = ({ navigation }) => {
   return (
     <SafeAreaView style={styles.safeContainer} edges={['top']}>
     <ScrollView style={styles.container} contentContainerStyle={{ paddingBottom: insets.bottom + SPACING.xxl }}>
-      <Calendar
-        onDayPress={onDayPress}
-        markedDates={markedDates}
-        markingType="multi-dot"
-        theme={{
-          todayTextColor: COLORS.primary,
-          selectedDayBackgroundColor: COLORS.primary,
-          selectedDayTextColor: '#fff',
-          arrowColor: COLORS.primary,
-          monthTextColor: COLORS.textPrimary,
-          textMonthFontWeight: 'bold',
-          dotColor: COLORS.primary,
-        }}
-      />
+{loadingCal ? (
+          <View style={styles.loadingCal}>
+            <ActivityIndicator size="large" color={COLORS.primary} />
+            <Text style={styles.loadingText}>Cargando calendario...</Text>
+          </View>
+        ) : (
+        <Calendar
+          onDayPress={onDayPress}
+          markedDates={markedDates}
+          markingType="multi-dot"
+          theme={{
+            calendarBackground: '#FFFFFF',
+            todayTextColor: COLORS.primary,
+            selectedDayBackgroundColor: COLORS.primary,
+            selectedDayTextColor: '#fff',
+            arrowColor: COLORS.primary,
+            monthTextColor: COLORS.textPrimary,
+            textMonthFontWeight: 'bold',
+            dotColor: COLORS.primary,
+          }}
+        />
+      )}
 
       {/* Resumen de cobertura */}
       <View style={styles.statsContainer}>
@@ -301,6 +315,16 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: COLORS.surface,
+  },
+  loadingCal: {
+    padding: SPACING.xl * 2,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  loadingText: {
+    marginTop: SPACING.sm,
+    fontSize: FONTS.sizes.md,
+    color: COLORS.textSecondary,
   },
   statsContainer: {
     flexDirection: 'row',

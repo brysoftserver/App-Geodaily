@@ -25,7 +25,7 @@ import MapItemList from '../components/mapa/MapItemList';
 import { useAuth } from '../store/AuthContext';
 import { useGPS } from '../store/GPSContext';
 import { useSyncMapData } from '../hooks/useSyncMapData';
-import { COLORS, FONTS, SPACING, BORDER_RADIUS, SHADOWS, API_CONFIG } from '../theme';
+import { COLORS, FONTS, SPACING, BORDER_RADIUS, API_CONFIG } from '../theme';
 import { Coordenadas } from '../types';
 import {
   saveVeredasCache,
@@ -55,10 +55,10 @@ const ICONOS_ESPECIE: Record<string, string> = {
 const getIconoEspecie = (especie: string): string =>
   ICONOS_ESPECIE[especie?.toLowerCase().trim() || ''] || '🌱';
 
-const MapaGeneralScreen: React.FC<{ navigation?: any }> = ({ navigation }) => {
-  const { user, isAdmin, isSupervisor, isGerente } = useAuth();
+const MapaGeneralScreen: React.FC<{ navigation?: Record<string, any> }> = ({ navigation: _navigation }) => {
+  const { isAdmin, isSupervisor, isInterventor, isGerente } = useAuth();
   const { userLocation, getCurrentPosition, siguiendo, setSiguiendo } = useGPS();
-  const canViewAll = isAdmin || isSupervisor || isGerente;
+  const canViewAll = isAdmin || isSupervisor || isInterventor || isGerente;
 
   const {
     plantaciones,
@@ -77,8 +77,8 @@ const MapaGeneralScreen: React.FC<{ navigation?: any }> = ({ navigation }) => {
 
   // --- Estado del mapa ---
   const [capasActivas, setCapasActivas] = useState<Set<CapaActiva>>(new Set(['plantaciones', 'tecnicos']));
-  const [veredasFeatures, setVeredasFeatures] = useState<any[] | null>(null);
-  const [selectedItem, setSelectedItem] = useState<any>(null);
+  const [veredasFeatures, setVeredasFeatures] = useState<Record<string, any>[] | null>(null);
+  const [selectedItem, setSelectedItem] = useState<Record<string, any> | null>(null);
   const [showList, setShowList] = useState(false);
   const [mapCenter, setMapCenter] = useState<Coordenadas>(PUERTO_RICO_CENTER);
   const [mapZoom, setMapZoom] = useState(ZOOM_MUNICIPIO);
@@ -102,6 +102,7 @@ const MapaGeneralScreen: React.FC<{ navigation?: any }> = ({ navigation }) => {
     syncAll();
     // Cargar veredas (desde cache si es fresco)
     cargarVeredas();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // ============================================================
@@ -166,7 +167,7 @@ const MapaGeneralScreen: React.FC<{ navigation?: any }> = ({ navigation }) => {
       if (res.ok) {
         const data = await res.json();
         if (data.veredas && data.veredas.length > 0) {
-          const features = data.veredas.map((v: any) => ({
+          const features = data.veredas.map((v: Record<string, any>) => ({
             ...v,
             geometry: v.geometry || { type: 'MultiPolygon', coordinates: [] },
           }));
@@ -259,7 +260,7 @@ const MapaGeneralScreen: React.FC<{ navigation?: any }> = ({ navigation }) => {
   // Construcción de marcadores
   // ============================================================
   const plantacionMarkers = capasActivas.has('plantaciones')
-    ? plantaciones.map((p: any) => ({
+    ? plantaciones.map((p: Record<string, any>) => ({
         id: `plant-${p.id}`,
         latitud: p.latitud,
         longitud: p.longitud,
@@ -269,7 +270,7 @@ const MapaGeneralScreen: React.FC<{ navigation?: any }> = ({ navigation }) => {
     : [];
 
   const tecnicosMarkers = capasActivas.has('tecnicos')
-    ? posiciones.map((pos: any) => ({
+    ? posiciones.map((pos: Record<string, any>) => ({
         id: `tec-${pos.id}`,
         latitud: pos.latitud,
         longitud: pos.longitud,
@@ -279,12 +280,12 @@ const MapaGeneralScreen: React.FC<{ navigation?: any }> = ({ navigation }) => {
       }))
     : [];
 
-  const medicionMarkers: any[] = capasActivas.has('mediciones')
-    ? mediciones.reduce((acc: any[], m: any) => {
+  const medicionMarkers: Record<string, any>[] = capasActivas.has('mediciones')
+    ? mediciones.reduce((acc: Record<string, any>[], m: Record<string, any>) => {
         const puntos = m.puntos || [];
         if (puntos.length === 0) return acc;
-        const latCentro = puntos.reduce((s: number, p: any) => s + p.latitud, 0) / puntos.length;
-        const lonCentro = puntos.reduce((s: number, p: any) => s + p.longitud, 0) / puntos.length;
+        const latCentro = puntos.reduce((s: number, p: Record<string, any>) => s + p.latitud, 0) / puntos.length;
+        const lonCentro = puntos.reduce((s: number, p: Record<string, any>) => s + p.longitud, 0) / puntos.length;
         acc.push({
           id: `med-${m.id}`,
           latitud: latCentro,
@@ -297,7 +298,8 @@ const MapaGeneralScreen: React.FC<{ navigation?: any }> = ({ navigation }) => {
       }, [])
     : [];
 
-  const allMarkers = [...plantacionMarkers, ...tecnicosMarkers, ...medicionMarkers];
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const allMarkers: any = [...plantacionMarkers, ...tecnicosMarkers, ...medicionMarkers];
 
   // Capa GeoJSON de veredas
   const veredaGeoLayer =

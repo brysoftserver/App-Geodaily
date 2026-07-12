@@ -23,7 +23,7 @@ import MetricCard from '../../components/MetricCard';
 import LoadingSpinner from '../../components/LoadingSpinner';
 
 type DashboardGerencialProps = {
-  navigation: NativeStackNavigationProp<any>;
+  navigation: NativeStackNavigationProp<Record<string, any>>;
 };
 
 const screenWidth = Dimensions.get('window').width;

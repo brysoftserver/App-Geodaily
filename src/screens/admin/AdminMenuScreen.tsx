@@ -10,13 +10,14 @@ import {
   StyleSheet,
   ScrollView,
   ImageBackground,
+  Alert,
 } from 'react-native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useAuth } from '../../store/AuthContext';
 import { COLORS, FONTS, SPACING, BORDER_RADIUS, SHADOWS } from '../../theme';
 
 type AdminMenuProps = {
-  navigation: NativeStackNavigationProp<any>;
+  navigation: NativeStackNavigationProp<Record<string, any>>;
 };
 
 const MENU_ITEMS = [
@@ -95,12 +96,18 @@ const AdminMenuScreen: React.FC<AdminMenuProps> = ({ navigation }) => {
         logout();
         break;
       case 'supervision':
-        // Navegar al stack de supervisión (reseteando)
-        navigation.getParent()?.navigate('Supervision');
+        // Mostrar mensaje informativo: el admin ya tiene acceso a todas las vistas
+        Alert.alert(
+          'Acceso completo',
+          'Como administrador, ya tienes acceso a todos los módulos desde este menú. Usa "Dashboard General" o "Listado de técnicos y visitas" para ver los datos.'
+        );
         break;
       case 'terreno':
-        // Navegar al stack de terreno
-        navigation.getParent()?.navigate('Terreno');
+        // Mostrar mensaje informativo
+        Alert.alert(
+          'Acceso completo',
+          'Como administrador, puedes acceder a todas las herramientas desde el menú principal. Usa "Mapa General del Proyecto" para ver datos de campo.'
+        );
         break;
       default:
         if (item.screen) {

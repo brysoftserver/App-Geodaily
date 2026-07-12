@@ -4,14 +4,14 @@
 
 import React from 'react';
 import { View, Text, TouchableOpacity, ScrollView, StyleSheet } from 'react-native';
-import { COLORS, FONTS, SPACING, BORDER_RADIUS } from '../../theme';
+import { COLORS, FONTS, SPACING } from '../../theme';
 
 interface MapItemListProps {
-  items: any[];
-  plantaciones: any[];
-  mediciones: any[];
+  items: Record<string, any>[];
+  plantaciones: Record<string, any>[];
+  mediciones: Record<string, any>[];
   isAdmin: boolean;
-  onSelect: (item: any) => void;
+  onSelect: (item: Record<string, any>) => void;
   onDelete: (tipo: 'plantación' | 'medición', id: string) => void;
 }
 
@@ -45,7 +45,7 @@ const MapItemList: React.FC<MapItemListProps> = ({
         const realId = item.id.replace(/^(plant-|med-|tec-)/, '');
 
         if (isPlantacion) {
-          const p = plantaciones.find((x: any) => x.id === realId);
+          const p = plantaciones.find((x: Record<string, any>) => x.id === realId);
           if (!p) return null;
           return (
             <TouchableOpacity
@@ -68,7 +68,7 @@ const MapItemList: React.FC<MapItemListProps> = ({
         }
 
         if (isMedicion) {
-          const m = mediciones.find((x: any) => x.id === realId);
+          const m = mediciones.find((x: Record<string, any>) => x.id === realId);
           if (!m) return null;
           return (
             <TouchableOpacity

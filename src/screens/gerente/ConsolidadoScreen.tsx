@@ -15,12 +15,11 @@ import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { COLORS, FONTS, SPACING, BORDER_RADIUS, SHADOWS } from '../../theme';
 import { useForm } from '../../store/FormContext';
 import FilterBar from '../../components/FilterBar';
-import { formatFecha } from '../../utils/formatters';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
 
 type ConsolidadoProps = {
-  navigation: NativeStackNavigationProp<any>;
+  navigation: NativeStackNavigationProp<Record<string, any>>;
 };
 
 const FILTER_OPTIONS = [
@@ -28,7 +27,7 @@ const FILTER_OPTIONS = [
   { value: 'visita_tecnica', label: 'Visitas' },
 ];
 
-const ConsolidadoScreen: React.FC<ConsolidadoProps> = ({ navigation }) => {
+const ConsolidadoScreen: React.FC<ConsolidadoProps> = ({ navigation: _navigation }) => {
   const { formularios } = useForm();
   const [filter, setFilter] = useState('all');
 
@@ -143,7 +142,7 @@ const ConsolidadoScreen: React.FC<ConsolidadoProps> = ({ navigation }) => {
             <View key={municipio} style={styles.distRow}>
               <Text style={styles.distLabel}>{municipio}</Text>
               <View style={styles.distBarContainer}>
-                <View style={[styles.distBar, { width: `${(count / indicadores!.total) * 100}%` }]} />
+                <View style={[styles.distBar, { width: `${(count / (indicadores?.total || 1)) * 100}%` }]} />
               </View>
               <Text style={styles.distCount}>{count}</Text>
             </View>
@@ -159,7 +158,7 @@ const ConsolidadoScreen: React.FC<ConsolidadoProps> = ({ navigation }) => {
             <View key={tecnico} style={styles.distRow}>
               <Text style={styles.distLabel}>{tecnico}</Text>
               <View style={styles.distBarContainer}>
-                <View style={[styles.distBar, { width: `${(count / indicadores!.total) * 100}%`, backgroundColor: COLORS.roleTecnico }]} />
+                <View style={[styles.distBar, { width: `${(count / (indicadores?.total || 1)) * 100}%`, backgroundColor: COLORS.roleTecnico }]} />
               </View>
               <Text style={styles.distCount}>{count}</Text>
             </View>

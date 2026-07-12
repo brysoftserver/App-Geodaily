@@ -10,6 +10,7 @@ import {
   ScrollView,
   Dimensions,
   RefreshControl,
+  Platform,
 } from 'react-native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useFocusEffect } from '@react-navigation/native';
@@ -23,7 +24,7 @@ import FilterBar from '../../components/FilterBar';
 import LoadingSpinner from '../../components/LoadingSpinner';
 
 type DashboardScreenProps = {
-  navigation: NativeStackNavigationProp<any>;
+  navigation: NativeStackNavigationProp<Record<string, any>>;
 };
 
 const FILTER_OPTIONS = [
@@ -33,7 +34,7 @@ const FILTER_OPTIONS = [
 
 const screenWidth = Dimensions.get('window').width;
 
-const DashboardScreen: React.FC<DashboardScreenProps> = ({ navigation }) => {
+const DashboardScreen: React.FC<DashboardScreenProps> = ({ navigation: _navigation }) => {
   const { formularios, cargarFormularios } = useForm();
   const [filter, setFilter] = useState('all');
   const [loadingDashboard, setLoadingDashboard] = useState(true);
@@ -105,12 +106,14 @@ const DashboardScreen: React.FC<DashboardScreenProps> = ({ navigation }) => {
     return { total, tecnicas, sincronizadas, pendientes };
   }, [filteredForms]);
 
-  // Agrupar por fecha para el gráfico
+  // Agrupar por fecha para el gráfico (con protección null)
   const chartData = useMemo(() => {
     const dateMap: Record<string, { visitas: number }> = {};
 
     filteredForms.forEach((f) => {
+      if (!f) return;
       const date = (f.created_at || '').split('T')[0];
+      if (!date) return;
       if (!dateMap[date]) {
         dateMap[date] = { visitas: 0 };
       }
@@ -122,15 +125,16 @@ const DashboardScreen: React.FC<DashboardScreenProps> = ({ navigation }) => {
     const sortedDates = Object.keys(dateMap).sort().slice(-7); // últimas 7 fechas
     return {
       labels: sortedDates.map((d) => d.slice(5)), // MM-DD
-      visitas: sortedDates.map((d) => dateMap[d].visitas),
+      visitas: sortedDates.map((d) => dateMap[d]?.visitas || 0),
     };
   }, [filteredForms]);
 
-  // Distribución por municipio
+  // Distribución por municipio (con protección null)
   const municipioData = useMemo(() => {
     const map: Record<string, number> = {};
     filteredForms.forEach((f) => {
-      const m = f.beneficiario?.municipio || 'Desconocido';
+      if (!f?.beneficiario) return;
+      const m = f.beneficiario.municipio || 'Desconocido';
       map[m] = (map[m] || 0) + 1;
     });
     return Object.entries(map)
@@ -223,7 +227,7 @@ const DashboardScreen: React.FC<DashboardScreenProps> = ({ navigation }) => {
         <View style={styles.chartCard}>
           <Text style={styles.chartTitle}>📭 Sin datos</Text>
           <Text style={styles.chartSubtitle}>
-            No hay formularios disponibles. Usa el menú "Listado de técnicos y visitas" para verificar la conexión con el servidor.
+            No hay formularios disponibles. Usa el menú &ldquo;Listado de técnicos y visitas&rdquo; para verificar la conexión con el servidor.
           </Text>
         </View>
       )}
@@ -282,9 +286,9 @@ const DashboardScreen: React.FC<DashboardScreenProps> = ({ navigation }) => {
         <Text style={styles.chartTitle}>Últimas actividades</Text>
         {filteredForms.slice(0, 5).map((form) => (
           <View key={form.id} style={styles.recentItem}>
-            <Text style={styles.recentName}>{form.beneficiario.nombre}</Text>
+            <Text style={styles.recentName}>{form.beneficiario?.nombre || '—'}</Text>
             <Text style={styles.recentMeta}>
-              {form.beneficiario.municipio} ·{' '}
+              {form.beneficiario?.municipio || '—'} ·{' '}
               {form.tipo === 'visita_tecnica' ? 'Visita' : form.tipo === 'caracterizacion' ? 'Caracterización' : 'Plantación'}
             </Text>
           </View>

@@ -21,7 +21,7 @@ import { COLORS, FONTS, SPACING, BORDER_RADIUS, SHADOWS } from '../../theme';
 type ScannerTipo = 'dispositivo' | 'usb_externo';
 
 type FirmaBiometricaScreenProps = {
-  navigation: NativeStackNavigationProp<any>;
+  navigation: NativeStackNavigationProp<Record<string, any>>;
 };
 
 const FirmaBiometricaScreen: React.FC<FirmaBiometricaScreenProps> = ({ navigation }) => {
@@ -263,7 +263,7 @@ const FirmaBiometricaScreen: React.FC<FirmaBiometricaScreenProps> = ({ navigatio
           )}
           {scannerTipo === 'dispositivo' && !isBiometricAvailable && (
             <Text style={styles.usbHintText}>
-              💡 Si tu tablet tiene un scanner USB-C, selecciona "Scanner USB-C externo" arriba.
+              💡 Si tu tablet tiene un scanner USB-C, selecciona &ldquo;Scanner USB-C externo&rdquo; arriba.
             </Text>
           )}
         </View>

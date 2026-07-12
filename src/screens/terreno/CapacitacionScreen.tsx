@@ -184,7 +184,7 @@ const CapacitacionScreen: React.FC = () => {
                   {cap.material && (
                     <TouchableOpacity
                       style={styles.materialBtn}
-                      onPress={() => handleOpenMaterial(cap.material!)}
+                      onPress={() => cap.material && handleOpenMaterial(cap.material)}
                     >
                       <Text style={styles.materialIcon}>
                         {cap.material.tipo === 'pdf'

@@ -11,7 +11,7 @@ import {
 } from 'react-native';
 import { COLORS, FONTS, SPACING, BORDER_RADIUS, SHADOWS } from '../theme';
 import { Formulario } from '../types';
-import { formatFecha, formatCoordenadas, truncarTexto, capitalizar } from '../utils/formatters';
+import { formatFecha, formatCoordenadas, truncarTexto } from '../utils/formatters';
 
 interface FormCardProps {
   formulario: Formulario;

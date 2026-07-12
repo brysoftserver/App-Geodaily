@@ -11,7 +11,6 @@ import {
   Modal,
   ScrollView,
   StyleSheet,
-  Platform,
 } from 'react-native';
 import { COLORS, FONTS, SPACING, BORDER_RADIUS, SHADOWS } from '../theme';
 

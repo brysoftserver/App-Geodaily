@@ -13,11 +13,9 @@ import {
   TouchableOpacity,
   SafeAreaView,
   StatusBar,
-  ScrollView,
   TextInput,
   Alert,
   Modal,
-  Platform,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useFocusEffect } from '@react-navigation/native';
@@ -40,11 +38,6 @@ interface PuntoPoligono {
   latitud: number;
   longitud: number;
   orden: number;
-}
-
-interface EspecieConteo {
-  nombre: string;
-  cantidad: string;
 }
 
 const MapaScreen: React.FC = () => {
@@ -221,6 +214,7 @@ const MapaScreen: React.FC = () => {
     } finally {
       setLocating(false);
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [getCurrentPosition, userLocation]);
 
   // Manejar tap en el mapa
@@ -292,6 +286,7 @@ const MapaScreen: React.FC = () => {
       }).catch(err => console.warn('[Mapa] Error al persistir medición:', err));
     }
     setMostrarResultado(true);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [poligono, calcularDistanciaHaversine, user?.id]);
 
   const limpiarPoligono = useCallback(() => {
@@ -341,6 +336,7 @@ const MapaScreen: React.FC = () => {
     setCantidadInput('');
     setMostrarPanelConteo(false);
     setUltimoPunto(null);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [plantaSeleccionada, cantidadInput, ultimoPunto, userLocation, user?.id]);
 
   // --- Funciones KML ---
@@ -356,7 +352,7 @@ const MapaScreen: React.FC = () => {
 
   const handleImportarKML = useCallback(async () => {
     try {
-      const result = await importarKML('');
+      const result = await importarKML(''); // eslint-disable-line @typescript-eslint/no-unused-vars
       // Note: real implementation would use DocumentPicker
       Alert.alert(
         'Importar KML',

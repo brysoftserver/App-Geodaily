@@ -503,6 +503,7 @@ export const SyncProvider: React.FC<{ children: React.ReactNode }> = ({
     } finally {
       isSyncing.current = false;
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [checkPending, sincronizarFormulario]);
 
   // ------------------------------------------------------------------
@@ -516,6 +517,7 @@ export const SyncProvider: React.FC<{ children: React.ReactNode }> = ({
   // Limpiar al desmontar
   useEffect(() => {
     return () => {
+      // eslint-disable-next-line react-hooks/exhaustive-deps
       abortController.current?.abort();
     };
   }, []);

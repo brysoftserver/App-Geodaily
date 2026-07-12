@@ -28,8 +28,8 @@ interface SyncMapDataState {
 }
 
 export function useSyncMapData() {
-  const { user, isAdmin, isSupervisor, isGerente } = useAuth();
-  const canViewAll = isAdmin || isSupervisor || isGerente;
+  const { user, isAdmin, isSupervisor, isGerente, isInterventor } = useAuth();
+  const canViewAll = isAdmin || isSupervisor || isGerente || isInterventor;
   const syncingRef = useRef(false);
 
   const [state, setState] = useState<SyncMapDataState>({

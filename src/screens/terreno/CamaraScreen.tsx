@@ -2,7 +2,7 @@
 // GEODAILY — Captura Fotográfica con Geotag
 // ============================================================
 
-import React, { useState, useRef, useMemo, useEffect } from 'react';
+import React, { useState, useRef, useMemo, useEffect, useCallback } from 'react';
 import {
   View,
   Text,
@@ -10,7 +10,6 @@ import {
   Image,
   StyleSheet,
   Alert,
-  FlatList,
   ActivityIndicator,
   ScrollView,
   Modal,
@@ -19,24 +18,23 @@ import {
 } from 'react-native';
 const { height: SCREEN_HEIGHT } = Dimensions.get('window');
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
+import { useFocusEffect } from '@react-navigation/native';
 import { Camera, CameraView, useCameraPermissions } from 'expo-camera';
 import * as Location from 'expo-location';
-import * as FileSystem from 'expo-file-system';
 import { useCamera } from '../../hooks/useCamera';
 import { useClimate } from '../../hooks/useClimate';
-import { useAuth } from '../../store/AuthContext';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useForm } from '../../store/FormContext';
 import { COLORS, FONTS, SPACING, BORDER_RADIUS, SHADOWS, API_CONFIG } from '../../theme';
 import { formatCoordenadas } from '../../utils/formatters';
 import LoadingSpinner from '../../components/LoadingSpinner';
-import { FotoGeotag, ClimaActual, DocumentoFinca } from '../../types';
+import { FotoGeotag, DocumentoFinca } from '../../types';
 import * as DocumentPicker from 'expo-document-picker';
 import { getDb } from '../../services/database';
 import apiClient, { isOfflineError } from '../../services/api';
 
 type CamaraScreenProps = {
-  navigation: NativeStackNavigationProp<any>;
+  navigation: NativeStackNavigationProp<Record<string, any>>;
 };
 
 const CamaraScreen: React.FC<CamaraScreenProps> = ({ navigation }) => {
@@ -44,9 +42,9 @@ const CamaraScreen: React.FC<CamaraScreenProps> = ({ navigation }) => {
   const [showCamera, setShowCamera] = useState(false);
   const [modoVideo, setModoVideo] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
-  const { capturarFoto, removeFoto, fotos, isLoading, clearFotos, setFotos } = useCamera();
+  const { capturarFoto, removeFoto, fotos, isLoading, setFotos } = useCamera();
   const { addFoto, formularioActual } = useForm();
-  const { climaActual, resumen, isLoading: climaLoading, error: climaError, fetchClimate } = useClimate();
+  const { climaActual, isLoading: climaLoading, error: climaError, fetchClimate } = useClimate();
   const cameraRef = useRef<CameraView>(null);
   const insets = useSafeAreaInsets();
   const [fotosGuardadas, setFotosGuardadas] = useState<Set<string>>(new Set());
@@ -60,16 +58,18 @@ const CamaraScreen: React.FC<CamaraScreenProps> = ({ navigation }) => {
   const [subiendoDocAMinIO, setSubiendoDocAMinIO] = useState(false);
   const [docsSaved, setDocsSaved] = useState(false);
 
-  // Cargar fotos existentes del FormContext al montar
+  // Sincronizar fotos desde FormContext cada vez que la pantalla obtiene foco
   // (para que no se pierdan al ir a otra pantalla y volver)
-  useEffect(() => {
-    const fotosExistentes = formularioActual?.fotos || [];
-    if (fotosExistentes.length > 0 && fotos.length === 0) {
-      setFotos(fotosExistentes);
-      // Marcar todas como ya guardadas
-      setFotosGuardadas(new Set(fotosExistentes.map(f => f.id)));
-    }
-  }, []); // solo al montar
+  useFocusEffect(
+    useCallback(() => {
+      const fotosExistentes = formularioActual?.fotos || [];
+      if (fotosExistentes.length > 0) {
+        setFotos(fotosExistentes);
+        setFotosGuardadas(new Set(fotosExistentes.map(f => f.id)));
+      }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [formularioActual?.fotos?.length])
+  );
 
   // Cargar documentos existentes al montar, solo del formulario actual
   useEffect(() => {
@@ -118,7 +118,7 @@ const CamaraScreen: React.FC<CamaraScreenProps> = ({ navigation }) => {
   const subirDocAMinIO = async (doc: DocumentoFinca): Promise<boolean> => {
     try {
       const formData = new FormData();
-      // @ts-ignore — React Native FormData
+      // @ts-expect-error — React Native FormData
       formData.append('archivo', {
         uri: doc.uri,
         type: doc.tipo === 'pdf' ? 'application/pdf' : 'image/jpeg',
@@ -212,6 +212,7 @@ const CamaraScreen: React.FC<CamaraScreenProps> = ({ navigation }) => {
     if (ultimaCoordenada && !climaActual && !climaLoading && !climaError) {
       fetchClimate(ultimaCoordenada.latitud, ultimaCoordenada.longitud);
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ultimaCoordenada?.latitud, ultimaCoordenada?.longitud]);
 
   const [ubicacionesFotos, setUbicacionesFotos] = useState<Record<string, { municipio: string; departamento: string; pais: string }>>({});

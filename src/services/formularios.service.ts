@@ -23,11 +23,12 @@ export const fetchFormulariosDelServidor = async (): Promise<Formulario[]> => {
 
     console.warn('[API Forms] Respuesta inesperada:', response.data);
     return [];
-  } catch (error: any) {
-    if (error?.isOffline) {
+  } catch (error) {
+    const err = error as any;
+    if (err?.isOffline) {
       console.warn('[API Forms] Sin conexión — no se pueden obtener formularios del servidor');
     } else {
-      console.error('[API Forms] Error:', error?.message || error);
+      console.error('[API Forms] Error:', err?.message || error);
     }
     return [];
   }
@@ -47,8 +48,9 @@ export const fetchFormularioDelServidor = async (id: string): Promise<Formulario
     }
 
     return null;
-  } catch (error: any) {
-    console.warn('[API Forms] Error obteniendo formulario:', id, error?.message || error);
+  } catch (error) {
+    const err = error as any;
+    console.warn('[API Forms] Error obteniendo formulario:', id, err?.message || error);
     return null;
   }
 };

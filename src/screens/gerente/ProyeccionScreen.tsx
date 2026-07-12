@@ -12,12 +12,11 @@ import {
   Dimensions,
 } from 'react-native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
-import { LineChart, BarChart } from 'react-native-chart-kit';
+import { BarChart } from 'react-native-chart-kit';
 import { COLORS, FONTS, SPACING, BORDER_RADIUS, SHADOWS } from '../../theme';
-import { useForm } from '../../store/FormContext';
 
 type ProyeccionProps = {
-  navigation: NativeStackNavigationProp<any>;
+  navigation: NativeStackNavigationProp<Record<string, any>>;
 };
 
 const screenWidth = Dimensions.get('window').width;
@@ -26,13 +25,11 @@ const screenWidth = Dimensions.get('window').width;
 const ESTIMACION_KG_HA = 800; // kg/ha/año en sistemas tradicionales
 const ARBOLES_POR_HA = 1200; // densidad típica cacao
 
-const ProyeccionScreen: React.FC<ProyeccionProps> = ({ navigation }) => {
-  const { formularios } = useForm();
+const ProyeccionScreen: React.FC<ProyeccionProps> = ({ navigation: _navigation }) => {
   const [periodo, setPeriodo] = useState<'3m' | '6m' | '12m'>('12m');
 
   // Este módulo de proyección estaba basado en el formulario de Plantación
   // que ha sido eliminado. Se muestra información informativa.
-  const plantacionesCount = 0;
   const areaHa = 0;
   const arbolesEstimados = 0;
   const produccionAnualKg = 0;

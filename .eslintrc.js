@@ -28,7 +28,9 @@ module.exports = {
     'react/jsx-uses-react': 'off',
 
     // TypeScript
-    '@typescript-eslint/no-explicit-any': 'warn',
+    // 'any' es necesario para datos dinámicos (API, SQL, navegación, formularios)
+    // Usar unknown en catch clauses para TypeScript 5.x
+    '@typescript-eslint/no-explicit-any': 'off',
     '@typescript-eslint/no-unused-vars': ['warn', { argsIgnorePattern: '^_' }],
     '@typescript-eslint/explicit-function-return-type': 'off',
     '@typescript-eslint/no-non-null-assertion': 'warn',

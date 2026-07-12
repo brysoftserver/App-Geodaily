@@ -12,7 +12,7 @@ interface AppBackgroundProps {
   style?: ViewStyle;
 }
 
-const FONDO_IMAGE = require('../../assets/images/fondo_login_geo_daily.png');
+import FONDO_IMAGE from '../../assets/images/fondo_login_geo_daily.png';
 
 const AppBackground: React.FC<AppBackgroundProps> = ({
   children,

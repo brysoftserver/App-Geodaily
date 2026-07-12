@@ -22,7 +22,7 @@ import { useOfflineSync } from '../../hooks/useOfflineSync';
 import { COLORS, FONTS, SPACING, BORDER_RADIUS, SHADOWS } from '../../theme';
 
 type TerrenoMenuProps = {
-  navigation: NativeStackNavigationProp<any>;
+  navigation: NativeStackNavigationProp<Record<string, any>>;
 };
 
 const MENU_ITEMS = [
@@ -81,7 +81,9 @@ const TerrenoMenuScreen: React.FC<TerrenoMenuProps> = ({ navigation }) => {
         const AsyncStorage = (await import('@react-native-async-storage/async-storage')).default;
         const savedAvatar = await AsyncStorage.getItem('@geodaily/avatar_uri');
         if (savedAvatar) setAvatarUri(savedAvatar);
-      } catch {}
+      } catch {
+        // Ignorar error al cargar avatar
+      }
     };
     loadAvatar();
   }, []);
@@ -111,7 +113,9 @@ const TerrenoMenuScreen: React.FC<TerrenoMenuProps> = ({ navigation }) => {
         try {
           const AsyncStorage = (await import('@react-native-async-storage/async-storage')).default;
           await AsyncStorage.setItem('@geodaily/avatar_uri', uri);
-        } catch {}
+        } catch {
+          // Ignorar error al guardar avatar
+        }
       }
     } catch (error) {
       console.warn('Error al seleccionar imagen:', error);

@@ -13,7 +13,6 @@ import { TrackingProvider } from './src/store/TrackingContext';
 import { GPSProvider } from './src/store/GPSContext';
 import AppNavigator from './src/navigation/AppNavigator';
 import { initDatabase } from './src/services/database';
-import { COLORS } from './src/theme';
 import LoadingSpinner from './src/components/LoadingSpinner';
 
 export default function App() {

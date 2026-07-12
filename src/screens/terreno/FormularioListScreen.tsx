@@ -7,15 +7,13 @@ import {
   View,
   Text,
   FlatList,
-  TouchableOpacity,
   StyleSheet,
-  Alert,
   RefreshControl,
   ImageBackground,
 } from 'react-native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
-import { COLORS, FONTS, SPACING, BORDER_RADIUS, SHADOWS } from '../../theme';
+import { COLORS, FONTS, SPACING, BORDER_RADIUS } from '../../theme';
 import { useForm } from '../../store/FormContext';
 import { useAuth } from '../../store/AuthContext';
 import { getFormulariosLocales } from '../../services/database';
@@ -29,7 +27,7 @@ type FormularioListScreenProps = {
 };
 
 /** Valida que un formulario tenga los campos esenciales para renderizar */
-const isValidFormulario = (f: any): f is import('../../types').Formulario => {
+const isValidFormulario = (f: Record<string, any>): f is import('../../types').Formulario => {
   if (!f || !f.id || !f.tipo) return false;
   if (!f.beneficiario || typeof f.beneficiario !== 'object') return false;
   if (!f.beneficiario.nombre) return false;

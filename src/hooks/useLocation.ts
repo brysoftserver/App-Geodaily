@@ -4,9 +4,8 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import * as Location from 'expo-location';
-import { Coordenadas } from '../types';
+import { Coordenadas, GeoReferencia } from '../types';
 import { getGeoreference } from '../services/georeference.service';
-import { GeoReferencia } from '../types';
 
 interface LocationState {
   coordenadas: Coordenadas | null;
@@ -109,6 +108,7 @@ export const useLocation = () => {
   // Solicitar permisos al montar el hook
   useEffect(() => {
     requestPermissions();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   return {

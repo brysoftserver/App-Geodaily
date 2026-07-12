@@ -19,7 +19,7 @@ export const uploadPhoto = async (
   try {
     const formData = new FormData();
 
-    // @ts-ignore — React Native FormData
+    // @ts-expect-error — React Native FormData
     formData.append('archivo', {
       uri: photoUri,
       type: 'image/jpeg',
@@ -55,7 +55,7 @@ export const uploadPhoto = async (
 /**
  * Obtener información de una foto por ID
  */
-export const getPhotoInfo = async (puntoId: string): Promise<any> => {
+export const getPhotoInfo = async (puntoId: string): Promise<Record<string, any> | null> => {
   try {
     const response = await apiClient.get(
       `${API_CONFIG.ENDPOINTS.PHOTOS}/${puntoId}`

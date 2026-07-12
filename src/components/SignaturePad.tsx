@@ -170,7 +170,7 @@ const SignaturePad: React.FC<SignaturePadProps> = ({
   const webviewRef = useRef<WebView>(null);
 
   const handleMessage = useCallback(
-    (event: any) => {
+    (event: { nativeEvent: { data: string } }) => {
       const data = event.nativeEvent.data;
       if (data === '__EMPTY__') {
         onEmpty?.();

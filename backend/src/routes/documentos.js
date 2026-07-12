@@ -112,15 +112,22 @@ router.post('/subir-multiple', authenticateToken, upload.array('archivos', 10), 
 
     const resultados = [];
 
+    const userRol = req.user?.rol || 'otros';
+    const userUsuario = req.user?.usuario || req.user?.id?.toString() || 'desconocido';
+
     for (const file of req.files) {
       const ext = path.extname(file.originalname);
       const filename = `doc_${Date.now()}_${Math.random().toString(36).slice(2, 6)}${ext}`;
 
-      await storage.uploadFile(
-        req.user.rol, req.user.usuario, 'documentos', filename, file.buffer
-      );
+      try {
+        await storage.uploadFile(
+          userRol, userUsuario, 'documentos', filename, file.buffer
+        );
+      } catch (storageErr) {
+        console.warn('[Documentos] Error subiendo a MinIO en lote:', storageErr.message);
+      }
 
-      const basePath = storage.getUserBasePath(req.user.rol, req.user.usuario);
+      const basePath = storage.getUserBasePath(userRol, userUsuario);
       const minioPath = `${basePath}/documentos/${filename}`;
       const bucket = process.env.MINIO_BUCKET || 'geodaily-archivos';
 

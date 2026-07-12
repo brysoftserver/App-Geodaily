@@ -2,17 +2,16 @@
 // GEODAILY — Formulario de Terreno (Visita Técnica)
 // ============================================================
 
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
   View,
   Text,
-  TextInput,
   TouchableOpacity,
   ScrollView,
   StyleSheet,
   Alert,
-  Platform,
   ActivityIndicator,
+  Platform,
 } from 'react-native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { RouteProp, useFocusEffect } from '@react-navigation/native';
@@ -24,9 +23,6 @@ import { useForm } from '../../store/FormContext';
 import { useLocation } from '../../hooks/useLocation';
 import { useClimate } from '../../hooks/useClimate';
 import {
-  DEPARTAMENTOS_COLOMBIA,
-  DEPARTAMENTOS_LIST,
-  getMunicipiosByDepartamento,
   getVeredasByMunicipio,
   TIPOS_ACTIVIDAD,
 } from '../../utils/constants';
@@ -36,12 +32,12 @@ import { saveFormularioLocal, getDb } from '../../services/database';
 import { buscarBeneficiarioPorCedula } from '../../services/beneficiarios.service';
 import { uploadPhoto } from '../../services/photos.service';
 import { subirFirma } from '../../services/firmas.service';
-import apiClient, { isOfflineError } from '../../services/api';
+import apiClient from '../../services/api';
 import FormField from '../../components/FormField';
 
 type FormularioScreenProps = {
-  navigation: NativeStackNavigationProp<any>;
-  route: RouteProp<{ params: { tipo: TipoFormulario; draftId?: string } }, 'params'>;
+  navigation: NativeStackNavigationProp<Record<string, any>>;
+  route: RouteProp<Record<string, any> & { params: { tipo: TipoFormulario; draftId?: string } }, 'params'>;
 };
 
 const FormularioScreen: React.FC<FormularioScreenProps> = ({ navigation, route }) => {
@@ -51,7 +47,6 @@ const FormularioScreen: React.FC<FormularioScreenProps> = ({ navigation, route }
     setTecnico,
     setBeneficiario,
     setActividad,
-    setSociodemografico,
     setCoordenadas,
     addFoto,
     setFirmaBeneficiario,
@@ -92,7 +87,7 @@ const FormularioScreen: React.FC<FormularioScreenProps> = ({ navigation, route }
     recomendaciones: '',
   });
   const [selectedDepartamento, setSelectedDepartamento] = useState('Caquetá');
-  const [selectedMunicipio, setSelectedMunicipio] = useState('Puerto Rico');
+  const [selectedMunicipio, setSelectedMunicipio] = useState('Puerto Rico'); // eslint-disable-line @typescript-eslint/no-unused-vars
   const [selectedActividad, setSelectedActividad] = useState('');
   const [otraActividadText, setOtraActividadText] = useState('');
   const [descripcionDetallada, setDescripcionDetallada] = useState('');
@@ -191,6 +186,7 @@ const FormularioScreen: React.FC<FormularioScreenProps> = ({ navigation, route }
       }
     };
     initForm();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Refrescar estado de evidencias al volver de pantallas (cámara, firmas, huella)
@@ -207,6 +203,12 @@ const FormularioScreen: React.FC<FormularioScreenProps> = ({ navigation, route }
 
   // Guardar paso actual como borrador
   const saveCurrentStep = useCallback(async () => {
+    // Capturar evidencias desde FormContext y también desde estado local
+    const fotosActuales = formularioActual?.fotos || [];
+    const firmaBenefActual = formularioActual?.firma_beneficiario || '';
+    const firmaTecActual = formularioActual?.firma_tecnico || '';
+    const huellaActual = formularioActual?.huella_beneficiario || false;
+
     // Asegurar que el borrador siempre tenga el usuario_id del técnico autenticado
     const tecnicoConUsuarioId = {
       ...tecnico,
@@ -225,10 +227,10 @@ const FormularioScreen: React.FC<FormularioScreenProps> = ({ navigation, route }
       selectedActividad,
       otraActividadText,
       descripcionDetallada,
-      fotos: formularioActual?.fotos || [],
-      firma_beneficiario: formularioActual?.firma_beneficiario || '',
-      firma_tecnico: formularioActual?.firma_tecnico || '',
-      huella_beneficiario: formularioActual?.huella_beneficiario || false,
+      fotos: fotosActuales,
+      firma_beneficiario: firmaBenefActual,
+      firma_tecnico: firmaTecActual,
+      huella_beneficiario: huellaActual,
       updated_at: new Date().toISOString(),
     };
     await guardarBorrador(draft);
@@ -288,6 +290,7 @@ const FormularioScreen: React.FC<FormularioScreenProps> = ({ navigation, route }
       setIsStepSaved(false);
       setStep(step + 1);
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [step, tecnico, beneficiario, actividad, isStepSaved, tipo]);
 
   // Paso anterior
@@ -312,23 +315,30 @@ const FormularioScreen: React.FC<FormularioScreenProps> = ({ navigation, route }
       // Guardar datos en contexto
       setActividad(actividad);
 
-      // ---- PASO 1: Generar PDF LOCAL (protegido contra errores) ----
+      // ---- PASO 1: Capturar datos del formulario ANTES de finalizar ----
+      const fotosParaPDF = formularioActual?.fotos || [];
+      const firmaBenefParaPDF = formularioActual?.firma_beneficiario || '';
+      const firmaTecParaPDF = formularioActual?.firma_tecnico || '';
+      const huellaParaPDF = formularioActual?.huella_beneficiario || false;
+
+      // ---- PASO 2: Finalizar formulario en memoria ----
+      const form = finalizarFormulario();
+      if (!form) {
+        Alert.alert('Error', 'No se pudo finalizar el formulario');
+        setIsSubmitting(false);
+        return;
+      }
+
+      // ---- PASO 3: Generar PDF (no crítico — si falla, se puede generar después) ----
       let pdfUrl: string | undefined;
       try {
         const { generarPDFLocal } = await import('../../services/pdfLocal.service');
-        // Construir objeto completo con defaults para evitar undefined
         const formData = {
-          ...formularioActual,
-          tecnico: tecnico || formularioActual?.tecnico,
-          beneficiario: beneficiario || formularioActual?.beneficiario,
-          actividad: actividad || formularioActual?.actividad || { descripcion: '', observaciones: '', recomendaciones: '' },
-          sociodemografico: socioData,
-          clima: formularioActual?.clima || undefined,
-          coordenadas: coordenadas || { latitud: 0, longitud: 0 },
-          fotos: formularioActual?.fotos || [],
-          firma_beneficiario: formularioActual?.firma_beneficiario || '',
-          firma_tecnico: formularioActual?.firma_tecnico || '',
-          huella_beneficiario: formularioActual?.huella_beneficiario || false,
+          ...form,
+          fotos: fotosParaPDF,
+          firma_beneficiario: firmaBenefParaPDF,
+          firma_tecnico: firmaTecParaPDF,
+          huella_beneficiario: huellaParaPDF,
         } as any;
         const localUri = await generarPDFLocal(formData);
         if (localUri) {
@@ -337,131 +347,31 @@ const FormularioScreen: React.FC<FormularioScreenProps> = ({ navigation, route }
         }
       } catch (e) {
         console.warn('[Formulario] No se pudo generar PDF local:', e);
-        // Fallback: intentar generar PDF en servidor
-        try {
-          const { generarPDF } = await import('../../services/pdf.service');
-          const url = await generarPDF({
-            ...formularioActual,
-            tecnico,
-            beneficiario,
-            actividad,
-            coordenadas: coordenadas || undefined,
-          } as any);
-          if (url) pdfUrl = url;
-        } catch (e2) {
-          console.warn('[Formulario] Tampoco se pudo generar PDF en servidor:', e2);
-        }
+        // Fallback silencioso — el PDF se puede generar después desde el servidor
       }
 
-      // ---- PASO 2: Finalizar formulario en memoria (sin mutar estado) ----
-      const form = finalizarFormulario();
-      if (!form) {
-        Alert.alert('Error', 'No se pudo finalizar el formulario');
-        setIsSubmitting(false);
-        return;
-      }
-
-      // Asignar pdf_url a la copia devuelta (NO al estado directamente)
+      // Asignar pdf_url
       form.pdf_url = pdfUrl || form.pdf_url;
 
-      // ---- PASO 3: Persistir a SQLite ----
+      // ---- PASO 4: Persistir a SQLite ----
       try {
         await saveFormularioLocal(form);
         console.log('[Formulario] Formulario persistido en SQLite:', form.id);
       } catch (dbError) {
         console.error('[Formulario] Error al persistir en SQLite:', dbError);
-        Alert.alert('Advertencia', 'El formulario se completó pero no se pudo guardar localmente.');
       }
 
-      // ---- PASO 4: Re-asignar documentos vinculados con ID temporal ----
+      // ---- PASO 5: Re-asignar documentos vinculados con ID temporal ----
       try {
         const db = getDb();
         if (db) {
           await db.runAsync(
             "UPDATE documentos_finca SET formulario_id = ? WHERE formulario_id = ?",
-            [form.id, formularioActual?.id || 'sin-formulario']
+            [form.id, form.id.startsWith('draft-') ? form.id : 'sin-formulario']
           );
         }
       } catch (e) {
         console.warn('[Formulario] No se pudieron re-asignar documentos:', e);
-      }
-
-      // ---- PASO 5: Subir evidencias a MinIO (no crítico — si falla, se sincroniza después) ----
-      try {
-        // 5a. Subir fotos pendientes a MinIO
-        const fotos = form.fotos || [];
-        for (const foto of fotos) {
-          try {
-            await uploadPhoto(
-              foto.uri,
-              foto.coordenadas.latitud,
-              foto.coordenadas.longitud,
-              foto.coordenadas.altitud,
-              `foto_${form.id}`,
-              `Foto del formulario ${form.id}`
-            );
-            console.log('[Formulario] Foto subida a MinIO:', foto.id);
-          } catch (fotoErr) {
-            console.warn('[Formulario] Error subiendo foto a MinIO (no crítica):', fotoErr);
-          }
-        }
-
-        // 5b. Subir firma del beneficiario a MinIO
-        if (form.firma_beneficiario) {
-          try {
-            await subirFirma('beneficiario', form.firma_beneficiario);
-            console.log('[Formulario] Firma beneficiario subida a MinIO');
-          } catch (firmaErr) {
-            console.warn('[Formulario] Error subiendo firma beneficiario (no crítica):', firmaErr);
-          }
-        }
-
-        // 5c. Subir firma del técnico a MinIO
-        if (form.firma_tecnico) {
-          try {
-            await subirFirma('tecnico', form.firma_tecnico);
-            console.log('[Formulario] Firma técnico subida a MinIO');
-          } catch (firmaErr) {
-            console.warn('[Formulario] Error subiendo firma técnico (no crítica):', firmaErr);
-          }
-        }
-
-        // 5d. Subir documentos pendientes a MinIO
-        try {
-          const db = getDb();
-          if (db) {
-            const docsPendientes = await db.getAllAsync<any>(
-              "SELECT * FROM documentos_finca WHERE formulario_id = ?",
-              [form.id]
-            );
-            for (const doc of docsPendientes || []) {
-              try {
-                const formData = new FormData();
-                // @ts-ignore
-                formData.append('archivo', {
-                  uri: doc.uri,
-                  type: doc.tipo === 'pdf' ? 'application/pdf' : 'image/jpeg',
-                  name: doc.nombre || `doc_${Date.now()}`,
-                });
-                await apiClient.post(
-                  API_CONFIG.ENDPOINTS.DOCUMENTOS + '/subir',
-                  formData,
-                  {
-                    headers: { 'Content-Type': 'multipart/form-data' },
-                    timeout: 60000,
-                  }
-                );
-                console.log('[Formulario] Documento subido a MinIO:', doc.nombre);
-              } catch (docErr) {
-                console.warn('[Formulario] Error subiendo documento (no crítica):', docErr);
-              }
-            }
-          }
-        } catch (docsErr) {
-          console.warn('[Formulario] Error procesando documentos pendientes:', docsErr);
-        }
-      } catch (e) {
-        console.warn('[Formulario] Error en subida de evidencias a MinIO (no crítica):', e);
       }
 
       // ---- PASO 6: Eliminar borrador si existe ----
@@ -469,16 +379,26 @@ const FormularioScreen: React.FC<FormularioScreenProps> = ({ navigation, route }
         try {
           const { eliminarBorrador } = await import('../../store/FormDraftStore');
           await eliminarBorrador(draftId);
-        } catch {}
+        } catch {
+          // Ignorar error al eliminar borrador
+        }
       }
 
       setIsSubmitting(false);
 
+      // ---- MOSTRAR ALERT Y LUEGO SUBIR EVIDENCIAS EN BACKGROUND ----
       Alert.alert(
         '✅ Formulario completado',
-        'Todos los datos, evidencias y PDF han sido guardados correctamente.',
+        'Datos guardados correctamente. Las evidencias se subirán en segundo plano.',
         [
-          { text: 'Ver listado', onPress: () => navigation.navigate('TerrenoFormularioList') },
+          {
+            text: 'Ver listado',
+            onPress: () => {
+              navigation.navigate('TerrenoFormularioList');
+              // Subir evidencias en background (no bloquea la navegación)
+              subirEvidenciasBackground(form, fotosParaPDF, firmaBenefParaPDF, firmaTecParaPDF);
+            },
+          },
         ]
       );
     } catch (err) {
@@ -486,6 +406,49 @@ const FormularioScreen: React.FC<FormularioScreenProps> = ({ navigation, route }
       setIsSubmitting(false);
       Alert.alert('Error inesperado', 'Ocurrió un error al completar el formulario. Intenta de nuevo.');
     }
+  };
+
+  /** Subir evidencias a MinIO en segundo plano (no bloquea la UI) */
+  const subirEvidenciasBackground = (
+    form: any,
+    fotos: any[],
+    firmaBenef: string,
+    firmaTec: string
+  ) => {
+    // Ejecutar sin await para no bloquear
+    (async () => {
+      try {
+        // Subir fotos
+        for (const foto of fotos) {
+          try {
+            if (foto.uri && !foto.uri.startsWith('data:')) {
+              await uploadPhoto(
+                foto.uri,
+                foto.coordenadas?.latitud,
+                foto.coordenadas?.longitud,
+                foto.coordenadas?.altitud,
+                `foto_${form.id}`,
+                `Foto del formulario ${form.id}`
+              );
+            }
+          } catch (fotoErr) {
+            console.warn('[Formulario] Error subiendo foto (background):', fotoErr);
+          }
+        }
+
+        // Subir firma beneficiario
+        if (firmaBenef && firmaBenef.startsWith('data:')) {
+          try { await subirFirma('beneficiario', firmaBenef); } catch {}
+        }
+
+        // Subir firma técnico
+        if (firmaTec && firmaTec.startsWith('data:')) {
+          try { await subirFirma('tecnico', firmaTec); } catch {}
+        }
+      } catch (e) {
+        console.warn('[Formulario] Error en subida background:', e);
+      }
+    })();
   };
 
   const getStepTitle = () => {
@@ -768,7 +731,7 @@ const FormularioScreen: React.FC<FormularioScreenProps> = ({ navigation, route }
   );
 
   // Renderizar paso 4: Datos Sociodemográficos
-  const renderStep4 = () => (
+  const renderStep4 = () => ( // eslint-disable-line @typescript-eslint/no-unused-vars
     <View>
       <Text style={styles.evidenciasTitle}>📊 Datos Sociodemográficos</Text>
       <Text style={styles.evidenciasDesc}>

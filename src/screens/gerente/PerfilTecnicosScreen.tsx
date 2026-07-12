@@ -9,7 +9,6 @@ import {
   StyleSheet,
   ScrollView,
   TouchableOpacity,
-  FlatList,
   ImageBackground,
   RefreshControl,
 } from 'react-native';
@@ -21,10 +20,9 @@ import { getFormulariosLocales } from '../../services/database';
 import { fetchFormulariosDelServidor } from '../../services/formularios.service';
 import { Formulario } from '../../types';
 import { formatFecha } from '../../utils/formatters';
-import LoadingSpinner from '../../components/LoadingSpinner';
 
 type PerfilTecnicosProps = {
-  navigation: NativeStackNavigationProp<any>;
+  navigation: NativeStackNavigationProp<Record<string, any>>;
 };
 
 const PerfilTecnicosScreen: React.FC<PerfilTecnicosProps> = ({ navigation }) => {

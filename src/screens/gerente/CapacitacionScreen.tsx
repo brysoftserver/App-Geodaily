@@ -14,7 +14,7 @@ import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { COLORS, FONTS, SPACING, BORDER_RADIUS, SHADOWS } from '../../theme';
 
 type CapacitacionProps = {
-  navigation: NativeStackNavigationProp<any>;
+  navigation: NativeStackNavigationProp<Record<string, any>>;
 };
 
 interface Material {
@@ -39,7 +39,7 @@ const MATERIALES: Material[] = [
 
 const TEMAS = ['Todos', 'Cultivo', 'Campo', 'Legal', 'Tecnología', 'Seguridad'];
 
-const CapacitacionScreen: React.FC<CapacitacionProps> = ({ navigation }) => {
+const CapacitacionScreen: React.FC<CapacitacionProps> = ({ navigation: _navigation }) => {
   const [selectedTema, setSelectedTema] = useState('Todos');
   const [completados, setCompletados] = useState<Set<string>>(new Set());
 

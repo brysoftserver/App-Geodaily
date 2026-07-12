@@ -223,7 +223,7 @@ const UserManagementScreen: React.FC = () => {
             <TextInput
               style={styles.modalInput}
               value={editingUser?.nombre || ''}
-              onChangeText={(t) => setEditingUser((prev) => ({ ...prev!, nombre: t }))}
+              onChangeText={(t) => setEditingUser((prev) => ({ ...(prev as UserItem), nombre: t }))}
               placeholder="Nombre completo"
               placeholderTextColor={COLORS.textLight}
             />
@@ -232,7 +232,7 @@ const UserManagementScreen: React.FC = () => {
             <TextInput
               style={styles.modalInput}
               value={editingUser?.usuario || ''}
-              onChangeText={(t) => setEditingUser((prev) => ({ ...prev!, usuario: t }))}
+              onChangeText={(t) => setEditingUser((prev) => ({ ...(prev as UserItem), usuario: t }))}
               placeholder="Nombre de usuario"
               placeholderTextColor={COLORS.textLight}
               autoCapitalize="none"
@@ -242,7 +242,7 @@ const UserManagementScreen: React.FC = () => {
             <TextInput
               style={styles.modalInput}
               value={editingUser?.email || ''}
-              onChangeText={(t) => setEditingUser((prev) => ({ ...prev!, email: t }))}
+              onChangeText={(t) => setEditingUser((prev) => ({ ...(prev as UserItem), email: t }))}
               placeholder="correo@ejemplo.com"
               placeholderTextColor={COLORS.textLight}
               keyboardType="email-address"
@@ -253,7 +253,7 @@ const UserManagementScreen: React.FC = () => {
             <TextInput
               style={styles.modalInput}
               value={editingUser?.telefono || ''}
-              onChangeText={(t) => setEditingUser((prev) => ({ ...prev!, telefono: t }))}
+              onChangeText={(t) => setEditingUser((prev) => ({ ...(prev as UserItem), telefono: t }))}
               placeholder="Teléfono"
               placeholderTextColor={COLORS.textLight}
               keyboardType="phone-pad"
@@ -268,7 +268,7 @@ const UserManagementScreen: React.FC = () => {
                     styles.roleChip,
                     editingUser?.rol === key && { backgroundColor: cfg.color + '20', borderColor: cfg.color },
                   ]}
-                  onPress={() => setEditingUser((prev) => ({ ...prev!, rol: key as UserItem['rol'] }))}
+                  onPress={() => setEditingUser((prev) => ({ ...(prev as UserItem), rol: key as UserItem['rol'] }))}
                 >
                   <Text style={[styles.roleChipText, editingUser?.rol === key && { color: cfg.color }]}>
                     {cfg.label}

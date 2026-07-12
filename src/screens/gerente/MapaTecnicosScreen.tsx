@@ -23,7 +23,7 @@ import { getUltimasPosicionesTecnicos } from '../../services/database';
 import MapViewOffline from '../../components/MapViewOffline';
 
 type MapaTecnicosProps = {
-  navigation: any;
+  navigation: Record<string, any>;
 };
 
 interface TecnicoUbicacion {
@@ -38,7 +38,7 @@ interface TecnicoUbicacion {
   nombre?: string;
 }
 
-const MapaTecnicosScreen: React.FC<MapaTecnicosProps> = ({ navigation }) => {
+const MapaTecnicosScreen: React.FC<MapaTecnicosProps> = ({ navigation: _navigation }) => {
   const [tecnicos, setTecnicos] = useState<TecnicoUbicacion[]>([]);
   const [loading, setLoading] = useState(true);
   const [lastUpdate, setLastUpdate] = useState<string>('');
@@ -47,7 +47,7 @@ const MapaTecnicosScreen: React.FC<MapaTecnicosProps> = ({ navigation }) => {
     try {
       setLoading(true);
       const posiciones = await getUltimasPosicionesTecnicos();
-      const tecnicosMap = posiciones.map((p: any) => ({
+      const tecnicosMap = posiciones.map((p: Record<string, any>) => ({
         usuario_id: p.usuario_id,
         latitud: p.latitud,
         longitud: p.longitud,

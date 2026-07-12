@@ -69,7 +69,9 @@ const MiRutaScreen: React.FC = () => {
         count: hoyFiltrado.length,
         desde: hoyFiltrado.length > 0 ? hoyFiltrado[0].timestamp : undefined,
       });
-    } catch {}
+    } catch {
+      // Ignorar error al cargar historial
+    }
     setCargandoHistorial(false);
   }, [user?.id]);
 
@@ -86,7 +88,9 @@ const MiRutaScreen: React.FC = () => {
             try {
               const database = await (await import('expo-sqlite')).openDatabaseAsync('geodaily.db');
               await database.runAsync('DELETE FROM tracking_posiciones');
-            } catch {}
+            } catch {
+                // Ignorar error al limpiar tracking
+              }
           },
         },
       ]
@@ -166,7 +170,7 @@ const MiRutaScreen: React.FC = () => {
     </html>`;
   }, [posiciones]);
 
-  const { width: SCREEN_WIDTH } = Dimensions.get('window');
+  const { width: SCREEN_WIDTH } = Dimensions.get('window'); // eslint-disable-line @typescript-eslint/no-unused-vars
 
   return (
     <SafeAreaView style={styles.container}>
@@ -283,7 +287,7 @@ const MiRutaScreen: React.FC = () => {
             {posiciones
               .slice(-10)
               .reverse()
-              .map((pos, idx) => (
+              .map((pos, _idx) => (
                 <View key={pos.id} style={styles.timelineRow}>
                   <View style={styles.timelineDot} />
                   <View style={styles.timelineContent}>

@@ -18,7 +18,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import SignaturePad from '../../components/SignaturePad';
 
 type Props = {
-  navigation: NativeStackNavigationProp<any>;
+  navigation: NativeStackNavigationProp<Record<string, any>>;
 };
 
 const FirmaDigitalScreen: React.FC<Props> = ({ navigation }) => {
@@ -37,7 +37,7 @@ const FirmaDigitalScreen: React.FC<Props> = ({ navigation }) => {
   };
 
   const handleGuardar = () => {
-    setFirmaTecnico(firma!);
+    setFirmaTecnico(firma ?? '');
     Alert.alert('✅ Guardada', 'Firma del técnico guardada correctamente.', [
       { text: 'OK', onPress: () => navigation.goBack() },
     ]);
@@ -64,7 +64,7 @@ const FirmaDigitalScreen: React.FC<Props> = ({ navigation }) => {
           )}
         </View>
         <Text style={styles.subtitle}>
-          El técnico debe firmar en el recuadro, presiona "✅ Confirmar" y luego "💾 Guardar".
+          El técnico debe firmar en el recuadro, presiona &ldquo;✅ Confirmar&rdquo; y luego &ldquo;💾 Guardar&rdquo;.
         </Text>
 
         {mostrarPad && !firma ? (

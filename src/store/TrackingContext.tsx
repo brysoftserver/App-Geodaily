@@ -76,9 +76,12 @@ export const TrackingProvider: React.FC<{ children: React.ReactNode }> = ({ chil
           console.log('[TrackingContext] Restaurando tracking persistido...');
           await iniciarTrackingInterno();
         }
-      } catch {}
+      } catch {
+          // Ignorar errores al restaurar estado persistido
+        }
     };
     checkSavedState();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []); // Solo al montar
 
   // Limpiar al desmontar el provider (cierre de app)

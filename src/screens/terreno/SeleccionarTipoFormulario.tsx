@@ -9,7 +9,7 @@ import { COLORS, FONTS, SPACING, BORDER_RADIUS, SHADOWS } from '../../theme';
 import { contarBorradores } from '../../store/FormDraftStore';
 
 type SeleccionarTipoProps = {
-  navigation: NativeStackNavigationProp<any>;
+  navigation: NativeStackNavigationProp<Record<string, any>>;
 };
 
 const SeleccionarTipoFormulario: React.FC<SeleccionarTipoProps> = ({ navigation }) => {

@@ -3,7 +3,7 @@
 // ============================================================
 
 import apiClient, { isOfflineError } from './api';
-import { GeoReferencia, Coordenadas } from '../types';
+import { GeoReferencia } from '../types';
 import { API_CONFIG } from '../theme';
 
 /**

@@ -10,14 +10,14 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { View, Text, StyleSheet, ActivityIndicator, NativeModules, Platform } from 'react-native';
 import { WebView } from 'react-native-webview';
-import { COLORS, FONTS, SPACING, BORDER_RADIUS, SHADOWS } from '../theme';
+import { COLORS, FONTS, SPACING, BORDER_RADIUS } from '../theme';
 import { API_CONFIG } from '../theme';
 import { Coordenadas } from '../types';
 
 // Carga condicional de MapLibre (fallback si no hay módulo nativo)
 // En Expo Go, el módulo JS se carga pero el native module no está registrado.
 // Usamos NativeModules para verificar limpiamente, sin mutar console.error.
-let MapLibreGL: any = null;
+let MapLibreGL: any = null; // eslint-disable-line @typescript-eslint/no-explicit-any
 try {
   if (NativeModules.MLRNModule) {
     MapLibreGL = require('@maplibre/maplibre-react-native');
@@ -61,7 +61,7 @@ interface MapViewOfflineProps {
     /** Nombre visible de la capa */
     nombre?: string;
     /** Features GeoJSON (FeatureCollection o Feature[]) */
-    features: any[];
+    features: Record<string, any>[];
     /** Color de relleno (con opacidad incluida, ej: rgba) */
     fillColor?: string;
     /** Color del borde */
@@ -172,9 +172,9 @@ const MapViewOffline: React.FC<MapViewOfflineProps> = ({
   onMarkerPress,
   onMapPress,
 }) => {
-  const cameraRef = useRef<any>(null);
+  const cameraRef = useRef<Record<string, any> | null>(null);
   const [isLoaded, setIsLoaded] = useState(false);
-  const [hasNativeModule, setHasNativeModule] = useState(!!MapLibreGL);
+  const hasNativeModule = !!MapLibreGL;
 
   // Altura del contenedor: '100%' usa flex, número usa altura fija
   const containerStyle = height === '100%'
@@ -203,7 +203,7 @@ const MapViewOffline: React.FC<MapViewOfflineProps> = ({
   const [webIframeReady, setWebIframeReady] = useState(false);
 
   // Web: comunicación con el iframe vía postMessage
-  const postMsg = useCallback((data: any) => {
+  const postMsg = useCallback((data: Record<string, any>) => {
     try {
       webIframeRef.current?.contentWindow?.postMessage(data, '*');
     } catch { /* iframe no disponible */ }
@@ -508,6 +508,7 @@ const MapViewOffline: React.FC<MapViewOfflineProps> = ({
     } else {
       injectJS(`window._setUserLocation(null);true;`);
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [webViewReady, showUserLocation, userLocation, injectJS]);
 
   // Mover el centro del mapa SIN recargar el WebView completo
@@ -646,7 +647,7 @@ const MapViewOffline: React.FC<MapViewOfflineProps> = ({
         onDidFinishLoadingMap={() => setIsLoaded(true)}
         onPress={
           onMapPress
-            ? (e: any) => {
+            ? (e: Record<string, any>) => {
                 const geometry = e?.geometry || e?.nativeEvent?.geometry;
                 if (geometry) {
                   onMapPress(geometry.coordinates[1], geometry.coordinates[0]);

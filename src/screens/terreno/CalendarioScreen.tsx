@@ -12,12 +12,16 @@ import {
   Modal,
   TextInput,
   Alert,
+  ActivityIndicator,
 } from 'react-native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
+import { useFocusEffect } from '@react-navigation/native';
 import { Calendar, DateData, LocaleConfig } from 'react-native-calendars';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { COLORS, FONTS, SPACING, BORDER_RADIUS, SHADOWS } from '../../theme';
 import { useForm } from '../../store/FormContext';
+import { fetchFormulariosDelServidor } from '../../services/formularios.service';
+import { getFormulariosLocales } from '../../services/database';
 import { formatFecha } from '../../utils/formatters';
 
 // Configurar calendario en español
@@ -46,11 +50,11 @@ interface VisitaPlanificada {
 }
 
 type CalendarioScreenProps = {
-  navigation: NativeStackNavigationProp<any>;
+  navigation: NativeStackNavigationProp<Record<string, any>>;
 };
 
 const CalendarioScreen: React.FC<CalendarioScreenProps> = ({ navigation }) => {
-  const { formularios } = useForm();
+  const { formularios, cargarFormularios } = useForm();
   const insets = useSafeAreaInsets();
   const [selectedDate, setSelectedDate] = useState<string>(
     new Date().toISOString().split('T')[0]
@@ -59,6 +63,28 @@ const CalendarioScreen: React.FC<CalendarioScreenProps> = ({ navigation }) => {
   const [modalVisible, setModalVisible] = useState(false);
   const [newVisitTitulo, setNewVisitTitulo] = useState('');
   const [newVisitUbicacion, setNewVisitUbicacion] = useState('');
+  const [loadingCal, setLoadingCal] = useState(true);
+
+  // Cargar formularios del servidor + local (calendario compartido)
+  const loadCalendarData = useCallback(async () => {
+    try {
+      const [locales, servidor] = await Promise.all([
+        getFormulariosLocales(),
+        fetchFormulariosDelServidor(),
+      ]);
+
+      const mapa = new Map<string, any>();
+      for (const f of locales) mapa.set(f.id, f);
+      for (const f of servidor) mapa.set(f.id, { ...f, sincronizado: true });
+
+      const fusionados = Array.from(mapa.values());
+      cargarFormularios(fusionados);
+    } catch (e) {
+      console.warn('[Calendario] Error cargando datos del servidor:', e);
+    } finally {
+      setLoadingCal(false);
+    }
+  }, [cargarFormularios]);
 
   // Cargar visitas planificadas guardadas
   const loadPlannedVisits = useCallback(async () => {
@@ -74,8 +100,16 @@ const CalendarioScreen: React.FC<CalendarioScreenProps> = ({ navigation }) => {
   }, []);
 
   useEffect(() => {
+    loadCalendarData();
     loadPlannedVisits();
-  }, [loadPlannedVisits]);
+  }, [loadCalendarData, loadPlannedVisits]);
+
+  // Recargar al enfocar la pantalla
+  useFocusEffect(
+    useCallback(() => {
+      loadCalendarData();
+    }, [loadCalendarData])
+  );
 
   // Guardar visitas planificadas
   const savePlannedVisits = async (visitas: VisitaPlanificada[]) => {
@@ -204,12 +238,19 @@ const CalendarioScreen: React.FC<CalendarioScreenProps> = ({ navigation }) => {
     <SafeAreaView style={styles.safeContainer} edges={['top']}>
     <View style={styles.container}>
       <ScrollView contentContainerStyle={{ paddingBottom: insets.bottom + SPACING.xxl }}>
+        {loadingCal ? (
+          <View style={styles.loadingCal}>
+            <ActivityIndicator size="large" color={COLORS.primary} />
+            <Text style={styles.loadingText}>Cargando calendario...</Text>
+          </View>
+        ) : (
         <Calendar
           onDayPress={onDayPress}
           onDayLongPress={onDayLongPress}
           markedDates={markedDates}
           markingType="multi-dot"
           theme={{
+            calendarBackground: '#FFFFFF',
             todayTextColor: COLORS.primary,
             selectedDayBackgroundColor: COLORS.primary,
             selectedDayTextColor: '#fff',
@@ -219,6 +260,7 @@ const CalendarioScreen: React.FC<CalendarioScreenProps> = ({ navigation }) => {
             dotColor: COLORS.primary,
           }}
         />
+        )}
 
         {/* Leyenda */}
         <View style={styles.legendContainer}>
@@ -425,7 +467,17 @@ const styles = StyleSheet.create({
   },
   container: {
     flex: 1,
-    backgroundColor: COLORS.background,
+    backgroundColor: '#FFFFFF',
+  },
+  loadingCal: {
+    padding: SPACING.xl * 2,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  loadingText: {
+    marginTop: SPACING.sm,
+    fontSize: FONTS.sizes.md,
+    color: COLORS.textSecondary,
   },
   legendContainer: {
     flexDirection: 'row',

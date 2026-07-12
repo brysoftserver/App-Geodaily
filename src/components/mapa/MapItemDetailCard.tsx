@@ -21,10 +21,10 @@ const timeAgo = (iso?: string): string => {
 };
 
 interface MapItemDetailCardProps {
-  item: any;
-  plantaciones: any[];
-  mediciones: any[];
-  posiciones: any[];
+  item: Record<string, any>;
+  plantaciones: Record<string, any>[];
+  mediciones: Record<string, any>[];
+  posiciones: Record<string, any>[];
   canViewAll: boolean;
   isAdmin: boolean;
   onClose: () => void;
@@ -59,16 +59,16 @@ const MapItemDetailCard: React.FC<MapItemDetailCardProps> = ({
           <Text style={styles.title}>🌱 Plantación</Text>
           <DetailRow
             label="Especie"
-            value={`${item.icon} ${plantaciones.find((p: any) => p.id === realId)?.especie || '—'}`}
+            value={`${item.icon} ${plantaciones.find((p: Record<string, any>) => p.id === realId)?.especie || '—'}`}
           />
           <DetailRow
             label="Cantidad"
-            value={String(plantaciones.find((p: any) => p.id === realId)?.cantidad || '—')}
+            value={String(plantaciones.find((p: Record<string, any>) => p.id === realId)?.cantidad || '—')}
           />
           {canViewAll && (
             <DetailRow
               label="Técnico"
-              value={plantaciones.find((p: any) => p.id === realId)?.usuario_nombre || '—'}
+              value={plantaciones.find((p: Record<string, any>) => p.id === realId)?.usuario_nombre || '—'}
             />
           )}
           {isAdmin && (
@@ -82,16 +82,16 @@ const MapItemDetailCard: React.FC<MapItemDetailCardProps> = ({
           <Text style={styles.title}>📐 Medición de Terreno</Text>
           <DetailRow
             label="Área"
-            value={`${mediciones.find((m: any) => m.id === realId)?.area_hectareas?.toFixed(2) || '?'} ha`}
+            value={`${mediciones.find((m: Record<string, any>) => m.id === realId)?.area_hectareas?.toFixed(2) || '?'} ha`}
           />
           <DetailRow
             label="Perímetro"
-            value={`${mediciones.find((m: any) => m.id === realId)?.perimetro_metros?.toFixed(1) || '?'} m`}
+            value={`${mediciones.find((m: Record<string, any>) => m.id === realId)?.perimetro_metros?.toFixed(1) || '?'} m`}
           />
           {canViewAll && (
             <DetailRow
               label="Técnico"
-              value={mediciones.find((m: any) => m.id === realId)?.usuario_nombre || '—'}
+              value={mediciones.find((m: Record<string, any>) => m.id === realId)?.usuario_nombre || '—'}
             />
           )}
           {isAdmin && (
@@ -105,18 +105,18 @@ const MapItemDetailCard: React.FC<MapItemDetailCardProps> = ({
           <Text style={styles.title}>👤 Técnico</Text>
           <DetailRow
             label="Nombre"
-            value={posiciones.find((p: any) => p.id === realId)?.usuario_nombre || realId}
+            value={posiciones.find((p: Record<string, any>) => p.id === realId)?.usuario_nombre || realId}
           />
           <DetailRow label="ID" value={realId} />
           <DetailRow
             label="Estado"
             value={
-              timeAgo(posiciones.find((p: any) => p.id === realId)?.timestamp) === 'ahora'
+              timeAgo(posiciones.find((p: Record<string, any>) => p.id === realId)?.timestamp) === 'ahora'
                 ? '🟢 En vivo'
-                : `⏹ ${timeAgo(posiciones.find((p: any) => p.id === realId)?.timestamp)}`
+                : `⏹ ${timeAgo(posiciones.find((p: Record<string, any>) => p.id === realId)?.timestamp)}`
             }
             valueColor={
-              timeAgo(posiciones.find((p: any) => p.id === realId)?.timestamp) === 'ahora'
+              timeAgo(posiciones.find((p: Record<string, any>) => p.id === realId)?.timestamp) === 'ahora'
                 ? '#2E7D32'
                 : COLORS.textSecondary
             }
@@ -124,8 +124,8 @@ const MapItemDetailCard: React.FC<MapItemDetailCardProps> = ({
           <DetailRow
             label="Última actualización"
             value={
-              posiciones.find((p: any) => p.id === realId)?.timestamp
-                ? new Date(posiciones.find((p: any) => p.id === realId)?.timestamp).toLocaleString()
+              posiciones.find((p: Record<string, any>) => p.id === realId)?.timestamp
+                ? new Date(posiciones.find((p: Record<string, any>) => p.id === realId)?.timestamp).toLocaleString()
                 : '—'
             }
           />

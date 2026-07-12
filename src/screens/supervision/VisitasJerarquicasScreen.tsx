@@ -8,7 +8,7 @@
 //   Nivel 4: Detalle del formulario + ver/descargar PDF
 // ============================================================
 
-import React, { useState, useMemo, useEffect, useCallback } from 'react';
+import React, { useState, useMemo, useEffect, useCallback, useRef } from 'react';
 import {
   View,
   Text,
@@ -27,7 +27,7 @@ import { fetchFormulariosDelServidor } from '../../services/formularios.service'
 import LoadingSpinner from '../../components/LoadingSpinner';
 
 type VisitasJerarquicasScreenProps = {
-  navigation: NativeStackNavigationProp<any>;
+  navigation: NativeStackNavigationProp<Record<string, any>>;
 };
 
 // --- Tipos auxiliares ---
@@ -62,73 +62,77 @@ const VisitasJerarquicasScreen: React.FC<VisitasJerarquicasScreenProps> = ({ nav
 
   // Estado de navegación jerárquica
   const [nivel, setNivel] = useState<Nivel>('tecnicos');
+  const nivelRef = useRef<Nivel>('tecnicos');
   const [tecnicoSeleccionado, setTecnicoSeleccionado] = useState<TecnicoAgrupado | null>(null);
   const [beneficiarioSeleccionado, setBeneficiarioSeleccionado] = useState<BeneficiarioAgrupado | null>(null);
 
-  // --- Agrupar datos ---
+  // --- Agrupar datos (con protección contra null) ---
   const tecnicos = useMemo(() => {
     const mapa = new Map<string, TecnicoAgrupado>();
 
     for (const form of formularios) {
-      const tec = form.tecnico;
-      if (!tec) continue; // evitar crash si el técnico es null/undefined
-      const key = tec.nombre || tec.cedula;
-      if (!key) continue;
+      try {
+        const tec = form.tecnico;
+        if (!tec || !tec.nombre) continue;
+        const key = tec.cedula || tec.nombre;
+        if (!key) continue;
 
-      if (!mapa.has(key)) {
-        mapa.set(key, {
-          id: tec.cedula || tec.nombre,
-          nombre: tec.nombre,
-          cedula: tec.cedula || '',
-          telefono: tec.telefono || '',
-          email: tec.email || '',
-          totalVisitas: 0,
-          totalBeneficiarios: 0,
-          beneficiarios: [],
-        });
-      }
+        if (!mapa.has(key)) {
+          mapa.set(key, {
+            id: tec.cedula || tec.nombre,
+            nombre: tec.nombre || 'Sin nombre',
+            cedula: tec.cedula || '',
+            telefono: tec.telefono || '',
+            email: tec.email || '',
+            totalVisitas: 0,
+            totalBeneficiarios: 0,
+            beneficiarios: [],
+          });
+        }
 
-      const grupo = mapa.get(key)!;
-      // Si este form tiene cédula pero el grupo no, actualizarla
-      if (tec.cedula && !grupo.cedula) {
-        grupo.cedula = tec.cedula;
-      }
-      grupo.totalVisitas++;
+        const grupo = mapa.get(key)!;
+        if (tec.cedula && !grupo.cedula) {
+          grupo.cedula = tec.cedula;
+        }
+        grupo.totalVisitas++;
 
-      // Agrupar beneficiarios dentro del técnico
-      const benef = form.beneficiario;
-      if (!benef) continue; // evitar crash si el beneficiario es null/undefined
-      const benefKey = benef.nombre || benef.cedula;
-      let benefGrupo = grupo.beneficiarios.find(
-        (b) => (b.nombre || b.cedula) === benefKey
-      );
-      if (!benefGrupo) {
-        benefGrupo = {
-          nombre: benef.nombre,
-          cedula: benef.cedula || '',
-          telefono: benef.telefono || '',
-          municipio: benef.municipio || '',
-          vereda: benef.vereda || '',
-          finca: benef.finca || '',
-          visitas: [],
-        };
-        grupo.beneficiarios.push(benefGrupo);
+        // Agrupar beneficiarios dentro del técnico
+        const benef = form.beneficiario;
+        if (!benef || !benef.nombre) continue;
+        const benefKey = benef.cedula || benef.nombre;
+        let benefGrupo = grupo.beneficiarios.find(
+          (b) => (b.cedula || b.nombre) === benefKey
+        );
+        if (!benefGrupo) {
+          benefGrupo = {
+            nombre: benef.nombre || 'Sin nombre',
+            cedula: benef.cedula || '',
+            telefono: benef.telefono || '',
+            municipio: benef.municipio || '',
+            vereda: benef.vereda || '',
+            finca: benef.finca || '',
+            visitas: [],
+          };
+          grupo.beneficiarios.push(benefGrupo);
+        }
+        benefGrupo.visitas.push(form);
+      } catch (err) {
+        console.warn('[VisitasJerarquicas] Error agrupando formulario:', err, form?.id);
       }
-      benefGrupo.visitas.push(form);
     }
 
     // Ordenar: técnicos por nombre, beneficiarios por nombre, visitas por fecha
     for (const tec of mapa.values()) {
       tec.totalBeneficiarios = tec.beneficiarios.length;
-      tec.beneficiarios.sort((a, b) => a.nombre.localeCompare(b.nombre));
+      tec.beneficiarios.sort((a, b) => a.nombre?.localeCompare(b.nombre || '') || 0);
       for (const benef of tec.beneficiarios) {
         benef.visitas.sort(
-          (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
+          (a, b) => new Date(a.created_at || 0).getTime() - new Date(b.created_at || 0).getTime()
         );
       }
     }
 
-    return Array.from(mapa.values()).sort((a, b) => a.nombre.localeCompare(b.nombre));
+    return Array.from(mapa.values()).sort((a, b) => (a.nombre || '').localeCompare(b.nombre || ''));
   }, [formularios]);
 
   // --- Cargar datos (servidor + local) ---
@@ -222,12 +226,18 @@ const VisitasJerarquicasScreen: React.FC<VisitasJerarquicasScreenProps> = ({ nav
     const unsubscribe = navigation.addListener('beforeRemove', (e) => {
       if (nivel === 'tecnicos') return; // dejar salir
       e.preventDefault(); // prevenir salida
-      // Subir un nivel
-      if (nivel === 'visitas') volverABeneficiarios();
-      else if (nivel === 'beneficiarios') volverATecnicos();
+      // Subir un nivel (usar refs para evitar stale closure)
+      if (nivelRef.current === 'visitas') {
+        setNivel('beneficiarios');
+        setBeneficiarioSeleccionado(null);
+      } else if (nivelRef.current === 'beneficiarios') {
+        setNivel('tecnicos');
+        setTecnicoSeleccionado(null);
+        setBeneficiarioSeleccionado(null);
+      }
     });
     return unsubscribe;
-  }, [navigation, nivel]);
+  }, [navigation]);
 
   const onRefresh = () => {
     setRefreshing(true);
@@ -244,6 +254,11 @@ const VisitasJerarquicasScreen: React.FC<VisitasJerarquicasScreenProps> = ({ nav
     setBeneficiarioSeleccionado(benef);
     setNivel('visitas');
   };
+
+  // Mantener ref sincronizada con estado nivel
+  useEffect(() => {
+    nivelRef.current = nivel;
+  }, [nivel]);
 
   const volverATecnicos = () => {
     setNivel('tecnicos');

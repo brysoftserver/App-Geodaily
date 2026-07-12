@@ -24,18 +24,18 @@ import { RouteProp } from '@react-navigation/native';
 import { WebView } from 'react-native-webview';
 import { COLORS, FONTS, SPACING, BORDER_RADIUS, SHADOWS, API_CONFIG } from '../../theme';
 import { Formulario, DatosCaracterizacionNueva } from '../../types';
-import { formatFecha, formatCoordenadas } from '../../utils/formatters';
+import { formatFecha } from '../../utils/formatters';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Print from 'expo-print';
 import * as Sharing from 'expo-sharing';
 import { convertirFotosAHTML, generarSelloBiometrico } from '../../services/pdfLocal.service';
 
 type FormularioDetailScreenProps = {
-  navigation: NativeStackNavigationProp<any>;
-  route: RouteProp<{ params: { formulario: Formulario } }, 'params'>;
+  navigation: NativeStackNavigationProp<Record<string, any>>;
+  route: RouteProp<Record<string, any> & { params: { formulario: Formulario } }, 'params'>;
 };
 
-const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, navigation }) => {
+const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, navigation: _navigation }) => {
   const { formulario } = route.params;
   const insets = useSafeAreaInsets();
   const [generatingPdf, setGeneratingPdf] = useState(false);

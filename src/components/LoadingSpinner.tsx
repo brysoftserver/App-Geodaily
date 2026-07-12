@@ -6,8 +6,8 @@ import React from 'react';
 import { View, ActivityIndicator, Text, StyleSheet, Image, ImageBackground } from 'react-native';
 import { COLORS, FONTS, SPACING } from '../theme';
 
-const FONDO = require('../../assets/images/fondo_login_geo_daily.png');
-const LOGO = require('../../assets/images/logo_geo_daily.png');
+import FONDO from '../../assets/images/fondo_login_geo_daily.png';
+import LOGO from '../../assets/images/logo_geo_daily.png';
 
 interface LoadingSpinnerProps {
   message?: string;

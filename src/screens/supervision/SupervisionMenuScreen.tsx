@@ -16,7 +16,7 @@ import { COLORS, FONTS, SPACING, BORDER_RADIUS, SHADOWS } from '../../theme';
 import { useAuth } from '../../store/AuthContext';
 
 type SupervisionMenuScreenProps = {
-  navigation: NativeStackNavigationProp<any>;
+  navigation: NativeStackNavigationProp<Record<string, any>>;
 };
 
 const MENU_ITEMS = [

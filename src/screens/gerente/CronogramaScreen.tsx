@@ -26,10 +26,10 @@ LocaleConfig.locales['es'] = {
 LocaleConfig.defaultLocale = 'es';
 
 type CronogramaProps = {
-  navigation: NativeStackNavigationProp<any>;
+  navigation: NativeStackNavigationProp<Record<string, any>>;
 };
 
-const CronogramaScreen: React.FC<CronogramaProps> = ({ navigation }) => {
+const CronogramaScreen: React.FC<CronogramaProps> = ({ navigation: _navigation }) => {
   const { formularios } = useForm();
   const [selectedDate, setSelectedDate] = useState(new Date().toISOString().split('T')[0]);
   const [filterTecnico, setFilterTecnico] = useState<string | null>(null);

@@ -21,7 +21,7 @@ import { useAuth } from '../../store/AuthContext';
 import LoadingSpinner from '../../components/LoadingSpinner';
 
 type FormulariosIncompletosScreenProps = {
-  navigation: NativeStackNavigationProp<any>;
+  navigation: NativeStackNavigationProp<Record<string, any>>;
 };
 
 const FormulariosIncompletosScreen: React.FC<FormulariosIncompletosScreenProps> = ({ navigation }) => {
@@ -213,20 +213,22 @@ const FormulariosIncompletosScreen: React.FC<FormulariosIncompletosScreenProps> 
 const styles = StyleSheet.create({
   safeContainer: {
     flex: 1,
-    backgroundColor: 'transparent',
+    backgroundColor: COLORS.surface,
   },
   container: {
     flex: 1,
-    backgroundColor: COLORS.background,
+    backgroundColor: COLORS.surface,
   },
   header: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    padding: SPACING.md,
+    paddingHorizontal: SPACING.md,
+    paddingVertical: SPACING.sm,
     backgroundColor: COLORS.surface,
     borderBottomWidth: 1,
     borderBottomColor: COLORS.divider,
+    minHeight: 44,
   },
   title: {
     fontSize: FONTS.sizes.lg,
@@ -274,6 +276,7 @@ const styles = StyleSheet.create({
     borderLeftWidth: 4,
     borderLeftColor: COLORS.warning,
     ...SHADOWS.sm,
+    overflow: 'hidden',
   },
   draftHeader: {
     flexDirection: 'row',
@@ -303,6 +306,7 @@ const styles = StyleSheet.create({
     color: COLORS.textSecondary,
     marginBottom: 2,
     flexShrink: 1,
+    overflow: 'hidden',
   },
   fieldLabel: {
     fontWeight: FONTS.weights.medium,

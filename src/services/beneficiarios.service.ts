@@ -3,7 +3,7 @@
 // ============================================================
 
 import * as SQLite from 'expo-sqlite';
-import { DatosBeneficiario, DatosSociodemograficos, DatosBeneficiarioCompleto } from '../types';
+import { DatosBeneficiario, DatosBeneficiarioCompleto } from '../types';
 import { API_CONFIG } from '../theme';
 
 let db: SQLite.SQLiteDatabase | null = null;

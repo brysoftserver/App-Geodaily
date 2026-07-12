@@ -69,7 +69,9 @@ export const useTracking = (
         if (saved === 'true') {
           iniciarTrackingInterno();
         }
-      } catch {}
+      } catch {
+          // Ignorar errores de carga de estado persistido
+        }
     };
     loadState();
 
@@ -79,6 +81,7 @@ export const useTracking = (
         intervalRef.current = null;
       }
     };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [autoResume]);
 
   const iniciarTrackingInterno = useCallback(async () => {
@@ -247,7 +250,7 @@ export const useTracking = (
          ORDER BY timestamp ASC`,
         [usuarioId, hoy]
       );
-      return rows.map((r: any) => ({
+      return rows.map((r: Record<string, any>) => ({
         id: r.id,
         usuario_id: r.usuario_id,
         latitud: r.latitud,
