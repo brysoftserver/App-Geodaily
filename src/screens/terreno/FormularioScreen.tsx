@@ -219,7 +219,7 @@ const FormularioScreen: React.FC<FormularioScreenProps> = ({ navigation, route }
       tecnico: tecnicoConUsuarioId,
       beneficiario,
       actividad,
-      socioData: undefined,
+      socioData,
       coordenadas: coordenadas || undefined,
       selectedDepartamento,
       selectedActividad,

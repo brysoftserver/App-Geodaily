@@ -14,14 +14,14 @@ router.get('/actual', authenticateToken, (req, res) => {
     return res.status(400).json({ estado: 'error', mensaje: 'lat y lon requeridos' });
   }
 
-  // Datos mock realistas — Putumayo, Colombia
+  // Datos mock — ubicación aproximada desde coordenadas
   res.json({
     fuente: 'IDEAM / OpenWeather (mock)',
     timestamp: new Date().toISOString(),
     ubicacion: {
       latitud: parseFloat(lat),
       longitud: parseFloat(lon),
-      nombre: 'Puerto Asís, Putumayo',
+      nombre: 'Ubicación actual',
     },
     temperatura: {
       actual: 28.5,
@@ -93,7 +93,7 @@ router.get('/resumen', authenticateToken, (req, res) => {
       ubicacion: {
         latitud: latNum,
         longitud: lonNum,
-        nombre: 'Puerto Asís, Putumayo',
+        nombre: 'Ubicación actual',
       },
       temperatura: {
         actual: 28.5,

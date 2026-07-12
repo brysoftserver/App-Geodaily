@@ -131,6 +131,8 @@ const FormularioCaracterizacionScreen: React.FC<Props> = ({ navigation, route })
   const { user } = useAuth();
   const {
     iniciarFormulario,
+    setTecnico,
+    setBeneficiario,
     setCoordenadas,
     addFoto,
     setFirmaBeneficiario,
@@ -184,6 +186,15 @@ const FormularioCaracterizacionScreen: React.FC<Props> = ({ navigation, route })
             setSelectedMunicipio(draft.caracterizacion_nueva.municipio);
           }
         }
+        // Restaurar evidencias guardadas en el borrador
+        if (draft?.fotos && draft.fotos.length > 0) {
+          for (const foto of draft.fotos) {
+            addFoto(foto);
+          }
+        }
+        if (draft?.firma_beneficiario) setFirmaBeneficiario(draft.firma_beneficiario);
+        if (draft?.firma_tecnico) setFirmaTecnico(draft.firma_tecnico);
+        if (draft?.huella_beneficiario) setHuella(true);
       }
 
       // Capturar ubicación
@@ -313,6 +324,10 @@ const FormularioCaracterizacionScreen: React.FC<Props> = ({ navigation, route })
         },
         caracterizacion_nueva: data,
         coordenadas: coordenadas || undefined,
+        fotos: formularioActual?.fotos || [],
+        firma_beneficiario: formularioActual?.firma_beneficiario || '',
+        firma_tecnico: formularioActual?.firma_tecnico || '',
+        huella_beneficiario: formularioActual?.huella_beneficiario || false,
         selectedDepartamento: 'Caquetá',
         selectedActividad: '',
         otraActividadText: '',
@@ -354,7 +369,23 @@ const FormularioCaracterizacionScreen: React.FC<Props> = ({ navigation, route })
     setIsSubmitting(true);
 
     try {
-      // 1. Guardar en contexto
+      // 1. Guardar en contexto — incluyendo técnico y beneficiario para que finalizarFormulario no falle
+      setTecnico({
+        usuario_id: user?.id || '',
+        nombre: data.tecnico_responsable || user?.nombre || '',
+        cedula: user?.cedula || '',
+        telefono: data.telefono || '',
+        email: user?.email || '',
+      });
+      setBeneficiario({
+        nombre: data.productor_nombre || '',
+        cedula: data.documento || '',
+        telefono: data.telefono || '',
+        departamento: 'Caquetá',
+        municipio: data.municipio || '',
+        vereda: data.vereda || '',
+        finca: data.finca || '',
+      });
       setCaracterizacionNueva(data);
       setCoordenadas(coordenadas || { latitud: 0, longitud: 0 });
 

@@ -132,7 +132,7 @@ const FormulariosIncompletosScreen: React.FC<FormulariosIncompletosScreenProps> 
     <SafeAreaView style={styles.safeContainer} edges={['top']}>
     <AppBackground overlay={0.35}>
     <View style={styles.container}>
-      <View style={[styles.header, { paddingTop: Math.max(insets.top, SPACING.md) }]}>
+      <View style={[styles.header, { paddingTop: SPACING.sm }]}>
         <Text style={styles.title}>Borradores Guardados</Text>
         <Text style={styles.count}>
           {drafts.length} borrador(es)
@@ -168,16 +168,16 @@ const FormulariosIncompletosScreen: React.FC<FormulariosIncompletosScreenProps> 
               </View>
 
               <View style={styles.draftBody}>
-                <Text style={styles.draftField}>
+                <Text style={styles.draftField} numberOfLines={1} ellipsizeMode="tail">
                   <Text style={styles.fieldLabel}>Técnico: </Text>
                   {item.tecnico?.nombre || '—'}
                 </Text>
-                <Text style={styles.draftField}>
+                <Text style={styles.draftField} numberOfLines={1} ellipsizeMode="tail">
                   <Text style={styles.fieldLabel}>Beneficiario: </Text>
                   {item.beneficiario?.nombre || '—'}
                 </Text>
                 {item.beneficiario?.municipio && (
-                  <Text style={styles.draftField}>
+                  <Text style={styles.draftField} numberOfLines={1} ellipsizeMode="tail">
                     <Text style={styles.fieldLabel}>Ubicación: </Text>
                     {item.beneficiario.municipio}
                     {item.beneficiario.departamento ? `, ${item.beneficiario.departamento}` : ''}
@@ -302,6 +302,7 @@ const styles = StyleSheet.create({
     fontSize: FONTS.sizes.sm,
     color: COLORS.textSecondary,
     marginBottom: 2,
+    flexShrink: 1,
   },
   fieldLabel: {
     fontWeight: FONTS.weights.medium,

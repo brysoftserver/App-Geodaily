@@ -93,7 +93,7 @@ const CalendarioScreen: React.FC<CalendarioScreenProps> = ({ navigation }) => {
 
     // Visitas realizadas (formularios completados) → dots verde
     formularios.forEach((form) => {
-      const dateKey = form.created_at.split('T')[0];
+      const dateKey = (form.created_at || '').split('T')[0];
       const dot = {
         key: `realizada-${form.id}`,
         color: COLORS.success, // verde
@@ -135,7 +135,7 @@ const CalendarioScreen: React.FC<CalendarioScreenProps> = ({ navigation }) => {
   // Items del día seleccionado
   const dayItems = useMemo(() => {
     const forms = formularios.filter(
-      (form) => form.created_at.split('T')[0] === selectedDate
+      (form) => (form.created_at || '').split('T')[0] === selectedDate
     );
     const planned = visitasPlanificadas.filter(
       (v) => v.fecha === selectedDate

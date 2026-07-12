@@ -110,7 +110,7 @@ const DashboardScreen: React.FC<DashboardScreenProps> = ({ navigation }) => {
     const dateMap: Record<string, { visitas: number }> = {};
 
     filteredForms.forEach((f) => {
-      const date = f.created_at.split('T')[0];
+      const date = (f.created_at || '').split('T')[0];
       if (!dateMap[date]) {
         dateMap[date] = { visitas: 0 };
       }
@@ -130,7 +130,7 @@ const DashboardScreen: React.FC<DashboardScreenProps> = ({ navigation }) => {
   const municipioData = useMemo(() => {
     const map: Record<string, number> = {};
     filteredForms.forEach((f) => {
-      const m = f.beneficiario.municipio;
+      const m = f.beneficiario?.municipio || 'Desconocido';
       map[m] = (map[m] || 0) + 1;
     });
     return Object.entries(map)

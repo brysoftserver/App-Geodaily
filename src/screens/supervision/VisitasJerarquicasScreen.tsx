@@ -16,6 +16,7 @@ import {
   TouchableOpacity,
   StyleSheet,
   RefreshControl,
+  BackHandler,
 } from 'react-native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useFocusEffect } from '@react-navigation/native';
@@ -71,7 +72,7 @@ const VisitasJerarquicasScreen: React.FC<VisitasJerarquicasScreenProps> = ({ nav
     for (const form of formularios) {
       const tec = form.tecnico;
       if (!tec) continue; // evitar crash si el técnico es null/undefined
-      const key = tec.cedula || tec.nombre;
+      const key = tec.nombre || tec.cedula;
       if (!key) continue;
 
       if (!mapa.has(key)) {
@@ -88,14 +89,18 @@ const VisitasJerarquicasScreen: React.FC<VisitasJerarquicasScreenProps> = ({ nav
       }
 
       const grupo = mapa.get(key)!;
+      // Si este form tiene cédula pero el grupo no, actualizarla
+      if (tec.cedula && !grupo.cedula) {
+        grupo.cedula = tec.cedula;
+      }
       grupo.totalVisitas++;
 
       // Agrupar beneficiarios dentro del técnico
       const benef = form.beneficiario;
       if (!benef) continue; // evitar crash si el beneficiario es null/undefined
-      const benefKey = benef.cedula || benef.nombre;
+      const benefKey = benef.nombre || benef.cedula;
       let benefGrupo = grupo.beneficiarios.find(
-        (b) => (b.cedula || b.nombre) === benefKey
+        (b) => (b.nombre || b.cedula) === benefKey
       );
       if (!benefGrupo) {
         benefGrupo = {
@@ -193,6 +198,36 @@ const VisitasJerarquicasScreen: React.FC<VisitasJerarquicasScreenProps> = ({ nav
       loadData();
     }, [loadData])
   );
+
+  // Interceptar botón físico/gesto de atrás para navegación jerárquica interna
+  useEffect(() => {
+    const onBackPress = () => {
+      if (nivel === 'beneficiarios') {
+        volverATecnicos();
+        return true; // prevenir salida
+      }
+      if (nivel === 'visitas') {
+        volverABeneficiarios();
+        return true; // prevenir salida
+      }
+      return false; // salir de la pantalla
+    };
+
+    const backHandler = BackHandler.addEventListener('hardwareBackPress', onBackPress);
+    return () => backHandler.remove();
+  }, [nivel]);
+
+  // Interceptar gesto/swipe de navegación (iOS) para subir nivel jerárquico
+  useEffect(() => {
+    const unsubscribe = navigation.addListener('beforeRemove', (e) => {
+      if (nivel === 'tecnicos') return; // dejar salir
+      e.preventDefault(); // prevenir salida
+      // Subir un nivel
+      if (nivel === 'visitas') volverABeneficiarios();
+      else if (nivel === 'beneficiarios') volverATecnicos();
+    });
+    return unsubscribe;
+  }, [navigation, nivel]);
 
   const onRefresh = () => {
     setRefreshing(true);

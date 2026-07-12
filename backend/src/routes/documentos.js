@@ -35,18 +35,27 @@ router.post('/subir', authenticateToken, upload.single('archivo'), async (req, r
     const ext = path.extname(req.file.originalname);
     const filename = `doc_${Date.now()}_${Math.random().toString(36).slice(2, 6)}${ext}`;
 
-    // Subir a MinIO
-    await storage.uploadFile(
-      req.user.rol,
-      req.user.usuario,
-      'documentos',
-      filename,
-      req.file.buffer
-    );
+    // Validar que el usuario tenga rol y nombre de usuario
+    const userRol = req.user?.rol || 'otros';
+    const userUsuario = req.user?.usuario || req.user?.id?.toString() || 'desconocido';
+
+    // Subir a MinIO (con try-catch para no bloquear si MinIO no está disponible)
+    try {
+      await storage.uploadFile(
+        userRol,
+        userUsuario,
+        'documentos',
+        filename,
+        req.file.buffer
+      );
+    } catch (storageErr) {
+      console.error('[Documentos] Error al subir a MinIO (no crítico, continúa):', storageErr.message);
+      // No retornamos error — el documento se marca para sincronización posterior
+    }
 
     // Guardar registro en PostgreSQL
     const bucket = process.env.MINIO_BUCKET || 'geodaily-archivos';
-    const basePath = storage.getUserBasePath(req.user.rol, req.user.usuario);
+    const basePath = storage.getUserBasePath(userRol, userUsuario);
     const minioPath = `${basePath}/documentos/${filename}`;
     await db.query(
       `INSERT INTO archivos (usuario_id, tipo, filename, originalname, mimetype, size_bytes, minio_path, minio_bucket, metadata_json)

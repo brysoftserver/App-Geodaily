@@ -2,7 +2,7 @@
 // GEODAILY — Calendario General (Supervisión)
 // ============================================================
 
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useCallback, useEffect, useRef } from 'react';
 import {
   View,
   Text,
@@ -11,9 +11,13 @@ import {
   TouchableOpacity,
 } from 'react-native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
+import { useFocusEffect } from '@react-navigation/native';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Calendar, DateData, LocaleConfig } from 'react-native-calendars';
 import { COLORS, FONTS, SPACING, BORDER_RADIUS, SHADOWS } from '../../theme';
 import { useForm } from '../../store/FormContext';
+import { fetchFormulariosDelServidor } from '../../services/formularios.service';
+import { getFormulariosLocales } from '../../services/database';
 import { formatFecha } from '../../utils/formatters';
 
 // Español
@@ -37,28 +41,71 @@ type CalendarioScreenProps = {
 };
 
 const CalendarioScreen: React.FC<CalendarioScreenProps> = ({ navigation }) => {
-  const { formularios } = useForm();
+  const { formularios, cargarFormularios } = useForm();
   const [selectedDate, setSelectedDate] = useState<string>(
     new Date().toISOString().split('T')[0]
   );
+  const [loadingCal, setLoadingCal] = useState(true);
+  const previousLength = useRef(0);
+
+  // Cargar datos del servidor + local para tener visitas sincronizadas
+  const loadCalendarData = useCallback(async () => {
+    try {
+      const [locales, servidor] = await Promise.all([
+        getFormulariosLocales(),
+        fetchFormulariosDelServidor(),
+      ]);
+
+      const mapa = new Map<string, any>();
+      for (const f of locales) mapa.set(f.id, f);
+      for (const f of servidor) mapa.set(f.id, { ...f, sincronizado: true });
+
+      const fusionados = Array.from(mapa.values());
+      cargarFormularios(fusionados);
+    } catch (e) {
+      console.warn('[Calendario] Error cargando datos:', e);
+    } finally {
+      setLoadingCal(false);
+    }
+  }, [cargarFormularios]);
+
+  // Cargar al montar
+  useEffect(() => {
+    loadCalendarData();
+  }, []);
+
+  // Recargar al enfocar
+  useFocusEffect(
+    useCallback(() => {
+      loadCalendarData();
+    }, [loadCalendarData])
+  );
+
+  // Cachear markedDates para evitar reprocesamiento si formularios no cambió
+  const formulariosLength = formularios.length;
+  const formulariosRef = useRef(formularios);
+  formulariosRef.current = formularios;
 
   // Agrupar por técnico
   const formsByTecnico = useMemo(() => {
     const map: Record<string, typeof formularios> = {};
-    formularios.forEach((f) => {
-      const key = f.tecnico.nombre;
+    const forms = formulariosRef.current;
+    forms.forEach((f) => {
+      const key = f.tecnico?.nombre || 'Desconocido';
       if (!map[key]) map[key] = [];
       map[key].push(f);
     });
     return map;
-  }, [formularios]);
+  }, [formulariosLength]);
 
   // Marcar fechas en el calendario
   const markedDates = useMemo(() => {
     const marks: Record<string, any> = {};
 
-    formularios.forEach((form) => {
-      const dateKey = form.created_at.split('T')[0];
+    const forms = formulariosRef.current;
+    forms.forEach((form) => {
+      const dateKey = (form.created_at || '').split('T')[0];
+      if (!dateKey) return;
       if (marks[dateKey]) {
         marks[dateKey].dots.push({
           key: form.id,
@@ -79,15 +126,15 @@ const CalendarioScreen: React.FC<CalendarioScreenProps> = ({ navigation }) => {
     };
 
     return marks;
-  }, [formularios, selectedDate]);
+  }, [formulariosLength, selectedDate]);
 
   // Formularios del día seleccionado
   const dayForms = useMemo(
     () =>
-      formularios.filter(
-        (f) => f.created_at.split('T')[0] === selectedDate
+      (formulariosRef.current).filter(
+        (f) => (f.created_at || '').split('T')[0] === selectedDate
       ),
-    [formularios, selectedDate]
+    [formulariosLength, selectedDate]
   );
 
   const onDayPress = (day: DateData) => {
@@ -95,14 +142,18 @@ const CalendarioScreen: React.FC<CalendarioScreenProps> = ({ navigation }) => {
   };
 
   const stats = useMemo(() => {
-    const total = formularios.length;
-    const conFotos = formularios.filter((f) => (f.fotos?.length || 0) > 0).length;
-    const conFirma = formularios.filter((f) => f.firma_beneficiario).length;
+    const forms = formulariosRef.current;
+    const total = forms.length;
+    const conFotos = forms.filter((f) => (f.fotos?.length || 0) > 0).length;
+    const conFirma = forms.filter((f) => f.firma_beneficiario).length;
     return { total, conFotos, conFirma };
-  }, [formularios]);
+  }, [formulariosLength]);
+
+  const insets = useSafeAreaInsets();
 
   return (
-    <ScrollView style={styles.container}>
+    <SafeAreaView style={styles.safeContainer} edges={['top']}>
+    <ScrollView style={styles.container} contentContainerStyle={{ paddingBottom: insets.bottom + SPACING.xxl }}>
       <Calendar
         onDayPress={onDayPress}
         markedDates={markedDates}
@@ -238,13 +289,18 @@ const CalendarioScreen: React.FC<CalendarioScreenProps> = ({ navigation }) => {
         ))}
       </View>
     </ScrollView>
+    </SafeAreaView>
   );
 };
 
 const styles = StyleSheet.create({
+  safeContainer: {
+    flex: 1,
+    backgroundColor: COLORS.surface,
+  },
   container: {
     flex: 1,
-    backgroundColor: COLORS.background,
+    backgroundColor: COLORS.surface,
   },
   statsContainer: {
     flexDirection: 'row',
