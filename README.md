@@ -100,10 +100,29 @@ node --require ./register-flow-strip.js \
 
 ### 4. Abrir en dispositivo
 
+⚠️ **La app ya no funciona en Expo Go** desde que se agregó el mapa offline real (MapLibre `OfflineManager`, que requiere el módulo nativo compilado). Se necesita el **dev client** propio:
+
+```bash
+# Primera vez (o cuando cambian dependencias nativas): instalar el dev client
+# en el teléfono, generado vía EAS:
+eas build --profile development --platform android
+# Instalar el APK resultante en el teléfono (una sola vez)
+
+# En cada sesión de desarrollo normal, igual que antes pero con --dev-client:
+npx expo start --dev-client --port 8082
+# Escanear el QR con la cámara (NO con la app Expo Go) o presionar 'a' en la terminal
 ```
-# Escanear QR con Expo Go
-# O presionar 'a' (Android) / 'i' (iOS) en la terminal
-```
+
+**Conexión del dev client según la red del teléfono:**
+
+| Red del teléfono | URL a ingresar en el dev client |
+|---|---|
+| Misma LAN que el servidor | `http://192.168.1.20:8082` (o escanear el QR) |
+| Datos móviles / otra red | `https://geodaily-dev.brysoftsas.com` (vía Cloudflare Tunnel) |
+
+En la pantalla inicial del dev client, usar **"Enter URL manually"** e ingresar la URL según la tabla. Los datos de la app (login, formularios) siempre van a `https://geodaily-api.brysoftsas.com`, independiente de la red.
+
+Las actualizaciones de código JS siguen llegando igual que con Expo Go (recarga en caliente) — el dev client instalado solo cambia cuando se agregan/actualizan módulos **nativos** (como pasó con MapLibre), no en cada cambio de código.
 
 ---
 
@@ -182,7 +201,7 @@ que Node 22 no puede procesar nativamente. Se requieren dos hooks:
 
 | Variable | Default | Descripción |
 |----------|---------|-------------|
-| `BACKEND_URL` | `http://192.168.1.20:8089` | URL del backend mock Express |
+| `BACKEND_URL` | `https://geodaily-api.brysoftsas.com` | URL pública del backend (Cloudflare Tunnel) |
 | `API_TIMEOUT` | `15000` | Timeout en ms |
 | `GOOGLE_MAPS_API_KEY` | — | Google Maps API key |
 | `LOGBOX_ENABLED` | `false` | Expo Logbox |
@@ -193,29 +212,35 @@ que Node 22 no puede procesar nativamente. Se requieren dos hooks:
 
 ## 🚀 Despliegue en Producción
 
-### Infraestructura (`api.geodaily.brysoftsas.com`)
+### Infraestructura (`geodaily-api.brysoftsas.com`)
+
+El túnel de Cloudflare corre en el CT dedicado **Gateway-Cloudflare (192.168.1.19)**
+y enruta hacia este servidor (192.168.1.20). Los hostnames públicos son de **un
+solo nivel** (`geodaily-api`, no `api.geodaily`) porque el certificado gratuito
+de Cloudflare (`*.brysoftsas.com`) no cubre subdominios de dos niveles.
 
 | Componente | Tecnología | Puerto |
 |------------|-----------|--------|
 | **Backend API** | Express.js | `:8089` |
 | **Almacenamiento** | MinIO (Docker) | `:9000` (API), `:9001` (Console) |
 | **Base de Datos** | PostgreSQL | `:5432` |
-| **Dominio** | `api.geodaily.brysoftsas.com` | Cloudflare Tunnel (sin puertos abiertos) |
+| **API pública** | `geodaily-api.brysoftsas.com` → `192.168.1.20:8089` | Cloudflare Tunnel (sin puertos abiertos) |
+| **Metro/dev** | `geodaily-dev.brysoftsas.com` → `192.168.1.20:8082` | Cloudflare Tunnel (solo desarrollo) |
 | **HTTPS** | Cloudflare (automático) | — |
 
 ### Configuración de Producción
 
 ```bash
 # .env — backend
-PROD_DOMAIN=api.geodaily.brysoftsas.com
+PROD_DOMAIN=https://geodaily-api.brysoftsas.com
 MINIO_ENDPOINT=localhost
 MINIO_PORT=9000
 MINIO_USE_SSL=false
 MINIO_ACCESS_KEY=geodaily_admin
 MINIO_BUCKET=geodaily-archivos
 
-# eas.json — production profile
-BACKEND_URL=https://api.geodaily.brysoftsas.com
+# eas.json — todos los perfiles (development/preview/production)
+BACKEND_URL=https://geodaily-api.brysoftsas.com
 ```
 
 ### Servicios

@@ -4,6 +4,18 @@
 
 import { format, parseISO, isValid } from 'date-fns';
 import { es } from 'date-fns/locale/es';
+import * as Crypto from 'expo-crypto';
+
+// --- Fecha de "hoy" en zona horaria local ---
+// Usar en vez de `new Date().toISOString().split('T')[0]`, que usa UTC y
+// hace que las visitas de la tarde/noche (Colombia es UTC-5) se agrupen
+// en el día siguiente.
+export const getLocalDateString = (fecha: Date = new Date()): string => {
+  const year = fecha.getFullYear();
+  const month = String(fecha.getMonth() + 1).padStart(2, '0');
+  const day = String(fecha.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+};
 
 // --- Formateo de fechas ---
 export const formatFecha = (fecha: string | Date, formato: string = 'dd/MM/yyyy'): string => {
@@ -87,9 +99,7 @@ export const validarEmail = (email: string): string | null => {
 
 // --- Generación de IDs ---
 export const generarId = (): string => {
-  return 'xxxx-xxxx-xxxx'.replace(/x/g, () =>
-    Math.floor(Math.random() * 16).toString(16)
-  );
+  return Crypto.randomUUID();
 };
 
 // --- Truncar texto ---

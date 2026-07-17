@@ -10,7 +10,6 @@ import {
   StyleSheet,
   ScrollView,
   ImageBackground,
-  Alert,
 } from 'react-native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useAuth } from '../../store/AuthContext';
@@ -62,20 +61,28 @@ const MENU_ITEMS = [
     screen: 'AdminVisitasJerarquicas',
   },
   {
-    id: 'supervision',
-    title: 'Panel de Supervisión',
-    subtitle: 'Ver dashboard y formularios de supervisores',
-    icon: '📊',
+    id: 'calendario',
+    title: 'Calendario General',
+    subtitle: 'Visitas realizadas y programadas de todo el equipo',
+    icon: '📅',
     color: COLORS.secondary,
-    screen: null, // navegación externa
+    screen: 'AdminCalendario',
   },
   {
-    id: 'terreno',
-    title: 'Módulo de Terreno',
-    subtitle: 'Acceso a herramientas de campo',
-    icon: '🌱',
-    color: COLORS.roleTecnico,
-    screen: null, // navegación externa
+    id: 'formularios',
+    title: 'Listado de Formularios',
+    subtitle: 'Todos los formularios, con filtros por tipo y estado',
+    icon: '📋',
+    color: COLORS.info,
+    screen: 'AdminFormularioList',
+  },
+  {
+    id: 'beneficiarios',
+    title: 'Base de Datos Beneficiarios',
+    subtitle: '300 beneficiarios, asignación a técnicos',
+    icon: '👤',
+    color: COLORS.roleAdmin,
+    screen: 'BaseDatosBeneficiarios',
   },
   {
     id: 'cerrar',
@@ -95,20 +102,6 @@ const AdminMenuScreen: React.FC<AdminMenuProps> = ({ navigation }) => {
       case 'cerrar':
         logout();
         break;
-      case 'supervision':
-        // Mostrar mensaje informativo: el admin ya tiene acceso a todas las vistas
-        Alert.alert(
-          'Acceso completo',
-          'Como administrador, ya tienes acceso a todos los módulos desde este menú. Usa "Dashboard General" o "Listado de técnicos y visitas" para ver los datos.'
-        );
-        break;
-      case 'terreno':
-        // Mostrar mensaje informativo
-        Alert.alert(
-          'Acceso completo',
-          'Como administrador, puedes acceder a todas las herramientas desde el menú principal. Usa "Mapa General del Proyecto" para ver datos de campo.'
-        );
-        break;
       default:
         if (item.screen) {
           navigation.navigate(item.screen);
@@ -121,11 +114,11 @@ const AdminMenuScreen: React.FC<AdminMenuProps> = ({ navigation }) => {
     <ScrollView style={styles.container} contentContainerStyle={styles.scrollContent}>
       {/* Encabezado */}
       <ImageBackground source={require('../../../Logos_imagenes/fondo_login_geo_daily.png')} style={styles.header}>
-        <ImageBackground source={require('../../../Logos_imagenes/fondo_login_geo_daily.png')} style={[styles.avatar, { overflow: 'hidden' }]} imageStyle={{ borderRadius: 36 }}>
+        <View style={[styles.avatar, { overflow: 'hidden' }]}>
           <Text style={styles.avatarText}>
             {user?.nombre?.charAt(0)?.toUpperCase() || 'A'}
           </Text>
-        </ImageBackground>
+        </View>
         <Text style={styles.welcomeText}>Consola de Administración</Text>
         <Text style={styles.userName}>{user?.nombre || 'Administrador'}</Text>
         <View style={styles.roleBadge}>
@@ -175,7 +168,7 @@ const AdminMenuScreen: React.FC<AdminMenuProps> = ({ navigation }) => {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: COLORS.background,
+    backgroundColor: COLORS.surface,
   },
   scrollContent: {
     flexGrow: 1,

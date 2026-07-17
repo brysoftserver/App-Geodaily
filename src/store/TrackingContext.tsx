@@ -7,13 +7,13 @@
 // Solo se detiene explícitamente con detenerTracking().
 // ============================================================
 
-import React, { createContext, useContext, useState, useRef, useCallback, useEffect } from 'react';
+import React, { createContext, useContext, useState, useRef, useCallback, useEffect, useMemo } from 'react';
 import * as Location from 'expo-location';
-import * as SQLite from 'expo-sqlite';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useAuth } from './AuthContext';
 import { useGPS } from './GPSContext';
 import { PosicionTracking, Coordenadas } from '../types';
+import { getDbSafe } from '../services/database';
 
 const STORAGE_KEY = '@geodaily/tracking_active';
 const TRACKING_INTERVAL_MS = 15000; // 15 segundos
@@ -32,13 +32,12 @@ interface TrackingContextType extends TrackingState {
 
 const TrackingContext = createContext<TrackingContextType | undefined>(undefined);
 
-let db: SQLite.SQLiteDatabase | null = null;
-
-const initDb = async (): Promise<SQLite.SQLiteDatabase> => {
-  if (!db) {
-    db = await SQLite.openDatabaseAsync('geodaily.db');
+const initDb = async () => {
+  const database = await getDbSafe();
+  if (!database) {
+    throw new Error('BD local no disponible');
   }
-  return db;
+  return database;
 };
 
 export const TrackingProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
@@ -257,17 +256,17 @@ export const TrackingProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     return posicionesRef.current;
   }, []);
 
+  const trackingValue = useMemo(() => ({
+    activo: state.activo,
+    posiciones: state.posiciones,
+    inicio: state.inicio,
+    distanceKm: state.distanceKm,
+    iniciarTracking,
+    detenerTracking,
+  }), [state.activo, state.posiciones, state.inicio, state.distanceKm, iniciarTracking, detenerTracking]);
+
   return (
-    <TrackingContext.Provider
-      value={{
-        activo: state.activo,
-        posiciones: state.posiciones,
-        inicio: state.inicio,
-        distanceKm: state.distanceKm,
-        iniciarTracking,
-        detenerTracking,
-      }}
-    >
+    <TrackingContext.Provider value={trackingValue}>
       {children}
     </TrackingContext.Provider>
   );

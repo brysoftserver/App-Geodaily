@@ -13,13 +13,25 @@ import { COLORS, FONTS, SPACING, BORDER_RADIUS, SHADOWS } from '../theme';
 import { Formulario } from '../types';
 import { formatFecha, formatCoordenadas, truncarTexto } from '../utils/formatters';
 
+export interface EstadoRevisionCard {
+  supervisor: 'ok' | 'novedades' | null;
+  interventor: 'ok' | 'novedades' | null;
+  novedades_total: number;
+}
+
 interface FormCardProps {
   formulario: Formulario;
   onPress: (formulario: Formulario) => void;
   onViewPDF?: (formulario: Formulario) => void;
+  /** true si el último intento de sync falló (requiere atención del técnico) */
+  failed?: boolean;
+  /** Reintento manual — solo se usa cuando `failed` es true */
+  onRetry?: (formulario: Formulario) => void;
+  /** Estado de revisión jerárquica (novedades / vistos buenos) */
+  estadoRevision?: EstadoRevisionCard;
 }
 
-const FormCard: React.FC<FormCardProps> = ({ formulario, onPress, onViewPDF }) => {
+const FormCard: React.FC<FormCardProps> = ({ formulario, onPress, onViewPDF, failed, onRetry, estadoRevision }) => {
   const getTipoColor = () => {
     return formulario.tipo === 'visita_tecnica' ? COLORS.roleTecnico : COLORS.primary;
   };
@@ -59,7 +71,41 @@ const FormCard: React.FC<FormCardProps> = ({ formulario, onPress, onViewPDF }) =
           </Text>
         </View>
 
-        {!formulario.sincronizado && (
+        {/* Estado de revisión jerárquica (visible para el técnico) */}
+        {estadoRevision && (
+          <View
+            style={[
+              styles.revisionBadge,
+              estadoRevision.supervisor === 'ok' && estadoRevision.interventor === 'ok'
+                ? styles.revisionAprobada
+                : estadoRevision.novedades_total > 0 && estadoRevision.supervisor !== 'ok'
+                  ? styles.revisionNovedades
+                  : estadoRevision.supervisor === 'ok'
+                    ? styles.revisionAprobada
+                    : styles.revisionPendiente,
+            ]}
+          >
+            <Text style={styles.revisionText}>
+              {estadoRevision.supervisor === 'ok' && estadoRevision.interventor === 'ok'
+                ? '✅ Aprobado por supervisor e interventoría'
+                : estadoRevision.novedades_total > 0 && estadoRevision.supervisor !== 'ok'
+                  ? `⚠️ ${estadoRevision.novedades_total} novedad(es) por corregir`
+                  : estadoRevision.supervisor === 'ok'
+                    ? '✅ Todo OK del supervisor — en interventoría'
+                    : '🕓 En revisión'}
+            </Text>
+          </View>
+        )}
+
+        {!formulario.sincronizado && failed && (
+          <TouchableOpacity
+            style={styles.failedBadge}
+            onPress={() => onRetry?.(formulario)}
+          >
+            <Text style={styles.failedText}>⚠️ Falló la sincronización — toca para reintentar</Text>
+          </TouchableOpacity>
+        )}
+        {!formulario.sincronizado && !failed && (
           <View style={styles.pendingBadge}>
             <Text style={styles.pendingText}>Pendiente de sincronizar</Text>
           </View>
@@ -141,6 +187,34 @@ const styles = StyleSheet.create({
   pendingText: {
     fontSize: FONTS.sizes.xs,
     color: COLORS.warning,
+  },
+  failedBadge: {
+    backgroundColor: COLORS.error + '20',
+    paddingHorizontal: SPACING.sm,
+    paddingVertical: 2,
+    borderRadius: BORDER_RADIUS.sm,
+    alignSelf: 'flex-start',
+    marginTop: SPACING.xs,
+  },
+  revisionBadge: {
+    paddingHorizontal: SPACING.sm,
+    paddingVertical: 2,
+    borderRadius: BORDER_RADIUS.sm,
+    alignSelf: 'flex-start',
+    marginTop: SPACING.xs,
+  },
+  revisionAprobada: { backgroundColor: COLORS.success + '20' },
+  revisionNovedades: { backgroundColor: COLORS.error + '20' },
+  revisionPendiente: { backgroundColor: COLORS.divider },
+  revisionText: {
+    fontSize: FONTS.sizes.xs,
+    color: COLORS.textPrimary,
+    fontWeight: FONTS.weights.medium,
+  },
+  failedText: {
+    fontSize: FONTS.sizes.xs,
+    color: COLORS.error,
+    fontWeight: FONTS.weights.semibold,
   },
   pdfButton: {
     justifyContent: 'center',

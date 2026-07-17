@@ -170,6 +170,13 @@ export interface FiltrosFormulario {
 }
 
 // --- Métricas del dashboard ---
+// --- Punto de polígono ---
+export interface PuntoPoligono {
+  latitud: number;
+  longitud: number;
+  orden: number;
+}
+
 // --- Plantación marcada en mapa ---
 export interface Plantacion {
   id: string;
@@ -181,6 +188,19 @@ export interface Plantacion {
   timestamp: string;
   sincronizado: boolean;
   icono: string;
+  /** Polígono del área de plantación (opcional — si viene, latitud/longitud son el centroide) */
+  poligono?: PuntoPoligono[];
+}
+
+export interface VisitaProgramada {
+  id: string;
+  usuario_id?: string;
+  usuario_nombre?: string;
+  titulo: string;
+  ubicacion: string;
+  fecha: string; // YYYY-MM-DD
+  estado: 'pendiente' | 'realizada' | 'cancelada';
+  sincronizado?: boolean;
 }
 
 export interface MetricasDashboard {
@@ -191,6 +211,32 @@ export interface MetricasDashboard {
   formularios_por_tipo: { tipo: string; count: number }[];
   visitas_por_municipio: { municipio: string; count: number }[];
   ultimas_visitas: Formulario[];
+}
+
+// ============================================================
+// INTERFACES — Base de Datos de Beneficiarios
+// ============================================================
+
+/** Beneficiario en la base de datos de beneficiarios */
+export interface BeneficiarioDB {
+  item: number;
+  corregimiento: string;
+  vereda: string;
+  nombre_completo: string;
+  cedula: string;
+  tecnico_asignado_id?: string | null;
+  tecnico_asignado_nombre?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+/** Payload para crear/editar un beneficiario manual */
+export interface BeneficiarioPayload {
+  item: number;
+  corregimiento: string;
+  vereda: string;
+  nombre_completo: string;
+  cedula: string;
 }
 
 // ============================================================
@@ -363,4 +409,208 @@ export interface DatosCaracterizacionNueva {
   componente_agroambiental: ComponenteAgroambiental;
   analisis_suelo: AnalisisSueloCaracterizacion;
   recomendaciones: RecomendacionesCaracterizacion;
+}
+
+// ============================================================
+// INTERFACES — Encuesta Social AgroAmbiental (Fase 5)
+// ============================================================
+
+export interface ComponenteSocialEncuesta {
+  // P1. Reconocimiento étnico
+  reconocimiento: string;
+  reconocimiento_otro: string;
+  // P2. Nivel educativo
+  nivel_educativo: string;
+  // P3. Participación ECA
+  participo_eca: string; // 'Sí' | 'No'
+  // P4. Personas núcleo familiar
+  personas_nucleo: string;
+  // P5. Fuente ingresos
+  fuente_ingresos: string;
+  fuente_ingresos_otra: string;
+  // P6. Ocupación secundaria
+  ocupacion_secundaria: string;
+  ocupacion_secundaria_otro: string;
+  // P7. Participa en organización
+  participa_organizacion: string; // 'Sí' | 'No'
+  organizacion_cual: string;
+  // P8. Tipo de asociación
+  tipo_asociacion: string;
+  tipo_asociacion_otro: string;
+  // P9. Rol en asociación
+  rol_asociacion: string;
+  // P10. Vivienda ubicación
+  vivienda_ubicacion: string;
+  vivienda_ubicacion_otra?: string;
+  // P11. Energía eléctrica
+  energia_electrica: string; // 'Sí' | 'No'
+  // P12. Tipo de energía
+  tipo_energia: string;
+  tipo_energia_otro: string;
+  // P13. Agua consumo
+  agua_consumo: string;
+  agua_consumo_otro: string;
+  // P14. Elementos tecnológicos (respuesta múltiple, separada por comas)
+  elementos_tecnologicos: string;
+  // P15. Señal celular
+  senal_celular: string; // 'Sí' | 'No'
+  // P16. Quiénes trabajan
+  quienes_trabajan: string;
+  quienes_trabajan_otro?: string;
+  // P17. Medio de transporte
+  medio_transporte: string;
+  medio_transporte_otro: string;
+}
+
+export interface CaracterizacionFinca {
+  nombre_finca: string;
+  // P19. Coordenada de la finca (captura GPS)
+  latitud: string;
+  longitud: string;
+  altitud: string;
+  // P20. Área total (ha)
+  area_total: string;
+  // P21. División en hectáreas (texto oficial del ministerio)
+  division_bosque: string;
+  division_agricola?: string;
+  division_pecuaria?: string;
+  division_instalaciones?: string;
+  // Campos antiguos (conservados para borradores previos — ya no se usan)
+  division_cana?: string;
+  division_pastos?: string;
+  division_otros_cultivos?: string;
+  division_rastrojo?: string;
+  // P22. Medio de salida de productos
+  medio_salida: string;
+  medio_salida_otro: string;
+  // P23. Distancia aproximada al centro poblado (km)
+  distancia_km?: string;
+  // P24. Observaciones descripción llegada al predio
+  distancia_observaciones: string;
+  // P25. Aprovechamiento productivo directo (Sí/No + porqué)
+  aprovechamiento_directo: string;
+  aprovechamiento_porque?: string;
+  // P26. Actividades que realiza en la finca (respuesta múltiple)
+  actividades_finca?: string;
+  actividades_finca_otro?: string;
+  actividades_agricolas: string; // sub-selección múltiple de agrícolas
+  actividades_agricolas_otro?: string;
+  actividades_pecuarias: string; // sub-selección múltiple de pecuarias
+  actividades_pecuarias_otro?: string;
+}
+
+export interface ComponenteProductivoEncuesta {
+  // P27. Actividad principal productiva (+ Cual?)
+  actividad_principal: string;
+  actividad_principal_cual?: string;
+  acceso_agua: string;
+  sistemas_riego: string;
+  asistencia_tecnica: string;
+  // Campos antiguos (el análisis pasó a la Sección de suelo, P32)
+  analisis_suelo?: string;
+  analisis_fisicoquimico?: string;
+  analisis_cromatografia?: string;
+}
+
+export interface AnalisisSueloEncuesta {
+  // P31. Ubicación del área de intervención del proyecto (geo)
+  intervencion_latitud?: string;
+  intervencion_longitud?: string;
+  intervencion_altitud?: string;
+  // P32. ¿Ha realizado alguna vez análisis de suelo en su predio?
+  analisis_realizado?: string;
+  // Campo antiguo (ya no se pregunta)
+  observacion_suelo?: string;
+  // P33. Textura (selección múltiple, separada por comas)
+  textura: string;
+  color: string;
+  drenaje: string;
+  profundidad: string;
+  piedras: string;
+  compactacion: string;
+  cobertura: string;
+  erosion: string;
+  // P41. Grado de pendiente del terreno (°)
+  pendiente: string;
+}
+
+export interface ComponenteAgroambientalEncuesta {
+  procesos_erosion: string;
+  fuentes_hidricas: string;
+  areas_conservacion: string;
+  practicas_conservacion: string;
+  uso_agroquimicos: string; // 'Si' | 'No'
+  tipo_agroquimicos: string;
+  tipo_agroquimicos_otro?: string;
+  herbicidas_cuales: string; // P48 — texto libre
+  manejo_residuos: string;
+}
+
+export interface RecomendacionesEncuesta {
+  recomendaciones_tecnicas: string;
+  compromisos_productor: string;
+  recomendaciones_ambientales: string;
+}
+
+export interface AcompaniamientoTecnico {
+  // Ítems 1-7 del Desarrollo del Acompañamiento Técnico (texto oficial).
+  // Los nombres de campo se conservan por compatibilidad con borradores:
+  // 1. Socialización de actividades del proyecto
+  actividades_realizadas_si: boolean;
+  actividades_realizadas_no: boolean;
+  actividades_realizadas_obs: string;
+  // 2. Selección y delimitación técnica del terreno
+  manejo_plagas_si: boolean;
+  manejo_plagas_no: boolean;
+  manejo_plagas_obs: string;
+  // 3. Muestreo de suelo
+  manejo_suelo_si: boolean;
+  manejo_suelo_no: boolean;
+  manejo_suelo_obs: string;
+  // 4. Punto de georeferenciación del terreno (con captura GPS)
+  manejo_agua_si: boolean;
+  manejo_agua_no: boolean;
+  manejo_agua_obs: string;
+  georef_latitud?: string;
+  georef_longitud?: string;
+  georef_altitud?: string;
+  // 5. Orientación sobre procesos de producción de cacao
+  capacitacion_si: boolean;
+  capacitacion_no: boolean;
+  capacitacion_obs: string;
+  // 6. Orientación manejo de preparación del terreno (limpias)
+  seguimiento_si: boolean;
+  seguimiento_no: boolean;
+  seguimiento_obs: string;
+  // 7. Orientación manejo de preparación del terreno (entresacado)
+  entresacado_si?: boolean;
+  entresacado_no?: boolean;
+  entresacado_obs?: string;
+  observaciones_generales: string;
+}
+
+/** Datos completos de la Encuesta Social AgroAmbiental */
+export interface EncuestaSocialAgroAmbiental {
+  // Datos generales
+  municipio: string;
+  fecha: string;
+  vereda: string;
+  productor_nombre: string;
+  edad: string;
+  sexo: string;
+  sexo_otro: string;
+  documento: string;
+  telefono: string;
+  tecnico_responsable: string;
+  tecnico_cedula: string;
+  ubicacion_predio: string;
+
+  // Componentes
+  componente_social: ComponenteSocialEncuesta;
+  caracterizacion_finca: CaracterizacionFinca;
+  componente_productivo: ComponenteProductivoEncuesta;
+  analisis_suelo: AnalisisSueloEncuesta;
+  componente_agroambiental: ComponenteAgroambientalEncuesta;
+  recomendaciones: RecomendacionesEncuesta;
+  acompaniamiento: AcompaniamientoTecnico;
 }

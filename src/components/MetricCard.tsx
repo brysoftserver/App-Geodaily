@@ -17,12 +17,16 @@ interface MetricCardProps {
 const MetricCard: React.FC<MetricCardProps> = ({
   titulo,
   valor,
+  icono,
   color = COLORS.primary,
   subtitulo,
 }) => {
   return (
     <View style={[styles.card, { borderLeftColor: color }]}>
-      <Text style={styles.titulo}>{titulo}</Text>
+      <View style={styles.tituloRow}>
+        {icono && <Text style={styles.icono}>{icono}</Text>}
+        <Text style={styles.titulo}>{titulo}</Text>
+      </View>
       <Text style={[styles.valor, { color }]}>{valor}</Text>
       {subtitulo && <Text style={styles.subtitulo}>{subtitulo}</Text>}
     </View>
@@ -40,10 +44,18 @@ const styles = StyleSheet.create({
     minWidth: 100,
     ...SHADOWS.sm,
   },
+  tituloRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: SPACING.xs,
+  },
+  icono: {
+    fontSize: FONTS.sizes.sm,
+    marginRight: SPACING.xs,
+  },
   titulo: {
     fontSize: FONTS.sizes.xs,
     color: COLORS.textSecondary,
-    marginBottom: SPACING.xs,
     textTransform: 'uppercase',
     letterSpacing: 0.5,
   },

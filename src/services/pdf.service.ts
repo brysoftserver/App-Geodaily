@@ -7,7 +7,7 @@ import { API_CONFIG } from '../theme';
 import { Formulario } from '../types';
 
 /**
- * Generar PDF del formulario en el servidor QGIS
+ * Generar PDF del formulario en el backend Express (no en QGIS)
  * y devolver la URL del PDF generado
  */
 export const generarPDF = async (

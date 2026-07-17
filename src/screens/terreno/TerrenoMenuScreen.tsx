@@ -27,12 +27,12 @@ type TerrenoMenuProps = {
 
 const MENU_ITEMS = [
   {
-    id: 'formulario',
-    title: 'Diligenciar Formulario',
-    subtitle: 'Capturar visita técnica o plantación',
-    icon: '📋',
-    color: COLORS.primary,
-    screen: 'SeleccionarTipoFormulario',
+    id: 'beneficiarios',
+    title: 'Listado de Beneficiarios',
+    subtitle: 'Selecciona un beneficiario y diligencia su formulario',
+    icon: '👥',
+    color: COLORS.secondary,
+    screen: 'BeneficiariosList',
   },
   {
     id: 'mapa',
@@ -244,7 +244,7 @@ const TerrenoMenuScreen: React.FC<TerrenoMenuProps> = ({ navigation }) => {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: COLORS.background,
+    backgroundColor: COLORS.surface,
   },
   scrollContent: {
     paddingBottom: SPACING.xl,

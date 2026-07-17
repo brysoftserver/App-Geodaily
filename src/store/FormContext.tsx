@@ -2,7 +2,7 @@
 // GEODAILY — Contexto de Formularios
 // ============================================================
 
-import React, { createContext, useContext, useReducer, useCallback } from 'react';
+import React, { createContext, useContext, useReducer, useCallback, useMemo } from 'react';
 import {
   Formulario,
   TipoFormulario,
@@ -25,7 +25,7 @@ interface FormState {
 }
 
 type FormAction =
-  | { type: 'INICIAR_FORMULARIO'; tipo: TipoFormulario }
+  | { type: 'INICIAR_FORMULARIO'; tipo: TipoFormulario; id?: string }
   | { type: 'SET_TECNICO'; data: DatosTecnico }
   | { type: 'SET_BENEFICIARIO'; data: DatosBeneficiario }
   | { type: 'SET_ACTIVIDAD'; data: ActividadRealizada }
@@ -56,8 +56,10 @@ function formReducer(state: FormState, action: FormAction): FormState {
       return {
         ...state,
         formularioActual: {
-          id: generarId(),
+          id: action.id || generarId(),
           tipo: action.tipo,
+          // Preservar beneficiario si ya estaba precargado (ej. desde SeleccionarTipoFormulario)
+          ...(state.formularioActual?.beneficiario?.cedula ? { beneficiario: state.formularioActual.beneficiario } : {}),
           fotos: [],
           firma_beneficiario: '',
           firma_tecnico: '',
@@ -164,7 +166,7 @@ function formReducer(state: FormState, action: FormAction): FormState {
 
 // --- Context ---
 interface FormContextType extends FormState {
-  iniciarFormulario: (tipo: TipoFormulario) => void;
+  iniciarFormulario: (tipo: TipoFormulario, id?: string) => void;
   setTecnico: (data: DatosTecnico) => void;
   setBeneficiario: (data: DatosBeneficiario) => void;
   setActividad: (data: ActividadRealizada) => void;
@@ -175,7 +177,7 @@ interface FormContextType extends FormState {
   setFirmaBeneficiario: (firma: string) => void;
   setFirmaTecnico: (firma: string) => void;
   setHuella: (value: boolean) => void;
-  finalizarFormulario: () => Formulario | null;
+  finalizarFormulario: (datosFinales?: Partial<Formulario>) => Formulario | null;
   cancelarFormulario: () => void;
   cargarFormularios: (formularios: Formulario[]) => void;
 }
@@ -186,8 +188,8 @@ const FormContext = createContext<FormContextType | undefined>(undefined);
 export const FormProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [state, dispatch] = useReducer(formReducer, initialState);
 
-  const iniciarFormulario = useCallback((tipo: TipoFormulario) => {
-    dispatch({ type: 'INICIAR_FORMULARIO', tipo });
+  const iniciarFormulario = useCallback((tipo: TipoFormulario, id?: string) => {
+    dispatch({ type: 'INICIAR_FORMULARIO', tipo, id });
   }, []);
 
   const setTecnico = useCallback((data: DatosTecnico) => {
@@ -230,12 +232,18 @@ export const FormProvider: React.FC<{ children: React.ReactNode }> = ({ children
     dispatch({ type: 'SET_HUELLA', value });
   }, []);
 
-  const finalizarFormulario = useCallback((): Formulario | null => {
-    const current = state.formularioActual;
-    if (!current) return null;
+  const finalizarFormulario = useCallback((datosFinales?: Partial<Formulario>): Formulario | null => {
+    // datosFinales: datos frescos que la pantalla pasa explícitamente al
+    // completar. Necesario porque los dispatch hechos en el mismo evento
+    // (ej. setTecnico + finalizar seguidos) aún no están reflejados en
+    // state — el closure ve el render anterior — y la validación fallaba
+    // con técnico/beneficiario vacíos ("No se pudo finalizar el formulario").
+    const base = state.formularioActual;
+    if (!base && !datosFinales) return null;
+    const current: Partial<Formulario> = { ...(base || {}), ...(datosFinales || {}) };
 
     const formCompleto: Formulario = {
-      id: current.id || '',
+      id: current.id || generarId(),
       tipo: current.tipo || 'visita_tecnica',
       tecnico: current.tecnico || { nombre: '', cedula: '', telefono: '', email: '' },
       beneficiario: current.beneficiario || { nombre: '', cedula: '', telefono: '', departamento: '', municipio: '', vereda: '', finca: '' },
@@ -272,26 +280,32 @@ export const FormProvider: React.FC<{ children: React.ReactNode }> = ({ children
     dispatch({ type: 'CARGAR_FORMULARIOS', formularios });
   }, []);
 
+  const formValue = useMemo(() => ({
+    ...state,
+    iniciarFormulario,
+    setTecnico,
+    setBeneficiario,
+    setActividad,
+    setSociodemografico,
+    setCaracterizacionNueva,
+    setCoordenadas,
+    addFoto,
+    setFirmaBeneficiario,
+    setFirmaTecnico,
+    setHuella,
+    finalizarFormulario,
+    cancelarFormulario,
+    cargarFormularios,
+  }), [
+    state,
+    iniciarFormulario, setTecnico, setBeneficiario, setActividad,
+    setSociodemografico, setCaracterizacionNueva, setCoordenadas,
+    addFoto, setFirmaBeneficiario, setFirmaTecnico, setHuella,
+    finalizarFormulario, cancelarFormulario, cargarFormularios,
+  ]);
+
   return (
-    <FormContext.Provider
-      value={{
-        ...state,
-        iniciarFormulario,
-        setTecnico,
-        setBeneficiario,
-        setActividad,
-        setSociodemografico,
-        setCaracterizacionNueva,
-        setCoordenadas,
-        addFoto,
-        setFirmaBeneficiario,
-        setFirmaTecnico,
-        setHuella,
-        finalizarFormulario,
-        cancelarFormulario,
-        cargarFormularios,
-      }}
-    >
+    <FormContext.Provider value={formValue}>
       {children}
     </FormContext.Provider>
   );

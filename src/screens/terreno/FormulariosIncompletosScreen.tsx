@@ -129,7 +129,7 @@ const FormulariosIncompletosScreen: React.FC<FormulariosIncompletosScreenProps> 
   }
 
   return (
-    <SafeAreaView style={styles.safeContainer} edges={['top']}>
+    <SafeAreaView style={styles.safeContainer} edges={[]}>
     <AppBackground overlay={0.35}>
     <View style={styles.container}>
       <View style={[styles.header, { paddingTop: SPACING.sm }]}>
@@ -159,11 +159,11 @@ const FormulariosIncompletosScreen: React.FC<FormulariosIncompletosScreenProps> 
               activeOpacity={0.7}
             >
               <View style={styles.draftHeader}>
-                <Text style={styles.draftType}>
+                <Text style={styles.draftType} numberOfLines={1} ellipsizeMode="tail">
                   {item.tipo === 'caracterizacion' ? '👥 Caracterización Sociodemográfica' : '🔍 Visita Técnica'}
                 </Text>
-                <Text style={styles.draftStep}>
-                  {item.tipo === 'caracterizacion' ? '📋 Formulario completo' : `Paso ${item.step || 1} de 4`}
+                <Text style={styles.draftStep} numberOfLines={1}>
+                  {item.tipo === 'caracterizacion' ? '📋 Completo' : `Paso ${item.step || 1} de 4`}
                 </Text>
               </View>
 
@@ -175,12 +175,12 @@ const FormulariosIncompletosScreen: React.FC<FormulariosIncompletosScreenProps> 
                 <Text style={styles.draftField} numberOfLines={1} ellipsizeMode="tail">
                   <Text style={styles.fieldLabel}>Beneficiario: </Text>
                   {item.beneficiario?.nombre || '—'}
+                  {item.beneficiario?.cedula ? `  —  CC ${item.beneficiario.cedula}` : ''}
                 </Text>
-                {item.beneficiario?.municipio && (
+                {item.beneficiario?.vereda && (
                   <Text style={styles.draftField} numberOfLines={1} ellipsizeMode="tail">
-                    <Text style={styles.fieldLabel}>Ubicación: </Text>
-                    {item.beneficiario.municipio}
-                    {item.beneficiario.departamento ? `, ${item.beneficiario.departamento}` : ''}
+                    <Text style={styles.fieldLabel}>Vereda: </Text>
+                    {item.beneficiario.vereda}
                   </Text>
                 )}
               </View>
@@ -283,13 +283,16 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     alignItems: 'center',
     marginBottom: SPACING.sm,
+    gap: SPACING.xs,
   },
   draftType: {
+    flex: 1,
     fontSize: FONTS.sizes.md,
     fontWeight: FONTS.weights.semibold,
     color: COLORS.textPrimary,
   },
   draftStep: {
+    flexShrink: 0,
     fontSize: FONTS.sizes.sm,
     color: COLORS.warning,
     fontWeight: FONTS.weights.medium,

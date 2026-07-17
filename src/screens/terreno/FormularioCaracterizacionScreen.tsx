@@ -1,6 +1,6 @@
 // ============================================================
-// GEODAILY — Formulario de Caracterización (NUEVO)
-// Pantalla única con secciones fijas visibles y dropdowns
+// GEODAILY — Encuesta Social AgroAmbiental
+// Pantalla única con todas las secciones, dropdowns y checklist
 // ============================================================
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
@@ -14,6 +14,7 @@ import {
   Alert,
   Platform,
   ActivityIndicator,
+  Switch,
 } from 'react-native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { RouteProp, useFocusEffect } from '@react-navigation/native';
@@ -28,17 +29,25 @@ import { useLocation } from '../../hooks/useLocation';
 import { useClimate } from '../../hooks/useClimate';
 import {
   getVeredasByMunicipio,
-  NIVEL_EDUCATIVO_OPTS,
-  PERSONAS_NUCLEO_OPTS,
-  FUENTE_INGRESOS_OPTS,
   SINO_OPTS,
-  SERVICIOS_PUBLICOS_OPTS,
-  MANO_OBRA_OPTS,
+  RECONOCIMIENTO_OPTS,
+  NIVEL_EDUCATIVO_ENV_OPTS,
+  FUENTE_INGRESOS_ENV_OPTS,
+  OCUPACION_SECUNDARIA_OPTS,
+  TIPO_ASOCIACION_OPTS,
+  VIVIENDA_UBICACION_OPTS,
+  TIPO_ENERGIA_OPTS,
+  AGUA_CONSUMO_OPTS,
+  ELEMENTOS_TECNOLOGICOS_OPTS,
+  QUIENES_TRABAJAN_OPTS,
+  MEDIO_TRANSPORTE_OPTS,
+  MEDIO_SALIDA_OPTS,
+  ACTIVIDADES_FINCA_OPTS,
+  ACTIVIDAD_AGRICOLA_OPTS,
+  ACTIVIDAD_PECUARIA_OPTS,
+  SEXO_OPTS,
   ACTIVIDAD_PRODUCTIVA_OPTS,
-  PROCESOS_EROSION_OPTS,
-  FUENTES_HIDRICAS_OPTS,
-  PRACTICAS_CONSERVACION_OPTS,
-  MANEJO_RESIDUOS_OPTS,
+  ANALISIS_SUELO_REALIZADO_OPTS,
   TEXTURA_SUELO_OPTS,
   COLOR_SUELO_OPTS,
   DRENAJE_OPTS,
@@ -47,18 +56,29 @@ import {
   COMPACTACION_OPTS,
   COBERTURA_SUELO_OPTS,
   EVIDENCIA_EROSION_OPTS,
+  PROCESOS_EROSION_OPTS,
+  FUENTES_HIDRICAS_OPTS,
+  PRACTICAS_CONSERVACION_OPTS,
+  AREAS_CONSERVACION_OPTS,
+  TIPO_AGROQUIMICO_OPTS,
+  MANEJO_RESIDUOS_OPTS,
 } from '../../utils/constants';
 import { guardarBorrador, getBorrador, FormDraft } from '../../store/FormDraftStore';
+import { subirFirma } from '../../services/firmas.service';
+import { uploadPhoto } from '../../services/photos.service';
+import { uploadVideo } from '../../services/videos.service';
+import { saveFormularioLocal, getDb, saveFotoLocal, saveVideoLocal } from '../../services/database';
 import {
-  DatosCaracterizacionNueva,
-  ComponenteSocial,
-  ComponenteProductivo,
-  ComponenteAgroambiental,
-  AnalisisSueloCaracterizacion,
-  RecomendacionesCaracterizacion,
+  EncuestaSocialAgroAmbiental,
+  ComponenteSocialEncuesta,
+  CaracterizacionFinca,
+  ComponenteProductivoEncuesta,
+  AnalisisSueloEncuesta,
+  ComponenteAgroambientalEncuesta,
+  RecomendacionesEncuesta,
+  AcompaniamientoTecnico,
   Formulario,
 } from '../../types';
-import { saveFormularioLocal, getDb } from '../../services/database';
 import DropdownPicker from '../../components/DropdownPicker';
 
 type Props = {
@@ -66,33 +86,74 @@ type Props = {
   route: RouteProp<Record<string, any> & { params: { draftId?: string } }, 'params'>;
 };
 
-// ─── Estado inicial ───────────────────────────────────────────
-const EMPTY_SOCIAL: ComponenteSocial = {
+// ─── Estados iniciales vacíos ────────────────────────────────
+const EMPTY_SOCIAL: ComponenteSocialEncuesta = {
+  reconocimiento: '',
+  reconocimiento_otro: '',
   nivel_educativo: '',
+  participo_eca: '',
   personas_nucleo: '',
   fuente_ingresos: '',
+  fuente_ingresos_otra: '',
+  ocupacion_secundaria: '',
+  ocupacion_secundaria_otro: '',
   participa_organizacion: '',
-  servicios_publicos: '',
-  mano_obra: '',
+  organizacion_cual: '',
+  tipo_asociacion: '',
+  tipo_asociacion_otro: '',
+  rol_asociacion: '',
+  vivienda_ubicacion: '',
+  vivienda_ubicacion_otra: '',
+  energia_electrica: '',
+  tipo_energia: '',
+  tipo_energia_otro: '',
+  agua_consumo: '',
+  agua_consumo_otro: '',
+  elementos_tecnologicos: '',
+  senal_celular: '',
+  quienes_trabajan: '',
+  quienes_trabajan_otro: '',
+  medio_transporte: '',
+  medio_transporte_otro: '',
 };
 
-const EMPTY_PRODUCTIVO: ComponenteProductivo = {
-  actividad_productiva: '',
+const EMPTY_FINCA: CaracterizacionFinca = {
+  nombre_finca: '',
+  latitud: '',
+  longitud: '',
+  altitud: '',
+  area_total: '',
+  division_bosque: '',
+  division_agricola: '',
+  division_pecuaria: '',
+  division_instalaciones: '',
+  medio_salida: '',
+  medio_salida_otro: '',
+  distancia_km: '',
+  distancia_observaciones: '',
+  aprovechamiento_directo: '',
+  aprovechamiento_porque: '',
+  actividades_finca: '',
+  actividades_finca_otro: '',
+  actividades_agricolas: '',
+  actividades_agricolas_otro: '',
+  actividades_pecuarias: '',
+  actividades_pecuarias_otro: '',
+};
+
+const EMPTY_PRODUCTIVO: ComponenteProductivoEncuesta = {
+  actividad_principal: '',
+  actividad_principal_cual: '',
   acceso_agua: '',
   sistemas_riego: '',
   asistencia_tecnica: '',
 };
 
-const EMPTY_AGROAMBIENTAL: ComponenteAgroambiental = {
-  procesos_erosion: '',
-  fuentes_hidricas: '',
-  areas_conservacion: '',
-  practicas_conservacion: '',
-  manejo_residuos: '',
-};
-
-const EMPTY_ANALISIS: AnalisisSueloCaracterizacion = {
-  observacion_suelo: '',
+const EMPTY_ANALISIS: AnalisisSueloEncuesta = {
+  intervencion_latitud: '',
+  intervencion_longitud: '',
+  intervencion_altitud: '',
+  analisis_realizado: '',
   textura: '',
   color: '',
   drenaje: '',
@@ -100,34 +161,80 @@ const EMPTY_ANALISIS: AnalisisSueloCaracterizacion = {
   piedras: '',
   compactacion: '',
   cobertura: '',
-  evidencia_erosion: '',
+  erosion: '',
+  pendiente: '',
 };
 
-const EMPTY_RECOMENDACIONES: RecomendacionesCaracterizacion = {
+const EMPTY_AGROAMBIENTAL: ComponenteAgroambientalEncuesta = {
+  procesos_erosion: '',
+  fuentes_hidricas: '',
+  areas_conservacion: '',
+  practicas_conservacion: '',
+  uso_agroquimicos: '',
+  tipo_agroquimicos: '',
+  tipo_agroquimicos_otro: '',
+  herbicidas_cuales: '',
+  manejo_residuos: '',
+};
+
+const EMPTY_RECOMENDACIONES: RecomendacionesEncuesta = {
   recomendaciones_tecnicas: '',
+  compromisos_productor: '',
   recomendaciones_ambientales: '',
 };
 
-const EMPTY_CARACTERIZACION: DatosCaracterizacionNueva = {
+const EMPTY_ACOMPANAMIENTO: AcompaniamientoTecnico = {
+  actividades_realizadas_si: false,
+  actividades_realizadas_no: false,
+  actividades_realizadas_obs: '',
+  manejo_plagas_si: false,
+  manejo_plagas_no: false,
+  manejo_plagas_obs: '',
+  manejo_suelo_si: false,
+  manejo_suelo_no: false,
+  manejo_suelo_obs: '',
+  manejo_agua_si: false,
+  manejo_agua_no: false,
+  manejo_agua_obs: '',
+  capacitacion_si: false,
+  capacitacion_no: false,
+  capacitacion_obs: '',
+  seguimiento_si: false,
+  seguimiento_no: false,
+  seguimiento_obs: '',
+  entresacado_si: false,
+  entresacado_no: false,
+  entresacado_obs: '',
+  georef_latitud: '',
+  georef_longitud: '',
+  georef_altitud: '',
+  observaciones_generales: '',
+};
+
+const EMPTY_ENCUESTA: EncuestaSocialAgroAmbiental = {
   municipio: 'Puerto Rico',
   fecha: format(new Date(), 'dd/MM/yyyy', { locale: es }),
   vereda: '',
-  encuesta_numero: '',
   productor_nombre: '',
+  edad: '',
+  sexo: '',
+  sexo_otro: '',
   documento: '',
   telefono: '',
   tecnico_responsable: '',
   tecnico_cedula: '',
-  finca: '',
+  ubicacion_predio: '',
   componente_social: { ...EMPTY_SOCIAL },
+  caracterizacion_finca: { ...EMPTY_FINCA },
   componente_productivo: { ...EMPTY_PRODUCTIVO },
-  componente_agroambiental: { ...EMPTY_AGROAMBIENTAL },
   analisis_suelo: { ...EMPTY_ANALISIS },
+  componente_agroambiental: { ...EMPTY_AGROAMBIENTAL },
   recomendaciones: { ...EMPTY_RECOMENDACIONES },
+  acompaniamiento: { ...EMPTY_ACOMPANAMIENTO },
 };
 
 // ─── Componente ──────────────────────────────────────────────
-const FormularioCaracterizacionScreen: React.FC<Props> = ({ navigation, route }) => {
+const EncuestaSocialAgroambientalScreen: React.FC<Props> = ({ navigation, route }) => {
   const { user } = useAuth();
   const {
     iniciarFormulario,
@@ -143,13 +250,13 @@ const FormularioCaracterizacionScreen: React.FC<Props> = ({ navigation, route })
     formularioActual,
   } = useForm();
   const { getCurrentPosition, coordenadas } = useLocation();
-  const { fetchClimate } = useClimate();
+  const { fetchClimate, climaActual } = useClimate();
   const insets = useSafeAreaInsets();
 
   const draftId = route.params.draftId;
 
   // ─── Estado del formulario ────────────────────────────────
-  const [data, setData] = useState<DatosCaracterizacionNueva>({ ...EMPTY_CARACTERIZACION });
+  const [data, setData] = useState<EncuestaSocialAgroAmbiental>({ ...EMPTY_ENCUESTA });
   const [selectedMunicipio, setSelectedMunicipio] = useState('Puerto Rico');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
@@ -162,10 +269,12 @@ const FormularioCaracterizacionScreen: React.FC<Props> = ({ navigation, route })
   const [documentosCount, setDocumentosCount] = useState(0);
 
   const formIdRef = useRef<string>('');
+  const formularioRef = useRef(formularioActual);
+  useEffect(() => { formularioRef.current = formularioActual; }, [formularioActual]);
 
   // ─── Inicializar ──────────────────────────────────────────
   useEffect(() => {
-    iniciarFormulario('caracterizacion');
+    iniciarFormulario('caracterizacion', draftId);
 
     // Autocompletar técnico desde el usuario autenticado
     if (user) {
@@ -181,9 +290,23 @@ const FormularioCaracterizacionScreen: React.FC<Props> = ({ navigation, route })
       if (draftId) {
         const draft = await getBorrador(draftId);
         if (draft?.caracterizacion_nueva) {
-          setData(draft.caracterizacion_nueva);
-          if (draft.caracterizacion_nueva.municipio) {
-            setSelectedMunicipio(draft.caracterizacion_nueva.municipio);
+          // Fusión profunda con los EMPTY_*: los borradores creados con la
+          // versión anterior de la encuesta no traen los campos nuevos y
+          // dejarían inputs sin controlar (undefined).
+          const d = draft.caracterizacion_nueva as unknown as Partial<EncuestaSocialAgroAmbiental>;
+          setData({
+            ...EMPTY_ENCUESTA,
+            ...d,
+            componente_social: { ...EMPTY_SOCIAL, ...(d.componente_social || {}) },
+            caracterizacion_finca: { ...EMPTY_FINCA, ...(d.caracterizacion_finca || {}) },
+            componente_productivo: { ...EMPTY_PRODUCTIVO, ...(d.componente_productivo || {}) },
+            analisis_suelo: { ...EMPTY_ANALISIS, ...(d.analisis_suelo || {}) },
+            componente_agroambiental: { ...EMPTY_AGROAMBIENTAL, ...(d.componente_agroambiental || {}) },
+            recomendaciones: { ...EMPTY_RECOMENDACIONES, ...(d.recomendaciones || {}) },
+            acompaniamiento: { ...EMPTY_ACOMPANAMIENTO, ...(d.acompaniamiento || {}) },
+          });
+          if ((draft.caracterizacion_nueva as any).municipio) {
+            setSelectedMunicipio((draft.caracterizacion_nueva as any).municipio);
           }
         }
         // Restaurar evidencias guardadas en el borrador
@@ -195,6 +318,17 @@ const FormularioCaracterizacionScreen: React.FC<Props> = ({ navigation, route })
         if (draft?.firma_beneficiario) setFirmaBeneficiario(draft.firma_beneficiario);
         if (draft?.firma_tecnico) setFirmaTecnico(draft.firma_tecnico);
         if (draft?.huella_beneficiario) setHuella(true);
+      } else {
+        // Si NO hay borrador pero viene beneficiario precargado desde
+        // SeleccionarTipoFormulario, pre-llenar nombre y documento
+        const benefPrecargado = formularioActual?.beneficiario;
+        if (benefPrecargado?.nombre || benefPrecargado?.cedula) {
+          setData(prev => ({
+            ...prev,
+            productor_nombre: benefPrecargado.nombre || prev.productor_nombre,
+            documento: benefPrecargado.cedula || prev.documento,
+          }));
+        }
       }
 
       // Capturar ubicación
@@ -202,6 +336,11 @@ const FormularioCaracterizacionScreen: React.FC<Props> = ({ navigation, route })
       if (coords) {
         setCoordenadas(coords);
         fetchClimate(coords.latitud, coords.longitud);
+      } else {
+        Alert.alert(
+          'Ubicación no disponible',
+          'No se pudo obtener tu ubicación GPS. El formulario se guardará sin coordenadas — verifica el permiso de ubicación y la señal GPS.'
+        );
       }
     };
     init();
@@ -224,7 +363,6 @@ const FormularioCaracterizacionScreen: React.FC<Props> = ({ navigation, route })
         setFirmaTecnicoOk(!!formularioActual.firma_tecnico);
         setHuellaOk(!!formularioActual.huella_beneficiario);
       }
-      // Cargar documentos vinculados desde SQLite
       const cargarDocs = async () => {
         const formId = formularioActual?.id || formIdRef.current;
         if (formId) {
@@ -239,9 +377,7 @@ const FormularioCaracterizacionScreen: React.FC<Props> = ({ navigation, route })
                 setDocumentosCount(rows[0].cnt || 0);
               }
             }
-          } catch (e) {
-            // Ignorar
-          }
+          } catch (e) { /* Ignorar */ }
         }
       };
       cargarDocs();
@@ -249,42 +385,56 @@ const FormularioCaracterizacionScreen: React.FC<Props> = ({ navigation, route })
   );
 
   // ─── Helpers ──────────────────────────────────────────────
-  const updateData = useCallback((partial: Partial<DatosCaracterizacionNueva>) => {
+  const updateData = useCallback((partial: Partial<EncuestaSocialAgroAmbiental>) => {
     setData((prev) => ({ ...prev, ...partial }));
   }, []);
 
-  const updateSocial = useCallback((partial: Partial<ComponenteSocial>) => {
+  const updateSocial = useCallback((partial: Partial<ComponenteSocialEncuesta>) => {
     setData((prev) => ({
       ...prev,
       componente_social: { ...prev.componente_social, ...partial },
     }));
   }, []);
 
-  const updateProductivo = useCallback((partial: Partial<ComponenteProductivo>) => {
+  const updateFinca = useCallback((partial: Partial<CaracterizacionFinca>) => {
+    setData((prev) => ({
+      ...prev,
+      caracterizacion_finca: { ...prev.caracterizacion_finca, ...partial },
+    }));
+  }, []);
+
+  const updateProductivo = useCallback((partial: Partial<ComponenteProductivoEncuesta>) => {
     setData((prev) => ({
       ...prev,
       componente_productivo: { ...prev.componente_productivo, ...partial },
     }));
   }, []);
 
-  const updateAgroambiental = useCallback((partial: Partial<ComponenteAgroambiental>) => {
-    setData((prev) => ({
-      ...prev,
-      componente_agroambiental: { ...prev.componente_agroambiental, ...partial },
-    }));
-  }, []);
-
-  const updateAnalisis = useCallback((partial: Partial<AnalisisSueloCaracterizacion>) => {
+  const updateAnalisis = useCallback((partial: Partial<AnalisisSueloEncuesta>) => {
     setData((prev) => ({
       ...prev,
       analisis_suelo: { ...prev.analisis_suelo, ...partial },
     }));
   }, []);
 
-  const updateRecomendaciones = useCallback((partial: Partial<RecomendacionesCaracterizacion>) => {
+  const updateAgroambiental = useCallback((partial: Partial<ComponenteAgroambientalEncuesta>) => {
+    setData((prev) => ({
+      ...prev,
+      componente_agroambiental: { ...prev.componente_agroambiental, ...partial },
+    }));
+  }, []);
+
+  const updateRecomendaciones = useCallback((partial: Partial<RecomendacionesEncuesta>) => {
     setData((prev) => ({
       ...prev,
       recomendaciones: { ...prev.recomendaciones, ...partial },
+    }));
+  }, []);
+
+  const updateAcompaniamiento = useCallback((partial: Partial<AcompaniamientoTecnico>) => {
+    setData((prev) => ({
+      ...prev,
+      acompaniamiento: { ...prev.acompaniamiento, ...partial },
     }));
   }, []);
 
@@ -293,11 +443,29 @@ const FormularioCaracterizacionScreen: React.FC<Props> = ({ navigation, route })
     return getVeredasByMunicipio('Caquetá', selectedMunicipio);
   }, [selectedMunicipio]);
 
+  // ─── Toggle helper para checklist ─────────────────────────
+  const toggleAcompaniamiento = useCallback((fieldSi: keyof AcompaniamientoTecnico, fieldNo: keyof AcompaniamientoTecnico, value: boolean) => {
+    setData((prev) => ({
+      ...prev,
+      acompaniamiento: {
+        ...prev.acompaniamiento,
+        [fieldSi]: value,
+        [fieldNo]: !value,
+      },
+    }));
+  }, []);
+
   // ─── Guardar borrador ────────────────────────────────────
   const guardarBorradorHandler = useCallback(async () => {
     setIsSaving(true);
     try {
       const draftIdActual = formIdRef.current || formularioActual?.id || 'draft-' + Date.now();
+      const currentForm = formularioRef.current || formularioActual;
+      const fotosActuales = currentForm?.fotos || [];
+      const firmaBenefActual = currentForm?.firma_beneficiario || '';
+      const firmaTecActual = currentForm?.firma_tecnico || '';
+      const huellaActual = currentForm?.huella_beneficiario || false;
+
       const draft: FormDraft = {
         id: draftIdActual,
         tipo: 'caracterizacion',
@@ -316,40 +484,78 @@ const FormularioCaracterizacionScreen: React.FC<Props> = ({ navigation, route })
           departamento: 'Caquetá',
           municipio: data.municipio,
           vereda: data.vereda,
-          finca: data.finca,
+          finca: data.caracterizacion_finca.nombre_finca || '',
         },
         actividad: {
-          descripcion: 'Caracterización',
+          descripcion: 'Encuesta Social AgroAmbiental',
           observaciones: data.recomendaciones.recomendaciones_tecnicas,
           recomendaciones: data.recomendaciones.recomendaciones_ambientales,
         },
-        caracterizacion_nueva: data,
+        caracterizacion_nueva: data as any,
         coordenadas: coordenadas || undefined,
-        fotos: formularioActual?.fotos || [],
-        firma_beneficiario: formularioActual?.firma_beneficiario || '',
-        firma_tecnico: formularioActual?.firma_tecnico || '',
-        huella_beneficiario: formularioActual?.huella_beneficiario || false,
+        fotos: fotosActuales,
+        firma_beneficiario: firmaBenefActual,
+        firma_tecnico: firmaTecActual,
+        huella_beneficiario: huellaActual,
         selectedDepartamento: 'Caquetá',
         selectedActividad: '',
         otraActividadText: '',
         descripcionDetallada: '',
         updated_at: new Date().toISOString(),
       };
+
       await guardarBorrador(draft);
-      Alert.alert('💾 Guardado', 'Borrador guardado correctamente');
+
+      let verifyOk = false;
+      try {
+        const verificado = await getBorrador(draftIdActual);
+        if (verificado) {
+          const vFotos = verificado.fotos?.length || 0;
+          const vFirmaB = !!verificado.firma_beneficiario;
+          const vFirmaT = !!verificado.firma_tecnico;
+          const vHuella = !!verificado.huella_beneficiario;
+          if (vFotos >= fotosActuales.length &&
+              (!firmaBenefActual || vFirmaB) &&
+              (!firmaTecActual || vFirmaT) &&
+              (!huellaActual || vHuella)) {
+            verifyOk = true;
+          }
+        }
+      } catch { /* ignorar */ }
+
+      try {
+        if (firmaBenefActual) subirFirma('beneficiario', firmaBenefActual, data.documento || undefined, data.productor_nombre || undefined, 'caracterizacion').catch(() => {});
+        if (firmaTecActual) subirFirma('tecnico', firmaTecActual, data.documento || undefined, data.productor_nombre || undefined, 'caracterizacion').catch(() => {});
+        for (const foto of fotosActuales) {
+          // Videos → videos_locales + /api/videos (carpeta videos/, .mp4)
+          if (foto.tipo === 'video') {
+            saveVideoLocal(foto.id, draftIdActual, foto.uri, foto.coordenadas).catch(() => {});
+            uploadVideo(foto.uri, foto.coordenadas?.latitud, foto.coordenadas?.longitud, `Encuesta ${draftIdActual}`, data.documento || undefined, data.productor_nombre || undefined, 'caracterizacion').catch(() => {});
+          } else {
+            saveFotoLocal(foto.id, draftIdActual, foto.uri, foto.coordenadas).catch(() => {});
+            uploadPhoto(foto.uri, foto.coordenadas?.latitud, foto.coordenadas?.longitud, foto.coordenadas?.altitud, `Encuesta ${draftIdActual}`, undefined, data.documento || undefined, data.productor_nombre || undefined, foto.timestamp, 'caracterizacion').catch(() => {});
+          }
+        }
+      } catch { /* ignorar */ }
+
+      Alert.alert(
+        '💾 Guardado',
+        verifyOk
+          ? `Evidencias guardadas:\n📸 ${fotosActuales.length} foto(s)\n✍️ ${firmaBenefActual ? 'Sí' : 'No'} firma beneficiario\n✍️ ${firmaTecActual ? 'Sí' : 'No'} firma técnico\n👆 ${huellaActual ? 'Sí' : 'No'} huella`
+          : `⚠️ Guardado con advertencia — revisa la consola.`
+      );
     } catch (err) {
-      console.warn('[Carac] Error al guardar borrador:', err);
-      Alert.alert('Error', 'No se pudo guardar el borrador');
+      Alert.alert('Error', 'No se pudo guardar: ' + (err as Error)?.message);
     } finally {
       setIsSaving(false);
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [data, coordenadas, user]);
+  }, [data, coordenadas, user, formularioActual]);
 
   // ─── Navegar a evidencia ─────────────────────────────────
   const goToEvidencia = useCallback(
-    (screen: string) => {
-      navigation.navigate(screen);
+    (screen: string, params?: Record<string, any>) => {
+      navigation.navigate(screen as any, params as any);
     },
     [navigation]
   );
@@ -358,7 +564,6 @@ const FormularioCaracterizacionScreen: React.FC<Props> = ({ navigation, route })
   const handleCompletar = useCallback(async () => {
     if (isSubmitting) return;
 
-    // Validar campos obligatorios del header
     if (!data.productor_nombre.trim()) {
       Alert.alert('Campo requerido', 'El nombre del productor es obligatorio');
       return;
@@ -371,7 +576,26 @@ const FormularioCaracterizacionScreen: React.FC<Props> = ({ navigation, route })
     setIsSubmitting(true);
 
     try {
-      // 1. Guardar en contexto — incluyendo técnico y beneficiario para que finalizarFormulario no falle
+      const currentForm = formularioRef.current || formularioActual;
+      const fotosParaUpload = currentForm?.fotos || [];
+      const firmaBenefParaUpload = currentForm?.firma_beneficiario || '';
+      const firmaTecParaUpload = currentForm?.firma_tecnico || '';
+      const formId = formIdRef.current || 'encuesta-' + Date.now();
+
+      try {
+        if (firmaBenefParaUpload) subirFirma('beneficiario', firmaBenefParaUpload, data.documento || undefined, data.productor_nombre || undefined, 'caracterizacion').catch(() => {});
+        if (firmaTecParaUpload) subirFirma('tecnico', firmaTecParaUpload, data.documento || undefined, data.productor_nombre || undefined, 'caracterizacion').catch(() => {});
+        for (const foto of fotosParaUpload) {
+          if (foto.tipo === 'video') {
+            saveVideoLocal(foto.id, formId, foto.uri, foto.coordenadas).catch(() => {});
+            uploadVideo(foto.uri, foto.coordenadas?.latitud, foto.coordenadas?.longitud, `Encuesta ${formId}`, data.documento || undefined, data.productor_nombre || undefined, 'caracterizacion').catch(() => {});
+          } else {
+            saveFotoLocal(foto.id, formId, foto.uri, foto.coordenadas).catch(() => {});
+            uploadPhoto(foto.uri, foto.coordenadas?.latitud, foto.coordenadas?.longitud, foto.coordenadas?.altitud, `Encuesta ${formId}`, undefined, data.documento || undefined, data.productor_nombre || undefined, foto.timestamp, 'caracterizacion').catch(() => {});
+          }
+        }
+      } catch { /* ignorar */ }
+
       setTecnico({
         usuario_id: user?.id || '',
         nombre: data.tecnico_responsable || user?.nombre || '',
@@ -386,17 +610,16 @@ const FormularioCaracterizacionScreen: React.FC<Props> = ({ navigation, route })
         departamento: 'Caquetá',
         municipio: data.municipio || '',
         vereda: data.vereda || '',
-        finca: data.finca || '',
+        finca: data.caracterizacion_finca.nombre_finca || '',
       });
-      setCaracterizacionNueva(data);
+      setCaracterizacionNueva(data as any);
       setCoordenadas(coordenadas || { latitud: 0, longitud: 0 });
 
-      // 2. Generar PDF
       let pdfUrl: string | undefined;
       try {
         const { generarPDFLocal } = await import('../../services/pdfLocal.service');
         const formData: Formulario = {
-          id: formIdRef.current || 'carac-' + Date.now(),
+          id: formIdRef.current || 'encuesta-' + Date.now(),
           tipo: 'caracterizacion',
           tecnico: {
             usuario_id: user?.id || '',
@@ -412,15 +635,18 @@ const FormularioCaracterizacionScreen: React.FC<Props> = ({ navigation, route })
             departamento: 'Caquetá',
             municipio: data.municipio,
             vereda: data.vereda,
-            finca: data.finca,
+            finca: data.caracterizacion_finca.nombre_finca || '',
           },
           actividad: {
-            descripcion: 'Caracterización',
+            descripcion: 'Encuesta Social AgroAmbiental',
             observaciones: data.recomendaciones.recomendaciones_tecnicas,
             recomendaciones: data.recomendaciones.recomendaciones_ambientales,
           },
           sociodemografico: undefined,
           coordenadas: coordenadas || { latitud: 0, longitud: 0 },
+          clima: climaActual
+            ? { ubicacion: { latitud: coordenadas?.latitud || 0, longitud: coordenadas?.longitud || 0 }, actual: climaActual, historico: null }
+            : undefined,
           fotos: formularioActual?.fotos || [],
           firma_beneficiario: formularioActual?.firma_beneficiario || '',
           firma_tecnico: formularioActual?.firma_tecnico || '',
@@ -428,30 +654,60 @@ const FormularioCaracterizacionScreen: React.FC<Props> = ({ navigation, route })
           sincronizado: false,
           created_at: new Date().toISOString(),
           updated_at: new Date().toISOString(),
-          caracterizacion_nueva: data,
+          caracterizacion_nueva: data as any,
         } as any;
         const localUri = await generarPDFLocal(formData);
         if (localUri) pdfUrl = localUri;
       } catch (e) {
-        console.warn('[Carac] No se pudo generar PDF:', e);
+        console.warn('[Encuesta] No se pudo generar PDF:', e);
       }
 
-      // 3. Finalizar formulario
-      const form = finalizarFormulario();
+      // Pasar los datos frescos directamente: los setTecnico/setBeneficiario
+      // despachados unas líneas arriba aún NO están en el estado del contexto
+      // (closure del render anterior) — antes esto hacía que la validación
+      // viera técnico vacío y fallara SIEMPRE con "No se pudo finalizar".
+      const form = finalizarFormulario({
+        tipo: 'caracterizacion',
+        tecnico: {
+          usuario_id: user?.id || '',
+          nombre: data.tecnico_responsable || user?.nombre || '',
+          cedula: user?.cedula || '',
+          telefono: data.telefono || '',
+          email: user?.email || '',
+        },
+        beneficiario: {
+          nombre: data.productor_nombre || '',
+          cedula: data.documento || '',
+          telefono: data.telefono || '',
+          departamento: 'Caquetá',
+          municipio: data.municipio || '',
+          vereda: data.vereda || '',
+          finca: data.caracterizacion_finca.nombre_finca || '',
+        },
+        actividad: {
+          descripcion: 'Encuesta Social AgroAmbiental',
+          observaciones: data.recomendaciones.recomendaciones_tecnicas,
+          recomendaciones: data.recomendaciones.recomendaciones_ambientales,
+        },
+        coordenadas: coordenadas || { latitud: 0, longitud: 0 },
+        clima: climaActual
+          ? { ubicacion: { latitud: coordenadas?.latitud || 0, longitud: coordenadas?.longitud || 0 }, actual: climaActual, historico: null }
+          : undefined,
+      });
       if (!form) {
-        Alert.alert('Error', 'No se pudo finalizar el formulario');
+        const motivo = !data.tecnico_responsable && !user?.nombre
+          ? 'Falta el nombre del técnico responsable.'
+          : !data.productor_nombre
+            ? 'Falta el nombre del productor.'
+            : 'Se perdió el formulario en curso. Tus datos siguen en el borrador — ciérralo y ábrelo de nuevo.';
+        Alert.alert('No se pudo finalizar', motivo);
         setIsSubmitting(false);
         return;
       }
       form.pdf_url = pdfUrl || form.pdf_url;
       (form as any).caracterizacion_nueva = data;
 
-      // 4. Persistir a SQLite
-      try {
-        await saveFormularioLocal(form);
-      } catch (dbError) {
-        console.error('[Carac] Error al guardar en SQLite:', dbError);
-      }
+      try { await saveFormularioLocal(form); } catch { /* ignorar */ }
 
       // 5. Actualizar documentos vinculados: si se guardaron con 'sin-formulario',
       //    reasignarlos al ID real del formulario completado
@@ -567,6 +823,74 @@ const FormularioCaracterizacionScreen: React.FC<Props> = ({ navigation, route })
     </View>
   );
 
+  // --- Selección múltiple (checkboxes) — valor almacenado separado por comas ---
+  const renderMultiCheck = (
+    label: string,
+    value: string,
+    options: string[],
+    onChange: (nuevo: string) => void
+  ) => {
+    const seleccionados = value ? value.split(', ').filter(Boolean) : [];
+    const toggle = (opt: string) => {
+      const next = seleccionados.includes(opt)
+        ? seleccionados.filter((o) => o !== opt)
+        : [...seleccionados, opt];
+      onChange(next.join(', '));
+    };
+    return (
+      <View style={styles.fieldContainer}>
+        <Text style={styles.fieldLabel}>{label}</Text>
+        {options.map((opt) => {
+          const activo = seleccionados.includes(opt);
+          return (
+            <TouchableOpacity key={opt} style={styles.checkRow} onPress={() => toggle(opt)} activeOpacity={0.7}>
+              <Text style={[styles.checkBox, activo && styles.checkBoxActive]}>{activo ? '☑' : '☐'}</Text>
+              <Text style={styles.checkLabel}>{opt}</Text>
+            </TouchableOpacity>
+          );
+        })}
+      </View>
+    );
+  };
+
+  // --- Botón de captura GPS: llena lat/lon/alt y muestra el resultado debajo ---
+  const renderCapturaGPS = (
+    label: string,
+    lat: string | undefined,
+    lon: string | undefined,
+    alt: string | undefined,
+    onCapture: (lat: string, lon: string, alt: string) => void
+  ) => (
+    <View style={styles.fieldContainer}>
+      <Text style={styles.fieldLabel}>{label}</Text>
+      <TouchableOpacity
+        style={styles.gpsButton}
+        onPress={async () => {
+          const coords = await getCurrentPosition();
+          if (coords) {
+            onCapture(
+              String(coords.latitud),
+              String(coords.longitud),
+              coords.altitud != null ? String(Math.round(coords.altitud)) : ''
+            );
+          } else {
+            Alert.alert('Sin señal GPS', 'No se pudo obtener la ubicación. Verifica el permiso de ubicación y vuelve a intentar.');
+          }
+        }}
+        activeOpacity={0.7}
+      >
+        <Text style={styles.gpsButtonText}>📍 Capturar ubicación</Text>
+      </TouchableOpacity>
+      {lat && lon ? (
+        <Text style={styles.gpsResultado}>
+          Lat: {lat}   Lon: {lon}{alt ? `   Alt: ${alt} m` : ''}
+        </Text>
+      ) : (
+        <Text style={styles.gpsPendiente}>Aún sin capturar</Text>
+      )}
+    </View>
+  );
+
   return (
     <SafeAreaView style={styles.safeContainer} edges={['top']}>
       <AppBackground overlay={0.35}>
@@ -580,6 +904,15 @@ const FormularioCaracterizacionScreen: React.FC<Props> = ({ navigation, route })
           {/* ═══ DATOS GENERALES ═══ */}
           {renderSection('DATOS GENERALES', '📋', COLORS.primary, (
             <>
+              <View style={styles.fieldContainer}>
+                <Text style={styles.fieldLabel}>Fecha *</Text>
+                <View style={styles.lockedField}>
+                  <Text style={styles.lockedFieldText}>
+                    📅 {format(new Date(), 'dd/MM/yyyy', { locale: es })}
+                  </Text>
+                </View>
+              </View>
+
               <DropdownPicker
                 label="Municipio"
                 value={selectedMunicipio}
@@ -591,15 +924,6 @@ const FormularioCaracterizacionScreen: React.FC<Props> = ({ navigation, route })
                 required
               />
 
-              <View style={styles.fieldContainer}>
-                <Text style={styles.fieldLabel}>Fecha *</Text>
-                <View style={styles.lockedField}>
-                  <Text style={styles.lockedFieldText}>
-                    📅 {format(new Date(), 'dd/MM/yyyy', { locale: es })}
-                  </Text>
-                </View>
-              </View>
-
               <DropdownPicker
                 label="Vereda"
                 value={data.vereda || null}
@@ -609,17 +933,28 @@ const FormularioCaracterizacionScreen: React.FC<Props> = ({ navigation, route })
                 required
               />
 
-              {renderField('Encuesta N.°', data.encuesta_numero, (t) => updateData({ encuesta_numero: t }), {
-                placeholder: 'Número de encuesta',
-                keyboardType: 'numeric',
-              })}
-
               {renderField('Nombre del productor', data.productor_nombre, (t) => updateData({ productor_nombre: t }), {
                 placeholder: 'Nombre completo del productor',
                 required: true,
               })}
 
-              {renderField('Documento', data.documento, (t) => updateData({ documento: t }), {
+              {renderField('Edad (años)', data.edad, (t) => updateData({ edad: t }), {
+                placeholder: '',
+                keyboardType: 'numeric',
+              })}
+
+              <DropdownPicker
+                label="Sexo"
+                value={data.sexo || null}
+                options={SEXO_OPTS}
+                onSelect={(val) => updateData({ sexo: val, sexo_otro: val === 'Otro' ? data.sexo_otro : '' })}
+                placeholder="Seleccionar..."
+              />
+              {data.sexo === 'Otro' && renderField('¿Cuál?', data.sexo_otro, (t) => updateData({ sexo_otro: t }), {
+                placeholder: 'Especifique...',
+              })}
+
+              {renderField('Documento (C.C.)', data.documento, (t) => updateData({ documento: t }), {
                 placeholder: 'Número de cédula',
                 keyboardType: 'numeric',
                 required: true,
@@ -630,10 +965,6 @@ const FormularioCaracterizacionScreen: React.FC<Props> = ({ navigation, route })
                 keyboardType: 'phone-pad',
               })}
 
-              {renderField('Nombre de la finca / predio', data.finca, (t) => updateData({ finca: t }), {
-                placeholder: 'Nombre de la finca',
-              })}
-
               <View style={styles.fieldContainer}>
                 <Text style={styles.fieldLabel}>Técnico responsable *</Text>
                 <View style={styles.lockedField}>
@@ -642,83 +973,331 @@ const FormularioCaracterizacionScreen: React.FC<Props> = ({ navigation, route })
                   </Text>
                 </View>
               </View>
+
+              {renderField('Ubicación del predio', data.ubicacion_predio, (t) => updateData({ ubicacion_predio: t }), {
+                placeholder: '',
+              })}
             </>
           ))}
 
-          {/* ═══ COMPONENTE SOCIAL ═══ */}
+          {/* ═══════════════════════════════════════════════════
+               COMPONENTE SOCIAL (P1-P17)
+               ═══════════════════════════════════════════════════ */}
           {renderSection('COMPONENTE SOCIAL', '👥', '#2E7D32', (
             <>
+              {/* 1 */}
               <DropdownPicker
-                label="1. Nivel educativo del productor"
+                label="1. Se reconoce como:"
+                value={data.componente_social.reconocimiento || null}
+                options={RECONOCIMIENTO_OPTS}
+                onSelect={(val) => updateSocial({ reconocimiento: val, reconocimiento_otro: val === 'Otro' ? data.componente_social.reconocimiento_otro : '' })}
+                placeholder="Seleccionar..."
+              />
+              {data.componente_social.reconocimiento === 'Otro' && renderField('Especifique cual otro', data.componente_social.reconocimiento_otro, (t) => updateSocial({ reconocimiento_otro: t }), { placeholder: '' })}
+
+              {/* 2 */}
+              <DropdownPicker
+                label="2. Nivel educativo del productor"
                 value={data.componente_social.nivel_educativo || null}
-                options={NIVEL_EDUCATIVO_OPTS}
+                options={NIVEL_EDUCATIVO_ENV_OPTS}
                 onSelect={(val) => updateSocial({ nivel_educativo: val })}
                 placeholder="Seleccionar..."
               />
+
+              {/* 3 */}
               <DropdownPicker
-                label="2. Número de personas del núcleo familiar"
-                value={data.componente_social.personas_nucleo || null}
-                options={PERSONAS_NUCLEO_OPTS}
-                onSelect={(val) => updateSocial({ personas_nucleo: val })}
+                label="3. ¿Ha participado antes en Escuelas de Campo (ECA)?"
+                value={data.componente_social.participo_eca || null}
+                options={SINO_OPTS}
+                onSelect={(val) => updateSocial({ participo_eca: val })}
                 placeholder="Seleccionar..."
               />
+
+              {/* 4 */}
+              {renderField('4. ¿Cuántas personas, incluyéndose usted, hacen parte de su núcleo familiar?', data.componente_social.personas_nucleo, (t) => updateSocial({ personas_nucleo: t }), {
+                placeholder: 'Número de personas',
+                keyboardType: 'numeric',
+              })}
+              <Text style={styles.notaInfo}>
+                Nota informativa: (El núcleo familiar lo conforman las personas que viven en la misma vivienda y/o dependen económicamente del hogar)
+              </Text>
+
+              {/* 5 */}
               <DropdownPicker
-                label="3. Principal fuente de ingresos"
+                label="5. Principal fuente de ingresos"
                 value={data.componente_social.fuente_ingresos || null}
-                options={FUENTE_INGRESOS_OPTS}
-                onSelect={(val) => updateSocial({ fuente_ingresos: val })}
+                options={FUENTE_INGRESOS_ENV_OPTS}
+                onSelect={(val) => updateSocial({ fuente_ingresos: val, fuente_ingresos_otra: val === 'Otra actividad' ? data.componente_social.fuente_ingresos_otra : '' })}
                 placeholder="Seleccionar..."
               />
+              {data.componente_social.fuente_ingresos === 'Otra actividad' && renderField('Especifique cual:', data.componente_social.fuente_ingresos_otra, (t) => updateSocial({ fuente_ingresos_otra: t }), { placeholder: '' })}
+
+              {/* 6 */}
               <DropdownPicker
-                label="4. Participa en alguna organización o asociación"
+                label="6. ¿Cual es su ocupación secundaria?"
+                value={data.componente_social.ocupacion_secundaria || null}
+                options={OCUPACION_SECUNDARIA_OPTS}
+                onSelect={(val) => updateSocial({ ocupacion_secundaria: val, ocupacion_secundaria_otro: val === 'Otro' ? data.componente_social.ocupacion_secundaria_otro : '' })}
+                placeholder="Seleccionar..."
+              />
+              {data.componente_social.ocupacion_secundaria === 'Otro' && renderField('Especifique cual otro:', data.componente_social.ocupacion_secundaria_otro, (t) => updateSocial({ ocupacion_secundaria_otro: t }), { placeholder: '' })}
+
+              {/* 7 */}
+              <DropdownPicker
+                label="7. Participa en alguna organización o asociación"
                 value={data.componente_social.participa_organizacion || null}
                 options={SINO_OPTS}
                 onSelect={(val) => updateSocial({ participa_organizacion: val })}
                 placeholder="Seleccionar..."
               />
+              {data.componente_social.participa_organizacion === 'Sí' && renderField('Si la respuesta es “sí”, cual?:', data.componente_social.organizacion_cual, (t) => updateSocial({ organizacion_cual: t }), { placeholder: '' })}
+
+              {/* 8 */}
               <DropdownPicker
-                label="5. Acceso a servicios públicos básicos"
-                value={data.componente_social.servicios_publicos || null}
-                options={SERVICIOS_PUBLICOS_OPTS}
-                onSelect={(val) => updateSocial({ servicios_publicos: val })}
+                label="8. ¿A qué asociaciones u organizaciones se encuentra afiliado?"
+                value={data.componente_social.tipo_asociacion || null}
+                options={TIPO_ASOCIACION_OPTS}
+                onSelect={(val) => updateSocial({ tipo_asociacion: val, tipo_asociacion_otro: val === 'Otro' ? data.componente_social.tipo_asociacion_otro : '' })}
                 placeholder="Seleccionar..."
               />
+              {data.componente_social.tipo_asociacion === 'Otro' && renderField('Especifique cual otra:', data.componente_social.tipo_asociacion_otro, (t) => updateSocial({ tipo_asociacion_otro: t }), { placeholder: '' })}
+
+              {/* 9 — texto libre según encuesta oficial */}
+              {renderField('9. ¿Cuál es el rol en la organización que está afiliado(a)?', data.componente_social.rol_asociacion, (t) => updateSocial({ rol_asociacion: t }), {
+                placeholder: '',
+              })}
+
+              {/* 10 */}
               <DropdownPicker
-                label="6. Mano de obra utilizada"
-                value={data.componente_social.mano_obra || null}
-                options={MANO_OBRA_OPTS}
-                onSelect={(val) => updateSocial({ mano_obra: val })}
+                label="10. En donde está ubicada la vivienda principal de su núcleo familiar"
+                value={data.componente_social.vivienda_ubicacion || null}
+                options={VIVIENDA_UBICACION_OPTS}
+                onSelect={(val) => updateSocial({ vivienda_ubicacion: val, vivienda_ubicacion_otra: val === 'Otra' ? data.componente_social.vivienda_ubicacion_otra : '' })}
                 placeholder="Seleccionar..."
               />
+              {data.componente_social.vivienda_ubicacion === 'Otra' && renderField('Especifique la otra ubicación:', data.componente_social.vivienda_ubicacion_otra || '', (t) => updateSocial({ vivienda_ubicacion_otra: t }), { placeholder: '' })}
+
+              {/* 11 */}
+              <DropdownPicker
+                label="11. ¿Su vivienda cuenta con energía?"
+                value={data.componente_social.energia_electrica || null}
+                options={SINO_OPTS}
+                onSelect={(val) => updateSocial({ energia_electrica: val })}
+                placeholder="Seleccionar..."
+              />
+
+              {/* 12 — título duplicado tal cual la encuesta oficial aprobada */}
+              <DropdownPicker
+                label="12. ¿Su vivienda cuenta con energía?"
+                value={data.componente_social.tipo_energia || null}
+                options={TIPO_ENERGIA_OPTS}
+                onSelect={(val) => updateSocial({ tipo_energia: val, tipo_energia_otro: val === 'Otro' ? data.componente_social.tipo_energia_otro : '' })}
+                placeholder="Seleccionar..."
+              />
+              {data.componente_social.tipo_energia === 'Otro' && renderField('Especifique otro tipo de energía:', data.componente_social.tipo_energia_otro, (t) => updateSocial({ tipo_energia_otro: t }), { placeholder: '' })}
+
+              {/* 13 */}
+              <DropdownPicker
+                label="13. ¿De dónde obtiene principalmente el agua para el consumo humano?"
+                value={data.componente_social.agua_consumo || null}
+                options={AGUA_CONSUMO_OPTS}
+                onSelect={(val) => updateSocial({ agua_consumo: val, agua_consumo_otro: val === 'Otro' ? data.componente_social.agua_consumo_otro : '' })}
+                placeholder="Seleccionar..."
+              />
+              {data.componente_social.agua_consumo === 'Otro' && renderField('Especifique cual otro:', data.componente_social.agua_consumo_otro, (t) => updateSocial({ agua_consumo_otro: t }), { placeholder: '' })}
+
+              {/* 14 — respuesta múltiple */}
+              {renderMultiCheck(
+                '14. ¿Cuenta con algunos de estos elementos? (respuesta multiple)',
+                data.componente_social.elementos_tecnologicos,
+                ELEMENTOS_TECNOLOGICOS_OPTS,
+                (nuevo) => updateSocial({ elementos_tecnologicos: nuevo })
+              )}
+
+              {/* 15 */}
+              <DropdownPicker
+                label="15. ¿Cuenta con señal de celular en su vivienda?"
+                value={data.componente_social.senal_celular || null}
+                options={SINO_OPTS}
+                onSelect={(val) => updateSocial({ senal_celular: val })}
+                placeholder="Seleccionar..."
+              />
+
+              {/* 16 */}
+              <DropdownPicker
+                label="16. ¿Quiénes trabajan en su finca?"
+                value={data.componente_social.quienes_trabajan || null}
+                options={QUIENES_TRABAJAN_OPTS}
+                onSelect={(val) => updateSocial({ quienes_trabajan: val, quienes_trabajan_otro: val === 'Otro' ? data.componente_social.quienes_trabajan_otro : '' })}
+                placeholder="Seleccionar..."
+              />
+              {data.componente_social.quienes_trabajan === 'Otro' && renderField('Especifique cual otro:', data.componente_social.quienes_trabajan_otro || '', (t) => updateSocial({ quienes_trabajan_otro: t }), { placeholder: '' })}
+
+              {/* 17 */}
+              <DropdownPicker
+                label="17. ¿Qué medio de transporte utiliza?"
+                value={data.componente_social.medio_transporte || null}
+                options={MEDIO_TRANSPORTE_OPTS}
+                onSelect={(val) => updateSocial({ medio_transporte: val, medio_transporte_otro: val === 'Otro' ? data.componente_social.medio_transporte_otro : '' })}
+                placeholder="Seleccionar..."
+              />
+              {data.componente_social.medio_transporte === 'Otro' && renderField('Especifique cual otro:', data.componente_social.medio_transporte_otro, (t) => updateSocial({ medio_transporte_otro: t }), { placeholder: '' })}
             </>
           ))}
 
-          {/* ═══ COMPONENTE PRODUCTIVO ═══ */}
-          {renderSection('COMPONENTE PRODUCTIVO', '🌱', '#1565C0', (
+          {/* ═══════════════════════════════════════════════════
+               CARACTERIZACIÓN DE LA FINCA (P18-P28)
+               ═══════════════════════════════════════════════════ */}
+          {renderSection('CARACTERIZACION DE LA FINCA', '🏠', '#8D6E63', (
             <>
+              {/* 18 */}
+              {renderField('18. Nombre de la finca', data.caracterizacion_finca.nombre_finca, (t) => updateFinca({ nombre_finca: t }), {
+                placeholder: '',
+              })}
+
+              {/* 19 — Captura GPS con resultado debajo */}
+              {renderCapturaGPS(
+                '19. Coordenada de la finca',
+                data.caracterizacion_finca.latitud,
+                data.caracterizacion_finca.longitud,
+                data.caracterizacion_finca.altitud,
+                (lat, lon, alt) => updateFinca({ latitud: lat, longitud: lon, altitud: alt })
+              )}
+
+              {/* 20 */}
+              {renderField('20. ¿Cuál es el área total de la finca en hectáreas?', data.caracterizacion_finca.area_total, (t) => updateFinca({ area_total: t }), {
+                placeholder: '',
+                keyboardType: 'numeric',
+              })}
+
+              {/* 21 — División en hectáreas (texto oficial) */}
+              <Text style={styles.subSectionTitle}>21. ¿Cómo está dividida en hectáreas?</Text>
+              <View style={styles.row}>
+                <View style={styles.halfField}>
+                  {renderField('Área de bosque', data.caracterizacion_finca.division_bosque, (t) => updateFinca({ division_bosque: t }), { placeholder: 'ha', keyboardType: 'numeric' })}
+                </View>
+                <View style={styles.halfField}>
+                  {renderField('Área de agrícola', data.caracterizacion_finca.division_agricola || '', (t) => updateFinca({ division_agricola: t }), { placeholder: 'ha', keyboardType: 'numeric' })}
+                </View>
+              </View>
+              <View style={styles.row}>
+                <View style={styles.halfField}>
+                  {renderField('Área de pecuaria', data.caracterizacion_finca.division_pecuaria || '', (t) => updateFinca({ division_pecuaria: t }), { placeholder: 'ha', keyboardType: 'numeric' })}
+                </View>
+                <View style={styles.halfField}>
+                  {renderField('Área instalaciones', data.caracterizacion_finca.division_instalaciones || '', (t) => updateFinca({ division_instalaciones: t }), { placeholder: 'ha', keyboardType: 'numeric' })}
+                </View>
+              </View>
+
+              {/* 22 */}
               <DropdownPicker
-                label="7. Principal actividad productiva"
-                value={data.componente_productivo.actividad_productiva || null}
-                options={ACTIVIDAD_PRODUCTIVA_OPTS}
-                onSelect={(val) => updateProductivo({ actividad_productiva: val })}
+                label="22. Medio de salida de productos al centro poblado más cercano"
+                value={data.caracterizacion_finca.medio_salida || null}
+                options={MEDIO_SALIDA_OPTS}
+                onSelect={(val) => updateFinca({ medio_salida: val })}
                 placeholder="Seleccionar..."
               />
+              <Text style={styles.notaInfo}>
+                Nota info: Terciaria – Secundaria – Primaria: camino de herradura, trocha o destapada y carreteable principal · Secundaria – Primaria: trocha o destapada y carreteable principal · Primaria: carreteable principal
+              </Text>
+
+              {/* 23 */}
+              {renderField('23. Distancia aproximada del predio al centro poblado (km)', data.caracterizacion_finca.distancia_km || '', (t) => updateFinca({ distancia_km: t }), {
+                placeholder: 'km',
+                keyboardType: 'numeric',
+              })}
+
+              {/* 24 */}
+              {renderField('24. Observaciones de la descripción llegada al predio (desde cabecera municipal)', data.caracterizacion_finca.distancia_observaciones, (t) => updateFinca({ distancia_observaciones: t }), {
+                placeholder: '',
+                multiline: true,
+                numberOfLines: 3,
+              })}
+
+              {/* 25 */}
               <DropdownPicker
-                label="8. El predio cuenta con acceso permanente al agua"
+                label="25. ¿Realiza aprovechamiento productivo de manera directa?"
+                value={data.caracterizacion_finca.aprovechamiento_directo || null}
+                options={SINO_OPTS}
+                onSelect={(val) => updateFinca({ aprovechamiento_directo: val, aprovechamiento_porque: val === 'No' ? data.caracterizacion_finca.aprovechamiento_porque : '' })}
+                placeholder="Seleccionar..."
+              />
+              <Text style={styles.notaInfo}>
+                Nota informativa: Si el beneficiario realiza la actividad productiva en la finca o contrata una persona externa
+              </Text>
+              {data.caracterizacion_finca.aprovechamiento_directo === 'No' && renderField('Porque?:', data.caracterizacion_finca.aprovechamiento_porque || '', (t) => updateFinca({ aprovechamiento_porque: t }), { placeholder: '' })}
+
+              {/* 26 — respuesta múltiple con sub-listas */}
+              {renderMultiCheck(
+                '26. ¿Cuáles son las actividades que realiza en su finca?',
+                data.caracterizacion_finca.actividades_finca || '',
+                ACTIVIDADES_FINCA_OPTS,
+                (nuevo) => updateFinca({ actividades_finca: nuevo })
+              )}
+              {(data.caracterizacion_finca.actividades_finca || '').includes('Actividades agrícolas') && (
+                <>
+                  {renderMultiCheck(
+                    'Actividades agrícolas',
+                    data.caracterizacion_finca.actividades_agricolas,
+                    ACTIVIDAD_AGRICOLA_OPTS,
+                    (nuevo) => updateFinca({ actividades_agricolas: nuevo })
+                  )}
+                  {(data.caracterizacion_finca.actividades_agricolas || '').includes('Otro') && renderField('Especifique cual otro:', data.caracterizacion_finca.actividades_agricolas_otro || '', (t) => updateFinca({ actividades_agricolas_otro: t }), { placeholder: '' })}
+                </>
+              )}
+              {(data.caracterizacion_finca.actividades_finca || '').includes('Actividades pecuarias') && (
+                <>
+                  {renderMultiCheck(
+                    'Actividades pecuarias',
+                    data.caracterizacion_finca.actividades_pecuarias,
+                    ACTIVIDAD_PECUARIA_OPTS,
+                    (nuevo) => updateFinca({ actividades_pecuarias: nuevo })
+                  )}
+                  {(data.caracterizacion_finca.actividades_pecuarias || '').includes('Otro') && renderField('Especifique cual otro:', data.caracterizacion_finca.actividades_pecuarias_otro || '', (t) => updateFinca({ actividades_pecuarias_otro: t }), { placeholder: '' })}
+                </>
+              )}
+              {(data.caracterizacion_finca.actividades_finca || '').split(', ').includes('Otro') && renderField('Especifique cual otro', data.caracterizacion_finca.actividades_finca_otro || '', (t) => updateFinca({ actividades_finca_otro: t }), { placeholder: '' })}
+            </>
+          ))}
+
+          {/* ═══════════════════════════════════════════════════
+               COMPONENTE PRODUCTIVO (P29-P35)
+               ═══════════════════════════════════════════════════ */}
+          {renderSection('COMPONENTE PRODUCTIVO', '🌱', '#1565C0', (
+            <>
+              {/* 27 */}
+              <DropdownPicker
+                label="27. ¿Cual es la actividad principal productiva de la finca?"
+                value={data.componente_productivo.actividad_principal || null}
+                options={ACTIVIDAD_PRODUCTIVA_OPTS}
+                onSelect={(val) => updateProductivo({ actividad_principal: val })}
+                placeholder="Seleccionar..."
+              />
+              {renderField('Cual?', data.componente_productivo.actividad_principal_cual || '', (t) => updateProductivo({ actividad_principal_cual: t }), {
+                placeholder: '',
+              })}
+
+              {/* 28 */}
+              <DropdownPicker
+                label="28. ¿El predio cuenta con acceso permanente al agua?"
                 value={data.componente_productivo.acceso_agua || null}
                 options={SINO_OPTS}
                 onSelect={(val) => updateProductivo({ acceso_agua: val })}
                 placeholder="Seleccionar..."
               />
+
+              {/* 29 */}
               <DropdownPicker
-                label="9. Dispone de sistemas de riego"
+                label="29. ¿Dispone de sistemas de riego?"
                 value={data.componente_productivo.sistemas_riego || null}
                 options={SINO_OPTS}
                 onSelect={(val) => updateProductivo({ sistemas_riego: val })}
                 placeholder="Seleccionar..."
               />
+
+              {/* 30 */}
               <DropdownPicker
-                label="10. Ha recibido asistencia técnica en los últimos dos años"
+                label="30. ¿Ha recibido asistencia técnica en los últimos dos años?"
                 value={data.componente_productivo.asistencia_tecnica || null}
                 options={SINO_OPTS}
                 onSelect={(val) => updateProductivo({ asistencia_tecnica: val })}
@@ -727,39 +1306,176 @@ const FormularioCaracterizacionScreen: React.FC<Props> = ({ navigation, route })
             </>
           ))}
 
-          {/* ═══ COMPONENTE AGROAMBIENTAL ═══ */}
+          {/* ═══════════════════════════════════════════════════
+               ANÁLISIS DE SUELO (P36-P45)
+               ═══════════════════════════════════════════════════ */}
+          {renderSection('SECCIÓN DE SUELO', '🔬', '#6A1B9A', (
+            <>
+              {/* 31 — Punto de georeferenciación */}
+              {renderCapturaGPS(
+                '31. Ubicación del área de intervención del proyecto',
+                data.analisis_suelo.intervencion_latitud,
+                data.analisis_suelo.intervencion_longitud,
+                data.analisis_suelo.intervencion_altitud,
+                (lat, lon, alt) => updateAnalisis({ intervencion_latitud: lat, intervencion_longitud: lon, intervencion_altitud: alt })
+              )}
+
+              {/* 32 */}
+              <DropdownPicker
+                label="32. ¿Ha realizado alguna vez análisis de suelo en su predio?"
+                value={data.analisis_suelo.analisis_realizado || null}
+                options={ANALISIS_SUELO_REALIZADO_OPTS}
+                onSelect={(val) => updateAnalisis({ analisis_realizado: val })}
+                placeholder="Seleccionar..."
+              />
+
+              {/* 33 — selección múltiple */}
+              {renderMultiCheck(
+                '33. ¿Cuál es la textura predominante en el suelo? Selección multiple',
+                data.analisis_suelo.textura,
+                TEXTURA_SUELO_OPTS,
+                (nuevo) => updateAnalisis({ textura: nuevo })
+              )}
+
+              {/* 34 */}
+              <DropdownPicker
+                label="34. ¿Qué coloración predomina en el suelo?"
+                value={data.analisis_suelo.color || null}
+                options={COLOR_SUELO_OPTS}
+                onSelect={(val) => updateAnalisis({ color: val })}
+                placeholder="Seleccionar..."
+              />
+
+              {/* 35 */}
+              <DropdownPicker
+                label="35. ¿Qué tipo de drenaje hay en el suelo?"
+                value={data.analisis_suelo.drenaje || null}
+                options={DRENAJE_OPTS}
+                onSelect={(val) => updateAnalisis({ drenaje: val })}
+                placeholder="Seleccionar..."
+              />
+
+              {/* 36 */}
+              <DropdownPicker
+                label="36. ¿Cuál es la profundidad efectiva del suelo?"
+                value={data.analisis_suelo.profundidad || null}
+                options={PROFUNDIDAD_OPTS}
+                onSelect={(val) => updateAnalisis({ profundidad: val })}
+                placeholder="Seleccionar..."
+              />
+
+              {/* 37 */}
+              <DropdownPicker
+                label="37. ¿Existe alguna presencia de piedras o fragmentos rocosos?"
+                value={data.analisis_suelo.piedras || null}
+                options={PRESENCIA_PIEDRAS_OPTS}
+                onSelect={(val) => updateAnalisis({ piedras: val })}
+                placeholder="Seleccionar..."
+              />
+
+              {/* 38 */}
+              <DropdownPicker
+                label="38. ¿Cuál es el estado de la compactación del suelo?"
+                value={data.analisis_suelo.compactacion || null}
+                options={COMPACTACION_OPTS}
+                onSelect={(val) => updateAnalisis({ compactacion: val })}
+                placeholder="Seleccionar..."
+              />
+
+              {/* 39 */}
+              <DropdownPicker
+                label="39. ¿Qué presencia de cobertura presenta el suelo?"
+                value={data.analisis_suelo.cobertura || null}
+                options={COBERTURA_SUELO_OPTS}
+                onSelect={(val) => updateAnalisis({ cobertura: val })}
+                placeholder="Seleccionar..."
+              />
+
+              {/* 40 */}
+              <DropdownPicker
+                label="40. ¿Se evidencia algún tipo de erosión en el suelo?"
+                value={data.analisis_suelo.erosion || null}
+                options={EVIDENCIA_EROSION_OPTS}
+                onSelect={(val) => updateAnalisis({ erosion: val })}
+                placeholder="Seleccionar..."
+              />
+
+              {/* 41 — grados */}
+              {renderField('41. ¿Cual es el grado de Pendiente del terreno? (°)', data.analisis_suelo.pendiente, (t) => updateAnalisis({ pendiente: t }), {
+                placeholder: '°',
+                keyboardType: 'numeric',
+              })}
+            </>
+          ))}
+
+          {/* ═══════════════════════════════════════════════════
+               COMPONENTE AGROAMBIENTAL (P46-P53)
+               ═══════════════════════════════════════════════════ */}
           {renderSection('COMPONENTE AGROAMBIENTAL', '🌿', '#E65100', (
             <>
+              {/* 42 */}
               <DropdownPicker
-                label="11. El predio presenta procesos de erosión"
+                label="42. ¿El predio presenta procesos de erosión?"
                 value={data.componente_agroambiental.procesos_erosion || null}
                 options={PROCESOS_EROSION_OPTS}
                 onSelect={(val) => updateAgroambiental({ procesos_erosion: val })}
                 placeholder="Seleccionar..."
               />
+
+              {/* 43 */}
               <DropdownPicker
-                label="12. Existen fuentes hídricas dentro o cerca del predio"
+                label="43. ¿Existen fuentes hídricas dentro o cerca del predio?"
                 value={data.componente_agroambiental.fuentes_hidricas || null}
                 options={FUENTES_HIDRICAS_OPTS}
                 onSelect={(val) => updateAgroambiental({ fuentes_hidricas: val })}
                 placeholder="Seleccionar..."
               />
+
+              {/* 44 */}
               <DropdownPicker
-                label="13. El predio cuenta con áreas de conservación o protección"
+                label="44. ¿El predio cuenta con áreas de conservación o protección?"
                 value={data.componente_agroambiental.areas_conservacion || null}
-                options={SINO_OPTS}
+                options={AREAS_CONSERVACION_OPTS}
                 onSelect={(val) => updateAgroambiental({ areas_conservacion: val })}
                 placeholder="Seleccionar..."
               />
+
+              {/* 45 */}
               <DropdownPicker
-                label="14. Realiza prácticas de conservación del suelo"
+                label="45. ¿Realiza prácticas de conservación del suelo?"
                 value={data.componente_agroambiental.practicas_conservacion || null}
                 options={PRACTICAS_CONSERVACION_OPTS}
                 onSelect={(val) => updateAgroambiental({ practicas_conservacion: val })}
                 placeholder="Seleccionar..."
               />
+
+              {/* 46 */}
               <DropdownPicker
-                label="15. Manejo de residuos de agroquímicos"
+                label="46. ¿Utiliza algún tipo agroquímico?"
+                value={data.componente_agroambiental.uso_agroquimicos || null}
+                options={SINO_OPTS}
+                onSelect={(val) => updateAgroambiental({ uso_agroquimicos: val })}
+                placeholder="Seleccionar..."
+              />
+
+              {/* 47 */}
+              <DropdownPicker
+                label="47. ¿Qué tipo de agroquímicos utiliza?"
+                value={data.componente_agroambiental.tipo_agroquimicos || null}
+                options={TIPO_AGROQUIMICO_OPTS}
+                onSelect={(val) => updateAgroambiental({ tipo_agroquimicos: val, tipo_agroquimicos_otro: val === 'Otro' ? data.componente_agroambiental.tipo_agroquimicos_otro : '' })}
+                placeholder="Seleccionar..."
+              />
+              {data.componente_agroambiental.tipo_agroquimicos === 'Otro' && renderField('Especifique cual otro:', data.componente_agroambiental.tipo_agroquimicos_otro || '', (t) => updateAgroambiental({ tipo_agroquimicos_otro: t }), { placeholder: '' })}
+
+              {/* 48 — texto libre */}
+              {renderField('48. Mencione qué tipo de herbicidas utiliza', data.componente_agroambiental.herbicidas_cuales, (t) => updateAgroambiental({ herbicidas_cuales: t }), {
+                placeholder: '',
+              })}
+
+              {/* 49 */}
+              <DropdownPicker
+                label="49. ¿Realiza manejo de residuos de agroquímicos?"
                 value={data.componente_agroambiental.manejo_residuos || null}
                 options={MANEJO_RESIDUOS_OPTS}
                 onSelect={(val) => updateAgroambiental({ manejo_residuos: val })}
@@ -768,89 +1484,82 @@ const FormularioCaracterizacionScreen: React.FC<Props> = ({ navigation, route })
             </>
           ))}
 
-          {/* ═══ ANÁLISIS DE SUELO ═══ */}
-          {renderSection('ANÁLISIS DE SUELO (EVALUACIÓN EN CAMPO)', '🔬', '#6A1B9A', (
-            <>
-              <DropdownPicker
-                label="16. Se realizó la observación y caracterización física del suelo"
-                value={data.analisis_suelo.observacion_suelo || null}
-                options={SINO_OPTS}
-                onSelect={(val) => updateAnalisis({ observacion_suelo: val })}
-                placeholder="Seleccionar..."
-              />
-              <DropdownPicker
-                label="17. Textura predominante"
-                value={data.analisis_suelo.textura || null}
-                options={TEXTURA_SUELO_OPTS}
-                onSelect={(val) => updateAnalisis({ textura: val })}
-                placeholder="Seleccionar..."
-              />
-              <DropdownPicker
-                label="18. Color predominante"
-                value={data.analisis_suelo.color || null}
-                options={COLOR_SUELO_OPTS}
-                onSelect={(val) => updateAnalisis({ color: val })}
-                placeholder="Seleccionar..."
-              />
-              <DropdownPicker
-                label="19. Drenaje del suelo"
-                value={data.analisis_suelo.drenaje || null}
-                options={DRENAJE_OPTS}
-                onSelect={(val) => updateAnalisis({ drenaje: val })}
-                placeholder="Seleccionar..."
-              />
-              <DropdownPicker
-                label="20. Profundidad efectiva del suelo"
-                value={data.analisis_suelo.profundidad || null}
-                options={PROFUNDIDAD_OPTS}
-                onSelect={(val) => updateAnalisis({ profundidad: val })}
-                placeholder="Seleccionar..."
-              />
-              <DropdownPicker
-                label="21. Presencia de piedras o fragmentos rocosos"
-                value={data.analisis_suelo.piedras || null}
-                options={PRESENCIA_PIEDRAS_OPTS}
-                onSelect={(val) => updateAnalisis({ piedras: val })}
-                placeholder="Seleccionar..."
-              />
-              <DropdownPicker
-                label="22. Estado de la compactación del suelo"
-                value={data.analisis_suelo.compactacion || null}
-                options={COMPACTACION_OPTS}
-                onSelect={(val) => updateAnalisis({ compactacion: val })}
-                placeholder="Seleccionar..."
-              />
-              <DropdownPicker
-                label="23. Cobertura del suelo"
-                value={data.analisis_suelo.cobertura || null}
-                options={COBERTURA_SUELO_OPTS}
-                onSelect={(val) => updateAnalisis({ cobertura: val })}
-                placeholder="Seleccionar..."
-              />
-              <DropdownPicker
-                label="24. Evidencia de erosión en el suelo"
-                value={data.analisis_suelo.evidencia_erosion || null}
-                options={EVIDENCIA_EROSION_OPTS}
-                onSelect={(val) => updateAnalisis({ evidencia_erosion: val })}
-                placeholder="Seleccionar..."
-              />
-            </>
-          ))}
-
-          {/* ═══ RECOMENDACIONES ═══ */}
+          {/* ═══════════════════════════════════════════════════
+               RECOMENDACIONES DEL TÉCNICO
+               ═══════════════════════════════════════════════════ */}
           {renderSection('RECOMENDACIONES DEL TÉCNICO', '📝', '#F57F17', (
             <>
               {renderField(
-                '25. Recomendaciones técnicas para el sistema productivo',
+                '50. Recomendaciones técnicas para el sistema productivo:',
                 data.recomendaciones.recomendaciones_tecnicas,
                 (t) => updateRecomendaciones({ recomendaciones_tecnicas: t }),
-                { placeholder: 'Describa las recomendaciones técnicas...', multiline: true, numberOfLines: 3 }
+                { placeholder: '', multiline: true, numberOfLines: 3 }
               )}
               {renderField(
-                '26. Recomendaciones ambientales y de conservación',
+                '51. Compromisos adquiridos sobre el desarrollo del estado actual del terreno:',
+                data.recomendaciones.compromisos_productor,
+                (t) => updateRecomendaciones({ compromisos_productor: t }),
+                { placeholder: '', multiline: true, numberOfLines: 3 }
+              )}
+              {renderField(
+                '52. Recomendaciones ambientales y de conservación:',
                 data.recomendaciones.recomendaciones_ambientales,
                 (t) => updateRecomendaciones({ recomendaciones_ambientales: t }),
-                { placeholder: 'Describa las recomendaciones ambientales...', multiline: true, numberOfLines: 3 }
+                { placeholder: '', multiline: true, numberOfLines: 3 }
+              )}
+            </>
+          ))}
+
+          {/* ═══════════════════════════════════════════════════
+               DESARROLLO DEL ACOMPAÑAMIENTO TÉCNICO
+               ═══════════════════════════════════════════════════ */}
+          {renderSection('DESARROLLO ACOMPAÑAMIENTO TECNICO', '📋', '#00897B', (
+            <>
+              {[
+                { label: '1. Socialización de actividades del proyecto al productor, mediante presentación digital.', si: 'actividades_realizadas_si', no: 'actividades_realizadas_no', obs: 'actividades_realizadas_obs' },
+                { label: '2. Realización de selección y delimitación técnica del terreno para la implementación del cultivo de cacao en arreglo agroforestal con plátano y maderable.', si: 'manejo_plagas_si', no: 'manejo_plagas_no', obs: 'manejo_plagas_obs' },
+                { label: '3. Realización de muestreo de suelo, teniendo en cuenta: criterios de homogeneidad, uso actual del terreno, topografía y condiciones agroecológicas.', si: 'manejo_suelo_si', no: 'manejo_suelo_no', obs: 'manejo_suelo_obs' },
+                { label: '4. Punto de georeferenciación del terreno donde se realizará la implementación del cultivo de cacao en arreglo agroforestal con plátano y maderable.', si: 'manejo_agua_si', no: 'manejo_agua_no', obs: 'manejo_agua_obs', geo: true },
+                { label: '5. Orientación al productor sobre procesos de producción y beneficios de la producción de cacao.', si: 'capacitacion_si', no: 'capacitacion_no', obs: 'capacitacion_obs' },
+                { label: '6. Orientación del manejo de preparación del terreno: realización de limpias si es rastrojo de porte bajo (herbáceas), recomendando no utilización de herbicidas a base de componentes de medio a altamente tóxicos.', si: 'seguimiento_si', no: 'seguimiento_no', obs: 'seguimiento_obs' },
+                { label: '7. Orientación del manejo de preparación del terreno: realización de entresacado en rastrojo biche de regeneración baja (arbóreas o arbustos), recomendando entresacado', si: 'entresacado_si', no: 'entresacado_no', obs: 'entresacado_obs' },
+              ].map((item) => (
+                <View key={item.si} style={styles.acompaniamientoItem}>
+                  <Text style={styles.fieldLabel}>{item.label}</Text>
+                  <View style={styles.siNoRow}>
+                    <TouchableOpacity
+                      style={[styles.siNoBtn, data.acompaniamiento[item.si as keyof AcompaniamientoTecnico] && styles.siNoBtnActive]}
+                      onPress={() => toggleAcompaniamiento(item.si as keyof AcompaniamientoTecnico, item.no as keyof AcompaniamientoTecnico, true)}
+                    >
+                      <Text style={[styles.siNoBtnText, data.acompaniamiento[item.si as keyof AcompaniamientoTecnico] && styles.siNoBtnTextActive]}>Sí</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={[styles.siNoBtn, data.acompaniamiento[item.no as keyof AcompaniamientoTecnico] && styles.siNoBtnNoActive]}
+                      onPress={() => toggleAcompaniamiento(item.no as keyof AcompaniamientoTecnico, item.si as keyof AcompaniamientoTecnico, true)}
+                    >
+                      <Text style={[styles.siNoBtnText, data.acompaniamiento[item.no as keyof AcompaniamientoTecnico] && styles.siNoBtnTextActive]}>No</Text>
+                    </TouchableOpacity>
+                  </View>
+                  {item.geo && renderCapturaGPS(
+                    'Captura de ubicación (latitud, longitud y altitud)',
+                    data.acompaniamiento.georef_latitud,
+                    data.acompaniamiento.georef_longitud,
+                    data.acompaniamiento.georef_altitud,
+                    (lat, lon, alt) => updateAcompaniamiento({ georef_latitud: lat, georef_longitud: lon, georef_altitud: alt })
+                  )}
+                  {renderField('Observaciones',
+                    data.acompaniamiento[item.obs as keyof AcompaniamientoTecnico] as string || '',
+                    (t) => updateAcompaniamiento({ [item.obs]: t } as any),
+                    { placeholder: 'Observaciones...', multiline: true, numberOfLines: 2 }
+                  )}
+                </View>
+              ))}
+
+              {renderField(
+                'Observaciones generales',
+                data.acompaniamiento.observaciones_generales,
+                (t) => updateAcompaniamiento({ observaciones_generales: t }),
+                { placeholder: 'Observaciones generales del acompañamiento...', multiline: true, numberOfLines: 3 }
               )}
             </>
           ))}
@@ -860,16 +1569,38 @@ const FormularioCaracterizacionScreen: React.FC<Props> = ({ navigation, route })
             <>
               <TouchableOpacity
                 style={[styles.evidenciaCard, fotosCount > 0 && styles.evidenciaCardOk]}
-                onPress={() => goToEvidencia('Camara')}
+                onPress={() => goToEvidencia('Camara', {
+                  mode: 'photo',
+                  requisito: '5 Fotos (4 Fotos De Realizacion De Actividades + 1 Foto Del Cuaderno De Visita)',
+                })}
                 activeOpacity={0.7}
               >
                 <View style={styles.evidenciaIcon}>
-                  <Text style={styles.evidenciaIconText}>📸</Text>
+                  <Text style={styles.evidenciaIconText}>📷</Text>
                 </View>
                 <View style={styles.evidenciaContent}>
-                  <Text style={styles.evidenciaCardTitle}>Evidencia Fotográfica</Text>
+                  <Text style={styles.evidenciaCardTitle}>Tomar Fotos</Text>
                   <Text style={styles.evidenciaCardDesc}>
-                    {fotosCount > 0 ? `${fotosCount} foto(s) capturada(s)` : 'Tomar fotos de la visita'}
+                    {fotosCount > 0
+                      ? `${fotosCount} foto(s) capturada(s) — requisito: 5 Fotos (4 Fotos De Realizacion De Actividades + 1 Foto Del Cuaderno De Visita)`
+                      : '5 Fotos (4 Fotos De Realizacion De Actividades + 1 Foto Del Cuaderno De Visita)'}
+                  </Text>
+                </View>
+                <Text style={styles.evidenciaArrow}>›</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={[styles.evidenciaCard, fotosCount > 0 && styles.evidenciaCardOk]}
+                onPress={() => goToEvidencia('Camara', { mode: 'video' })}
+                activeOpacity={0.7}
+              >
+                <View style={styles.evidenciaIcon}>
+                  <Text style={styles.evidenciaIconText}>🎥</Text>
+                </View>
+                <View style={styles.evidenciaContent}>
+                  <Text style={styles.evidenciaCardTitle}>Tomar Video</Text>
+                  <Text style={styles.evidenciaCardDesc}>
+                    Grabar video corto (máx. 30s)
                   </Text>
                 </View>
                 <Text style={styles.evidenciaArrow}>›</Text>
@@ -928,7 +1659,7 @@ const FormularioCaracterizacionScreen: React.FC<Props> = ({ navigation, route })
 
               <TouchableOpacity
                 style={[styles.evidenciaCard, documentosCount > 0 && styles.evidenciaCardOk]}
-                onPress={() => goToEvidencia('Camara')}
+                onPress={() => goToEvidencia('Documentos')}
                 activeOpacity={0.7}
               >
                 <View style={styles.evidenciaIcon}>
@@ -1008,7 +1739,6 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: COLORS.background,
   },
-  // Scroll
   scrollView: {
     flex: 1,
   },
@@ -1016,7 +1746,6 @@ const styles = StyleSheet.create({
     padding: SPACING.md,
     paddingBottom: SPACING.xxl,
   },
-  // Section card
   sectionCard: {
     backgroundColor: COLORS.surface,
     borderRadius: BORDER_RADIUS.lg,
@@ -1040,7 +1769,20 @@ const styles = StyleSheet.create({
     paddingTop: SPACING.sm,
     paddingBottom: SPACING.xs,
   },
-  // Field
+  subSectionTitle: {
+    fontSize: FONTS.sizes.sm,
+    fontWeight: FONTS.weights.semibold,
+    color: COLORS.textSecondary,
+    marginBottom: SPACING.sm,
+    marginTop: SPACING.xs,
+  },
+  row: {
+    flexDirection: 'row',
+    gap: SPACING.sm,
+  },
+  halfField: {
+    flex: 1,
+  },
   fieldContainer: {
     marginBottom: SPACING.md,
   },
@@ -1075,6 +1817,94 @@ const styles = StyleSheet.create({
     fontSize: FONTS.sizes.md,
     fontWeight: FONTS.weights.semibold,
     color: COLORS.primary,
+  },
+  // Selección múltiple (checkboxes)
+  checkRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 6,
+  },
+  checkBox: {
+    fontSize: 20,
+    marginRight: SPACING.sm,
+    color: COLORS.textSecondary,
+  },
+  checkBoxActive: {
+    color: COLORS.primary,
+  },
+  checkLabel: {
+    fontSize: FONTS.sizes.md,
+    color: COLORS.textPrimary,
+    flex: 1,
+  },
+  // Captura GPS
+  gpsButton: {
+    backgroundColor: COLORS.primary,
+    borderRadius: BORDER_RADIUS.md,
+    paddingVertical: SPACING.sm + 2,
+    alignItems: 'center',
+  },
+  gpsButtonText: {
+    color: '#fff',
+    fontWeight: FONTS.weights.semibold,
+    fontSize: FONTS.sizes.md,
+  },
+  gpsResultado: {
+    marginTop: SPACING.xs,
+    fontSize: FONTS.sizes.sm,
+    color: COLORS.success,
+    fontWeight: FONTS.weights.medium,
+  },
+  gpsPendiente: {
+    marginTop: SPACING.xs,
+    fontSize: FONTS.sizes.sm,
+    color: COLORS.textLight,
+    fontStyle: 'italic',
+  },
+  // Nota informativa oficial (texto del ministerio)
+  notaInfo: {
+    fontSize: FONTS.sizes.xs,
+    color: COLORS.textSecondary,
+    fontStyle: 'italic',
+    marginTop: -SPACING.xs,
+    marginBottom: SPACING.sm,
+  },
+  // Acompañamiento
+  acompaniamientoItem: {
+    marginBottom: SPACING.md,
+    paddingBottom: SPACING.sm,
+    borderBottomWidth: 1,
+    borderBottomColor: COLORS.divider,
+  },
+  siNoRow: {
+    flexDirection: 'row',
+    gap: SPACING.sm,
+    marginBottom: SPACING.sm,
+  },
+  siNoBtn: {
+    flex: 1,
+    paddingVertical: SPACING.sm + 2,
+    borderRadius: BORDER_RADIUS.md,
+    borderWidth: 1.5,
+    borderColor: COLORS.border,
+    alignItems: 'center',
+    backgroundColor: COLORS.surface,
+  },
+  siNoBtnActive: {
+    borderColor: COLORS.success,
+    backgroundColor: COLORS.success + '18',
+  },
+  siNoBtnNoActive: {
+    borderColor: COLORS.error,
+    backgroundColor: COLORS.error + '12',
+  },
+  siNoBtnText: {
+    fontSize: FONTS.sizes.md,
+    fontWeight: FONTS.weights.semibold,
+    color: COLORS.textSecondary,
+  },
+  siNoBtnTextActive: {
+    color: COLORS.textPrimary,
   },
   // Evidencias
   evidenciaCard: {
@@ -1130,7 +1960,6 @@ const styles = StyleSheet.create({
     marginTop: SPACING.sm,
     marginBottom: SPACING.xs,
   },
-  // Ubicación
   locationBox: {
     backgroundColor: COLORS.surfaceAlt,
     padding: SPACING.md,
@@ -1149,7 +1978,6 @@ const styles = StyleSheet.create({
     color: COLORS.textSecondary,
     fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
   },
-  // Bottom bar
   bottomBar: {
     flexDirection: 'row',
     padding: SPACING.md,
@@ -1188,7 +2016,6 @@ const styles = StyleSheet.create({
   buttonDisabled: {
     opacity: 0.5,
   },
-  // Loading overlay
   loadingOverlay: {
     ...StyleSheet.absoluteFillObject,
     backgroundColor: 'rgba(0,0,0,0.5)',
@@ -1212,4 +2039,4 @@ const styles = StyleSheet.create({
   },
 });
 
-export default FormularioCaracterizacionScreen;
+export default EncuestaSocialAgroambientalScreen;

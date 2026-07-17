@@ -2,7 +2,7 @@
 // GEODAILY — Pantalla de Login
 // ============================================================
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   View,
   Text,
@@ -17,6 +17,7 @@ import {
   ImageBackground,
 } from 'react-native';
 import { useAuth } from '../../store/AuthContext';
+import { existeCredencialOffline } from '../../services/auth';
 import { COLORS, FONTS, SPACING, BORDER_RADIUS, SHADOWS } from '../../theme';
 import LoadingSpinner from '../../components/LoadingSpinner';
 
@@ -24,6 +25,13 @@ const LoginScreen: React.FC = () => {
   const { login, isLoading, error } = useAuth();
   const [usuario, setUsuario] = useState('');
   const [contrasena, setContrasena] = useState('');
+  const [offlineDisponible, setOfflineDisponible] = useState(false);
+
+  // Detectar si hay una sesión cacheada en este dispositivo — permite avisar
+  // al técnico que puede entrar sin señal con su último usuario y contraseña.
+  useEffect(() => {
+    existeCredencialOffline().then(setOfflineDisponible).catch(() => setOfflineDisponible(false));
+  }, []);
 
   const handleLogin = async () => {
     if (!usuario.trim()) {
@@ -114,6 +122,15 @@ const LoginScreen: React.FC = () => {
               <Text style={styles.loginButtonText}>Ingresar</Text>
             )}
           </TouchableOpacity>
+
+          {offlineDisponible && (
+            <View style={styles.offlineHint}>
+              <Text style={styles.offlineHintText}>
+                📴 Puedes ingresar sin conexión con tu último usuario y contraseña.
+                Tus datos guardados están a salvo.
+              </Text>
+            </View>
+          )}
           </View>
 
           {/* Usuarios de prueba — solo visible en desarrollo */}
@@ -235,6 +252,18 @@ const styles = StyleSheet.create({
     color: COLORS.textOnPrimary,
     fontSize: FONTS.sizes.lg,
     fontWeight: FONTS.weights.bold,
+  },
+  offlineHint: {
+    marginTop: SPACING.md,
+    backgroundColor: COLORS.primary + '12',
+    borderRadius: BORDER_RADIUS.md,
+    padding: SPACING.sm,
+  },
+  offlineHintText: {
+    color: COLORS.textSecondary,
+    fontSize: FONTS.sizes.xs,
+    textAlign: 'center',
+    lineHeight: 16,
   },
   testUsers: {
     marginTop: SPACING.lg,

@@ -1,60 +1,122 @@
 // ============================================================
-// GEODAILY — Configuración del Sistema (Admin) Mejorado
+// GEODAILY — Configuración del Sistema (Admin)
+// Estado REAL de servicios (health check del backend), técnicos con
+// posiciones reales reportadas por sus teléfonos, y actividad real.
 // ============================================================
 
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useEffect } from 'react';
 import {
   View,
   Text,
   StyleSheet,
   ScrollView,
   TouchableOpacity,
-  Alert,
   ImageBackground,
 } from 'react-native';
 import { COLORS, FONTS, SPACING, BORDER_RADIUS, SHADOWS, API_CONFIG } from '../../theme';
+import apiClient from '../../services/api';
+import { fetchFormulariosDelServidor } from '../../services/formularios.service';
 
 interface ServiceStatus {
   id: string;
   title: string;
   value: string;
   icon: string;
-  online: boolean;
+  online: boolean | null; // null = aún sin verificar
   lastCheck?: string;
 }
 
+interface TecnicoEnCampo {
+  id: string;
+  nombre: string;
+  ultimaPos: string;
+  activo: boolean;
+}
+
 const INITIAL_SERVICES: ServiceStatus[] = [
-  { id: 'version', title: 'Versión de la App', value: 'GEODAILY v2.0.0', icon: '📱', online: true },
-  { id: 'api', title: 'API Backend', value: `${API_CONFIG.BASE_URL}/api`, icon: '🔌', online: true, lastCheck: 'hace 2 min' },
-  { id: 'qgis', title: 'Servidor QGIS', value: `http://192.168.1.20:8081`, icon: '🗺️', online: true, lastCheck: 'hace 5 min' },
-  { id: 'database', title: 'Base de Datos', value: 'PostgreSQL / PostGIS', icon: '🗄️', online: true, lastCheck: 'hace 1 min' },
-  { id: 'auth', title: 'Autenticación', value: 'JWT (bcrypt + jsonwebtoken)', icon: '🔐', online: true },
+  { id: 'api', title: 'API Backend', value: `${API_CONFIG.BASE_URL}/api`, icon: '🔌', online: null },
+  { id: 'database', title: 'Base de Datos', value: 'PostgreSQL (vía API /health)', icon: '🗄️', online: null },
+  { id: 'auth', title: 'Autenticación', value: 'JWT (bcrypt + jsonwebtoken)', icon: '🔐', online: null },
 ];
 
-const MOCK_TECNICOS = [
-  { id: 't1', nombre: 'Carlos Martínez', estado: 'En ruta', ultimaPos: 'hace 5 min', color: COLORS.roleTecnico },
-  { id: 't2', nombre: 'Ana López', estado: 'En campo', ultimaPos: 'hace 12 min', color: COLORS.roleTecnico },
-  { id: 't3', nombre: 'Jorge Pérez', estado: 'Detenido', ultimaPos: 'hace 45 min', color: COLORS.roleTecnico },
-];
+const formatHace = (ts: string): string => {
+  const diff = Date.now() - new Date(ts).getTime();
+  const mins = Math.floor(diff / 60000);
+  if (mins < 1) return 'ahora';
+  if (mins < 60) return `hace ${mins} min`;
+  const horas = Math.floor(mins / 60);
+  if (horas < 24) return `hace ${horas} h`;
+  return `hace ${Math.floor(horas / 24)} día(s)`;
+};
 
 const SystemConfigScreen: React.FC = () => {
   const [services, setServices] = useState<ServiceStatus[]>(INITIAL_SERVICES);
   const [verificando, setVerificando] = useState<string | null>(null);
+  const [tecnicos, setTecnicos] = useState<TecnicoEnCampo[]>([]);
+  const [formulariosSemana, setFormulariosSemana] = useState<number | null>(null);
 
+  // Verificación REAL de cada servicio contra el backend
   const verificarServicio = useCallback(async (serviceId: string) => {
     setVerificando(serviceId);
-    // Simular verificación
-    await new Promise((r) => setTimeout(r, 1500));
+    let online = false;
+    try {
+      if (serviceId === 'api') {
+        const res = await apiClient.get(API_CONFIG.ENDPOINTS.HEALTH, { timeout: 8000 });
+        online = res.data?.estado === 'ok' || res.data?.estado === 'degradado';
+      } else if (serviceId === 'database') {
+        const res = await apiClient.get(API_CONFIG.ENDPOINTS.HEALTH, { timeout: 8000 });
+        online = res.data?.db === 'ok';
+      } else if (serviceId === 'auth') {
+        const res = await apiClient.get(`${API_CONFIG.ENDPOINTS.AUTH}/verify`, { timeout: 8000 });
+        online = res.data?.success === true;
+      }
+    } catch {
+      online = false;
+    }
     setServices((prev) =>
-      prev.map((s) =>
-        s.id === serviceId
-          ? { ...s, online: Math.random() > 0.2, lastCheck: 'ahora' }
-          : s
-      )
+      prev.map((s) => (s.id === serviceId ? { ...s, online, lastCheck: 'ahora' } : s))
     );
     setVerificando(null);
-    Alert.alert('Verificación completa', `Servicio ${serviceId} verificado.`);
   }, []);
+
+  // Técnicos con posición reportada (datos reales de /api/tracking/ultimas)
+  const cargarTecnicos = useCallback(async () => {
+    try {
+      const res = await apiClient.get(`${API_CONFIG.ENDPOINTS.TRACKING}/ultimas`, { timeout: 10000 });
+      const posiciones: Record<string, any>[] = res.data?.posiciones || [];
+      setTecnicos(
+        posiciones.map((p) => ({
+          id: p.usuario_id,
+          nombre: p.usuario_nombre || p.usuario_login || p.usuario_id,
+          ultimaPos: formatHace(p.created_at || p.timestamp),
+          activo: Date.now() - new Date(p.created_at || p.timestamp).getTime() < 30 * 60000,
+        }))
+      );
+    } catch (error) {
+      console.warn('[SystemConfig] Error cargando técnicos:', error);
+    }
+  }, []);
+
+  // Formularios reales de la última semana
+  const cargarActividad = useCallback(async () => {
+    try {
+      const formularios = await fetchFormulariosDelServidor();
+      const hace7dias = Date.now() - 7 * 24 * 3600 * 1000;
+      setFormulariosSemana(
+        formularios.filter((f) => new Date(f.created_at || 0).getTime() >= hace7dias).length
+      );
+    } catch (error) {
+      console.warn('[SystemConfig] Error cargando actividad:', error);
+    }
+  }, []);
+
+  useEffect(() => {
+    verificarServicio('api');
+    verificarServicio('database');
+    verificarServicio('auth');
+    cargarTecnicos();
+    cargarActividad();
+  }, [verificarServicio, cargarTecnicos, cargarActividad]);
 
   return (
     <ScrollView style={styles.container} contentContainerStyle={styles.scrollContent}>
@@ -80,7 +142,14 @@ const SystemConfigScreen: React.FC = () => {
               <View
                 style={[
                   styles.serviceDot,
-                  { backgroundColor: svc.online ? COLORS.success : COLORS.error },
+                  {
+                    backgroundColor:
+                      svc.online === null
+                        ? COLORS.textLight
+                        : svc.online
+                          ? COLORS.success
+                          : COLORS.error,
+                  },
                 ]}
               />
               <TouchableOpacity
@@ -97,13 +166,15 @@ const SystemConfigScreen: React.FC = () => {
         ))}
       </View>
 
-      {/* Técnicos en tiempo real */}
+      {/* Técnicos con posición reportada (datos reales del servidor) */}
       <View style={styles.card}>
         <Text style={styles.cardTitle}>👷 Técnicos en Campo</Text>
         <Text style={styles.cardSubtitle}>
-          {MOCK_TECNICOS.length} técnico(s) registrados hoy
+          {tecnicos.length > 0
+            ? `${tecnicos.length} técnico(s) con posición reportada`
+            : 'Ningún técnico ha reportado posición aún'}
         </Text>
-        {MOCK_TECNICOS.map((tec) => (
+        {tecnicos.map((tec) => (
           <View key={tec.id} style={styles.tecnicoRow}>
             <ImageBackground source={require('../../../Logos_imagenes/fondo_login_geo_daily.png')} style={[styles.tecnicoAvatar, { overflow: 'hidden' }]} imageStyle={{ borderRadius: 18 }}>
               <Text style={styles.tecnicoAvatarText}>
@@ -113,18 +184,13 @@ const SystemConfigScreen: React.FC = () => {
             <View style={styles.tecnicoInfo}>
               <Text style={styles.tecnicoName}>{tec.nombre}</Text>
               <Text style={styles.tecnicoStatus}>
-                {tec.estado} · {tec.ultimaPos}
+                Última posición · {tec.ultimaPos}
               </Text>
             </View>
             <View
               style={[
                 styles.tecnicoLiveDot,
-                {
-                  backgroundColor:
-                    tec.estado === 'En ruta' || tec.estado === 'En campo'
-                      ? COLORS.success
-                      : COLORS.textLight,
-                },
+                { backgroundColor: tec.activo ? COLORS.success : COLORS.textLight },
               ]}
             />
           </View>
@@ -143,37 +209,34 @@ const SystemConfigScreen: React.FC = () => {
           <Text style={styles.configValue}>SQLite</Text>
         </View>
         <View style={styles.configRow}>
-          <Text style={styles.configLabel}>Retención de datos</Text>
-          <Text style={styles.configValue}>30 días</Text>
-        </View>
-        <View style={styles.configRow}>
           <Text style={styles.configLabel}>Sincronización automática</Text>
           <Text style={[styles.configValue, { color: COLORS.success }]}>Activada</Text>
         </View>
       </View>
 
-      {/* Registro de Auditoría */}
+      {/* Actividad real del sistema */}
       <View style={styles.card}>
-        <Text style={styles.cardTitle}>📋 Registro de Auditoría</Text>
-        <View style={styles.auditRow}>
-          <Text style={styles.auditIcon}>📋</Text>
-          <View style={styles.auditContent}>
-            <Text style={styles.auditTitle}>Inicios de sesión</Text>
-            <Text style={styles.auditText}>12 intentos hoy · 3 administradores activos</Text>
-          </View>
-        </View>
+        <Text style={styles.cardTitle}>📋 Actividad del Sistema</Text>
         <View style={styles.auditRow}>
           <Text style={styles.auditIcon}>📄</Text>
           <View style={styles.auditContent}>
             <Text style={styles.auditTitle}>Formularios generados</Text>
-            <Text style={styles.auditText}>48 formularios en la última semana</Text>
+            <Text style={styles.auditText}>
+              {formulariosSemana === null
+                ? 'Consultando…'
+                : `${formulariosSemana} formulario(s) en los últimos 7 días`}
+            </Text>
           </View>
         </View>
         <View style={styles.auditRow}>
-          <Text style={styles.auditIcon}>🔄</Text>
+          <Text style={styles.auditIcon}>👷</Text>
           <View style={styles.auditContent}>
-            <Text style={styles.auditTitle}>Sincronización QGIS</Text>
-            <Text style={styles.auditText}>Última sincronización: hoy 10:30 AM</Text>
+            <Text style={styles.auditTitle}>Técnicos reportando posición</Text>
+            <Text style={styles.auditText}>
+              {tecnicos.length === 0
+                ? 'Ninguno todavía'
+                : `${tecnicos.filter((t) => t.activo).length} activo(s) en los últimos 30 min · ${tecnicos.length} en total`}
+            </Text>
           </View>
         </View>
       </View>

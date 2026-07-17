@@ -30,23 +30,61 @@ router.post('/subir', authenticateToken, upload.single('archivo'), async (req, r
       return res.status(400).json({ estado: 'error', mensaje: 'Archivo de video requerido' });
     }
 
-    const { descripcion, latitud, longitud } = req.body;
+    const { descripcion, latitud, longitud, beneficiario_cedula, beneficiario_nombre, tipo_formulario } = req.body;
     const ext = path.extname(req.file.originalname) || '.mp4';
     const filename = `video_${Date.now()}_${Math.random().toString(36).slice(2, 6)}${ext}`;
 
-    // Subir a MinIO
+    // ─── Resolver datos del beneficiario para carpeta en MinIO ───
+    let benefItem = null;
+    let benefNombre = null;
+    if (beneficiario_cedula) {
+      try {
+        const benef = await db.queryOne(
+          'SELECT item, nombre_completo FROM beneficiarios WHERE cedula = $1',
+          [beneficiario_cedula.trim()]
+        );
+        if (benef) {
+          benefItem = benef.item;
+          benefNombre = beneficiario_nombre || benef.nombre_completo;
+        }
+      } catch (lookupErr) {
+        console.warn('[Videos] Error buscando beneficiario:', lookupErr.message);
+      }
+    }
+
+    // Subir a MinIO (con carpeta de beneficiario si aplica)
     await storage.uploadFile(
       req.user.rol,
       req.user.usuario,
       'videos',
       filename,
-      req.file.buffer
+      req.file.buffer,
+      {
+        contentType: req.file.mimetype,
+        beneficiarioItem: benefItem,
+        beneficiarioNombre: benefNombre,
+        tipoFormulario: tipo_formulario,
+      }
     );
 
     // Guardar registro en PostgreSQL
     const bucket = process.env.MINIO_BUCKET || 'geodaily-archivos';
     const basePath = storage.getUserBasePath(req.user.rol, req.user.usuario);
-    const minioPath = `${basePath}/videos/${filename}`;
+    let minioPath;
+    if (benefItem && benefNombre) {
+      const subpath = storage.getBeneficiarySubpath(benefItem, benefNombre);
+      const formFolder = storage.getFormTypeFolder(tipo_formulario);
+      minioPath = formFolder ? `${basePath}/${subpath}/${formFolder}/videos/${filename}` : `${basePath}/${subpath}/videos/${filename}`;
+    } else {
+      minioPath = `${basePath}/videos/${filename}`;
+    }
+
+    const metadataExtra = {
+      descripcion: descripcion || null,
+      beneficiario_item: benefItem,
+      beneficiario_cedula: beneficiario_cedula || null,
+    };
+
     await db.query(
       `INSERT INTO archivos (usuario_id, tipo, filename, originalname, mimetype, size_bytes, minio_path, minio_bucket, latitud, longitud, metadata_json)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
@@ -61,7 +99,7 @@ router.post('/subir', authenticateToken, upload.single('archivo'), async (req, r
         bucket,
         latitud ? parseFloat(latitud) : null,
         longitud ? parseFloat(longitud) : null,
-        JSON.stringify({ descripcion: descripcion || null }),
+        JSON.stringify(metadataExtra),
       ]
     );
 
@@ -100,6 +138,24 @@ router.post('/subir-multiple', authenticateToken, upload.array('archivos', 10), 
       return res.status(400).json({ estado: 'error', mensaje: 'Archivos de video requeridos' });
     }
 
+    const { beneficiario_cedula, beneficiario_nombre, tipo_formulario } = req.body;
+    let benefItem = null;
+    let benefNombre = null;
+    if (beneficiario_cedula) {
+      try {
+        const benef = await db.queryOne(
+          'SELECT item, nombre_completo FROM beneficiarios WHERE cedula = $1',
+          [beneficiario_cedula.trim()]
+        );
+        if (benef) {
+          benefItem = benef.item;
+          benefNombre = beneficiario_nombre || benef.nombre_completo;
+        }
+      } catch (lookupErr) {
+        console.warn('[Videos] Error buscando beneficiario en subida múltiple:', lookupErr.message);
+      }
+    }
+
     const resultados = [];
 
     for (const file of req.files) {
@@ -111,15 +167,29 @@ router.post('/subir-multiple', authenticateToken, upload.array('archivos', 10), 
         req.user.usuario,
         'videos',
         filename,
-        file.buffer
+        file.buffer,
+        {
+          contentType: file.mimetype,
+          beneficiarioItem: benefItem,
+          beneficiarioNombre: benefNombre,
+          tipoFormulario: tipo_formulario,
+        }
       );
 
       const bucket = process.env.MINIO_BUCKET || 'geodaily-archivos';
       const basePath = storage.getUserBasePath(req.user.rol, req.user.usuario);
-      const minioPath = `${basePath}/videos/${filename}`;
+      let minioPath;
+      if (benefItem && benefNombre) {
+        const subpath = storage.getBeneficiarySubpath(benefItem, benefNombre);
+        const formFolder = storage.getFormTypeFolder(tipo_formulario);
+        minioPath = formFolder ? `${basePath}/${subpath}/${formFolder}/videos/${filename}` : `${basePath}/${subpath}/videos/${filename}`;
+      } else {
+        minioPath = `${basePath}/videos/${filename}`;
+      }
+
       await db.query(
-        `INSERT INTO archivos (usuario_id, tipo, filename, originalname, mimetype, size_bytes, minio_path, minio_bucket)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+        `INSERT INTO archivos (usuario_id, tipo, filename, originalname, mimetype, size_bytes, minio_path, minio_bucket, metadata_json)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
         [
           req.user.id, 'video',
           filename,
@@ -127,6 +197,7 @@ router.post('/subir-multiple', authenticateToken, upload.array('archivos', 10), 
           file.mimetype, file.size,
           minioPath,
           bucket,
+          JSON.stringify({ beneficiario_item: benefItem, beneficiario_cedula: beneficiario_cedula || null }),
         ]
       );
       const archivoResult = await db.queryOne(
@@ -179,6 +250,9 @@ router.get('/:id', authenticateToken, async (req, res) => {
     );
     if (!video) {
       return res.status(404).json({ estado: 'error', mensaje: 'Video no encontrado' });
+    }
+    if (req.user.rol !== 'admin' && video.usuario_id !== req.user.id) {
+      return res.status(403).json({ estado: 'error', mensaje: 'No autorizado' });
     }
     res.json({ estado: 'ok', video });
   } catch (error) {

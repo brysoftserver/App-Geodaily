@@ -1,74 +1,170 @@
 // ============================================================
 // Climate Routes — Clima actual e histórico
+// Usa datos REALES: Open-Meteo (clima, sin API key) + Nominatim
+// (OpenStreetMap, reverse geocoding sin API key) según las
+// coordenadas exactas recibidas — no hay ubicación ni clima
+// anclados a un municipio fijo.
 // ============================================================
 
 const express = require('express');
 const { authenticateToken } = require('../middleware/auth');
 const router = express.Router();
 
-// Resolver nombre de ubicación desde coordenadas (reverse geocode offline)
-function resolverUbicacion(lat, lon) {
-  // Tabla simplificada de ciudades principales de Colombia
-  const zonas = [
-    { nombre: 'Puerto Rico (Caquetá)', latMin: 1.0, latMax: 2.5, lonMin: -76.5, lonMax: -74.5 },
-    { nombre: 'Florencia (Caquetá)', latMin: 1.2, latMax: 2.0, lonMin: -75.8, lonMax: -75.4 },
-    { nombre: 'San Vicente del Caguán', latMin: 1.8, latMax: 3.0, lonMin: -75.0, lonMax: -74.0 },
-    { nombre: 'Cartagena del Chairá', latMin: 0.5, latMax: 1.5, lonMin: -75.5, lonMax: -74.0 },
-    { nombre: 'Puerto Asís (Putumayo)', latMin: 0.2, latMax: 0.8, lonMin: -77.0, lonMax: -76.0 },
-    { nombre: 'Mocoa (Putumayo)', latMin: 0.8, latMax: 1.5, lonMin: -77.0, lonMax: -76.5 },
-    { nombre: 'Bogotá', latMin: 4.3, latMax: 4.9, lonMin: -74.3, lonMax: -73.9 },
-    { nombre: 'Medellín', latMin: 6.0, latMax: 6.5, lonMin: -75.8, lonMax: -75.4 },
-    { nombre: 'Cali', latMin: 3.2, latMax: 3.6, lonMin: -76.7, lonMax: -76.4 },
-    { nombre: 'Barranquilla', latMin: 10.8, latMax: 11.2, lonMin: -75.0, lonMax: -74.7 },
-  ];
+const FETCH_TIMEOUT_MS = 8000;
 
+async function fetchConTimeout(url, options = {}, timeoutMs = FETCH_TIMEOUT_MS) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+// Interpretación de códigos WMO usados por Open-Meteo (weather_code)
+const WEATHER_CODE_MAP = {
+  0: { clima: 'cielo despejado', icono: '01d' },
+  1: { clima: 'mayormente despejado', icono: '01d' },
+  2: { clima: 'parcialmente nublado', icono: '02d' },
+  3: { clima: 'nublado', icono: '03d' },
+  45: { clima: 'niebla', icono: '50d' },
+  48: { clima: 'niebla con escarcha', icono: '50d' },
+  51: { clima: 'llovizna ligera', icono: '09d' },
+  53: { clima: 'llovizna moderada', icono: '09d' },
+  55: { clima: 'llovizna densa', icono: '09d' },
+  61: { clima: 'lluvia ligera', icono: '10d' },
+  63: { clima: 'lluvia moderada', icono: '10d' },
+  65: { clima: 'lluvia fuerte', icono: '10d' },
+  71: { clima: 'nevada ligera', icono: '13d' },
+  73: { clima: 'nevada moderada', icono: '13d' },
+  75: { clima: 'nevada fuerte', icono: '13d' },
+  80: { clima: 'chubascos ligeros', icono: '09d' },
+  81: { clima: 'chubascos moderados', icono: '09d' },
+  82: { clima: 'chubascos fuertes', icono: '09d' },
+  95: { clima: 'tormenta eléctrica', icono: '11d' },
+  96: { clima: 'tormenta con granizo', icono: '11d' },
+  99: { clima: 'tormenta fuerte con granizo', icono: '11d' },
+};
+
+function interpretarCodigoClima(code) {
+  return WEATHER_CODE_MAP[code] || { clima: 'condiciones no determinadas', icono: '02d' };
+}
+
+/**
+ * Resolver el nombre real del lugar (vereda/corregimiento/municipio) desde
+ * las coordenadas exactas vía Nominatim (OpenStreetMap) — reemplaza el
+ * antiguo lookup de cajas geográficas fijas por municipio.
+ */
+async function resolverUbicacion(lat, lon) {
   const latNum = parseFloat(lat);
   const lonNum = parseFloat(lon);
-  let nombreLugar = 'Ubicación actual';
+  const fallback = { latitud: latNum, longitud: lonNum, nombre: 'Ubicación actual' };
 
-  for (const z of zonas) {
-    if (latNum >= z.latMin && latNum <= z.latMax && lonNum >= z.lonMin && lonNum <= z.lonMax) {
-      nombreLugar = z.nombre;
-      break;
-    }
+  try {
+    const response = await fetchConTimeout(
+      `https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${latNum}&lon=${lonNum}&zoom=14&accept-language=es`,
+      { headers: { 'User-Agent': 'GEODAILY-App/1.0 (contacto@brysoftsas.com)' } },
+      5000
+    );
+    if (!response.ok) return fallback;
+
+    const data = await response.json();
+    const addr = data.address || {};
+    // Nivel municipio únicamente — OSM no tiene mapeadas de forma confiable
+    // las veredas rurales de esta zona, así que evitamos mezclar niveles
+    // de detalle inconsistentes (a veces vereda, a veces municipio).
+    const municipio = addr.municipality || addr.county || addr.town || addr.city;
+    const departamento = addr.state;
+
+    let nombre = municipio || fallback.nombre;
+    if (departamento) nombre += ` (${departamento})`;
+
+    return { latitud: latNum, longitud: lonNum, nombre };
+  } catch (error) {
+    console.warn('[Climate] Error en reverse geocoding (Nominatim):', error.message);
+    return fallback;
+  }
+}
+
+/**
+ * Obtener clima real (Open-Meteo) para las coordenadas exactas recibidas.
+ */
+async function obtenerClimaReal(lat, lon) {
+  const latNum = parseFloat(lat);
+  const lonNum = parseFloat(lon);
+
+  const url =
+    `https://api.open-meteo.com/v1/forecast?latitude=${latNum}&longitude=${lonNum}` +
+    `&current=temperature_2m,relative_humidity_2m,apparent_temperature,weather_code,cloud_cover,pressure_msl,wind_speed_10m,wind_direction_10m` +
+    `&hourly=visibility&forecast_days=1&timezone=auto`;
+
+  const response = await fetchConTimeout(url, {}, FETCH_TIMEOUT_MS);
+  if (!response.ok) {
+    throw new Error(`Open-Meteo respondió HTTP ${response.status}`);
+  }
+  const data = await response.json();
+  const current = data.current;
+  if (!current) {
+    throw new Error('Open-Meteo no devolvió datos "current"');
   }
 
-  return { latitud: latNum, longitud: lonNum, nombre: nombreLugar };
+  // Visibilidad: buscar la hora actual en el arreglo horario (en metros → km)
+  let visibilidadKm = 10;
+  try {
+    const idx = data.hourly?.time?.indexOf(current.time);
+    if (idx !== undefined && idx >= 0 && data.hourly?.visibility?.[idx] != null) {
+      visibilidadKm = Math.round((data.hourly.visibility[idx] / 1000) * 10) / 10;
+    }
+  } catch { /* usar default */ }
+
+  const { clima, icono } = interpretarCodigoClima(current.weather_code);
+
+  return {
+    timestamp: current.time ? new Date(current.time).toISOString() : new Date().toISOString(),
+    temperatura: {
+      actual: current.temperature_2m,
+      sensacion_termica: current.apparent_temperature,
+      minima: data.daily?.temperature_2m_min?.[0] ?? current.temperature_2m,
+      maxima: data.daily?.temperature_2m_max?.[0] ?? current.temperature_2m,
+    },
+    humedad: current.relative_humidity_2m,
+    presion: current.pressure_msl,
+    viento: {
+      velocidad: current.wind_speed_10m,
+      direccion_grados: current.wind_direction_10m,
+    },
+    nubosidad: current.cloud_cover,
+    visibilidad: visibilidadKm,
+    clima,
+    icono,
+  };
 }
 
 // GET /api/climate/actual?lat=X&lon=Y
-router.get('/actual', authenticateToken, (req, res) => {
+router.get('/actual', authenticateToken, async (req, res) => {
   const { lat, lon } = req.query;
 
   if (!lat || !lon) {
     return res.status(400).json({ estado: 'error', mensaje: 'lat y lon requeridos' });
   }
 
-  const ubicacion = resolverUbicacion(lat, lon);
+  try {
+    const [ubicacion, climaReal] = await Promise.all([
+      resolverUbicacion(lat, lon),
+      obtenerClimaReal(lat, lon),
+    ]);
 
-  // Datos mock — con ubicación realista según coordenadas
-  res.json({
-    fuente: 'IDEAM / OpenWeather (mock)',
-    timestamp: new Date().toISOString(),
-    ubicacion,
-    temperatura: {
-      actual: 28.5,
-      sensacion_termica: 31.2,
-      minima: 22.0,
-      maxima: 31.0,
-    },
-    humedad: 82,
-    presion: 1012,
-    viento: {
-      velocidad: 3.2,
-      direccion_grados: 135,
-    },
-    nubosidad: 65,
-    visibilidad: 8,
-    clima: 'nubes dispersas',
-    icono: '02d',
-    pais: 'Colombia',
-  });
+    res.json({
+      fuente: 'Open-Meteo',
+      ubicacion,
+      pais: 'Colombia',
+      ...climaReal,
+    });
+  } catch (error) {
+    console.error('[Climate] Error obteniendo clima real:', error.message);
+    res.status(502).json({ estado: 'error', mensaje: 'No se pudo obtener el clima real en este momento. Verifica la conexión a internet del servidor.' });
+  }
 });
 
 // GET /api/climate/historico?lat=X&lon=Y
@@ -100,7 +196,7 @@ router.get('/historico', authenticateToken, (req, res) => {
 });
 
 // GET /api/climate/resumen?lat=X&lon=Y
-router.get('/resumen', authenticateToken, (req, res) => {
+router.get('/resumen', authenticateToken, async (req, res) => {
   const { lat, lon } = req.query;
 
   if (!lat || !lon) {
@@ -110,45 +206,45 @@ router.get('/resumen', authenticateToken, (req, res) => {
   const latNum = parseFloat(lat);
   const lonNum = parseFloat(lon);
 
-  const ubicacion = resolverUbicacion(lat, lon);
+  try {
+    const [ubicacion, climaReal] = await Promise.all([
+      resolverUbicacion(lat, lon),
+      obtenerClimaReal(lat, lon),
+    ]);
 
-  res.json({
-    ubicacion,
-    actual: {
-      fuente: 'IDEAM / OpenWeather (mock)',
-      timestamp: new Date().toISOString(),
+    const actual = {
+      fuente: 'Open-Meteo',
       ubicacion,
-      temperatura: {
-        actual: 28.5,
-        sensacion_termica: 31.2,
-        minima: 22.0,
-        maxima: 31.0,
-      },
-      humedad: 82,
-      presion: 1012,
-      viento: {
-        velocidad: 3.2,
-        direccion_grados: 135,
-      },
-      nubosidad: 65,
-      visibilidad: 8,
-      clima: 'nubes dispersas',
-      icono: '02d',
       pais: 'Colombia',
-    },
-    historico: [
-      { variable: 'precipitacion', mes: 1, valor: 180, unidad: 'mm', periodo: '1991-2020' },
-      { variable: 'precipitacion', mes: 2, valor: 165, unidad: 'mm', periodo: '1991-2020' },
-      { variable: 'precipitacion', mes: 3, valor: 210, unidad: 'mm', periodo: '1991-2020' },
-      { variable: 'precipitacion', mes: 4, valor: 280, unidad: 'mm', periodo: '1991-2020' },
-      { variable: 'precipitacion', mes: 5, valor: 320, unidad: 'mm', periodo: '1991-2020' },
-      { variable: 'precipitacion', mes: 6, valor: 350, unidad: 'mm', periodo: '1991-2020' },
-      { variable: 'temperatura', mes: 1, valor: 24.5, unidad: '°C', periodo: '1991-2020' },
-      { variable: 'temperatura', mes: 6, valor: 26.8, unidad: '°C', periodo: '1991-2020' },
-      { variable: 'humedad', mes: 1, valor: 78, unidad: '%', periodo: '1991-2020' },
-      { variable: 'humedad', mes: 6, valor: 85, unidad: '%', periodo: '1991-2020' },
-    ],
-  });
+      ...climaReal,
+    };
+
+    res.json({
+      ubicacion: { latitud: latNum, longitud: lonNum },
+      actual,
+      historico: [
+        { variable: 'precipitacion', mes: 1, valor: 180, unidad: 'mm', periodo: '1991-2020' },
+        { variable: 'precipitacion', mes: 2, valor: 165, unidad: 'mm', periodo: '1991-2020' },
+        { variable: 'precipitacion', mes: 3, valor: 210, unidad: 'mm', periodo: '1991-2020' },
+        { variable: 'precipitacion', mes: 4, valor: 280, unidad: 'mm', periodo: '1991-2020' },
+        { variable: 'precipitacion', mes: 5, valor: 320, unidad: 'mm', periodo: '1991-2020' },
+        { variable: 'precipitacion', mes: 6, valor: 350, unidad: 'mm', periodo: '1991-2020' },
+        { variable: 'temperatura', mes: 1, valor: 24.5, unidad: '°C', periodo: '1991-2020' },
+        { variable: 'temperatura', mes: 6, valor: 26.8, unidad: '°C', periodo: '1991-2020' },
+        { variable: 'humedad', mes: 1, valor: 78, unidad: '%', periodo: '1991-2020' },
+        { variable: 'humedad', mes: 6, valor: 85, unidad: '%', periodo: '1991-2020' },
+      ],
+    });
+  } catch (error) {
+    console.error('[Climate] Error obteniendo resumen climático real:', error.message);
+    res.status(502).json({ estado: 'error', mensaje: 'No se pudo obtener el clima real en este momento. Verifica la conexión a internet del servidor.' });
+  }
 });
 
 module.exports = router;
+// Reutilizables por otros módulos (ej. watermark.js para estampar
+// ubicación/clima en las fotos de evidencia):
+module.exports.resolverUbicacion = resolverUbicacion;
+module.exports.obtenerClimaReal = obtenerClimaReal;
+module.exports.interpretarCodigoClima = interpretarCodigoClima;
+module.exports.fetchConTimeout = fetchConTimeout;

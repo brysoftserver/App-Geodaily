@@ -1,8 +1,11 @@
 // ============================================================
 // GEODAILY — Listado de Formularios (Técnico)
 // ============================================================
+// Soporta filtro opcional por beneficiarioCedula desde
+// la jerarquía BeneficiarioDetailScreen → "Ver visitas anteriores"
+// ============================================================
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import {
   View,
   Text,
@@ -16,7 +19,9 @@ import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 import { COLORS, FONTS, SPACING, BORDER_RADIUS } from '../../theme';
 import { useForm } from '../../store/FormContext';
 import { useAuth } from '../../store/AuthContext';
+import { useSync } from '../../store/SyncContext';
 import { getFormulariosLocales } from '../../services/database';
+import { fetchResumenRevisiones, EstadoRevision } from '../../services/revisiones.service';
 import { Formulario } from '../../types';
 import FormCard from '../../components/FormCard';
 import LoadingSpinner from '../../components/LoadingSpinner';
@@ -24,6 +29,11 @@ import { TerrenoStackParamList } from '../../navigation/TerrenoNavigator';
 
 type FormularioListScreenProps = {
   navigation: NativeStackNavigationProp<TerrenoStackParamList, 'TerrenoFormularioList'>;
+  route?: {
+    params: {
+      beneficiarioCedula?: string;
+    };
+  };
 };
 
 /** Valida que un formulario tenga los campos esenciales para renderizar */
@@ -35,15 +45,30 @@ const isValidFormulario = (f: Record<string, any>): f is import('../../types').F
   return true;
 };
 
-const FormularioListScreen: React.FC<FormularioListScreenProps> = ({ navigation }) => {
+const FormularioListScreen: React.FC<FormularioListScreenProps> = ({ navigation, route }) => {
   const { formularios, cargarFormularios } = useForm();
   const { user } = useAuth();
+  const { failedForms, reintentarFormulario } = useSync();
   const insets = useSafeAreaInsets();
   const [isLoading, setIsLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [estadosRevision, setEstadosRevision] = useState<Record<string, EstadoRevision>>({});
+
+  // Filtrar por beneficiario si viene como parámetro
+  const beneficiarioCedula = route?.params?.beneficiarioCedula;
+  const formulariosFiltrados = useMemo(() => {
+    if (!beneficiarioCedula) return formularios;
+    return formularios.filter(
+      (f) => f.beneficiario?.cedula === beneficiarioCedula
+    );
+  }, [formularios, beneficiarioCedula]);
 
   const loadForms = useCallback(async () => {
     try {
+      // Estado de revisiones (novedades / vistos buenos) — best effort,
+      // si no hay conexión simplemente no se muestran badges
+      fetchResumenRevisiones().then(setEstadosRevision).catch(() => {});
+
       // Técnico solo ve sus propios formularios
       const localForms = await getFormulariosLocales(user?.id);
       // Filtrar formularios inválidos para evitar white screen
@@ -94,7 +119,12 @@ const FormularioListScreen: React.FC<FormularioListScreenProps> = ({ navigation 
   }
 
   // Safely filter formularios again just in case context has invalid ones
-  const safeFormularios = formularios.filter(isValidFormulario);
+  const safeFormularios = formulariosFiltrados.filter(isValidFormulario);
+
+  // Obtener nombre del beneficiario del primer formulario filtrado (para el título)
+  const beneficiarioNombre = safeFormularios.length > 0
+    ? safeFormularios[0].beneficiario?.nombre
+    : null;
 
   return (
     <ImageBackground
@@ -105,7 +135,11 @@ const FormularioListScreen: React.FC<FormularioListScreenProps> = ({ navigation 
     <SafeAreaView style={styles.safeContainer} edges={['top']}>
     <View style={styles.container}>
       <View style={[styles.header, { paddingTop: Math.max(insets.top, SPACING.md) }]}>
-        <Text style={styles.title}>Historial de Formularios</Text>
+        <Text style={styles.title}>
+          {beneficiarioNombre
+            ? `Visitas de ${beneficiarioNombre}`
+            : 'Historial de Formularios'}
+        </Text>
         <Text style={styles.count}>
           {safeFormularios.length} formulario(s)
         </Text>
@@ -116,7 +150,9 @@ const FormularioListScreen: React.FC<FormularioListScreenProps> = ({ navigation 
           <Text style={styles.emptyIcon}>📋</Text>
           <Text style={styles.emptyText}>No hay formularios registrados</Text>
           <Text style={styles.emptySubtext}>
-            Completa un formulario desde el menú principal para verlo aquí
+            {beneficiarioNombre
+              ? 'Este beneficiario aún no tiene visitas registradas'
+              : 'Completa un formulario desde el listado de beneficiarios para verlo aquí'}
           </Text>
         </View>
       ) : (
@@ -128,6 +164,9 @@ const FormularioListScreen: React.FC<FormularioListScreenProps> = ({ navigation 
               formulario={item}
               onPress={handleFormPress}
               onViewPDF={handleViewPDF}
+              failed={failedForms.includes(item.id)}
+              onRetry={(f) => reintentarFormulario(f.id)}
+              estadoRevision={estadosRevision[item.id]}
             />
           )}
           contentContainerStyle={[styles.listContent, { paddingBottom: insets.bottom + SPACING.xxl }]}

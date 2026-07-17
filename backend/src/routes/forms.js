@@ -18,7 +18,7 @@ function esBase64DataURI(val) {
 /**
  * Subir una firma/foto base64 a MinIO y devolver la ruta
  */
-async function subirBase64AMinIO(req, data, tipo, prefijo) {
+async function subirBase64AMinIO(req, data, tipo, prefijo, tipoFormulario, benefItem, benefNombre) {
   if (!esBase64DataURI(data)) return data; // ya es ruta o null
 
   const matches = data.match(/^data:([A-Za-z-+/]+);base64,(.+)$/);
@@ -26,13 +26,23 @@ async function subirBase64AMinIO(req, data, tipo, prefijo) {
   const timestamp = Date.now();
   const filename = `${prefijo}_${timestamp}.png`;
   const basePath = storage.getUserBasePath(req.user.rol, req.user.usuario);
+  const formFolder = storage.getFormTypeFolder(tipoFormulario);
 
   await storage.uploadFile(
     req.user.rol, req.user.usuario, 'firmas', filename, buffer,
-    { contentType: matches[1] }
+    {
+      contentType: matches[1],
+      tipoFormulario,
+      beneficiarioItem: benefItem,
+      beneficiarioNombre: benefNombre,
+    }
   );
 
-  return `${basePath}/firmas/${filename}`;
+  if (benefItem && benefNombre) {
+    const subpath = storage.getBeneficiarySubpath(benefItem, benefNombre);
+    return formFolder ? `${basePath}/${subpath}/${formFolder}/firmas/${filename}` : `${basePath}/${subpath}/firmas/${filename}`;
+  }
+  return formFolder ? `${basePath}/${formFolder}/firmas/${filename}` : `${basePath}/firmas/${filename}`;
 }
 
 // POST /api/formularios/guardar
@@ -48,6 +58,7 @@ router.post('/guardar', authenticateToken, async (req, res) => {
     }
 
     // Extraer campos del formulario para mapear al esquema
+    const tecnico = formulario.tecnico || {};
     const beneficiario = formulario.beneficiario || {};
     const actividad = formulario.actividad || {};
     const sociodemografico = formulario.sociodemografico || {};
@@ -60,24 +71,45 @@ router.post('/guardar', authenticateToken, async (req, res) => {
     const existente = await db.queryOne('SELECT id FROM formularios WHERE id = $1', [formulario.id]);
 
     // Subir firmas base64 a MinIO si vienen en ese formato
-    const firmaBeneficiario = await subirBase64AMinIO(req, formulario.firma_beneficiario, 'beneficiario', `firma_beneficiario_${formulario.id}`);
-    const firmaTecnico = await subirBase64AMinIO(req, formulario.firma_tecnico, 'tecnico', `firma_tecnico_${formulario.id}`);
+    const tipoFormulario = formulario.tipo;
+    // Resolver datos del beneficiario para la estructura de carpetas en MinIO
+    let benefItem = null;
+    let benefNombre = null;
+    if (beneficiario?.cedula) {
+      try {
+        const benef = await db.queryOne(
+          'SELECT item, nombre_completo FROM beneficiarios WHERE cedula = $1',
+          [beneficiario.cedula.trim()]
+        );
+        if (benef) {
+          benefItem = benef.item;
+          benefNombre = beneficiario.nombre || benef.nombre_completo;
+        }
+      } catch (lookupErr) {
+        console.warn('[Forms] Error buscando beneficiario:', lookupErr.message);
+      }
+    }
+
+    const firmaBeneficiario = await subirBase64AMinIO(req, formulario.firma_beneficiario, 'beneficiario', `firma_beneficiario_${formulario.id}`, tipoFormulario, benefItem, benefNombre);
+    const firmaTecnico = await subirBase64AMinIO(req, formulario.firma_tecnico, 'tecnico', `firma_tecnico_${formulario.id}`, tipoFormulario, benefItem, benefNombre);
 
     if (existente) {
       await db.query(
         `UPDATE formularios SET
           tipo = $1, usuario_id = $2,
-          beneficiario_json = $3, actividad_json = $4,
-          sociodemografico_json = $5, caracterizacion_nueva_json = $6,
-          coordenadas_json = $7, georeferencia_json = $8,
-          clima_json = $9, fotos_json = $10,
-          firma_beneficiario = $11, firma_tecnico = $12,
-          huella_beneficiario = $13, sincronizado = TRUE,
+          tecnico_json = $3,
+          beneficiario_json = $4, actividad_json = $5,
+          sociodemografico_json = $6, caracterizacion_nueva_json = $7,
+          coordenadas_json = $8, georeferencia_json = $9,
+          clima_json = $10, fotos_json = $11,
+          firma_beneficiario = $12, firma_tecnico = $13,
+          huella_beneficiario = $14, sincronizado = TRUE,
           updated_at = NOW()
-         WHERE id = $14`,
+         WHERE id = $15`,
         [
           formulario.tipo || 'desconocido',
           req.user.id,
+          JSON.stringify(tecnico),
           JSON.stringify(beneficiario),
           JSON.stringify(actividad),
           JSON.stringify(sociodemografico),
@@ -95,16 +127,18 @@ router.post('/guardar', authenticateToken, async (req, res) => {
     } else {
       await db.query(
         `INSERT INTO formularios
-          (id, tipo, usuario_id, beneficiario_json, actividad_json,
+          (id, tipo, usuario_id, tecnico_json,
+           beneficiario_json, actividad_json,
            sociodemografico_json, caracterizacion_nueva_json,
            coordenadas_json, georeferencia_json, clima_json,
            fotos_json, firma_beneficiario, firma_tecnico,
            huella_beneficiario, sincronizado, created_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, TRUE, $15)`,
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, TRUE, $16)`,
         [
           formulario.id,
           formulario.tipo || 'desconocido',
           req.user.id,
+          JSON.stringify(tecnico),
           JSON.stringify(beneficiario),
           JSON.stringify(actividad),
           JSON.stringify(sociodemografico),
@@ -147,6 +181,7 @@ router.get('/', authenticateToken, async (req, res) => {
     const { tipo, usuario_id, desde, hasta, limit, offset } = req.query;
     let sql = `
       SELECT id, tipo, usuario_id,
+        tecnico_json,
         beneficiario_json, actividad_json, sociodemografico_json,
         caracterizacion_nueva_json, coordenadas_json, georeferencia_json,
         clima_json, fotos_json, firma_beneficiario, firma_tecnico,
@@ -164,6 +199,16 @@ router.get('/', authenticateToken, async (req, res) => {
     if (req.user.rol === 'tecnico') {
       sql += ` AND usuario_id = $${paramIdx++}`;
       params.push(req.user.id);
+    }
+
+    // Jerarquía de control: el INTERVENTOR solo ve formularios que ya
+    // tienen el visto bueno del SUPERVISOR (orden: técnico → supervisor
+    // → interventor). Supervisor, gerente y admin ven todo.
+    if (req.user.rol === 'interventor') {
+      sql += ` AND id IN (
+        SELECT formulario_id FROM revisiones_formulario
+        WHERE revisor_rol = 'supervisor' AND tipo = 'visto_bueno'
+      )`;
     }
 
     sql += ' ORDER BY created_at DESC';
@@ -187,15 +232,30 @@ router.get('/', authenticateToken, async (req, res) => {
 // GET /api/formularios/:id
 router.get('/:id', authenticateToken, async (req, res) => {
   try {
-    const form = await db.queryOne(
-      `SELECT id, tipo, usuario_id,
+    let sql = `SELECT id, tipo, usuario_id,
+        tecnico_json,
         beneficiario_json, actividad_json, sociodemografico_json,
         caracterizacion_nueva_json, coordenadas_json, georeferencia_json,
         clima_json, fotos_json, firma_beneficiario, firma_tecnico,
         huella_beneficiario, pdf_url, sincronizado, created_at, updated_at
-       FROM formularios WHERE id = $1`,
-      [req.params.id]
-    );
+       FROM formularios WHERE id = $1`;
+    const params = [req.params.id];
+
+    // Filtro por rol: si es técnico, solo puede ver sus propios formularios
+    if (req.user.rol === 'tecnico') {
+      sql += ' AND usuario_id = $2';
+      params.push(req.user.id);
+    }
+
+    // Jerarquía: interventor solo ve formularios ya aprobados por supervisor
+    if (req.user.rol === 'interventor') {
+      sql += ` AND id IN (
+        SELECT formulario_id FROM revisiones_formulario
+        WHERE revisor_rol = 'supervisor' AND tipo = 'visto_bueno'
+      )`;
+    }
+
+    const form = await db.queryOne(sql, params);
     if (!form) {
       return res.status(404).json({ estado: 'error', mensaje: 'Formulario no encontrado' });
     }
@@ -206,9 +266,13 @@ router.get('/:id', authenticateToken, async (req, res) => {
   }
 });
 
-// DELETE /api/formularios/:id
+// DELETE /api/formularios/:id — Solo admin puede eliminar
 router.delete('/:id', authenticateToken, async (req, res) => {
   try {
+    if (req.user.rol !== 'admin') {
+      return res.status(403).json({ estado: 'error', mensaje: 'Solo administradores pueden eliminar formularios' });
+    }
+
     const result = await db.query(
       'DELETE FROM formularios WHERE id = $1 RETURNING id',
       [req.params.id]

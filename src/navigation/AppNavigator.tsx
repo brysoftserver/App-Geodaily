@@ -3,6 +3,7 @@
 // ============================================================
 
 import React from 'react';
+import { View, StyleSheet } from 'react-native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { useAuth } from '../store/AuthContext';
 import LoginScreen from '../screens/auth/LoginScreen';
@@ -12,7 +13,7 @@ import InterventorNavigator from './InterventorNavigator';
 import GerenteNavigator from './GerenteNavigator';
 import AdminNavigator from './AdminNavigator';
 import LoadingSpinner from '../components/LoadingSpinner';
-import AppBackground from '../components/AppBackground';
+import { COLORS } from '../theme';
 
 export type RootStackParamList = {
   Login: undefined;
@@ -33,20 +34,19 @@ const AppNavigator: React.FC = () => {
   }
 
   return (
-    <AppBackground overlay={0.35}>
+    <View style={styles.root}>
       <Stack.Navigator
         screenOptions={{
           headerShown: false,
-          contentStyle: {
-            backgroundColor: 'transparent',
-          },
+          animation: 'slide_from_right',
+          animationDuration: 150,
         }}
       >
         {!isAuthenticated ? (
           <Stack.Screen
             name="Login"
             component={LoginScreen}
-            options={{ animationTypeForReplace: 'pop' }}
+            options={{ animationTypeForReplace: 'pop', animation: 'fade' }}
           />
         ) : isAdmin ? (
           <Stack.Screen
@@ -77,12 +77,19 @@ const AppNavigator: React.FC = () => {
           <Stack.Screen
             name="Login"
             component={LoginScreen}
-            options={{ animationTypeForReplace: 'pop' }}
+            options={{ animationTypeForReplace: 'pop', animation: 'fade' }}
           />
         )}
       </Stack.Navigator>
-    </AppBackground>
+    </View>
   );
 };
+
+const styles = StyleSheet.create({
+  root: {
+    flex: 1,
+    backgroundColor: COLORS.surface,
+  },
+});
 
 export default AppNavigator;

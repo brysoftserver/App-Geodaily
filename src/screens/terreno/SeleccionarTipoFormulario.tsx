@@ -1,19 +1,39 @@
 // ============================================================
 // GEODAILY — Selección de Tipo de Formulario
 // ============================================================
+// Recibe opcionalmente un beneficiario desde BeneficiarioDetailScreen
+// para pre-cargar los datos en el formulario.
+// ============================================================
 
 import React, { useState, useEffect } from 'react';
 import { View, Text, TouchableOpacity, StyleSheet } from 'react-native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { COLORS, FONTS, SPACING, BORDER_RADIUS, SHADOWS } from '../../theme';
 import { contarBorradores } from '../../store/FormDraftStore';
+import { useForm } from '../../store/FormContext';
+import { DatosBeneficiario } from '../../types';
 
 type SeleccionarTipoProps = {
   navigation: NativeStackNavigationProp<Record<string, any>>;
+  route?: {
+    params: {
+      beneficiario?: DatosBeneficiario;
+    };
+  };
 };
 
-const SeleccionarTipoFormulario: React.FC<SeleccionarTipoProps> = ({ navigation }) => {
+const SeleccionarTipoFormulario: React.FC<SeleccionarTipoProps> = ({ navigation, route }) => {
+  const { setBeneficiario } = useForm();
   const [borradorCount, setBorradorCount] = useState(0);
+
+  const beneficiario = route?.params?.beneficiario;
+
+  // Si viene con beneficiario, pre-cargarlo en el contexto del formulario
+  useEffect(() => {
+    if (beneficiario) {
+      setBeneficiario(beneficiario);
+    }
+  }, [beneficiario, setBeneficiario]);
 
   useEffect(() => {
     const loadCount = async () => {
@@ -32,6 +52,19 @@ const SeleccionarTipoFormulario: React.FC<SeleccionarTipoProps> = ({ navigation 
 
   return (
     <View style={styles.container}>
+      {beneficiario && (
+        <View style={styles.beneficiarioBanner}>
+          <Text style={styles.beneficiarioBannerIcon}>👤</Text>
+          <View style={styles.beneficiarioBannerInfo}>
+            <Text style={styles.beneficiarioBannerLabel}>Formulario para:</Text>
+            <Text style={styles.beneficiarioBannerName}>{beneficiario.nombre}</Text>
+            {beneficiario.cedula && (
+              <Text style={styles.beneficiarioBannerDetail}>C.C. {beneficiario.cedula}</Text>
+            )}
+          </View>
+        </View>
+      )}
+
       <Text style={styles.title}>Selecciona el tipo de formulario</Text>
 
       <TouchableOpacity
@@ -39,11 +72,11 @@ const SeleccionarTipoFormulario: React.FC<SeleccionarTipoProps> = ({ navigation 
         onPress={() => navigation.navigate('FormularioCaracterizacion', {})}
         activeOpacity={0.7}
       >
-        <Text style={styles.cardIcon}>👥</Text>
+        <Text style={styles.cardIcon}>🌿</Text>
         <View style={styles.cardContent}>
-          <Text style={styles.cardTitle}>Caracterización Sociodemográfica</Text>
+          <Text style={styles.cardTitle}>Encuesta Social AgroAmbiental</Text>
           <Text style={styles.cardDesc}>
-            Registro completo de datos personales, familiares, educación y condiciones de vida del beneficiario
+            Registro completo de 52 preguntas: social, finca, productivo, análisis de suelo, agroambiental, recomendaciones y acompañamiento
           </Text>
         </View>
         <Text style={styles.arrow}>›</Text>
@@ -155,6 +188,42 @@ const styles = StyleSheet.create({
     color: '#fff',
     fontSize: FONTS.sizes.xs,
     fontWeight: FONTS.weights.bold,
+  },
+  // ─── Banner de beneficiario ─────────────────────────────────
+  beneficiarioBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: COLORS.secondary + '15',
+    borderRadius: BORDER_RADIUS.md,
+    padding: SPACING.md,
+    marginBottom: SPACING.lg,
+    borderWidth: 1,
+    borderColor: COLORS.secondary + '30',
+  },
+  beneficiarioBannerIcon: {
+    fontSize: 32,
+    marginRight: SPACING.md,
+  },
+  beneficiarioBannerInfo: {
+    flex: 1,
+  },
+  beneficiarioBannerLabel: {
+    fontSize: FONTS.sizes.xs,
+    color: COLORS.textSecondary,
+    fontWeight: FONTS.weights.medium,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+  beneficiarioBannerName: {
+    fontSize: FONTS.sizes.lg,
+    fontWeight: FONTS.weights.bold,
+    color: COLORS.textPrimary,
+    marginTop: 2,
+  },
+  beneficiarioBannerDetail: {
+    fontSize: FONTS.sizes.sm,
+    color: COLORS.textSecondary,
+    marginTop: 1,
   },
 });
 

@@ -2,7 +2,7 @@
 // GEODAILY — Formulario de Terreno (Visita Técnica)
 // ============================================================
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   View,
   Text,
@@ -28,10 +28,12 @@ import {
 } from '../../utils/constants';
 import { guardarBorrador, getBorrador, FormDraft } from '../../store/FormDraftStore';
 import { TipoFormulario, DatosTecnico, DatosBeneficiario, DatosSociodemograficos, ActividadRealizada } from '../../types';
-import { saveFormularioLocal, getDb } from '../../services/database';
+import { saveFormularioLocal, getDb, saveFotoLocal, saveVideoLocal } from '../../services/database';
 import { buscarBeneficiarioPorCedula } from '../../services/beneficiarios.service';
-import { uploadPhoto } from '../../services/photos.service';
+import { useSync } from '../../store/SyncContext';
 import { subirFirma } from '../../services/firmas.service';
+import { uploadPhoto } from '../../services/photos.service';
+import { uploadVideo } from '../../services/videos.service';
 import apiClient from '../../services/api';
 import FormField from '../../components/FormField';
 
@@ -48,6 +50,7 @@ const FormularioScreen: React.FC<FormularioScreenProps> = ({ navigation, route }
     setBeneficiario,
     setActividad,
     setCoordenadas,
+    setSociodemografico,
     addFoto,
     setFirmaBeneficiario,
     setFirmaTecnico,
@@ -57,6 +60,7 @@ const FormularioScreen: React.FC<FormularioScreenProps> = ({ navigation, route }
   } = useForm();
   const { getCurrentPosition, coordenadas } = useLocation();
   const { fetchClimate } = useClimate();
+  const { syncNow } = useSync();
   const insets = useSafeAreaInsets();
 
   const tipo = route.params.tipo;
@@ -112,12 +116,12 @@ const FormularioScreen: React.FC<FormularioScreenProps> = ({ navigation, route }
   const [firmaTecnicoOk, setFirmaTecnicoOk] = useState(false);
   const [huellaOk, setHuellaOk] = useState(false);
 
-  const totalSteps = 5;
+  const totalSteps = 6;
   const draftId = route.params.draftId;
 
   // Inicializar formulario al montar
   useEffect(() => {
-    iniciarFormulario(tipo);
+    iniciarFormulario(tipo, draftId);
 
     const initForm = async () => {
       // Si hay un draftId, cargar borrador
@@ -182,6 +186,11 @@ const FormularioScreen: React.FC<FormularioScreenProps> = ({ navigation, route }
         if (coords) {
           setCoordenadas(coords);
           fetchClimate(coords.latitud, coords.longitud);
+        } else {
+          Alert.alert(
+            'Ubicación no disponible',
+            'No se pudo obtener tu ubicación GPS. El formulario se guardará sin coordenadas — verifica el permiso de ubicación y la señal GPS.'
+          );
         }
       }
     };
@@ -201,21 +210,51 @@ const FormularioScreen: React.FC<FormularioScreenProps> = ({ navigation, route }
     }, [formularioActual])
   );
 
-  // Guardar paso actual como borrador
-  const saveCurrentStep = useCallback(async () => {
-    // Capturar evidencias desde FormContext y también desde estado local
-    const fotosActuales = formularioActual?.fotos || [];
-    const firmaBenefActual = formularioActual?.firma_beneficiario || '';
-    const firmaTecActual = formularioActual?.firma_tecnico || '';
-    const huellaActual = formularioActual?.huella_beneficiario || false;
+  // Sincronizar beneficiario desde FormContext al estado local
+  // (cuando viene precargado desde SeleccionarTipoFormulario)
+  useEffect(() => {
+    if (formularioActual?.beneficiario?.cedula && formularioActual?.beneficiario?.nombre) {
+      setBeneficiarioState(prev => {
+        // Solo si el local está vacío, usar el del contexto
+        if (!prev.cedula && !prev.nombre) {
+          return formularioActual.beneficiario as DatosBeneficiario;
+        }
+        return prev;
+      });
+    }
+  }, [formularioActual?.beneficiario?.cedula, formularioActual?.beneficiario?.nombre]);
 
-    // Asegurar que el borrador siempre tenga el usuario_id del técnico autenticado
+  // Ref para evitar stale closures de formularioActual
+  const formularioRef = useRef(formularioActual);
+  useEffect(() => { formularioRef.current = formularioActual; }, [formularioActual]);
+
+  // Guardar paso actual como borrador + subir evidencias a MinIO
+  const saveCurrentStep = useCallback(async () => {
+    // ---- 1. Capturar evidencias desde FormContext (usando ref como fallback) ----
+    const currentForm = formularioRef.current || formularioActual;
+    const fotosActuales = currentForm?.fotos || [];
+    const firmaBenefActual = currentForm?.firma_beneficiario || '';
+    const firmaTecActual = currentForm?.firma_tecnico || '';
+    const huellaActual = currentForm?.huella_beneficiario || false;
+    const formId = currentForm?.id || 'draft-' + Date.now();
+
+    console.log('[Formulario] saveCurrentStep:', {
+      fotosCount: fotosActuales.length,
+      firmaBenefLen: firmaBenefActual.length,
+      firmaTecLen: firmaTecActual.length,
+      huella: huellaActual,
+      formId,
+    });
+
+    // ---- 2. Asegurar usuario_id ----
     const tecnicoConUsuarioId = {
       ...tecnico,
       usuario_id: user?.id || tecnico.usuario_id,
     };
+
+    // ---- 3. Construir draft con TODAS las evidencias ----
     const draft: FormDraft = {
-      id: formularioActual?.id || 'draft-' + Date.now(),
+      id: formId,
       tipo,
       step,
       tecnico: tecnicoConUsuarioId,
@@ -233,9 +272,85 @@ const FormularioScreen: React.FC<FormularioScreenProps> = ({ navigation, route }
       huella_beneficiario: huellaActual,
       updated_at: new Date().toISOString(),
     };
+
+    // ---- 4. Guardar borrador en AsyncStorage ----
     await guardarBorrador(draft);
     setIsStepSaved(true);
-    Alert.alert('Guardado', 'Progreso guardado correctamente');
+
+    // ---- 5. VERIFICAR: leer de vuelta y confirmar que las evidencias se guardaron ----
+    let verifyOk = false;
+    try {
+      const verificado = await getBorrador(formId);
+      if (verificado) {
+        const vFotos = verificado.fotos?.length || 0;
+        const vFirmaB = !!verificado.firma_beneficiario;
+        const vFirmaT = !!verificado.firma_tecnico;
+        const vHuella = !!verificado.huella_beneficiario;
+        console.log('[Formulario] VERIFICACIÓN post-guardado:', {
+          fotos: vFotos, firmaBenef: vFirmaB, firmaTec: vFirmaT, huella: vHuella,
+          sizeBytes: JSON.stringify(verificado).length,
+        });
+        if (vFotos >= fotosActuales.length &&
+            (!firmaBenefActual || vFirmaB) &&
+            (!firmaTecActual || vFirmaT) &&
+            (!huellaActual || vHuella)) {
+          verifyOk = true;
+        }
+      }
+    } catch (verifyErr) {
+      console.warn('[Formulario] Error en verificación:', verifyErr);
+    }
+
+    // ---- 6. Subir evidencias a MinIO (fire-and-forget — no bloquea al usuario) ----
+    try {
+      if (firmaBenefActual) {
+        subirFirma('beneficiario', firmaBenefActual, beneficiario.cedula, beneficiario.nombre, 'visita_tecnica').catch(() => {});
+      }
+      if (firmaTecActual) {
+        subirFirma('tecnico', firmaTecActual, beneficiario.cedula, beneficiario.nombre, 'visita_tecnica').catch(() => {});
+      }
+      for (const foto of fotosActuales) {
+        // Los videos van por su propio camino: tabla videos_locales y
+        // /api/videos (carpeta videos/ en MinIO, extensión .mp4). Antes
+        // todo pasaba por uploadPhoto y los videos quedaban como .jpg
+        // en la carpeta de fotos.
+        if (foto.tipo === 'video') {
+          saveVideoLocal(foto.id, formId, foto.uri, foto.coordenadas).catch(() => {});
+          uploadVideo(
+            foto.uri,
+            foto.coordenadas?.latitud,
+            foto.coordenadas?.longitud,
+            `Formulario ${formId}`,
+            beneficiario.cedula || undefined,
+            beneficiario.nombre || undefined,
+            'visita_tecnica',
+          ).catch(() => {});
+        } else {
+          saveFotoLocal(foto.id, formId, foto.uri, foto.coordenadas).catch(() => {});
+          uploadPhoto(
+            foto.uri,
+            foto.coordenadas?.latitud,
+            foto.coordenadas?.longitud,
+            foto.coordenadas?.altitud,
+            `Formulario ${formId}`,
+            undefined,
+            beneficiario.cedula || undefined,
+            beneficiario.nombre || undefined,
+            foto.timestamp,
+            'visita_tecnica',
+          ).catch(() => {});
+        }
+      }
+    } catch {
+      // Ignorar errores de subida — el borrador ya está guardado
+    }
+
+    Alert.alert(
+      '✅ Guardado',
+      verifyOk
+        ? `Evidencias guardadas en AsyncStorage:\n📸 ${fotosActuales.length} foto(s)\n✍️ ${firmaBenefActual ? 'Sí' : 'No'} firma beneficiario\n✍️ ${firmaTecActual ? 'Sí' : 'No'} firma técnico\n👆 ${huellaActual ? 'Sí' : 'No'} huella`
+        : `⚠️ Guardado (verificación falló)\nSe capturaron ${fotosActuales.length} foto(s). Revisa la consola.`
+    );
   }, [formularioActual, tipo, step, tecnico, beneficiario, actividad, socioData, coordenadas, selectedDepartamento, selectedActividad, otraActividadText, descripcionDetallada, user?.id]);
 
   // Avanzar paso
@@ -302,8 +417,8 @@ const FormularioScreen: React.FC<FormularioScreenProps> = ({ navigation, route }
   };
 
   // Navegar a captura de evidencia
-  const goToEvidencia = (screen: string) => {
-    navigation.navigate(screen);
+  const goToEvidencia = (screen: string, params?: Record<string, any>) => {
+    navigation.navigate(screen as any, params as any);
   };
 
   // Completar formulario (desde paso de evidencias)
@@ -314,6 +429,30 @@ const FormularioScreen: React.FC<FormularioScreenProps> = ({ navigation, route }
     try {
       // Guardar datos en contexto
       setActividad(actividad);
+      setSociodemografico(socioData);
+
+      // ---- PASO 0: Subir evidencias a MinIO (fire-and-forget) ----
+      const currentForm = formularioRef.current || formularioActual;
+      const fotosParaUpload = currentForm?.fotos || [];
+      const firmaBenefUpload = currentForm?.firma_beneficiario || '';
+      const firmaTecUpload = currentForm?.firma_tecnico || '';
+      const formId = currentForm?.id || '';
+
+      try {
+        if (firmaBenefUpload) subirFirma('beneficiario', firmaBenefUpload, beneficiario.cedula, beneficiario.nombre, 'visita_tecnica').catch(() => {});
+        if (firmaTecUpload) subirFirma('tecnico', firmaTecUpload, beneficiario.cedula, beneficiario.nombre, 'visita_tecnica').catch(() => {});
+        for (const foto of fotosParaUpload) {
+          if (foto.tipo === 'video') {
+            saveVideoLocal(foto.id, formId, foto.uri, foto.coordenadas).catch(() => {});
+            uploadVideo(foto.uri, foto.coordenadas?.latitud, foto.coordenadas?.longitud, `Formulario ${formId}`, beneficiario.cedula || undefined, beneficiario.nombre || undefined, 'visita_tecnica').catch(() => {});
+          } else {
+            saveFotoLocal(foto.id, formId, foto.uri, foto.coordenadas).catch(() => {});
+            uploadPhoto(foto.uri, foto.coordenadas?.latitud, foto.coordenadas?.longitud, foto.coordenadas?.altitud, `Formulario ${formId}`, undefined, beneficiario.cedula || undefined, beneficiario.nombre || undefined, foto.timestamp, 'visita_tecnica').catch(() => {});
+          }
+        }
+      } catch {
+        // Ignorar errores de subida
+      }
 
       // ---- PASO 1: Capturar datos del formulario ANTES de finalizar ----
       const fotosParaPDF = formularioActual?.fotos || [];
@@ -322,9 +461,22 @@ const FormularioScreen: React.FC<FormularioScreenProps> = ({ navigation, route }
       const huellaParaPDF = formularioActual?.huella_beneficiario || false;
 
       // ---- PASO 2: Finalizar formulario en memoria ----
-      const form = finalizarFormulario();
+      // Pasar los datos frescos de la pantalla: los dispatch de este mismo
+      // evento aún no están en el estado del contexto (render anterior).
+      const form = finalizarFormulario({
+        tecnico,
+        beneficiario,
+        actividad,
+        sociodemografico: socioData,
+        ...(coordenadas ? { coordenadas } : {}),
+      });
       if (!form) {
-        Alert.alert('Error', 'No se pudo finalizar el formulario');
+        const motivo = !tecnico?.nombre
+          ? 'Falta el nombre del técnico (paso 1).'
+          : !beneficiario?.nombre
+            ? 'Falta el nombre del beneficiario (paso 1).'
+            : 'Se perdió el formulario en curso. Tus datos siguen guardados en el borrador — vuelve a "Formularios Incompletos" y ábrelo de nuevo.';
+        Alert.alert('No se pudo finalizar', motivo);
         setIsSubmitting(false);
         return;
       }
@@ -386,7 +538,8 @@ const FormularioScreen: React.FC<FormularioScreenProps> = ({ navigation, route }
 
       setIsSubmitting(false);
 
-      // ---- MOSTRAR ALERT Y LUEGO SUBIR EVIDENCIAS EN BACKGROUND ----
+      // ---- MOSTRAR ALERT Y LANZAR EL SYNC (fotos ya encoladas en fotos_locales
+      // desde la captura; la firma va embebida en el formulario mismo) ----
       Alert.alert(
         '✅ Formulario completado',
         'Datos guardados correctamente. Las evidencias se subirán en segundo plano.',
@@ -395,12 +548,14 @@ const FormularioScreen: React.FC<FormularioScreenProps> = ({ navigation, route }
             text: 'Ver listado',
             onPress: () => {
               navigation.navigate('TerrenoFormularioList');
-              // Subir evidencias en background (no bloquea la navegación)
-              subirEvidenciasBackground(form, fotosParaPDF, firmaBenefParaPDF, firmaTecParaPDF);
             },
           },
-        ]
+        ],
+        { cancelable: false }
       );
+      // Disparar el sync inmediatamente (no bloquea la navegación ni depende
+      // de que el usuario toque el botón del Alert)
+      syncNow();
     } catch (err) {
       console.error('[Formulario] Error en handleCompletar:', err);
       setIsSubmitting(false);
@@ -408,56 +563,14 @@ const FormularioScreen: React.FC<FormularioScreenProps> = ({ navigation, route }
     }
   };
 
-  /** Subir evidencias a MinIO en segundo plano (no bloquea la UI) */
-  const subirEvidenciasBackground = (
-    form: any,
-    fotos: any[],
-    firmaBenef: string,
-    firmaTec: string
-  ) => {
-    // Ejecutar sin await para no bloquear
-    (async () => {
-      try {
-        // Subir fotos
-        for (const foto of fotos) {
-          try {
-            if (foto.uri && !foto.uri.startsWith('data:')) {
-              await uploadPhoto(
-                foto.uri,
-                foto.coordenadas?.latitud,
-                foto.coordenadas?.longitud,
-                foto.coordenadas?.altitud,
-                `foto_${form.id}`,
-                `Foto del formulario ${form.id}`
-              );
-            }
-          } catch (fotoErr) {
-            console.warn('[Formulario] Error subiendo foto (background):', fotoErr);
-          }
-        }
-
-        // Subir firma beneficiario
-        if (firmaBenef && firmaBenef.startsWith('data:')) {
-          try { await subirFirma('beneficiario', firmaBenef); } catch {}
-        }
-
-        // Subir firma técnico
-        if (firmaTec && firmaTec.startsWith('data:')) {
-          try { await subirFirma('tecnico', firmaTec); } catch {}
-        }
-      } catch (e) {
-        console.warn('[Formulario] Error en subida background:', e);
-      }
-    })();
-  };
-
   const getStepTitle = () => {
     switch (step) {
       case 1: return 'Datos del Técnico';
       case 2: return 'Datos del Beneficiario';
       case 3: return 'Actividad Realizada';
-      case 4: return 'Resumen del Formulario';
-      case 5: return 'Evidencias';
+      case 4: return 'Datos Sociodemográficos';
+      case 5: return 'Resumen del Formulario';
+      case 6: return 'Evidencias';
       default: return '';
     }
   };
@@ -731,7 +844,7 @@ const FormularioScreen: React.FC<FormularioScreenProps> = ({ navigation, route }
   );
 
   // Renderizar paso 4: Datos Sociodemográficos
-  const renderStep4 = () => ( // eslint-disable-line @typescript-eslint/no-unused-vars
+  const renderStep4 = () => (
     <View>
       <Text style={styles.evidenciasTitle}>📊 Datos Sociodemográficos</Text>
       <Text style={styles.evidenciasDesc}>
@@ -993,21 +1106,41 @@ const FormularioScreen: React.FC<FormularioScreenProps> = ({ navigation, route }
         Registra las evidencias del formulario. Puedes hacerlo en cualquier orden.
       </Text>
 
-      {/* Botón 1: Evidencia Fotográfica */}
+      {/* Botón 1a: Tomar Fotos */}
       <TouchableOpacity
         style={[styles.evidenciaCard, fotosCount > 0 && styles.evidenciaCardOk]}
-        onPress={() => goToEvidencia('Camara')}
+        onPress={() => goToEvidencia('Camara', { mode: 'photo' })}
         activeOpacity={0.7}
       >
         <View style={styles.evidenciaIcon}>
-          <Text style={styles.evidenciaIconText}>📸</Text>
+          <Text style={styles.evidenciaIconText}>📷</Text>
         </View>
         <View style={styles.evidenciaContent}>
-          <Text style={styles.evidenciaCardTitle}>Evidencia Fotográfica</Text>
+          <Text style={styles.evidenciaCardTitle}>Tomar Fotos</Text>
           <Text style={styles.evidenciaCardDesc}>
             {fotosCount > 0
               ? `${fotosCount} foto(s) capturada(s)`
-              : 'Tomar fotos de la visita'}
+              : 'Capturar fotos de la visita'}
+          </Text>
+        </View>
+        <View style={styles.evidenciaArrow}>
+          <Text style={styles.evidenciaArrowText}>›</Text>
+        </View>
+      </TouchableOpacity>
+
+      {/* Botón 1b: Tomar Video */}
+      <TouchableOpacity
+        style={[styles.evidenciaCard, fotosCount > 0 && styles.evidenciaCardOk]}
+        onPress={() => goToEvidencia('Camara', { mode: 'video' })}
+        activeOpacity={0.7}
+      >
+        <View style={styles.evidenciaIcon}>
+          <Text style={styles.evidenciaIconText}>🎥</Text>
+        </View>
+        <View style={styles.evidenciaContent}>
+          <Text style={styles.evidenciaCardTitle}>Tomar Video</Text>
+          <Text style={styles.evidenciaCardDesc}>
+            Grabar video corto (máx. 30s)
           </Text>
         </View>
         <View style={styles.evidenciaArrow}>
@@ -1119,8 +1252,9 @@ const FormularioScreen: React.FC<FormularioScreenProps> = ({ navigation, route }
         {step === 1 && renderStep1()}
         {step === 2 && renderStep2()}
         {step === 3 && renderStep3()}
-        {step === 4 && renderStep5()}
-        {step === 5 && renderStep6()}
+        {step === 4 && renderStep4()}
+        {step === 5 && renderStep5()}
+        {step === 6 && renderStep6()}
       </ScrollView>
 
       {/* Botones de navegación */}

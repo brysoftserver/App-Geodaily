@@ -6,6 +6,10 @@
     "development": {
       "developmentClient": true,
       "distribution": "internal",
+      "env": {
+        "BACKEND_URL": "https://geodaily-api.brysoftsas.com",
+        "API_TIMEOUT": "15000"
+      },
       "android": {
         "buildType": "apk"
       }
@@ -13,7 +17,7 @@
     "preview": {
       "distribution": "internal",
       "env": {
-        "BACKEND_URL": "http://192.168.1.20:8089",
+        "BACKEND_URL": "https://geodaily-api.brysoftsas.com",
         "API_TIMEOUT": "15000"
       },
       "android": {
@@ -26,7 +30,7 @@
     "production": {
       "distribution": "internal",
       "env": {
-        "BACKEND_URL": "https://api.geodaily.brysoftsas.com",
+        "BACKEND_URL": "https://geodaily-api.brysoftsas.com",
         "API_TIMEOUT": "15000"
       },
       "android": {

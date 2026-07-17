@@ -4,6 +4,7 @@
 // ============================================================
 
 import { useState, useCallback, useRef } from 'react';
+import { Alert } from 'react-native';
 import { API_CONFIG } from '../theme';
 import { useAuth } from '../store/AuthContext';
 import {
@@ -212,11 +213,21 @@ export function useSyncMapData() {
     if (!isAdmin) return;
     try {
       const token = user?.token;
-      if (token) {
-        await fetch(`${API_CONFIG.BASE_URL}/api/plantaciones/${id}`, {
-          method: 'DELETE',
-          headers: { Authorization: `Bearer ${token}` },
-        });
+      if (!token) {
+        Alert.alert('Sesión requerida', 'No hay sesión activa para eliminar en el servidor.');
+        return;
+      }
+      // Borrar primero en el SERVIDOR — si falla, NO borrar localmente:
+      // el polling volvería a traer el punto y parecería que "no se puede
+      // borrar" sin explicación.
+      const res = await fetch(`${API_CONFIG.BASE_URL}/api/plantaciones/${id}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok && res.status !== 404) {
+        const data = await res.json().catch(() => ({}));
+        Alert.alert('No se pudo eliminar', data?.mensaje || `El servidor respondió ${res.status}.`);
+        return;
       }
       await deletePlantacionLocal(id);
       setState(prev => ({
@@ -224,7 +235,8 @@ export function useSyncMapData() {
         plantaciones: prev.plantaciones.filter(p => p.id !== id),
       }));
     } catch (error) {
-      console.error('[SyncMapData] Error al eliminar plantación:', error);
+      console.warn('[SyncMapData] Error al eliminar plantación:', error);
+      Alert.alert('No se pudo eliminar', 'Verifica tu conexión a internet e inténtalo de nuevo.');
     }
   }, [isAdmin, user?.token]);
 
@@ -235,11 +247,18 @@ export function useSyncMapData() {
     if (!isAdmin) return;
     try {
       const token = user?.token;
-      if (token) {
-        await fetch(`${API_CONFIG.BASE_URL}/api/mediciones/${id}`, {
-          method: 'DELETE',
-          headers: { Authorization: `Bearer ${token}` },
-        });
+      if (!token) {
+        Alert.alert('Sesión requerida', 'No hay sesión activa para eliminar en el servidor.');
+        return;
+      }
+      const res = await fetch(`${API_CONFIG.BASE_URL}/api/mediciones/${id}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok && res.status !== 404) {
+        const data = await res.json().catch(() => ({}));
+        Alert.alert('No se pudo eliminar', data?.mensaje || `El servidor respondió ${res.status}.`);
+        return;
       }
       await deleteMedicionLocal(id);
       setState(prev => ({
@@ -247,7 +266,8 @@ export function useSyncMapData() {
         mediciones: prev.mediciones.filter(m => m.id !== id),
       }));
     } catch (error) {
-      console.error('[SyncMapData] Error al eliminar medición:', error);
+      console.warn('[SyncMapData] Error al eliminar medición:', error);
+      Alert.alert('No se pudo eliminar', 'Verifica tu conexión a internet e inténtalo de nuevo.');
     }
   }, [isAdmin, user?.token]);
 

@@ -305,6 +305,7 @@ const styles = StyleSheet.create({
   },
   content: {
     padding: SPACING.lg,
+    paddingBottom: SPACING.xxl,
   },
   title: {
     fontSize: FONTS.sizes.xxl,

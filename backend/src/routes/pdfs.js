@@ -412,19 +412,50 @@ router.post('/generar', authenticateToken, async (req, res) => {
     // Subir a MinIO
     const buffer = Buffer.from(html, 'utf8');
 
+    // Resolver datos del beneficiario para carpeta en MinIO
+    const b = formulario.beneficiario || {};
+    let benefItem = null;
+    let benefNombre = null;
+    if (b.cedula) {
+      try {
+        const benef = await db.queryOne(
+          'SELECT item, nombre_completo FROM beneficiarios WHERE cedula = $1',
+          [b.cedula.trim()]
+        );
+        if (benef) {
+          benefItem = benef.item;
+          benefNombre = b.nombre || benef.nombre_completo;
+        }
+      } catch (lookupErr) {
+        console.warn('[PDFs] Error buscando beneficiario:', lookupErr.message);
+      }
+    }
+
     await storage.uploadFile(
       req.user.rol,
       req.user.usuario,
       'pdfs',
       filename,
       buffer,
-      { contentType: 'text/html' }
+      {
+        contentType: 'text/html',
+        tipoFormulario: formulario.tipo,
+        beneficiarioItem: benefItem,
+        beneficiarioNombre: benefNombre,
+      }
     );
 
     // Guardar registro en PostgreSQL
     const bucket = process.env.MINIO_BUCKET || 'geodaily-archivos';
     const basePath = storage.getUserBasePath(req.user.rol, req.user.usuario);
-    const minioPath = `${basePath}/pdfs/${filename}`;
+    let minioPath;
+    if (benefItem && benefNombre) {
+      const subpath = storage.getBeneficiarySubpath(benefItem, benefNombre);
+      const formFolder = storage.getFormTypeFolder(formulario.tipo);
+      minioPath = formFolder ? `${basePath}/${subpath}/${formFolder}/pdfs/${filename}` : `${basePath}/${subpath}/pdfs/${filename}`;
+    } else {
+      minioPath = `${basePath}/pdfs/${filename}`;
+    }
     await db.query(
       `INSERT INTO archivos (usuario_id, tipo, filename, originalname, mimetype, size_bytes, minio_path, minio_bucket, metadata_json)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
@@ -478,6 +509,9 @@ router.get('/:id', authenticateToken, async (req, res) => {
     );
     if (!pdfRecord) {
       return res.status(404).json({ estado: 'error', mensaje: 'PDF no encontrado' });
+    }
+    if (req.user.rol !== 'admin' && pdfRecord.usuario_id !== req.user.id) {
+      return res.status(403).json({ estado: 'error', mensaje: 'No autorizado' });
     }
 
     res.json({

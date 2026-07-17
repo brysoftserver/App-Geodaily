@@ -2,6 +2,42 @@
 // GEODAILY — Constantes Globales
 // ============================================================
 
+// ============================================================
+// ESPECIES DE PLANTACIÓN — 3 tipos universales para todos los roles
+// ============================================================
+export interface PlantaOpcion {
+  nombre: string;
+  icono: string;
+}
+
+export const PLANTAS_OPCIONES: PlantaOpcion[] = [
+  { nombre: 'Cacao', icono: '�' },
+  { nombre: 'Plátano', icono: '🌴' },
+  { nombre: 'Abarco / Cedro / Caucho', icono: '🌳' },
+];
+
+/** Obtener icono desde nombre de especie (source of truth única para todos los roles) */
+const ICONOS_MAP: Record<string, string> = {};
+PLANTAS_OPCIONES.forEach((p) => {
+  p.nombre.split('/').forEach((part) => {
+    const key = part.trim().toLowerCase();
+    if (key) ICONOS_MAP[key] = p.icono;
+  });
+});
+// Sinónimos adicionales para compatibilidad
+ICONOS_MAP['cacao'] = '�';
+ICONOS_MAP['platano'] = '🌴';
+ICONOS_MAP['banano'] = '🌴';
+ICONOS_MAP['abarco'] = '🌳';
+ICONOS_MAP['cedro'] = '🌳';
+ICONOS_MAP['caucho'] = '🌳';
+ICONOS_MAP['forestal'] = '🌳';
+
+export const getIconoEspecie = (nombre: string): string =>
+  ICONOS_MAP[nombre?.toLowerCase().trim() || ''] || '🌱';
+
+// ============================================================
+
 export const STORAGE_KEYS = {
   AUTH_TOKEN: 'geodaily.auth_token',
   USER_DATA: 'geodaily.user_data',
@@ -12,6 +48,11 @@ export const STORAGE_KEYS = {
   TECNICO_CEDULA: 'geodaily.tecnico_cedula',
   VISITAS_PLANIFICADAS: 'geodaily.visitas_planificadas',
   FORM_DRAFTS: 'geodaily.form_drafts',
+  // Credencial cacheada para login offline — hash salteado de la contraseña
+  // + datos de sesión de la última autenticación online exitosa. Permite
+  // que un técnico en campo vuelva a entrar sin señal aunque haya cerrado la
+  // app o incluso cerrado sesión. NO se borra por un 401 de red.
+  OFFLINE_CRED: 'geodaily.offline_cred',
 } as const;
 
 // ============================================================
@@ -375,8 +416,9 @@ export const ACTIVIDAD_PRODUCTIVA_OPTS = ['Agricultura', 'Ganadería', 'Sistemas
 export const PROCESOS_EROSION_OPTS = ['Severa', 'Moderada', 'Leve', 'No presenta'];
 export const FUENTES_HIDRICAS_OPTS = ['Nacimiento', 'Quebrada', 'Río', 'Ninguna'];
 export const PRACTICAS_CONSERVACION_OPTS = ['Barreras vivas', 'Cobertura vegetal', 'Terrazas', 'Ninguna'];
-export const MANEJO_RESIDUOS_OPTS = ['Triple lavado y disposición adecuada', 'Los almacena', 'Los quema', 'Los desecha en el campo'];
-export const TEXTURA_SUELO_OPTS = ['Arenoso', 'Franco', 'Arcilloso', 'Franco-arcilloso'];
+export const AREAS_CONSERVACION_OPTS = ['Bosque virgen', 'Bosque intervenido', 'Rastrojo maduro', 'Rastrojo biche', 'Regeneración natural', 'Ninguna'];
+export const MANEJO_RESIDUOS_OPTS = ['Triple lavado y disposición adecuada', 'Los almacena', 'Los quema', 'Los desecha en el campo', 'Los entierra'];
+export const TEXTURA_SUELO_OPTS = ['Arenoso', 'Franco', 'Arcilloso', 'Limoso'];
 export const COLOR_SUELO_OPTS = ['Negro', 'Café oscuro', 'Café claro', 'Rojizo'];
 export const DRENAJE_OPTS = ['Bueno', 'Regular', 'Deficiente'];
 export const PROFUNDIDAD_OPTS = ['Menor de 20 cm', 'Entre 20 y 50 cm', 'Entre 50 y 100 cm', 'Mayor de 100 cm'];
@@ -384,6 +426,51 @@ export const PRESENCIA_PIEDRAS_OPTS = ['Alta', 'Media', 'Baja', 'No presenta'];
 export const COMPACTACION_OPTS = ['Alta compactación', 'Moderada compactación', 'Baja compactación', 'Sin evidencia de compactación'];
 export const COBERTURA_SUELO_OPTS = ['Suelo desnudo', 'Rastrojos o residuos vegetales', 'Cobertura herbácea o pastos', 'Cobertura arbórea o arbustiva'];
 export const EVIDENCIA_EROSION_OPTS = ['Severa', 'Moderada', 'Leve', 'No presenta'];
+
+// ============================================================
+// Opciones para Encuesta Social AgroAmbiental
+// ⚠️ TEXTO OFICIAL APROBADO POR EL MINISTERIO — no cambiar ni una
+// palabra, ni el orden, ni las opciones sin autorización expresa.
+// ============================================================
+export const RECONOCIMIENTO_OPTS = ['Campesino', 'Indígena', 'NARP (Negra, Afrocolombiana, Raizal, Palenquera)', 'Rom', 'Otro'];
+export const NIVEL_EDUCATIVO_ENV_OPTS = ['Básica Primaria', 'Básica Secundaria', 'Técnico', 'Tecnólogo', 'Título Universitario', 'Educación no formal (cursos, talleres, ECA´s, etc)', 'Ninguno'];
+export const FUENTE_INGRESOS_ENV_OPTS = ['Agricultura', 'Ganadería', 'Comercio', 'Empleo formal', 'Jornalero', 'Pescador', 'Otra actividad'];
+export const OCUPACION_SECUNDARIA_OPTS = ['Estudiante', 'Agricultor (a)', 'Ganadero (a)', 'Vendedor (a)', 'Pescador (a)', 'Trabajador(a) del hogar', 'Con diversidad funcional', 'Jornalero (a)', 'Ninguna de las anteriores', 'Otro'];
+export const TIPO_ASOCIACION_OPTS = ['Junta de Acción Comunal', 'Organización de mujeres', 'Organización de productores', 'Organización de víctimas', 'Organización ambiental', 'Organización social y política', 'Otro'];
+export const ROL_ASOCIACION_OPTS = ['Presidente', 'Tesorero', 'Fiscal', 'Vocal', 'Asociado', 'No aplica']; // (ya no se usa — P9 es texto libre)
+export const VIVIENDA_UBICACION_OPTS = ['En la finca', 'En otra finca', 'En el caserío', 'En la cabecera municipal', 'En una ciudad', 'Otra'];
+export const TIPO_ENERGIA_OPTS = ['Energía solar', 'Planta de energía a gasolina', 'Red energía eléctrica', 'Energía por Pelton', 'Otro'];
+export const AGUA_CONSUMO_OPTS = ['Acueducto comunitario', 'Acueducto municipal', 'Río, quebrada o nacimiento', 'Reservorio', 'Perforado', 'Aljibe', 'Aguas lluvias', 'Agua en bolsa', 'Otro'];
+export const ELEMENTOS_TECNOLOGICOS_OPTS = ['Celular', 'Computador', 'Internet', 'WhatsApp'];
+export const QUIENES_TRABAJAN_OPTS = ['Usted y su núcleo familiar', 'Trabajadores externos', 'Trabajo mixto', 'Vecinos con el sistema de trueque o manocambiada', 'Otro'];
+export const MEDIO_TRANSPORTE_OPTS = ['A pie', 'Canoa', 'Cabalgar', 'Bicicleta', 'Motocicleta', 'Automóvil', 'Transporte público', 'Otro'];
+export const MEDIO_SALIDA_OPTS = [
+  'Fluvial',
+  'Terrestre (Terciaria – Secundaria – Primaria)',
+  'Terrestre (Secundaria – Primaria)',
+  'Terrestre (Primaria)',
+];
+export const ACTIVIDADES_FINCA_OPTS = [
+  'Actividades agrícolas',
+  'Actividades pecuarias',
+  'Venta de pasto',
+  'Venta de leche',
+  'Venta de lácteos transformados',
+  'Actividades de aprovechamiento forestal',
+  'Actividades de aprovechamiento no maderable',
+  'Actividades de conservación',
+  'Actividades de caza, recolección y pesca',
+  'Ecoturismo',
+  'Ninguna',
+  'Otro',
+];
+export const ACTIVIDAD_AGRICOLA_OPTS = ['Cacao', 'Plátano', 'Huerta casera', 'Yuca', 'Maíz', 'Citricos', 'Aguacate', 'Caucho', 'Caña panelera', 'Otro'];
+export const ACTIVIDAD_PECUARIA_OPTS = ['Ganadería bovina', 'Porcicultura', 'Piscicultura', 'Ovicultura', 'Conejos', 'Cuyes', 'Pollos', 'Gallinas ponedoras', 'Otro'];
+export const SEXO_OPTS = ['Masculino', 'Femenino', 'Otro'];
+export const ANALISIS_SUELO_REALIZADO_OPTS = ['Análisis fisicoquímico', 'Cromatografía de suelo', 'Ninguno'];
+export const PENDIENTE_OPTS = ['Plano (< 5%)', 'Ligeramente inclinado (5-15%)', 'Inclinado (15-30%)', 'Fuertemente inclinado (> 30%)']; // (ya no se usa — P41 es grados °)
+export const TIPO_AGROQUIMICO_OPTS = ['Herbicida (control de malezas)', 'Insecticidas (control de plagas)', 'Fungicidas (control de enfermedades fúngicas)', 'Otro'];
+export const HERBICIDAS_OPTS = ['Glifosato', 'Paraquat', '2,4-D', 'Atrazina', 'Otro']; // (ya no se usa — P48 es texto libre)
 
 export const ERROR_MESSAGES = {
   NETWORK: 'Sin conexión a internet. Los datos se guardarán localmente.',

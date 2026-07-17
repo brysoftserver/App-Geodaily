@@ -2,7 +2,7 @@
 // GEODAILY — Capacitación (Gerencia)
 // ============================================================
 
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import {
   View,
   Text,
@@ -10,8 +10,13 @@ import {
   ScrollView,
   TouchableOpacity,
 } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { COLORS, FONTS, SPACING, BORDER_RADIUS, SHADOWS } from '../../theme';
+
+// Persistencia local del avance — antes vivía solo en memoria y se
+// perdía al cerrar la app.
+const STORAGE_KEY_COMPLETADOS = '@geodaily/capacitaciones_completadas';
 
 type CapacitacionProps = {
   navigation: NativeStackNavigationProp<Record<string, any>>;
@@ -43,6 +48,15 @@ const CapacitacionScreen: React.FC<CapacitacionProps> = ({ navigation: _navigati
   const [selectedTema, setSelectedTema] = useState('Todos');
   const [completados, setCompletados] = useState<Set<string>>(new Set());
 
+  // Cargar avance guardado
+  useEffect(() => {
+    AsyncStorage.getItem(STORAGE_KEY_COMPLETADOS)
+      .then((json) => {
+        if (json) setCompletados(new Set(JSON.parse(json)));
+      })
+      .catch((error) => console.warn('[Capacitacion] Error cargando avance:', error));
+  }, []);
+
   const filteredMateriales = useMemo(() => {
     if (selectedTema === 'Todos') return MATERIALES;
     return MATERIALES.filter(m => m.tema === selectedTema);
@@ -53,6 +67,9 @@ const CapacitacionScreen: React.FC<CapacitacionProps> = ({ navigation: _navigati
     if (newSet.has(id)) newSet.delete(id);
     else newSet.add(id);
     setCompletados(newSet);
+    AsyncStorage.setItem(STORAGE_KEY_COMPLETADOS, JSON.stringify([...newSet])).catch(
+      (error) => console.warn('[Capacitacion] Error guardando avance:', error)
+    );
   };
 
   const getTypeIcon = (type: string) => {

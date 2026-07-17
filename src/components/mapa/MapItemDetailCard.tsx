@@ -4,6 +4,7 @@
 
 import React from 'react';
 import { View, Text, TouchableOpacity, StyleSheet } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { COLORS, FONTS, SPACING, BORDER_RADIUS, SHADOWS } from '../../theme';
 
 /** Formatear timestamp ISO a "hace X tiempo" */
@@ -41,6 +42,10 @@ const MapItemDetailCard: React.FC<MapItemDetailCardProps> = ({
   onClose,
   onDelete,
 }) => {
+  // La tarjeta es position:absolute bottom:0 — necesita su propia
+  // safe-area para no quedar debajo de la barra de navegación del teléfono
+  const insets = useSafeAreaInsets();
+
   if (!item) return null;
 
   const isPlantacion = item.id.startsWith('plant-');
@@ -49,7 +54,7 @@ const MapItemDetailCard: React.FC<MapItemDetailCardProps> = ({
   const realId = item.id.replace(/^(plant-|med-|tec-)/, '');
 
   return (
-    <View style={styles.card}>
+    <View style={[styles.card, { paddingBottom: SPACING.md + insets.bottom }]}>
       <TouchableOpacity style={styles.closeBtn} onPress={onClose}>
         <Text style={styles.closeText}>✕</Text>
       </TouchableOpacity>

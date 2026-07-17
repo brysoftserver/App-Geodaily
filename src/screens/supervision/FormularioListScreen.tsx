@@ -230,6 +230,7 @@ const styles = StyleSheet.create({
   },
   listContent: {
     paddingVertical: SPACING.sm,
+    paddingBottom: SPACING.xxl,
   },
   emptyState: {
     flex: 1,

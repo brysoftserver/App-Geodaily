@@ -17,6 +17,7 @@ import {
   AppStateStatus,
 } from 'react-native';
 import * as Location from 'expo-location';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import MapViewOffline from '../components/MapViewOffline';
 import MapLayerToggle from '../components/mapa/MapLayerToggle';
 import MapToolbar from '../components/mapa/MapToolbar';
@@ -27,6 +28,7 @@ import { useGPS } from '../store/GPSContext';
 import { useSyncMapData } from '../hooks/useSyncMapData';
 import { COLORS, FONTS, SPACING, BORDER_RADIUS, API_CONFIG } from '../theme';
 import { Coordenadas } from '../types';
+import { getIconoEspecie } from '../utils/constants';
 import {
   saveVeredasCache,
   getVeredasCache,
@@ -44,18 +46,10 @@ const VEREDAS_CACHE_TTL = 86400000; // 24h
 
 type CapaActiva = 'plantaciones' | 'tecnicos' | 'mediciones' | 'veredas';
 
-const ICONOS_ESPECIE: Record<string, string> = {
-  cacao: '🍫', platano: '🍌', banano: '🍌',
-  café: '☕', cafe: '☕', citricos: '🍊', cítricos: '🍊',
-  naranja: '🍊', limón: '🍋', limon: '🍋',
-  aguacate: '🥑', mango: '🥭', guanabana: '🍈', guanábana: '🍈',
-  maracuya: '💜', maracuyá: '💜', forestal: '🌳',
-  pasto: '🌿', maíz: '🌽', maiz: '🌽', yuca: '🥔', hortalizas: '🥬',
-};
-const getIconoEspecie = (especie: string): string =>
-  ICONOS_ESPECIE[especie?.toLowerCase().trim() || ''] || '🌱';
+// NOTA: getIconoEspecie se importa de utils/constants (source of truth única)
 
 const MapaGeneralScreen: React.FC<{ navigation?: Record<string, any> }> = ({ navigation: _navigation }) => {
+  const insets = useSafeAreaInsets();
   const { isAdmin, isSupervisor, isInterventor, isGerente } = useAuth();
   const { userLocation, getCurrentPosition, siguiendo, setSiguiendo } = useGPS();
   const canViewAll = isAdmin || isSupervisor || isInterventor || isGerente;
@@ -347,7 +341,10 @@ const MapaGeneralScreen: React.FC<{ navigation?: Record<string, any> }> = ({ nav
   // Render
   // ============================================================
   return (
-    <View style={styles.container}>
+    // paddingBottom con safe-area: sin esto el listado y los botones de la
+    // parte inferior quedaban ocultos debajo de la barra de navegación
+    // del teléfono (HUD inaccesible).
+    <View style={[styles.container, { paddingBottom: insets.bottom }]}>
       {/* Header */}
       <View style={styles.header}>
         <Text style={styles.headerTitle}>

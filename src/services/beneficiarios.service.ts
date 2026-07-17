@@ -2,17 +2,16 @@
 // GEODAILY — Servicio de Beneficiarios (Búsqueda + Padrón)
 // ============================================================
 
-import * as SQLite from 'expo-sqlite';
 import { DatosBeneficiario, DatosBeneficiarioCompleto } from '../types';
 import { API_CONFIG } from '../theme';
+import { getDbSafe } from './database';
 
-let db: SQLite.SQLiteDatabase | null = null;
-
-const initDb = async (): Promise<SQLite.SQLiteDatabase> => {
-  if (!db) {
-    db = await SQLite.openDatabaseAsync('geodaily.db');
+const initDb = async () => {
+  const database = await getDbSafe();
+  if (!database) {
+    throw new Error('BD local no disponible');
   }
-  return db;
+  return database;
 };
 
 /**

@@ -51,7 +51,7 @@ db.initSchema()
   .catch(err => console.error('[Server] ❌ Error inicializando DB:', err.message));
 
 // --- Middleware global ---
-const PROD_DOMAIN = process.env.PROD_DOMAIN || 'https://api.geodaily.brysoftsas.com';
+const PROD_DOMAIN = process.env.PROD_DOMAIN || 'https://geodaily-api.brysoftsas.com';
 const corsOptions = {
   origin: [
     'http://192.168.1.20:8082',
@@ -78,12 +78,15 @@ app.use('/api/formularios', require('./routes/forms'));
 app.use('/api/photos', require('./routes/photos'));
 app.use('/api/pdfs', require('./routes/pdfs'));
 app.use('/api/plantaciones', require('./routes/plantaciones'));
+app.use('/api/visitas-programadas', require('./routes/visitas-programadas'));
 app.use('/api/tracking', require('./routes/tracking'));
 app.use('/api/mediciones', require('./routes/mediciones'));
 app.use('/api/videos', require('./routes/videos'));
 app.use('/api/maps', require('./routes/maps'));
 app.use('/api/firmas', require('./routes/firmas'));
 app.use('/api/documentos', require('./routes/documentos'));
+app.use('/api/beneficiarios', require('./routes/beneficiarios'));
+app.use('/api/revisiones', require('./routes/revisiones'));
 
 // --- 404 handler ---
 app.use((_req, res) => {

@@ -14,7 +14,7 @@ export const COLORS = {
   secondaryDark: '#C17900',
 
   // Colores de fondo
-  background: 'transparent',
+  background: '#FFFFFF',
   surface: '#FFFFFF',
   surfaceAlt: '#E8F5E9',
 
@@ -117,7 +117,9 @@ export const SHADOWS = {
 } as const;
 
 export const API_CONFIG = {
-  BASE_URL: process.env.BACKEND_URL || 'http://192.168.1.20:8089',
+  // Fallback = dominio público (Cloudflare Tunnel) — funciona desde
+  // cualquier red; la LAN directa solo vía BACKEND_URL en .env si se necesita.
+  BASE_URL: process.env.BACKEND_URL || 'https://geodaily-api.brysoftsas.com',
   TIMEOUT: Number(process.env.API_TIMEOUT) || 15000,
   ENDPOINTS: {
     GEOREFERENCE: '/api/georeference',
@@ -129,6 +131,8 @@ export const API_CONFIG = {
     FORMS: '/api/formularios',
     AUTH: '/api/auth',
     PLANTACIONES: '/api/plantaciones',
+    VISITAS_PROGRAMADAS: '/api/visitas-programadas',
+    BENEFICIARIOS: '/api/beneficiarios',
     MEDICIONES: '/api/mediciones',
     TRACKING: '/api/tracking',
     FIRMAS: '/api/firmas',

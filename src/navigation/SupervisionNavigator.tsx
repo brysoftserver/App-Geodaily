@@ -8,9 +8,10 @@ import { COLORS, FONTS } from '../theme';
 import SupervisionMenuScreen from '../screens/supervision/SupervisionMenuScreen';
 import DashboardScreen from '../screens/supervision/DashboardScreen';
 import VisitasJerarquicasScreen from '../screens/supervision/VisitasJerarquicasScreen';
-import CalendarioScreen from '../screens/supervision/CalendarioScreen';
+import CalendarioScreen from '../screens/CalendarioGlobalScreen';
 import MapaGeneralScreen from '../screens/MapaGeneralScreen';
 import FormularioDetailScreen from '../screens/terreno/FormularioDetailScreen';
+import BaseDatosBeneficiariosScreen from '../screens/supervision/BaseDatosBeneficiariosScreen';
 
 export type SupervisionStackParamList = {
   SupervisionMenu: undefined;
@@ -19,6 +20,7 @@ export type SupervisionStackParamList = {
   SupervisionCalendario: undefined;
   MapaGeneral: undefined;
   SupervisionFormularioDetail: { formulario: import('../types').Formulario };
+  BaseDatosBeneficiarios: undefined;
 };
 
 const Stack = createNativeStackNavigator<SupervisionStackParamList>();
@@ -36,9 +38,8 @@ const SupervisionNavigator: React.FC = () => {
           fontSize: FONTS.sizes.lg,
         },
         headerShadowVisible: false,
-        contentStyle: {
-          backgroundColor: COLORS.background,
-        },
+        animation: 'slide_from_right',
+        animationDuration: 150,
       }}
     >
       <Stack.Screen
@@ -70,6 +71,11 @@ const SupervisionNavigator: React.FC = () => {
         name="MapaGeneral"
         component={MapaGeneralScreen}
         options={{ title: 'Mapa General del Proyecto' }}
+      />
+      <Stack.Screen
+        name="BaseDatosBeneficiarios"
+        component={BaseDatosBeneficiariosScreen}
+        options={{ title: 'Base de Datos Beneficiarios' }}
       />
     </Stack.Navigator>
   );

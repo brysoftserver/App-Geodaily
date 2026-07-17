@@ -68,7 +68,7 @@ const PerfilTecnicosScreen: React.FC<PerfilTecnicosProps> = ({ navigation }) => 
   const tecnicosMap = useMemo(() => {
     const map: Record<string, Formulario[]> = {};
     formularios.forEach(f => {
-      const nombre = f.tecnico.nombre;
+      const nombre = f.tecnico?.nombre || 'Desconocido';
       if (!map[nombre]) map[nombre] = [];
       map[nombre].push(f);
     });
@@ -125,9 +125,9 @@ const PerfilTecnicosScreen: React.FC<PerfilTecnicosProps> = ({ navigation }) => 
           >
             <View style={styles.formDot} />
             <View style={styles.formInfo}>
-              <Text style={styles.formName}>{form.beneficiario.nombre}</Text>
+              <Text style={styles.formName}>{form.beneficiario?.nombre || '—'}</Text>
               <Text style={styles.formMeta}>
-                {formatFecha(form.created_at)} · {form.beneficiario.municipio}
+                {formatFecha(form.created_at)} · {form.beneficiario?.municipio || '—'}
               </Text>
             </View>
             <Text style={styles.formType}>
@@ -171,7 +171,7 @@ const PerfilTecnicosScreen: React.FC<PerfilTecnicosProps> = ({ navigation }) => 
               {tecnico.total} visitas · {tecnico.sincronizadas} sincronizadas
             </Text>
             <Text style={styles.tecnicoUltima}>
-              Última: {tecnico.ultimaVisita?.beneficiario.nombre} · {formatFecha(tecnico.ultimaVisita?.created_at || '')}
+              Última: {tecnico.ultimaVisita?.beneficiario?.nombre || '—'} · {formatFecha(tecnico.ultimaVisita?.created_at || '')}
             </Text>
           </View>
           <Text style={styles.chevron}>›</Text>

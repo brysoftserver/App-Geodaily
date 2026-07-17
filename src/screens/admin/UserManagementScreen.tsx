@@ -2,7 +2,7 @@
 // GEODAILY — Gestión de Usuarios (Admin) — CRUD Completo
 // ============================================================
 
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useEffect } from 'react';
 import {
   View,
   Text,
@@ -13,8 +13,10 @@ import {
   Alert,
   Modal,
   ImageBackground,
+  ActivityIndicator,
 } from 'react-native';
 import { COLORS, FONTS, SPACING, BORDER_RADIUS, SHADOWS } from '../../theme';
+import { getUsuarios, crearUsuario, actualizarUsuario, eliminarUsuario, UsuarioBackend } from '../../services/admin.service';
 
 interface UserItem {
   id: string;
@@ -24,6 +26,7 @@ interface UserItem {
   email: string;
   telefono: string;
   estado: 'Activo' | 'Inactivo';
+  esNuevo?: boolean;
 }
 
 const ROLE_CONFIG: Record<string, { label: string; color: string }> = {
@@ -34,19 +37,39 @@ const ROLE_CONFIG: Record<string, { label: string; color: string }> = {
   admin: { label: 'Administrador', color: COLORS.roleAdmin },
 };
 
-const INITIAL_USERS: UserItem[] = [
-  { id: 'tec-001', nombre: 'Carlos Martínez', usuario: 'tecnico1', rol: 'tecnico', email: 'carlos@geodaily.app', telefono: '3151234567', estado: 'Activo' },
-  { id: 'sup-001', nombre: 'María Gómez', usuario: 'supervisor1', rol: 'supervisor', email: 'maria@geodaily.app', telefono: '3157654321', estado: 'Activo' },
-  { id: 'ger-001', nombre: 'Pedro Ramírez', usuario: 'gerente1', rol: 'gerente', email: 'pedro@geodaily.app', telefono: '3105550199', estado: 'Activo' },
-  { id: 'adm-001', nombre: 'Admin GEODAILY', usuario: 'admin1', rol: 'admin', email: 'admin@geodaily.app', telefono: '3109876543', estado: 'Activo' },
-];
+const fromBackend = (u: UsuarioBackend): UserItem => ({
+  id: u.id,
+  nombre: u.nombre,
+  usuario: u.usuario,
+  rol: u.rol,
+  email: u.email || '',
+  telefono: u.telefono || '',
+  estado: u.activo ? 'Activo' : 'Inactivo',
+});
 
 const UserManagementScreen: React.FC = () => {
-  const [users, setUsers] = useState<UserItem[]>(INITIAL_USERS);
+  const [users, setUsers] = useState<UserItem[]>([]);
+  const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
   const [filterRol, setFilterRol] = useState<string>('todos');
   const [modalVisible, setModalVisible] = useState(false);
-  const [editingUser, setEditingUser] = useState<Partial<UserItem> | null>(null);
+  const [editingUser, setEditingUser] = useState<Partial<UserItem & { contrasena: string }> | null>(null);
+
+  const loadUsers = useCallback(async () => {
+    try {
+      const usuarios = await getUsuarios();
+      setUsers(usuarios.map(fromBackend));
+    } catch (error) {
+      console.error('[UserManagement] Error al cargar usuarios:', error);
+      Alert.alert('Error', 'No se pudieron cargar los usuarios. Verifica tu conexión.');
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadUsers();
+  }, [loadUsers]);
 
   const filteredUsers = users.filter((u) => {
     const matchesSearch =
@@ -65,9 +88,10 @@ const UserManagementScreen: React.FC = () => {
 
   const openCreateModal = useCallback(() => {
     setEditingUser({
-      id: `usr-${Date.now()}`,
+      esNuevo: true,
       nombre: '',
       usuario: '',
+      contrasena: '',
       rol: 'tecnico',
       email: '',
       telefono: '',
@@ -81,47 +105,84 @@ const UserManagementScreen: React.FC = () => {
     setModalVisible(true);
   }, []);
 
-  const saveUser = useCallback(() => {
+  const saveUser = useCallback(async () => {
     if (!editingUser || !editingUser.nombre || !editingUser.usuario) {
       Alert.alert('Campos requeridos', 'Nombre y usuario son obligatorios.');
       return;
     }
+    if (editingUser.esNuevo && !editingUser.contrasena) {
+      Alert.alert('Campo requerido', 'La contraseña es obligatoria para un usuario nuevo.');
+      return;
+    }
 
-    setUsers((prev) => {
-      const idx = prev.findIndex((u) => u.id === editingUser.id);
-      if (idx >= 0) {
-        const updated = [...prev];
-        updated[idx] = editingUser as UserItem;
-        return updated;
+    try {
+      if (editingUser.esNuevo && editingUser.contrasena) {
+        await crearUsuario({
+          usuario: editingUser.usuario,
+          contrasena: editingUser.contrasena,
+          nombre: editingUser.nombre,
+          rol: editingUser.rol || 'tecnico',
+          email: editingUser.email,
+          telefono: editingUser.telefono,
+        });
+      } else if (editingUser.id) {
+        await actualizarUsuario(editingUser.id, {
+          nombre: editingUser.nombre,
+          email: editingUser.email,
+          telefono: editingUser.telefono,
+          rol: editingUser.rol,
+        });
       }
-      return [...prev, editingUser as UserItem];
-    });
 
-    setModalVisible(false);
-    setEditingUser(null);
-    Alert.alert('✅ Guardado', 'Usuario guardado correctamente.');
-  }, [editingUser]);
+      await loadUsers();
+      setModalVisible(false);
+      setEditingUser(null);
+      Alert.alert('✅ Guardado', 'Usuario guardado correctamente.');
+    } catch (error: any) {
+      const mensaje = error?.response?.data?.error || 'No se pudo guardar el usuario.';
+      Alert.alert('Error', mensaje);
+    }
+  }, [editingUser, loadUsers]);
 
-  const toggleUserStatus = useCallback((userId: string) => {
-    setUsers((prev) =>
-      prev.map((u) =>
-        u.id === userId
-          ? { ...u, estado: u.estado === 'Activo' ? 'Inactivo' : 'Activo' }
-          : u
-      )
-    );
-  }, []);
+  const toggleUserStatus = useCallback(async (userId: string) => {
+    const user = users.find((u) => u.id === userId);
+    if (!user) return;
+    try {
+      await actualizarUsuario(userId, { activo: user.estado !== 'Activo' });
+      await loadUsers();
+    } catch (error) {
+      console.error('[UserManagement] Error al cambiar estado:', error);
+      Alert.alert('Error', 'No se pudo cambiar el estado del usuario.');
+    }
+  }, [users, loadUsers]);
 
   const deleteUser = useCallback((userId: string) => {
-    Alert.alert('Eliminar usuario', '¿Estás seguro de eliminar este usuario?', [
+    Alert.alert('Desactivar usuario', '¿Estás seguro de desactivar este usuario? No podrá iniciar sesión, pero su historial se conserva.', [
       { text: 'Cancelar', style: 'cancel' },
       {
-        text: 'Eliminar',
+        text: 'Desactivar',
         style: 'destructive',
-        onPress: () => setUsers((prev) => prev.filter((u) => u.id !== userId)),
+        onPress: async () => {
+          try {
+            await eliminarUsuario(userId);
+            await loadUsers();
+          } catch (error) {
+            console.error('[UserManagement] Error al desactivar:', error);
+            Alert.alert('Error', 'No se pudo desactivar el usuario.');
+          }
+        },
       },
     ]);
-  }, []);
+  }, [loadUsers]);
+
+  if (loading) {
+    return (
+      <View style={[styles.container, styles.loadingContainer]}>
+        <ActivityIndicator size="large" color={COLORS.primary} />
+        <Text style={styles.emptyText}>Cargando usuarios...</Text>
+      </View>
+    );
+  }
 
   return (
     <View style={styles.container}>
@@ -214,9 +275,7 @@ const UserManagementScreen: React.FC = () => {
         <View style={styles.modalOverlay}>
           <ScrollView contentContainerStyle={styles.modalContent}>
             <Text style={styles.modalTitle}>
-              {editingUser && users.some((u) => u.id === editingUser.id)
-                ? '✏️ Editar Usuario'
-                : '➕ Nuevo Usuario'}
+              {editingUser?.esNuevo ? '➕ Nuevo Usuario' : '✏️ Editar Usuario'}
             </Text>
 
             <Text style={styles.fieldLabel}>Nombre *</Text>
@@ -236,7 +295,23 @@ const UserManagementScreen: React.FC = () => {
               placeholder="Nombre de usuario"
               placeholderTextColor={COLORS.textLight}
               autoCapitalize="none"
+              editable={!!editingUser?.esNuevo}
             />
+
+            {editingUser?.esNuevo && (
+              <>
+                <Text style={styles.fieldLabel}>Contraseña *</Text>
+                <TextInput
+                  style={styles.modalInput}
+                  value={editingUser?.contrasena || ''}
+                  onChangeText={(t) => setEditingUser((prev) => ({ ...prev, contrasena: t }))}
+                  placeholder="Contraseña inicial"
+                  placeholderTextColor={COLORS.textLight}
+                  secureTextEntry
+                  autoCapitalize="none"
+                />
+              </>
+            )}
 
             <Text style={styles.fieldLabel}>Email</Text>
             <TextInput
@@ -297,6 +372,7 @@ const UserManagementScreen: React.FC = () => {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: COLORS.background },
+  loadingContainer: { justifyContent: 'center', alignItems: 'center', gap: SPACING.md },
   // Stats
   statsRow: {
     flexDirection: 'row',
@@ -368,7 +444,7 @@ const styles = StyleSheet.create({
   chipText: { fontSize: FONTS.sizes.xs, color: COLORS.textSecondary },
   chipTextActive: { color: COLORS.textOnPrimary, fontWeight: FONTS.weights.semibold },
   // List
-  listContent: { flexGrow: 1, padding: SPACING.md, paddingBottom: SPACING.xl },
+  listContent: { flexGrow: 1, padding: SPACING.md, paddingBottom: SPACING.xxl },
   empty: { alignItems: 'center', paddingVertical: SPACING.xl },
   emptyText: { fontSize: FONTS.sizes.md, color: COLORS.textSecondary },
   userCard: {

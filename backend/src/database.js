@@ -4,12 +4,16 @@
 
 const { Pool } = require('pg');
 
+if (!process.env.PG_PASSWORD) {
+  throw new Error('PG_PASSWORD no configurado. Define la variable de entorno PG_PASSWORD antes de iniciar el servidor.');
+}
+
 const pool = new Pool({
   host: process.env.PG_HOST || 'localhost',
   port: parseInt(process.env.PG_PORT || '5432'),
   database: process.env.PG_DB || 'geodaily',
   user: process.env.PG_USER || 'geodaily_admin',
-  password: process.env.PG_PASSWORD || 'GeoDaily2026_S3gura!',
+  password: process.env.PG_PASSWORD,
   max: 20,
   idleTimeoutMillis: 30000,
   connectionTimeoutMillis: 5000,
@@ -165,6 +169,17 @@ async function initSchema() {
       created_at TIMESTAMPTZ DEFAULT NOW()
     )`,
 
+    `CREATE TABLE IF NOT EXISTS visitas_programadas (
+      id VARCHAR(100) PRIMARY KEY,
+      usuario_id VARCHAR(20) REFERENCES usuarios(id),
+      titulo VARCHAR(200),
+      ubicacion VARCHAR(200),
+      fecha DATE NOT NULL,
+      estado VARCHAR(20) DEFAULT 'pendiente',
+      timestamp_dispositivo TIMESTAMPTZ,
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    )`,
+
     `CREATE TABLE IF NOT EXISTS actividad_log (
       id SERIAL PRIMARY KEY,
       usuario_id VARCHAR(20),
@@ -173,6 +188,31 @@ async function initSchema() {
       ip VARCHAR(50),
       created_at TIMESTAMPTZ DEFAULT NOW()
     )`,
+
+    `CREATE TABLE IF NOT EXISTS beneficiarios (
+      item INTEGER PRIMARY KEY,
+      corregimiento VARCHAR(100) NOT NULL,
+      vereda VARCHAR(100) NOT NULL,
+      nombre_completo VARCHAR(200) NOT NULL,
+      cedula VARCHAR(30) NOT NULL,
+      tecnico_asignado_id VARCHAR(20),
+      tecnico_asignado_nombre VARCHAR(200),
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      updated_at TIMESTAMPTZ DEFAULT NOW()
+    )`,
+
+    `CREATE TABLE IF NOT EXISTS revisiones_formulario (
+      id SERIAL PRIMARY KEY,
+      formulario_id VARCHAR(100) NOT NULL,
+      revisor_id VARCHAR(20) NOT NULL,
+      revisor_nombre VARCHAR(200),
+      revisor_rol VARCHAR(20) NOT NULL,
+      tipo VARCHAR(20) NOT NULL,
+      comentario TEXT,
+      datos_formulario_json JSONB,
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_revisiones_formulario ON revisiones_formulario(formulario_id)`,
 
     `CREATE INDEX IF NOT EXISTS idx_formularios_usuario ON formularios(usuario_id)`,
     `CREATE INDEX IF NOT EXISTS idx_formularios_tipo ON formularios(tipo)`,
@@ -196,7 +236,42 @@ async function initSchema() {
     }
   }
 
+  // Migración: agregar tecnico_json a formularios (para el agrupamiento
+  // de visitas por técnico en el listado jerárquico de roles superiores)
+  try {
+    await query(`ALTER TABLE formularios ADD COLUMN tecnico_json JSONB DEFAULT '{}'::jsonb`);
+    console.log('[DB] ✅ Columna tecnico_json agregada a formularios');
+  } catch (err) {
+    if (!err.message.includes('already exists')) {
+      console.error('[DB] Error agregando tecnico_json:', err.message);
+    }
+  }
+
+  await seedBeneficiarios();
+
   console.log('[DB] ✅ Esquema de base de datos inicializado');
+}
+
+// Siembra inicial de los 300 beneficiarios del proyecto (una sola vez,
+// solo si la tabla está vacía). Fuente: data/beneficiarios-seed.json,
+// generado desde la base de datos oficial del proyecto.
+async function seedBeneficiarios() {
+  try {
+    const { count } = await queryOne('SELECT COUNT(*)::int AS count FROM beneficiarios');
+    if (count > 0) return;
+
+    const seed = require('./data/beneficiarios-seed.json');
+    for (const b of seed) {
+      await query(
+        `INSERT INTO beneficiarios (item, corregimiento, vereda, nombre_completo, cedula)
+         VALUES ($1, $2, $3, $4, $5) ON CONFLICT (item) DO NOTHING`,
+        [b.item, b.corregimiento, b.vereda, b.nombre_completo, b.cedula]
+      );
+    }
+    console.log(`[DB] ✅ Beneficiarios sembrados: ${seed.length}`);
+  } catch (err) {
+    console.error('[DB] Error sembrando beneficiarios:', err.message);
+  }
 }
 
 module.exports = {

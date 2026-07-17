@@ -222,6 +222,32 @@ export function generarSelloBiometrico(nombreBeneficiario: string): string {
 /**
  * Construir el HTML completo del PDF
  */
+// ============================================================
+// Helper: renderiza una fila label:valor para las cards
+// ============================================================
+function r(label: string, value: string | number | null | undefined, fallback = '—'): string {
+  const v = value != null && value !== '' ? String(value) : fallback;
+  return `<div class="row"><span class="label">${escapeHtml(label)}</span><span class="value">${escapeHtml(v)}</span></div>`;
+}
+
+// ============================================================
+// Helper: renderiza un par de secciones en grid 2 columnas
+// ============================================================
+function card(iconTitle: string, contenido: string): string {
+  return `
+    <div class="card">
+      <h3 class="card-title">${iconTitle}</h3>
+      ${contenido}
+    </div>`;
+}
+
+function grid2(izq: string, der: string): string {
+  return `<div class="grid-2">${izq}${der}</div>`;
+}
+
+// ============================================================
+// construirHTML — Formulario de Visita Técnica (2 columnas)
+// ============================================================
 function construirHTML(
   form: Formulario,
   fotosHtml: string,
@@ -229,323 +255,343 @@ function construirHTML(
   firmaTecHtml: string,
   huellaHtml: string
 ): string {
+  const sd = form.sociodemografico;
+  const gr = form.georeferencia;
+  const clima = form.clima?.actual;
+
+  // --- Sociodemográfico (si existe) ---
+  const socioHtml = sd ? card('👨‍👩‍👧‍👦 Datos Sociodemográficos', [
+    r('Género', sd.genero),
+    r('Escolaridad', sd.escolaridad),
+    sd.etnia ? r('Etnia', sd.etnia) : '',
+    r('Personas a cargo', sd.personas_cargo),
+    r('Hectáreas', sd.hectareas),
+    r('Vive en la finca', sd.vive_en_finca ? 'Sí' : 'No'),
+    r('Asociado', sd.asociado ? 'Sí' : 'No'),
+    sd.asociacion_nombre ? r('Asociación', sd.asociacion_nombre) : '',
+    sd.telefono_emergencia ? r('Tel. emergencia', sd.telefono_emergencia) : '',
+  ].join('')) : '';
+
+  // --- Georeferencia (si existe) ---
+  const geoHtml = gr ? card('🌐 Georeferencia', [
+    r('Latitud', gr.coordenadas.latitud.toFixed(6)),
+    r('Longitud', gr.coordenadas.longitud.toFixed(6)),
+    gr.coordenadas.altitud ? r('Altitud', `${gr.coordenadas.altitud.toFixed(1)} m`) : '',
+    r('Huso UTM', gr.huso_utm),
+    r('Banda UTM', gr.banda_utm),
+    r('Código MGRS', gr.codigo_mgrs),
+    r('Zona horaria', gr.zona_horaria),
+    r('País', gr.pais),
+  ].join('')) : '';
+
+  // --- Clima ---
+  const climaHtml = clima ? card('🌤 Condiciones Ambientales', [
+    clima.ubicacion?.nombre ? r('Lugar', clima.ubicacion.nombre) : '',
+    clima.temperatura?.actual != null ? r('Temperatura', `${Math.round(clima.temperatura.actual)}°C`) : '',
+    clima.temperatura?.sensacion_termica != null ? r('Sensación térmica', `${Math.round(clima.temperatura.sensacion_termica)}°C`) : '',
+    clima.humedad != null ? r('Humedad', `${clima.humedad}%`) : '',
+    clima.viento?.velocidad != null ? r('Viento', `${Math.round(clima.viento.velocidad)} m/s`) : '',
+    clima.nubosidad != null ? r('Nubosidad', `${clima.nubosidad}%`) : '',
+    clima.presion != null ? r('Presión', `${clima.presion} hPa`) : '',
+    clima.visibilidad != null ? r('Visibilidad', `${clima.visibilidad} km`) : '',
+    clima.clima ? r('Condición', clima.clima) : '',
+  ].join('')) : '';
+
+  // --- Videos como anexo ---
+  const videos = (form.fotos || []).filter((f) => f.tipo === 'video');
+  const anexoVideosHtml = videos.length > 0 ? `
+    <div class="section annex-videos">
+      <h2>📎 ANEXO — VIDEOS DE LA VISITA (${videos.length})</h2>
+      <p class="annex-note">Los videos no pueden incrustarse en el PDF. Quedan almacenados en el servidor (MinIO, carpeta videos/) como evidencia complementaria.</p>
+      ${videos.map((v, i) => `
+        <div class="video-ref">
+          <span class="video-num">Video ${i + 1}</span>
+          <span class="video-info">${formatFecha(v.timestamp)} · 📍 ${v.coordenadas ? `${v.coordenadas.latitud?.toFixed(6)}, ${v.coordenadas.longitud?.toFixed(6)}` : '—'}</span>
+        </div>`).join('')}
+    </div>` : '';
+
   return `<!DOCTYPE html>
 <html lang="es">
 <head>
   <meta charset="utf-8" />
-  <title>Formulario ${form.id}</title>
+  <title>Visita Técnica — ${escapeHtml(form.beneficiario.nombre)}</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body {
       font-family: 'Helvetica Neue', Arial, sans-serif;
-      margin: 40px;
+      margin: 32px;
       color: #2d3436;
-      line-height: 1.6;
+      line-height: 1.5;
     }
+    /* --- HEADER --- */
     .header {
       text-align: center;
       border-bottom: 3px solid #1B5E20;
-      padding-bottom: 16px;
-      margin-bottom: 24px;
+      padding-bottom: 14px;
+      margin-bottom: 20px;
     }
-    .header h1 {
+    .header h1 { color: #1B5E20; font-size: 22px; margin-bottom: 2px; }
+    .header p { color: #636e72; font-size: 12px; }
+    /* --- GRID 2 COLUMNAS --- */
+    .grid-2 {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+      margin-bottom: 16px;
+    }
+    /* --- CARDS --- */
+    .card {
+      background: #f8f9fa;
+      border-radius: 8px;
+      padding: 14px 16px;
+      border-left: 4px solid #1B5E20;
+      break-inside: avoid;
+    }
+    .card-title {
       color: #1B5E20;
-      font-size: 24px;
-      margin-bottom: 4px;
-    }
-    .header p {
-      color: #636e72;
       font-size: 13px;
+      font-weight: bold;
+      border-bottom: 1px solid #e0e0e0;
+      padding-bottom: 6px;
+      margin-bottom: 8px;
     }
+    .row {
+      display: flex;
+      font-size: 11.5px;
+      margin: 2px 0;
+    }
+    .label {
+      font-weight: bold;
+      color: #555;
+      min-width: 110px;
+      flex-shrink: 0;
+    }
+    .value {
+      flex: 1;
+      color: #2d3436;
+    }
+    /* --- SECCIÓN FULL WIDTH (cuando algo necesita ancho completo) --- */
     .section {
-      margin: 20px 0;
-      padding: 16px 20px;
+      margin: 16px 0;
+      padding: 14px 16px;
       background: #f8f9fa;
       border-radius: 8px;
       border-left: 4px solid #1B5E20;
     }
     .section h2 {
       color: #1B5E20;
-      font-size: 16px;
-      margin-bottom: 12px;
+      font-size: 14px;
+      margin-bottom: 10px;
       border-bottom: 1px solid #e0e0e0;
-      padding-bottom: 6px;
+      padding-bottom: 5px;
     }
-    .row {
-      display: flex;
-      margin: 3px 0;
-      font-size: 13px;
-    }
-    .label {
-      font-weight: bold;
-      color: #555;
-      min-width: 140px;
-    }
-    .value {
-      flex: 1;
+    .desc-detallada {
+      font-size: 12px;
       color: #2d3436;
+      background: #fff;
+      padding: 8px 10px;
+      border-radius: 4px;
+      border: 1px solid #e0e0e0;
+      margin-top: 4px;
+      line-height: 1.5;
+    }
+    /* --- FOTOS EN GRILLA 2 COLUMNAS --- */
+    .photo-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
     }
     .foto-item {
-      margin: 16px 0;
-      padding: 12px;
+      padding: 10px;
       background: #fff;
       border-radius: 6px;
       border: 1px solid #e0e0e0;
-      page-break-inside: avoid;
+      break-inside: avoid;
+    }
+    .evidencia-label {
+      font-size: 11px;
+      color: #0984e3;
+      font-weight: bold;
+      margin-bottom: 6px;
     }
     .foto-img {
       width: 100%;
-      max-width: 350px;
-      max-height: 240px;
       height: auto;
-      border-radius: 4px;
-      margin: 8px auto;
-      display: block;
+      max-height: 200px;
       object-fit: cover;
+      border-radius: 4px;
+      display: block;
     }
-    .foto-coords {
-      font-size: 11px;
+    .foto-coords, .foto-heading {
+      font-size: 10px;
       color: #636e72;
       font-family: monospace;
+      margin-top: 3px;
     }
-    .foto-heading {
-      font-size: 11px;
-      color: #0984e3;
-      font-family: monospace;
-    }
-    .evidencia-item {
-      margin: 12px 0;
-      padding: 12px;
-      background: #fff;
-      border-radius: 6px;
-      border: 1px solid #e0e0e0;
-      page-break-inside: avoid;
-    }
-    .evidencia-label {
-      font-size: 13px;
-      color: #2d3436;
-      margin-bottom: 8px;
+    /* --- FIRMAS LADO A LADO --- */
+    .firmas-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+      margin-top: 8px;
     }
     .firma-item {
-      display: inline-block;
-      vertical-align: top;
-      margin: 8px;
       padding: 12px;
       background: #fff;
       border-radius: 6px;
       border: 1px solid #e0e0e0;
-      page-break-inside: avoid;
-      width: calc(50% - 16px);
-      min-width: 200px;
+      break-inside: avoid;
     }
-    .firmas-contiguo {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 8px;
-      justify-content: center;
-    }
+    .firma-item .evidencia-label { font-size: 11px; color: #6c5ce7; }
     .firma-img {
       max-width: 100%;
-      max-height: 100px;
+      max-height: 80px;
       border: 1px dashed #b2bec3;
       border-radius: 4px;
-      padding: 8px;
+      padding: 6px;
       background: #fff;
+      display: block;
+      margin: 0 auto;
     }
-    /* --- Sello de verificación biométrica --- */
+    /* --- HUELLA --- */
+    .huella-wrap {
+      display: flex;
+      justify-content: center;
+      margin-top: 8px;
+    }
     .huella-sello {
-      margin: 16px 0;
-      page-break-inside: avoid;
+      max-width: 480px;
+      break-inside: avoid;
     }
     .huella-sello-inner {
       background: linear-gradient(135deg, #f0fdf4 0%, #dcfce7 100%);
       border: 2px solid #1B5E20;
       border-radius: 12px;
-      padding: 20px;
+      padding: 16px;
       box-shadow: 0 2px 8px rgba(27, 94, 32, 0.15);
     }
     .huella-sello-header {
       display: flex;
       align-items: center;
-      gap: 16px;
+      gap: 14px;
       border-bottom: 1px solid #bbf7d0;
-      padding-bottom: 14px;
-      margin-bottom: 14px;
+      padding-bottom: 10px;
+      margin-bottom: 10px;
     }
-    .huella-sello-img {
-      width: 64px;
-      height: 64px;
-      flex-shrink: 0;
+    .huella-sello-img { width: 52px; height: 52px; flex-shrink: 0; }
+    .huella-sello-titles { flex: 1; }
+    .huella-sello-verificado { font-size: 18px; font-weight: bold; color: #15803d; }
+    .huella-sello-label { font-size: 12px; color: #16a34a; }
+    .huella-sello-body { margin-bottom: 10px; }
+    .huella-sello-table { width: 100%; border-collapse: collapse; }
+    .huella-sello-table td { padding: 3px 6px; font-size: 12px; }
+    .huella-sello-label-cell { color: #555; font-weight: bold; width: 110px; }
+    .huella-sello-value-cell { color: #2d3436; }
+    .huella-sello-exitoso { display: inline-block; background: #15803d; color: #fff; font-size: 11px; font-weight: bold; padding: 2px 10px; border-radius: 10px; }
+    .huella-sello-footer { text-align: center; border-top: 1px solid #bbf7d0; padding-top: 8px; }
+    .huella-sello-stamp { display: inline-block; font-size: 12px; font-weight: bold; color: #15803d; letter-spacing: 1px; border: 2px solid #15803d; border-radius: 6px; padding: 3px 14px; transform: rotate(-2deg); }
+    /* --- ANEXO VIDEOS --- */
+    .annex-videos { border-left-color: #0984e3 !important; }
+    .annex-note { font-size: 11px; color: #636e72; margin-bottom: 8px; }
+    .video-ref {
+      display: flex; gap: 12px; font-size: 11px;
+      padding: 4px 0; border-bottom: 1px dotted #e0e0e0;
     }
-    .huella-sello-titles {
-      flex: 1;
-    }
-    .huella-sello-verificado {
-      font-size: 20px;
-      font-weight: bold;
-      color: #15803d;
-    }
-    .huella-sello-label {
-      font-size: 13px;
-      color: #16a34a;
-    }
-    .huella-sello-body {
-      margin-bottom: 14px;
-    }
-    .huella-sello-table {
-      width: 100%;
-      border-collapse: collapse;
-    }
-    .huella-sello-table td {
-      padding: 4px 8px;
-      font-size: 13px;
-    }
-    .huella-sello-label-cell {
-      color: #555;
-      font-weight: bold;
-      width: 120px;
-    }
-    .huella-sello-value-cell {
-      color: #2d3436;
-    }
-    .huella-sello-exitoso {
-      display: inline-block;
-      background: #15803d;
-      color: #fff;
-      font-size: 12px;
-      font-weight: bold;
-      padding: 2px 12px;
-      border-radius: 10px;
-    }
-    .huella-sello-footer {
-      text-align: center;
-      border-top: 1px solid #bbf7d0;
-      padding-top: 12px;
-    }
-    .huella-sello-stamp {
-      display: inline-block;
-      font-size: 14px;
-      font-weight: bold;
-      color: #15803d;
-      letter-spacing: 1px;
-      border: 2px solid #15803d;
-      border-radius: 6px;
-      padding: 4px 16px;
-      transform: rotate(-2deg);
-    }
-    /* --- Fin sello biométrico --- */
-    .no-data {
-      font-size: 12px;
-      color: #b2bec3;
-      font-style: italic;
-      padding: 8px 0;
-    }
+    .video-num { font-weight: bold; color: #0984e3; min-width: 60px; }
+    .video-info { color: #636e72; }
+    /* --- NO DATA & FOOTER --- */
+    .no-data { font-size: 11px; color: #b2bec3; font-style: italic; padding: 6px 0; }
     .footer {
-      margin-top: 40px;
-      padding-top: 16px;
+      margin-top: 32px; padding-top: 12px;
       border-top: 1px solid #e0e0e0;
-      text-align: center;
-      font-size: 11px;
-      color: #b2bec3;
-    }
-    .desc-detallada {
-      font-size: 13px;
-      color: #2d3436;
-      background: #fff;
-      padding: 10px;
-      border-radius: 4px;
-      border: 1px solid #e0e0e0;
-      margin-top: 6px;
-      line-height: 1.5;
+      text-align: center; font-size: 10px; color: #b2bec3;
     }
     @media print {
-      .foto-img { max-width: 100%; }
-      .section { break-inside: avoid; }
+      .grid-2 { break-inside: avoid; }
+      .card { break-inside: avoid; }
+      .photo-grid { break-inside: avoid; }
     }
   </style>
 </head>
 <body>
   <div class="header">
-    <h1>🌱 GEODAILY — Formulario de Campo</h1>
-    <p><strong>ID:</strong> ${escapeHtml(form.id)} | <strong>Tipo:</strong> ${form.tipo === 'visita_tecnica' ? 'Visita Técnica' : form.tipo === 'caracterizacion' ? 'Caracterización' : 'Plantación'} | <strong>Fecha:</strong> ${formatFecha(form.created_at)}</p>
+    <h1>🌱 GEODAILY — Formulario de Visita Técnica</h1>
+    <p><strong>ID:</strong> ${escapeHtml(form.id)} · <strong>Fecha:</strong> ${formatFecha(form.created_at)}</p>
   </div>
 
-  <!-- Datos del Técnico -->
-  <div class="section">
-    <h2>👤 Datos del Técnico</h2>
-    <div class="row"><span class="label">Nombre:</span><span class="value">${escapeHtml(form.tecnico.nombre)}</span></div>
-    <div class="row"><span class="label">Cédula:</span><span class="value">${escapeHtml(form.tecnico.cedula)}</span></div>
-    <div class="row"><span class="label">Teléfono:</span><span class="value">${escapeHtml(form.tecnico.telefono || '—')}</span></div>
-    <div class="row"><span class="label">Email:</span><span class="value">${escapeHtml(form.tecnico.email || '—')}</span></div>
-  </div>
+  <!-- FILA 1: Técnico + Beneficiario -->
+  ${grid2(
+    card('👤 Técnico', [
+      r('Nombre', form.tecnico.nombre),
+      r('Cédula', form.tecnico.cedula),
+      r('Teléfono', form.tecnico.telefono),
+      r('Email', form.tecnico.email),
+    ].join('')),
+    card('👥 Beneficiario', [
+      r('Nombre', form.beneficiario.nombre),
+      r('Cédula', form.beneficiario.cedula),
+      r('Teléfono', form.beneficiario.telefono),
+      r('Departamento', form.beneficiario.departamento),
+      r('Municipio', form.beneficiario.municipio),
+      r('Vereda', form.beneficiario.vereda),
+      r('Finca', form.beneficiario.finca),
+    ].join(''))
+  )}
 
-  <!-- Datos del Beneficiario -->
-  <div class="section">
-    <h2>👥 Datos del Beneficiario</h2>
-    <div class="row"><span class="label">Nombre:</span><span class="value">${escapeHtml(form.beneficiario.nombre)}</span></div>
-    <div class="row"><span class="label">Cédula:</span><span class="value">${escapeHtml(form.beneficiario.cedula || '—')}</span></div>
-    <div class="row"><span class="label">Teléfono:</span><span class="value">${escapeHtml(form.beneficiario.telefono || '—')}</span></div>
-    <div class="row"><span class="label">Departamento:</span><span class="value">${escapeHtml(form.beneficiario.departamento || '—')}</span></div>
-    <div class="row"><span class="label">Municipio:</span><span class="value">${escapeHtml(form.beneficiario.municipio || '—')}</span></div>
-    <div class="row"><span class="label">Vereda:</span><span class="value">${escapeHtml(form.beneficiario.vereda || '—')}</span></div>
-    <div class="row"><span class="label">Finca:</span><span class="value">${escapeHtml(form.beneficiario.finca || '—')}</span></div>
-  </div>
+  <!-- FILA 2: Actividad + Ubicación GPS -->
+  ${grid2(
+    card('📋 Actividad Realizada', [
+      r('Tipo', form.actividad.descripcion),
+    ].join('')),
+    card('📍 Ubicación', [
+      r('Latitud', form.coordenadas?.latitud?.toFixed(6)),
+      r('Longitud', form.coordenadas?.longitud?.toFixed(6)),
+      form.coordenadas?.altitud ? r('Altitud', `${form.coordenadas.altitud.toFixed(1)} m`) : '',
+      form.coordenadas?.precision_gps ? r('Precisión', `±${form.coordenadas.precision_gps} m`) : '',
+    ].join(''))
+  )}
 
-  <!-- Actividad Realizada -->
+  <!-- Descripción detallada (full width si existe) -->
+  ${form.actividad.descripcion_detallada ? `
   <div class="section">
-    <h2>📋 Actividad Realizada</h2>
-    <div class="row"><span class="label">Tipo:</span><span class="value">${escapeHtml(form.actividad.descripcion || '—')}</span></div>
-    ${form.actividad.descripcion_detallada ? `
-    <div class="row"><span class="label">Descripción detallada:</span></div>
+    <h2>📝 Descripción Detallada</h2>
     <div class="desc-detallada">${escapeHtml(form.actividad.descripcion_detallada)}</div>
-    ` : ''}
-    <div class="row" style="margin-top:8px;"><span class="label">Observaciones:</span><span class="value">${escapeHtml(form.actividad.observaciones || '—')}</span></div>
-    <div class="row"><span class="label">Recomendaciones:</span><span class="value">${escapeHtml(form.actividad.recomendaciones || '—')}</span></div>
-  </div>
+  </div>` : ''}
 
-  <!-- Ubicación -->
-  <div class="section">
-    <h2>📍 Ubicación Geográfica</h2>
-    <div class="row"><span class="label">Latitud:</span><span class="value">${form.coordenadas?.latitud?.toFixed(6) || '—'}</span></div>
-    <div class="row"><span class="label">Longitud:</span><span class="value">${form.coordenadas?.longitud?.toFixed(6) || '—'}</span></div>
-    ${form.coordenadas?.altitud ? `<div class="row"><span class="label">Altitud:</span><span class="value">${form.coordenadas.altitud.toFixed(1)} m</span></div>` : ''}
-    ${form.coordenadas?.precision_gps ? `<div class="row"><span class="label">Precisión:</span><span class="value">±${form.coordenadas.precision_gps} m</span></div>` : ''}
-  </div>
+  <!-- FILA 3: Observaciones + Recomendaciones -->
+  ${(form.actividad.observaciones || form.actividad.recomendaciones) ? grid2(
+    form.actividad.observaciones ? card('🔍 Observaciones', `<div class="desc-detallada">${escapeHtml(form.actividad.observaciones)}</div>`) : '',
+    form.actividad.recomendaciones ? card('💡 Recomendaciones', `<div class="desc-detallada">${escapeHtml(form.actividad.recomendaciones)}</div>`) : ''
+  ) : ''}
 
-  <!-- DATOS CLIMÁTICOS -->
-  ${form.clima?.actual ? `
-  <div class="section">
-    <h2>🌤 Condiciones Ambientales</h2>
-    <div class="row"><span class="label">Ubicación:</span><span class="value">${escapeHtml(form.clima.actual.ubicacion?.nombre || form.clima.ubicacion?.latitud?.toFixed(4) + ', ' + form.clima.ubicacion?.longitud?.toFixed(4) || '—')}</span></div>
-    <div class="row"><span class="label">Temperatura:</span><span class="value">${form.clima.actual.temperatura?.actual != null ? Math.round(form.clima.actual.temperatura.actual) + '°C' : '—'}</span></div>
-    <div class="row"><span class="label">Sensación térmica:</span><span class="value">${form.clima.actual.temperatura?.sensacion_termica != null ? Math.round(form.clima.actual.temperatura.sensacion_termica) + '°C' : '—'}</span></div>
-    <div class="row"><span class="label">Humedad:</span><span class="value">${form.clima.actual.humedad != null ? form.clima.actual.humedad + '%' : '—'}</span></div>
-    <div class="row"><span class="label">Viento:</span><span class="value">${form.clima.actual.viento?.velocidad != null ? Math.round(form.clima.actual.viento.velocidad) + ' m/s' : '—'}</span></div>
-    <div class="row"><span class="label">Nubosidad:</span><span class="value">${form.clima.actual.nubosidad != null ? form.clima.actual.nubosidad + '%' : '—'}</span></div>
-    <div class="row"><span class="label">Presión:</span><span class="value">${form.clima.actual.presion != null ? form.clima.actual.presion + ' hPa' : '—'}</span></div>
-    <div class="row"><span class="label">Visibilidad:</span><span class="value">${form.clima.actual.visibilidad != null ? form.clima.actual.visibilidad + ' km' : '—'}</span></div>
-  </div>
-  ` : ''}
+  <!-- FILA 4: Clima + Sociodemográfico -->
+  ${(climaHtml || socioHtml) ? grid2(climaHtml, socioHtml) : ''}
 
-  <!-- EVIDENCIAS AL FINAL (como documentos oficiales) -->
+  <!-- FILA 5: Georeferencia (si existe) -->
+  ${geoHtml ? `<div class="section" style="border-left-color:#6c5ce7;"><h2>🌐 Georeferencia del Terreno</h2><div class="grid-2">${geoHtml}</div></div>` : ''}
+
+  <!-- EVIDENCIAS DE CAMPO -->
   <div class="section">
     <h2>📸 Evidencias de Campo</h2>
 
-    <!-- FOTOS -->
-    <h3 style="color:#0984e3;font-size:14px;margin:12px 0 4px;">Fotografías</h3>
-    ${fotosHtml}
+    <!-- FOTOS en grilla 2 columnas -->
+    <p style="font-size:12px;font-weight:bold;color:#0984e3;margin:8px 0 4px;">Fotografías</p>
+    <div class="photo-grid">${fotosHtml}</div>
 
-    <!-- FIRMAS (contiguas, lado a lado) -->
-    <h3 style="color:#0984e3;font-size:14px;margin:16px 0 4px;">Firmas</h3>
-    <div class="firmas-contiguo">
+    <!-- FIRMAS lado a lado -->
+    <p style="font-size:12px;font-weight:bold;color:#6c5ce7;margin:14px 0 4px;">Firmas</p>
+    <div class="firmas-grid">
       ${firmaBenefHtml}
       ${firmaTecHtml}
     </div>
 
     <!-- HUELLA BIOMÉTRICA -->
-    <h3 style="color:#0984e3;font-size:14px;margin:16px 0 4px;">Registro Biométrico</h3>
-    ${huellaHtml}
+    <p style="font-size:12px;font-weight:bold;color:#15803d;margin:14px 0 4px;">Registro Biométrico</p>
+    <div class="huella-wrap">${huellaHtml}</div>
   </div>
+
+  <!-- ANEXO: Videos -->
+  ${anexoVideosHtml}
 
   <div class="footer">
     <p>Documento generado por GEODAILY — ${new Date().toISOString()}</p>
@@ -567,103 +613,195 @@ function construirHTMLCaracterizacion(
 ): string {
   const c = (form as any).caracterizacion_nueva || {};
 
-  // Extraer sub-componentes con shorthand seguro
+  // Sub-componentes de la Encuesta Social AgroAmbiental (texto oficial)
   const cs = c.componente_social || {};
+  const cf = c.caracterizacion_finca || {};
   const cp = c.componente_productivo || {};
-  const ca = c.componente_agroambiental || {};
   const asuelo = c.analisis_suelo || {};
+  const ca = c.componente_agroambiental || {};
   const rec = c.recomendaciones || {};
+  const aco = c.acompaniamiento || {};
 
-  const row = (label: string, val: string | undefined | null) =>
-    val ? `<div class="row"><span class="label">${label}:</span><span class="value">${escapeHtml(val)}</span></div>` : '';
+  // Bloque pregunta+respuesta (siempre se imprime — la encuesta completa)
+  const q = (num: string, texto: string, respuesta?: string | null) => `
+    <div class="q">
+      <div class="q-t">${num}. ${escapeHtml(texto)}</div>
+      <div class="q-a">${respuesta ? escapeHtml(respuesta) : '—'}</div>
+    </div>`;
 
-  const section = (title: string, icon: string, rows: string) =>
-    rows ? `
+  // Respuesta + "Especifique" opcional en la misma celda
+  const conOtro = (val?: string, otro?: string) =>
+    val ? (otro ? `${val} — ${otro}` : val) : '';
+
+  const seccion = (titulo: string, contenido: string) => `
     <div class="section">
-      <h2>${icon} ${title}</h2>
-      ${rows}
-    </div>` : '';
+      <h2>${titulo}</h2>
+      <div class="cols">${contenido}</div>
+    </div>`;
 
-  // ---- Datos Generales (mapeo correcto según DatosCaracterizacionNueva) ----
+  // ---- Encabezado oficial ----
   const datosGenerales = `
-    <div class="row"><span class="label">Municipio:</span><span class="value">${escapeHtml(c.municipio || '—')}</span></div>
-    <div class="row"><span class="label">Fecha:</span><span class="value">${escapeHtml(c.fecha || '—')}</span></div>
-    <div class="row"><span class="label">Vereda:</span><span class="value">${escapeHtml(c.vereda || '—')}</span></div>
-    <div class="row"><span class="label">N° Encuesta:</span><span class="value">${escapeHtml(c.encuesta_numero || '—')}</span></div>
-    <div class="row"><span class="label">Productor:</span><span class="value">${escapeHtml(c.productor_nombre || '—')}</span></div>
-    <div class="row"><span class="label">Documento:</span><span class="value">${escapeHtml(c.documento || '—')}</span></div>
-    <div class="row"><span class="label">Teléfono:</span><span class="value">${escapeHtml(c.telefono || '—')}</span></div>
-    <div class="row"><span class="label">Técnico:</span><span class="value">${escapeHtml(c.tecnico_responsable || '—')}</span></div>
-    <div class="row"><span class="label">Cédula del Técnico:</span><span class="value">${escapeHtml(c.tecnico_cedula || '—')}</span></div>
-    <div class="row"><span class="label">Finca / Predio:</span><span class="value">${escapeHtml(c.finca || '—')}</span></div>
+    ${q('•', 'Fecha', c.fecha || formatFecha(form.created_at))}
+    ${q('•', 'Municipio', c.municipio)}
+    ${q('•', 'Vereda', c.vereda)}
+    ${q('•', 'Nombre del productor', c.productor_nombre)}
+    ${q('•', 'Edad (años)', c.edad)}
+    ${q('•', 'Sexo', conOtro(c.sexo, c.sexo_otro))}
+    ${q('•', 'Documento (C.C.)', c.documento)}
+    ${q('•', 'Teléfono', c.telefono)}
+    ${q('•', 'Técnico responsable', c.tecnico_responsable || form.tecnico?.nombre)}
+    ${q('•', 'Ubicación del predio', c.ubicacion_predio)}
   `;
 
-  // ---- Componente Social (cs = c.componente_social) ----
-  const socialRows = [
-    row('Nivel educativo', cs.nivel_educativo),
-    row('Personas en el núcleo familiar', cs.personas_nucleo),
-    row('Fuente de ingresos', cs.fuente_ingresos),
-    row('Participa en organización', cs.participa_organizacion),
-    row('Servicios públicos', cs.servicios_publicos),
-    row('Mano de obra', cs.mano_obra),
-  ].join('');
-  const componenteSocial = section('Componente Social', '🤝', socialRows);
+  // ---- COMPONENTE SOCIAL (1-17) ----
+  const componenteSocial = seccion('COMPONENTE SOCIAL', [
+    q('1', 'Se reconoce como:', conOtro(cs.reconocimiento, cs.reconocimiento_otro)),
+    q('2', 'Nivel educativo del productor', cs.nivel_educativo),
+    q('3', '¿Ha participado antes en Escuelas de Campo (ECA)?', cs.participo_eca),
+    q('4', '¿Cuántas personas, incluyéndose usted, hacen parte de su núcleo familiar?', cs.personas_nucleo ? `${cs.personas_nucleo} personas` : ''),
+    q('5', 'Principal fuente de ingresos', conOtro(cs.fuente_ingresos, cs.fuente_ingresos_otra)),
+    q('6', '¿Cual es su ocupación secundaria?', conOtro(cs.ocupacion_secundaria, cs.ocupacion_secundaria_otro)),
+    q('7', 'Participa en alguna organización o asociación', conOtro(cs.participa_organizacion, cs.organizacion_cual)),
+    q('8', '¿A qué asociaciones u organizaciones se encuentra afiliado?', conOtro(cs.tipo_asociacion, cs.tipo_asociacion_otro)),
+    q('9', '¿Cuál es el rol en la organización que está afiliado(a)?', cs.rol_asociacion),
+    q('10', 'En donde está ubicada la vivienda principal de su núcleo familiar', conOtro(cs.vivienda_ubicacion, cs.vivienda_ubicacion_otra)),
+    q('11', '¿Su vivienda cuenta con energía?', cs.energia_electrica),
+    q('12', '¿Su vivienda cuenta con energía?', conOtro(cs.tipo_energia, cs.tipo_energia_otro)),
+    q('13', '¿De dónde obtiene principalmente el agua para el consumo humano?', conOtro(cs.agua_consumo, cs.agua_consumo_otro)),
+    q('14', '¿Cuenta con algunos de estos elementos? (respuesta multiple)', cs.elementos_tecnologicos),
+    q('15', '¿Cuenta con señal de celular en su vivienda?', cs.senal_celular),
+    q('16', '¿Quiénes trabajan en su finca?', conOtro(cs.quienes_trabajan, cs.quienes_trabajan_otro)),
+    q('17', '¿Qué medio de transporte utiliza?', conOtro(cs.medio_transporte, cs.medio_transporte_otro)),
+  ].join(''));
 
-  // ---- Componente Productivo (cp = c.componente_productivo) ----
-  const prodRows = [
-    row('Actividad productiva principal', cp.actividad_productiva),
-    row('Acceso al agua', cp.acceso_agua),
-    row('Sistemas de riego', cp.sistemas_riego),
-    row('Asistencia técnica', cp.asistencia_tecnica),
-  ].join('');
-  const componenteProductivo = section('Componente Productivo', '🌾', prodRows);
+  // ---- CARACTERIZACION DE LA FINCA (18-26) ----
+  const coordFinca = cf.latitud && cf.longitud
+    ? `Lat: ${cf.latitud}  Lon: ${cf.longitud}${cf.altitud ? `  Alt: ${cf.altitud} m` : ''}`
+    : '';
+  const divisiones = [
+    cf.division_bosque ? `Bosque: ${cf.division_bosque} ha` : '',
+    cf.division_agricola ? `Agrícola: ${cf.division_agricola} ha` : '',
+    cf.division_pecuaria ? `Pecuaria: ${cf.division_pecuaria} ha` : '',
+    cf.division_instalaciones ? `Instalaciones: ${cf.division_instalaciones} ha` : '',
+  ].filter(Boolean).join(' · ');
+  const actividadesFinca = [
+    conOtro(cf.actividades_finca, cf.actividades_finca_otro),
+    cf.actividades_agricolas ? `Agrícolas: ${conOtro(cf.actividades_agricolas, cf.actividades_agricolas_otro)}` : '',
+    cf.actividades_pecuarias ? `Pecuarias: ${conOtro(cf.actividades_pecuarias, cf.actividades_pecuarias_otro)}` : '',
+  ].filter(Boolean).join(' | ');
+  const caracterizacionFinca = seccion('CARACTERIZACION DE LA FINCA', [
+    q('18', 'Nombre de la finca', cf.nombre_finca),
+    q('19', 'Coordenada de la finca', coordFinca),
+    q('20', '¿Cuál es el área total de la finca en hectáreas?', cf.area_total ? `${cf.area_total} ha` : ''),
+    q('21', '¿Cómo está dividida en hectáreas?', divisiones),
+    q('22', 'Medio de salida de productos al centro poblado más cercano', cf.medio_salida),
+    q('23', 'Distancia aproximada del predio al centro poblado', cf.distancia_km ? `${cf.distancia_km} km` : ''),
+    q('24', 'Observaciones de la descripción llegada al predio (desde cabecera municipal)', cf.distancia_observaciones),
+    q('25', '¿Realiza aprovechamiento productivo de manera directa?', conOtro(cf.aprovechamiento_directo, cf.aprovechamiento_porque ? `Porque: ${cf.aprovechamiento_porque}` : '')),
+    q('26', '¿Cuáles son las actividades que realiza en su finca?', actividadesFinca),
+  ].join(''));
 
-  // ---- Componente Agroambiental (ca = c.componente_agroambiental) ----
-  const agroRows = [
-    row('Procesos de erosión', ca.procesos_erosion),
-    row('Fuentes hídricas', ca.fuentes_hidricas),
-    row('Áreas de conservación', ca.areas_conservacion),
-    row('Prácticas de conservación', ca.practicas_conservacion),
-    row('Manejo de residuos', ca.manejo_residuos),
-  ].join('');
-  const componenteAgro = section('Componente Agroambiental', '🌿', agroRows);
+  // ---- COMPONENTE PRODUCTIVO (27-30) ----
+  const componenteProductivo = seccion('COMPONENTE PRODUCTIVO', [
+    q('27', '¿Cual es la actividad principal productiva de la finca?', conOtro(cp.actividad_principal, cp.actividad_principal_cual)),
+    q('28', '¿El predio cuenta con acceso permanente al agua?', cp.acceso_agua),
+    q('29', '¿Dispone de sistemas de riego?', cp.sistemas_riego),
+    q('30', '¿Ha recibido asistencia técnica en los últimos dos años?', cp.asistencia_tecnica),
+  ].join(''));
 
-  // ---- Análisis de Suelo (asuelo = c.analisis_suelo) ----
-  const sueloRows = [
-    row('Observación del suelo', asuelo.observacion_suelo),
-    row('Textura', asuelo.textura),
-    row('Color', asuelo.color),
-    row('Drenaje', asuelo.drenaje),
-    row('Profundidad efectiva', asuelo.profundidad),
-    row('Presencia de piedras', asuelo.piedras),
-    row('Compactación', asuelo.compactacion),
-    row('Cobertura', asuelo.cobertura),
-    row('Evidencia de erosión', asuelo.evidencia_erosion),
-  ].join('');
-  const analisisSuelo = section('Análisis de Suelo', '🧪', sueloRows);
+  // ---- SECCIÓN DE SUELO (31-41) ----
+  const coordIntervencion = asuelo.intervencion_latitud && asuelo.intervencion_longitud
+    ? `Lat: ${asuelo.intervencion_latitud}  Lon: ${asuelo.intervencion_longitud}${asuelo.intervencion_altitud ? `  Alt: ${asuelo.intervencion_altitud} m` : ''}`
+    : '';
+  const seccionSuelo = seccion('SECCIÓN DE SUELO', [
+    q('31', 'Ubicación del área de intervención del proyecto', coordIntervencion),
+    q('32', '¿Ha realizado alguna vez análisis de suelo en su predio?', asuelo.analisis_realizado),
+    q('33', '¿Cuál es la textura predominante en el suelo? Selección multiple', asuelo.textura),
+    q('34', '¿Qué coloración predomina en el suelo?', asuelo.color),
+    q('35', '¿Qué tipo de drenaje hay en el suelo?', asuelo.drenaje),
+    q('36', '¿Cuál es la profundidad efectiva del suelo?', asuelo.profundidad),
+    q('37', '¿Existe alguna presencia de piedras o fragmentos rocosos?', asuelo.piedras),
+    q('38', '¿Cuál es el estado de la compactación del suelo?', asuelo.compactacion),
+    q('39', '¿Qué presencia de cobertura presenta el suelo?', asuelo.cobertura),
+    q('40', '¿Se evidencia algún tipo de erosión en el suelo?', asuelo.erosion),
+    q('41', '¿Cual es el grado de Pendiente del terreno?', asuelo.pendiente ? `${asuelo.pendiente} °` : ''),
+  ].join(''));
 
-  // ---- Recomendaciones (rec = c.recomendaciones) ----
-  const recomendacionesHtml = (rec.recomendaciones_tecnicas || rec.recomendaciones_ambientales) ? `
+  // ---- COMPONENTE AGROAMBIENTAL (42-49) ----
+  const componenteAgro = seccion('COMPONENTE AGROAMBIENTAL', [
+    q('42', '¿El predio presenta procesos de erosión?', ca.procesos_erosion),
+    q('43', '¿Existen fuentes hídricas dentro o cerca del predio?', ca.fuentes_hidricas),
+    q('44', '¿El predio cuenta con áreas de conservación o protección?', ca.areas_conservacion),
+    q('45', '¿Realiza prácticas de conservación del suelo?', ca.practicas_conservacion),
+    q('46', '¿Utiliza algún tipo agroquímico?', ca.uso_agroquimicos),
+    q('47', '¿Qué tipo de agroquímicos utiliza?', conOtro(ca.tipo_agroquimicos, ca.tipo_agroquimicos_otro)),
+    q('48', 'Mencione qué tipo de herbicidas utiliza', ca.herbicidas_cuales),
+    q('49', '¿Realiza manejo de residuos de agroquímicos?', ca.manejo_residuos),
+  ].join(''));
+
+  // ---- RECOMENDACIONES DEL TÉCNICO (50-52) — ancho completo por ser texto largo ----
+  const recomendacionesHtml = `
     <div class="section">
-      <h2>📋 Recomendaciones del Técnico</h2>
-      ${rec.recomendaciones_tecnicas ? `
-      <div class="row" style="margin-bottom:4px;"><span class="label">Recomendaciones técnicas:</span></div>
-      <div class="desc-detallada">${escapeHtml(rec.recomendaciones_tecnicas)}</div>
-      ` : ''}
-      ${rec.recomendaciones_ambientales ? `
-      <div class="row" style="margin-top:12px;margin-bottom:4px;"><span class="label">Recomendaciones ambientales:</span></div>
-      <div class="desc-detallada">${escapeHtml(rec.recomendaciones_ambientales)}</div>
-      ` : ''}
-    </div>` : '';
+      <h2>RECOMENDACIONES DEL TÉCNICO</h2>
+      <div class="q-full"><div class="q-t">50. Recomendaciones técnicas para el sistema productivo:</div>
+      <div class="desc-detallada">${escapeHtml(rec.recomendaciones_tecnicas || '—')}</div></div>
+      <div class="q-full"><div class="q-t">51. Compromisos adquiridos sobre el desarrollo del estado actual del terreno:</div>
+      <div class="desc-detallada">${escapeHtml(rec.compromisos_productor || '—')}</div></div>
+      <div class="q-full"><div class="q-t">52. Recomendaciones ambientales y de conservación:</div>
+      <div class="desc-detallada">${escapeHtml(rec.recomendaciones_ambientales || '—')}</div></div>
+    </div>`;
 
-  // ---- Ubicación GPS ----
-  const ubicacionHtml = form.coordenadas ? `
+  // ---- DESARROLLO ACOMPAÑAMIENTO TECNICO (7 ítems oficiales) ----
+  const itemAco = (num: string, texto: string, si?: boolean, no?: boolean, obs?: string, extra?: string) => `
+    <div class="q">
+      <div class="q-t">${num}. ${escapeHtml(texto)}</div>
+      <div class="q-a">${si ? 'Sí' : no ? 'No' : '—'}${extra ? ` · ${escapeHtml(extra)}` : ''}${obs ? `<br/><em>Obs: ${escapeHtml(obs)}</em>` : ''}</div>
+    </div>`;
+  const geoAco = aco.georef_latitud && aco.georef_longitud
+    ? `Lat: ${aco.georef_latitud}  Lon: ${aco.georef_longitud}${aco.georef_altitud ? `  Alt: ${aco.georef_altitud} m` : ''}`
+    : '';
+  const acompanamientoHtml = seccion('DESARROLLO ACOMPAÑAMIENTO TECNICO', [
+    itemAco('1', 'Socialización de actividades del proyecto al productor, mediante presentación digital.', aco.actividades_realizadas_si, aco.actividades_realizadas_no, aco.actividades_realizadas_obs),
+    itemAco('2', 'Realización de selección y delimitación técnica del terreno para la implementación del cultivo de cacao en arreglo agroforestal con plátano y maderable.', aco.manejo_plagas_si, aco.manejo_plagas_no, aco.manejo_plagas_obs),
+    itemAco('3', 'Realización de muestreo de suelo, teniendo en cuenta: criterios de homogeneidad, uso actual del terreno, topografía y condiciones agroecológicas.', aco.manejo_suelo_si, aco.manejo_suelo_no, aco.manejo_suelo_obs),
+    itemAco('4', 'Punto de georeferenciación del terreno donde se realizará la implementación del cultivo de cacao en arreglo agroforestal con plátano y maderable.', aco.manejo_agua_si, aco.manejo_agua_no, aco.manejo_agua_obs, geoAco),
+    itemAco('5', 'Orientación al productor sobre procesos de producción y beneficios de la producción de cacao.', aco.capacitacion_si, aco.capacitacion_no, aco.capacitacion_obs),
+    itemAco('6', 'Orientación del manejo de preparación del terreno: realización de limpias si es rastrojo de porte bajo (herbáceas), recomendando no utilización de herbicidas a base de componentes de medio a altamente tóxicos.', aco.seguimiento_si, aco.seguimiento_no, aco.seguimiento_obs),
+    itemAco('7', 'Orientación del manejo de preparación del terreno: realización de entresacado en rastrojo biche de regeneración baja (arbóreas o arbustos), recomendando entresacado', aco.entresacado_si, aco.entresacado_no, aco.entresacado_obs),
+    aco.observaciones_generales ? q('•', 'Observaciones generales', aco.observaciones_generales) : '',
+  ].join(''));
+
+  // ---- Ubicación GPS del formulario + Clima en el momento de la visita ----
+  const clima = (form.clima as any)?.actual;
+  const ubicacionClimaHtml = `
     <div class="section">
-      <h2>📍 Ubicación Geográfica</h2>
-      <div class="row"><span class="label">Latitud:</span><span class="value">${form.coordenadas.latitud?.toFixed(6) || '—'}</span></div>
-      <div class="row"><span class="label">Longitud:</span><span class="value">${form.coordenadas.longitud?.toFixed(6) || '—'}</span></div>
-      ${form.coordenadas.altitud ? `<div class="row"><span class="label">Altitud:</span><span class="value">${form.coordenadas.altitud.toFixed(1)} m</span></div>` : ''}
-      ${form.coordenadas.precision_gps ? `<div class="row"><span class="label">Precisión:</span><span class="value">±${form.coordenadas.precision_gps} m</span></div>` : ''}
+      <h2>📍 UBICACIÓN Y CONDICIONES AMBIENTALES DE LA VISITA</h2>
+      <div class="cols">
+        ${q('•', 'Latitud', form.coordenadas?.latitud ? form.coordenadas.latitud.toFixed(6) : '')}
+        ${q('•', 'Longitud', form.coordenadas?.longitud ? form.coordenadas.longitud.toFixed(6) : '')}
+        ${q('•', 'Altitud', form.coordenadas?.altitud ? `${form.coordenadas.altitud.toFixed(1)} m` : '')}
+        ${q('•', 'Precisión GPS', form.coordenadas?.precision_gps ? `±${form.coordenadas.precision_gps} m` : '')}
+        ${clima ? q('•', 'Lugar', clima.ubicacion?.nombre) : ''}
+        ${clima ? q('•', 'Temperatura', clima.temperatura?.actual != null ? `${clima.temperatura.actual}°C (sensación ${clima.temperatura.sensacion_termica ?? '—'}°C)` : '') : ''}
+        ${clima ? q('•', 'Humedad', clima.humedad != null ? `${clima.humedad}%` : '') : ''}
+        ${clima ? q('•', 'Presión', clima.presion != null ? `${clima.presion} hPa` : '') : ''}
+        ${clima?.viento ? q('•', 'Viento', `${clima.viento.velocidad ?? '—'} m/s`) : ''}
+        ${clima?.nubosidad != null ? q('•', 'Nubosidad', `${clima.nubosidad}%`) : ''}
+        ${clima?.clima ? q('•', 'Condición', clima.clima) : ''}
+      </div>
+    </div>`;
+
+  // ---- ANEXO: Videos (no se pueden embeber en el PDF — se listan como referencia) ----
+  const videos = (form.fotos || []).filter((f) => f.tipo === 'video');
+  const anexoVideosHtml = videos.length > 0 ? `
+    <div class="section" style="border-left-color:#0984e3;">
+      <h2>📎 ANEXO — VIDEOS DE LA VISITA (${videos.length})</h2>
+      <p style="font-size:12px;color:#636e72;margin-bottom:8px;">Los videos no pueden incrustarse en el PDF. Quedan almacenados en el servidor del proyecto (MinIO, carpeta videos/) como parte de la evidencia de esta visita.</p>
+      ${videos.map((v, i) => `
+        <div class="q-full" style="margin-bottom:6px;">
+          <div class="q-t">Video ${i + 1}</div>
+          <div class="q-a">Fecha: ${formatFecha(v.timestamp)} · Coordenadas: ${v.coordenadas ? `${v.coordenadas.latitud?.toFixed(6)}, ${v.coordenadas.longitud?.toFixed(6)}` : '—'} · ID: ${escapeHtml(v.id)}</div>
+        </div>`).join('')}
     </div>` : '';
 
   return `<!DOCTYPE html>
@@ -701,9 +839,23 @@ function construirHTMLCaracterizacion(
       border-bottom: 1px solid #e0e0e0;
       padding-bottom: 6px;
     }
-    .row { display: flex; margin: 3px 0; font-size: 13px; }
-    .label { font-weight: bold; color: #555; min-width: 160px; }
+    .row { display: flex; margin: 2px 0; font-size: 11.5px; }
+    .label { font-weight: bold; color: #555; min-width: 110px; flex-shrink: 0; }
     .value { flex: 1; color: #2d3436; }
+    /* Encuesta en 2 columnas — compacta pero legible */
+    .cols { column-count: 2; column-gap: 20px; }
+    .q {
+      break-inside: avoid;
+      -webkit-column-break-inside: avoid;
+      margin-bottom: 7px;
+      padding-bottom: 5px;
+      border-bottom: 1px dotted #e0e0e0;
+    }
+    .q-t { font-size: 10.5px; font-weight: bold; color: #555; line-height: 1.35; }
+    .q-a { font-size: 11.5px; color: #1B5E20; font-weight: 600; margin-top: 1px; line-height: 1.35; }
+    .q-a em { color: #636e72; font-weight: normal; font-size: 10.5px; }
+    .q-full { margin-bottom: 8px; }
+    .q-full .q-t { font-size: 11px; }
     .desc-detallada {
       font-size: 13px;
       color: #2d3436;
@@ -714,25 +866,17 @@ function construirHTMLCaracterizacion(
       margin-top: 6px;
       line-height: 1.5;
     }
-    .foto-item {
-      margin: 16px 0; padding: 12px; background: #fff;
-      border-radius: 6px; border: 1px solid #e0e0e0; page-break-inside: avoid;
-    }
-    .foto-img {
-      width: 100%; max-width: 350px; max-height: 240px; height: auto;
-      border-radius: 4px; margin: 8px auto; display: block; object-fit: cover;
-    }
-    .foto-coords { font-size: 11px; color: #636e72; font-family: monospace; }
-    .foto-heading { font-size: 11px; color: #0984e3; font-family: monospace; }
+    .photo-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    .foto-item { padding: 10px; background: #fff; border-radius: 6px; border: 1px solid #e0e0e0; break-inside: avoid; }
+    .foto-img { width: 100%; height: auto; max-height: 200px; object-fit: cover; border-radius: 4px; display: block; }
+    .foto-coords { font-size: 10px; color: #636e72; font-family: monospace; margin-top: 3px; }
+    .foto-heading { font-size: 10px; color: #0984e3; font-family: monospace; }
     .evidencia-item { margin: 12px 0; padding: 12px; background: #fff; border-radius: 6px; border: 1px solid #e0e0e0; page-break-inside: avoid; }
     .evidencia-label { font-size: 13px; color: #2d3436; margin-bottom: 8px; }
-    .firma-item {
-      display: inline-block; vertical-align: top; margin: 8px; padding: 12px;
-      background: #fff; border-radius: 6px; border: 1px solid #e0e0e0;
-      page-break-inside: avoid; width: calc(50% - 16px); min-width: 200px;
-    }
-    .firmas-contiguo { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; }
-    .firma-img { max-width: 100%; max-height: 100px; border: 1px dashed #b2bec3; border-radius: 4px; padding: 8px; background: #fff; }
+    .firmas-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 8px; }
+    .firma-item { padding: 12px; background: #fff; border-radius: 6px; border: 1px solid #e0e0e0; break-inside: avoid; }
+    .firma-item .evidencia-label { font-size: 11px; color: #6c5ce7; }
+    .firma-img { max-width: 100%; max-height: 80px; border: 1px dashed #b2bec3; border-radius: 4px; padding: 6px; background: #fff; display: block; margin: 0 auto; }
     .huella-sello { margin: 16px 0; page-break-inside: avoid; }
     .huella-sello-inner {
       background: linear-gradient(135deg, #f0fdf4 0%, #dcfce7 100%);
@@ -759,52 +903,77 @@ function construirHTMLCaracterizacion(
 </head>
 <body>
   <div class="header">
-    <h1>🌱 GEODAILY — Caracterización Sociodemográfica</h1>
+    <h1>🌱 GEODAILY — Encuesta Social AgroAmbiental</h1>
     <p><strong>ID:</strong> ${escapeHtml(form.id)} | <strong>Productor:</strong> ${escapeHtml(c.productor_nombre || '—')} | <strong>Fecha:</strong> ${escapeHtml(c.fecha || formatFecha(form.created_at))}</p>
   </div>
 
-  <!-- Datos Generales -->
+  <!-- Encabezado oficial de la encuesta -->
   <div class="section">
-    <h2>📋 Datos Generales</h2>
-    ${datosGenerales}
+    <h2>DATOS GENERALES</h2>
+    <div class="cols">${datosGenerales}</div>
   </div>
 
   ${componenteSocial}
+  ${caracterizacionFinca}
   ${componenteProductivo}
+  ${seccionSuelo}
   ${componenteAgro}
-  ${analisisSuelo}
   ${recomendacionesHtml}
-  ${ubicacionHtml}
+  ${acompanamientoHtml}
 
-  <!-- Información del Técnico -->
-  <div class="section">
-    <h2>👤 Datos del Técnico</h2>
-    <div class="row"><span class="label">Nombre:</span><span class="value">${escapeHtml(form.tecnico.nombre)}</span></div>
-    <div class="row"><span class="label">Cédula:</span><span class="value">${escapeHtml(form.tecnico.cedula)}</span></div>
-    <div class="row"><span class="label">Teléfono:</span><span class="value">${escapeHtml(form.tecnico.telefono || '—')}</span></div>
-  </div>
+  <!-- SOCIODEMOGRÁFICO (si existe) -->
+  ${form.sociodemografico ? `
+  <div class="section" style="border-left-color:#e17055;">
+    <h2>👨‍👩‍👧‍👦 DATOS SOCIODEMOGRÁFICOS</h2>
+    <div class="cols">
+      ${q('•', 'Género', form.sociodemografico.genero)}
+      ${q('•', 'Escolaridad', form.sociodemografico.escolaridad)}
+      ${q('•', 'Etnia', form.sociodemografico.etnia)}
+      ${q('•', 'Personas a cargo', String(form.sociodemografico.personas_cargo))}
+      ${q('•', 'Hectáreas', String(form.sociodemografico.hectareas))}
+      ${q('•', 'Vive en la finca', form.sociodemografico.vive_en_finca ? 'Sí' : 'No')}
+      ${q('•', 'Asociado', form.sociodemografico.asociado ? 'Sí' : 'No')}
+      ${form.sociodemografico.asociacion_nombre ? q('•', 'Asociación', form.sociodemografico.asociacion_nombre) : ''}
+      ${form.sociodemografico.telefono_emergencia ? q('•', 'Tel. emergencia', form.sociodemografico.telefono_emergencia) : ''}
+    </div>
+  </div>` : ''}
 
-  <!-- Datos del Beneficiario -->
-  <div class="section">
-    <h2>👥 Datos del Beneficiario</h2>
-    <div class="row"><span class="label">Nombre:</span><span class="value">${escapeHtml(form.beneficiario.nombre)}</span></div>
-    <div class="row"><span class="label">Cédula:</span><span class="value">${escapeHtml(form.beneficiario.cedula || '—')}</span></div>
-    <div class="row"><span class="label">Teléfono:</span><span class="value">${escapeHtml(form.beneficiario.telefono || '—')}</span></div>
-  </div>
+  <!-- GEOREFERENCIA (si existe) -->
+  ${form.georeferencia ? `
+  <div class="section" style="border-left-color:#6c5ce7;">
+    <h2>🌐 GEOREFERENCIA DEL TERRENO</h2>
+    <div class="cols">
+      ${q('•', 'Latitud', form.georeferencia.coordenadas.latitud.toFixed(6))}
+      ${q('•', 'Longitud', form.georeferencia.coordenadas.longitud.toFixed(6))}
+      ${form.georeferencia.coordenadas.altitud ? q('•', 'Altitud', `${form.georeferencia.coordenadas.altitud.toFixed(1)} m`) : ''}
+      ${q('•', 'Huso UTM', String(form.georeferencia.huso_utm))}
+      ${q('•', 'Banda UTM', form.georeferencia.banda_utm)}
+      ${q('•', 'Código MGRS', form.georeferencia.codigo_mgrs)}
+      ${q('•', 'Zona horaria', form.georeferencia.zona_horaria)}
+      ${q('•', 'País', form.georeferencia.pais)}
+    </div>
+  </div>` : ''}
+
+  ${ubicacionClimaHtml}
 
   <!-- EVIDENCIAS -->
   <div class="section">
-    <h2>📸 Evidencias de Campo</h2>
-    <h3 style="color:#0984e3;font-size:14px;margin:12px 0 4px;">Fotografías</h3>
-    ${fotosHtml}
-    <h3 style="color:#0984e3;font-size:14px;margin:16px 0 4px;">Firmas</h3>
-    <div class="firmas-contiguo">
+    <h2>📸 EVIDENCIAS DE CAMPO</h2>
+
+    <p style="font-size:12px;font-weight:bold;color:#0984e3;margin:8px 0 4px;">Fotografías</p>
+    <div class="photo-grid">${fotosHtml}</div>
+
+    <p style="font-size:12px;font-weight:bold;color:#6c5ce7;margin:14px 0 4px;">Firmas</p>
+    <div class="firmas-grid">
       ${firmaBenefHtml}
       ${firmaTecHtml}
     </div>
-    <h3 style="color:#0984e3;font-size:14px;margin:16px 0 4px;">Registro Biométrico</h3>
-    ${huellaHtml}
+
+    <p style="font-size:12px;font-weight:bold;color:#15803d;margin:14px 0 4px;">Registro Biométrico</p>
+    <div style="display:flex;justify-content:center;">${huellaHtml}</div>
   </div>
+
+  ${anexoVideosHtml}
 
   <div class="footer">
     <p>Documento generado por GEODAILY — ${new Date().toISOString()}</p>

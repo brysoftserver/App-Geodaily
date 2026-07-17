@@ -1,5 +1,10 @@
 // ============================================================
-// GEODAILY — Captura Fotográfica con Geotag
+// GEODAILY — Captura de Fotos y Videos con Geotag
+// ============================================================
+// Recibe route.params.mode: 'photo' | 'video'
+// - photo: solo captura de fotos, instrucciones al inicio
+// - video: solo grabación de video (máx 30s), instrucciones al inicio
+// Cada modo tiene su propia lógica de subida a MinIO y almacenamiento local
 // ============================================================
 
 import React, { useState, useRef, useMemo, useEffect, useCallback } from 'react';
@@ -18,29 +23,34 @@ import {
 } from 'react-native';
 const { height: SCREEN_HEIGHT } = Dimensions.get('window');
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
-import { useFocusEffect } from '@react-navigation/native';
+import { RouteProp, useFocusEffect } from '@react-navigation/native';
 import { Camera, CameraView, useCameraPermissions } from 'expo-camera';
 import * as Location from 'expo-location';
 import { useCamera } from '../../hooks/useCamera';
 import { useClimate } from '../../hooks/useClimate';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useForm } from '../../store/FormContext';
-import { COLORS, FONTS, SPACING, BORDER_RADIUS, SHADOWS, API_CONFIG } from '../../theme';
+import { COLORS, FONTS, SPACING, BORDER_RADIUS, SHADOWS } from '../../theme';
 import { formatCoordenadas } from '../../utils/formatters';
 import LoadingSpinner from '../../components/LoadingSpinner';
-import { FotoGeotag, DocumentoFinca } from '../../types';
-import * as DocumentPicker from 'expo-document-picker';
-import { getDb } from '../../services/database';
-import apiClient, { isOfflineError } from '../../services/api';
+import { FotoGeotag } from '../../types';
+import { saveFotoLocal, saveVideoLocal } from '../../services/database';
 
 type CamaraScreenProps = {
   navigation: NativeStackNavigationProp<Record<string, any>>;
+  route: RouteProp<Record<string, any> & { params: { mode?: 'photo' | 'video'; requisito?: string } }, 'params'>;
 };
 
-const CamaraScreen: React.FC<CamaraScreenProps> = ({ navigation }) => {
+const CamaraScreen: React.FC<CamaraScreenProps> = ({ navigation, route }) => {
+  const mode = route.params?.mode || 'photo';
+  const esVideo = mode === 'video';
+  // Requisito de evidencias del formulario que abrió la cámara
+  // (ej. "5 Fotos (4 Fotos De Realizacion De Actividades + 1 Foto Del Cuaderno De Visita)")
+  const requisito = route.params?.requisito;
+
   const [permission, requestPermission] = useCameraPermissions();
   const [showCamera, setShowCamera] = useState(false);
-  const [modoVideo, setModoVideo] = useState(false);
+  const [modoVideo, setModoVideo] = useState(esVideo);
   const [isRecording, setIsRecording] = useState(false);
   const { capturarFoto, removeFoto, fotos, isLoading, setFotos } = useCamera();
   const { addFoto, formularioActual } = useForm();
@@ -49,14 +59,11 @@ const CamaraScreen: React.FC<CamaraScreenProps> = ({ navigation }) => {
   const insets = useSafeAreaInsets();
   const [fotosGuardadas, setFotosGuardadas] = useState<Set<string>>(new Set());
 
+  // ---- Modal de instrucciones (se muestra al entrar) ----
+  const [showInstrucciones, setShowInstrucciones] = useState(true);
+
   // ---- Estado para previsualización de foto a pantalla completa ----
   const [fotoPreview, setFotoPreview] = useState<FotoGeotag | null>(null);
-
-  // ---- Estado para Gestión Documental ----
-  const [documentos, setDocumentos] = useState<DocumentoFinca[]>([]);
-  const [subiendoDoc, setSubiendoDoc] = useState(false);
-  const [subiendoDocAMinIO, setSubiendoDocAMinIO] = useState(false);
-  const [docsSaved, setDocsSaved] = useState(false);
 
   // Sincronizar fotos desde FormContext cada vez que la pantalla obtiene foco
   // (para que no se pierdan al ir a otra pantalla y volver)
@@ -71,131 +78,39 @@ const CamaraScreen: React.FC<CamaraScreenProps> = ({ navigation }) => {
     }, [formularioActual?.fotos?.length])
   );
 
-  // Cargar documentos existentes al montar, solo del formulario actual
+  // Refs para leer el estado más reciente dentro del listener de navegación
+  // (evita stale closures — mismo patrón que VisitasJerarquicasScreen)
+  const fotosRef = useRef(fotos);
+  const fotosGuardadasRef = useRef(fotosGuardadas);
+  useEffect(() => { fotosRef.current = fotos; }, [fotos]);
+  useEffect(() => { fotosGuardadasRef.current = fotosGuardadas; }, [fotosGuardadas]);
+
+  // Interceptar salida (botón atrás nativo, swipe, etc.) si hay fotos sin guardar —
+  // antes se perdían silenciosamente porque solo "Continuar" las guardaba
   useEffect(() => {
-    const cargarDocs = async () => {
-      try {
-        const db = getDb();
-        const formId = formularioActual?.id;
-        if (db && formId) {
-          const docs = await db.getAllAsync<any>(
-            'SELECT * FROM documentos_finca WHERE formulario_id = ? ORDER BY created_at DESC',
-            [formId]
-          );
-          if (docs && docs.length > 0) {
-            setDocumentos(docs as DocumentoFinca[]);
-            setDocsSaved(true);
-          }
-        }
-      } catch (e) {
-        // Ignorar si no hay formulario activo aún
-      }
-    };
-    cargarDocs();
-  }, [formularioActual?.id]);
+    const unsubscribe = navigation.addListener('beforeRemove', (e) => {
+      const sinGuardar = fotosRef.current.filter((f) => !fotosGuardadasRef.current.has(f.id));
+      if (sinGuardar.length === 0) return; // nada pendiente, dejar salir
 
-  // Actualizar documentos guardados con 'sin-formulario' cuando el form ID real esté disponible
-  useEffect(() => {
-    const actualizarFormId = async () => {
-      const formId = formularioActual?.id;
-      if (!formId || formId === 'sin-formulario') return;
-      try {
-        const db = getDb();
-        if (db) {
-          await db.runAsync(
-            "UPDATE documentos_finca SET formulario_id = ? WHERE formulario_id = 'sin-formulario' OR formulario_id IS NULL OR formulario_id = ''",
-            [formId]
-          );
-        }
-      } catch (e) {
-        // Ignorar
-      }
-    };
-    actualizarFormId();
-  }, [formularioActual?.id]);
-
-  // Subir un documento a MinIO
-  const subirDocAMinIO = async (doc: DocumentoFinca): Promise<boolean> => {
-    try {
-      const formData = new FormData();
-      // @ts-expect-error — React Native FormData
-      formData.append('archivo', {
-        uri: doc.uri,
-        type: doc.tipo === 'pdf' ? 'application/pdf' : 'image/jpeg',
-        name: doc.nombre || `doc_${Date.now()}`,
-      });
-      if (doc.descripcion) formData.append('descripcion', doc.descripcion);
-
-      const response = await apiClient.post(
-        API_CONFIG.ENDPOINTS.DOCUMENTOS + '/subir',
-        formData,
-        {
-          headers: { 'Content-Type': 'multipart/form-data' },
-          timeout: 60000,
-        }
+      e.preventDefault();
+      Alert.alert(
+        'Fotos sin guardar',
+        `Tienes ${sinGuardar.length} foto(s) sin guardar. ¿Deseas guardarlas antes de salir?`,
+        [
+          { text: 'Descartar', style: 'destructive', onPress: () => navigation.dispatch(e.data.action) },
+          {
+            text: 'Guardar',
+            onPress: async () => {
+              await guardarFotosEnContexto();
+              navigation.dispatch(e.data.action);
+            },
+          },
+        ]
       );
-      console.log('[Camara] Documento subido a MinIO:', response.data?.ruta);
-      return true;
-    } catch (error) {
-      if (isOfflineError(error)) {
-        console.warn('[Camara] Offline — documento no subido a MinIO, quedó pendiente');
-        return true; // No es error crítico, se sincronizará después
-      }
-      console.error('[Camara] Error al subir documento a MinIO:', error);
-      return false;
-    }
-  };
-
-  // Seleccionar y guardar documento (local + MinIO)
-  const handleSubirDocumento = async () => {
-    try {
-      const result = await DocumentPicker.getDocumentAsync({
-        type: ['application/pdf', 'image/*'],
-        copyToCacheDirectory: true,
-      });
-
-      if (!result.canceled && result.assets && result.assets.length > 0) {
-        setSubiendoDoc(true);
-        setSubiendoDocAMinIO(true);
-        const asset = result.assets[0];
-        const nuevoDoc: DocumentoFinca = {
-          id: 'doc-' + Date.now(),
-          formulario_id: formularioActual?.id || 'sin-formulario',
-          tipo: asset.name?.toLowerCase().endsWith('.pdf') ? 'pdf' : 'foto',
-          uri: asset.uri,
-          nombre: asset.name,
-          descripcion: '',
-          created_at: new Date().toISOString(),
-        };
-
-        // 1. Subir a MinIO
-        const minioOk = await subirDocAMinIO(nuevoDoc);
-        if (!minioOk) {
-          Alert.alert('Advertencia', 'El documento se guardó localmente pero no se pudo subir a MinIO. Se sincronizará después.');
-        }
-
-        // 2. Guardar en SQLite local
-        const db = getDb();
-        if (db) {
-          await db.runAsync(
-            `INSERT OR REPLACE INTO documentos_finca (id, formulario_id, tipo, uri, nombre, descripcion, created_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?)`,
-            [nuevoDoc.id, nuevoDoc.formulario_id, nuevoDoc.tipo, nuevoDoc.uri, nuevoDoc.nombre, nuevoDoc.descripcion || null, nuevoDoc.created_at]
-          );
-        }
-        setDocumentos(prev => [...prev, nuevoDoc]);
-        setDocsSaved(true);
-        setSubiendoDocAMinIO(false);
-        Alert.alert('✅ Documento guardado', `${asset.name} se ha guardado correctamente (local + MinIO).`);
-        setSubiendoDoc(false);
-      }
-    } catch (error) {
-      console.error('[Camara] Error al seleccionar documento:', error);
-      Alert.alert('Error', 'No se pudo agregar el documento.');
-      setSubiendoDoc(false);
-      setSubiendoDocAMinIO(false);
-    }
-  };
+    });
+    return unsubscribe;
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [navigation]);
 
   // Obtener la última coordenada disponible para el clima
   const ultimaCoordenada = useMemo(() => {
@@ -311,6 +226,7 @@ const CamaraScreen: React.FC<CamaraScreenProps> = ({ navigation }) => {
         return;
       }
     }
+    setShowInstrucciones(false);
     setShowCamera(true);
   };
 
@@ -346,13 +262,28 @@ const CamaraScreen: React.FC<CamaraScreenProps> = ({ navigation }) => {
     const sinGuardar = fotos.filter((f) => !fotosGuardadas.has(f.id));
     if (sinGuardar.length === 0) return true;
     try {
+      const formId = formularioActual?.id;
       for (const foto of sinGuardar) {
         addFoto(foto);
+        if (formId) {
+          try {
+            if (foto.tipo === 'video') {
+              // Guardar video en videos_locales para sync offline
+              await saveVideoLocal(foto.id, formId, foto.uri, foto.coordenadas);
+              console.log('[Camara] Video encolado para sync:', foto.id);
+            } else {
+              // Guardar foto en fotos_locales para sync offline
+              await saveFotoLocal(foto.id, formId, foto.uri, foto.coordenadas);
+            }
+          } catch (queueErr) {
+            console.warn('[Camara] No se pudo encolar para sync:', foto.id, queueErr);
+          }
+        }
       }
       setFotosGuardadas(new Set(fotos.map((f) => f.id)));
       return true;
     } catch (err) {
-      console.error('[Camara] Error al guardar fotos:', err);
+      console.error('[Camara] Error al guardar fotos/videos:', err);
       return false;
     }
   };
@@ -390,20 +321,13 @@ const CamaraScreen: React.FC<CamaraScreenProps> = ({ navigation }) => {
           { text: 'Descartar', style: 'destructive', onPress: () => navigation.goBack() },
           { text: 'Guardar', onPress: async () => {
             const ok = await guardarFotosEnContexto();
-            if (ok && documentos.length > 0) {
-              Alert.alert('✅ Todo guardado', `${fotos.length} foto(s) y ${documentos.length} documento(s) vinculados.`);
-            }
             navigation.goBack();
           }},
         ]
       );
       return;
     }
-    // Ya todo está guardado, mostrar resumen solo si hay documentos
-    if (documentos.length > 0) {
-      navigation.goBack();
-      return;
-    }
+    // Ya todo está guardado
     navigation.goBack();
   };
 
@@ -445,7 +369,7 @@ const CamaraScreen: React.FC<CamaraScreenProps> = ({ navigation }) => {
         setIsRecording(true);
 
         // 3. Iniciar grabación — se bloquea hasta que se detenga
-        const video = await cameraRef.current.recordAsync({ maxDuration: 60 });
+        const video = await cameraRef.current.recordAsync({ maxDuration: 30 });
 
         // 4. Grabación finalizada (por stopRecording o por maxDuration)
         if (video?.uri) {
@@ -481,20 +405,22 @@ const CamaraScreen: React.FC<CamaraScreenProps> = ({ navigation }) => {
               >
                 <Text style={styles.closeButtonText}>✕</Text>
               </TouchableOpacity>
-              {/* Toggle Foto/Video */}
-              <TouchableOpacity
-                style={[styles.modeToggle, modoVideo && styles.modeToggleActive]}
-                onPress={() => { setModoVideo(!modoVideo); setIsRecording(false); }}
-              >
+              {/* Indicador del modo actual (fijo) */}
+              <View style={[styles.modeToggle, modoVideo && styles.modeToggleActive]}>
                 <Text style={styles.modeToggleText}>
                   {modoVideo ? '🎥 Video' : '📷 Foto'}
                 </Text>
-              </TouchableOpacity>
+              </View>
             </View>
             {isRecording && (
               <View style={styles.recordingBadge}>
                 <View style={styles.recordingDot} />
                 <Text style={styles.recordingText}>GRABANDO</Text>
+              </View>
+            )}
+            {modoVideo && (
+              <View style={styles.maxDurationBadge}>
+                <Text style={styles.maxDurationText}>⏱ Máx 30s</Text>
               </View>
             )}
           </View>
@@ -523,29 +449,102 @@ const CamaraScreen: React.FC<CamaraScreenProps> = ({ navigation }) => {
   const todasGuardadas = fotos.length > 0 && fotos.every((f) => fotosGuardadas.has(f.id));
   const pendientes = fotos.length - fotosGuardadas.size;
 
+  const titulo = esVideo ? 'Grabar Video' : 'Evidencia Fotográfica';
+  const subtitulo = esVideo
+    ? 'Graba un video corto (máx. 30 segundos) como evidencia. Se georreferenciará automáticamente y se subirá a la nube.'
+    : 'Las fotos se georreferenciarán automáticamente. Los datos climáticos se obtienen desde tu ubicación actual.';
+  const iconoBoton = esVideo ? '🎥' : '📷';
+  const textoBoton = esVideo ? 'Abrir Cámara de Video' : 'Abrir Cámara';
+
   return (
     <View style={[styles.container, { paddingTop: Math.max(insets.top, SPACING.xxl), paddingBottom: insets.bottom + SPACING.lg }]}>
+      {/*
+       * ─── MODAL DE INSTRUCCIONES ───
+       * Se muestra al entrar a la pantalla, antes de abrir la cámara
+       */}
+      <Modal
+        visible={showInstrucciones}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setShowInstrucciones(false)}
+      >
+        <View style={styles.instModalOverlay}>
+          <View style={styles.instModal}>
+            <Text style={styles.instTitle}>
+              {esVideo ? '🎥 Instrucciones para grabar video' : '📷 Instrucciones para tomar fotos'}
+            </Text>
+            <Text style={styles.instSubtitle}>
+              {esVideo
+                ? 'Sigue estas recomendaciones para obtener un buen video:'
+                : 'Sigue estas recomendaciones para obtener buenas fotos:'}
+            </Text>
+
+            {!esVideo && requisito && (
+              <View style={styles.requisitoBanner}>
+                <Text style={styles.requisitoTexto}>📌 Requisito: {requisito}</Text>
+              </View>
+            )}
+
+            {esVideo ? (
+              <>
+                <View style={styles.instItem}>
+                  <Text style={styles.instNum}>1</Text>
+                  <Text style={styles.instText}>Asegúrate de tener buena iluminación y enfocar correctamente la escena.</Text>
+                </View>
+                <View style={styles.instItem}>
+                  <Text style={styles.instNum}>2</Text>
+                  <Text style={styles.instText}>Sostén el dispositivo firme o apóyalo para evitar movimientos bruscos.</Text>
+                </View>
+                <View style={styles.instItem}>
+                  <Text style={styles.instNum}>3</Text>
+                  <Text style={styles.instText}>El video durará máximo 30 segundos — captura lo esencial.</Text>
+                </View>
+              </>
+            ) : (
+              <>
+                <View style={styles.instItem}>
+                  <Text style={styles.instNum}>1</Text>
+                  <Text style={styles.instText}>Asegúrate de tener buena iluminación y que el objeto esté bien enfocado.</Text>
+                </View>
+                <View style={styles.instItem}>
+                  <Text style={styles.instNum}>2</Text>
+                  <Text style={styles.instText}>Sostén el dispositivo firme para evitar fotos borrosas.</Text>
+                </View>
+                <View style={styles.instItem}>
+                  <Text style={styles.instNum}>3</Text>
+                  <Text style={styles.instText}>Toma fotos desde diferentes ángulos para cubrir toda el área.</Text>
+                </View>
+              </>
+            )}
+
+            <TouchableOpacity style={styles.instBoton} onPress={handleOpenCamera}>
+              <Text style={styles.instBotonText}>
+                {esVideo ? '🎥 Empezar a grabar' : '📷 Abrir cámara'}
+              </Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
       <ScrollView
         style={styles.scrollContainer}
         contentContainerStyle={styles.scrollContent}
         keyboardShouldPersistTaps="handled"
         showsVerticalScrollIndicator={true}
       >
-        <Text style={styles.title}>Evidencia Fotográfica</Text>
-        <Text style={styles.subtitle}>
-          Las fotos se georreferenciarán automáticamente. Los datos climáticos se obtienen desde tu ubicación actual.
-        </Text>
+        <Text style={styles.title}>{titulo}</Text>
+        <Text style={styles.subtitle}>{subtitulo}</Text>
 
-        {renderClimaCard()}
+        {!esVideo && renderClimaCard()}
 
         <TouchableOpacity
-          style={styles.openCameraButton}
+          style={[styles.openCameraButton, esVideo && styles.openCameraButtonVideo]}
           onPress={handleOpenCamera}
           disabled={isLoading}
         >
-          <Text style={styles.cameraIcon}>📷</Text>
+          <Text style={styles.cameraIcon}>{iconoBoton}</Text>
           <Text style={styles.openCameraText}>
-            {isLoading ? 'Capturando...' : 'Abrir Cámara'}
+            {isLoading ? 'Capturando...' : textoBoton}
           </Text>
         </TouchableOpacity>
 
@@ -607,48 +606,6 @@ const CamaraScreen: React.FC<CamaraScreenProps> = ({ navigation }) => {
             <Text style={styles.fotoTapHint}>👆 Toca una foto para verla en grande | Mantén presionado para eliminar</Text>
           </View>
         )}
-
-        {/* ---- Sección de Gestión Documental ---- */}
-        <View style={styles.docSection}>
-          <View style={styles.docHeader}>
-            <Text style={styles.docTitle}>📄 Documentos de la Finca</Text>
-            <Text style={styles.docCount}>{documentos.length} archivo(s)</Text>
-          </View>
-
-          <TouchableOpacity
-            style={styles.subirDocBtn}
-            onPress={handleSubirDocumento}
-            disabled={subiendoDoc}
-          >
-            <Text style={styles.subirDocBtnText}>
-              {subiendoDoc
-                ? subiendoDocAMinIO ? '⏳ Subiendo a MinIO...' : '⏳ Procesando...'
-                : '+ Agregar documento (PDF/imagen)'}
-            </Text>
-          </TouchableOpacity>
-
-          {documentos.length > 0 && (
-            <View style={styles.docList}>
-              {documentos.map((doc) => (
-                <View key={doc.id} style={styles.docItem}>
-                  <Text style={styles.docIcon}>
-                    {doc.nombre?.toLowerCase().endsWith('.pdf') ? '📕' : '🖼️'}
-                  </Text>
-                  <View style={styles.docInfo}>
-                    <Text style={styles.docNombre} numberOfLines={1}>{doc.nombre}</Text>
-                    <Text style={styles.docFecha}>
-                      {new Date(doc.created_at).toLocaleDateString('es-CO')}
-                    </Text>
-                  </View>
-                  <Text style={styles.docSynced}>✅</Text>
-                </View>
-              ))}
-              {docsSaved && (
-                <Text style={styles.docsSavedText}>✓ Documentos guardados (local + MinIO)</Text>
-              )}
-            </View>
-          )}
-        </View>
 
         {/* Botón Guardar fotos en FormContext */}
         {fotos.length > 0 && pendientes > 0 && (
@@ -1226,6 +1183,106 @@ const styles = StyleSheet.create({
     fontSize: FONTS.sizes.md,
     fontWeight: FONTS.weights.bold,
     color: COLORS.textOnPrimary,
+  },
+  // ---- Modal de instrucciones iniciales ----
+  instModalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.8)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: SPACING.lg,
+  },
+  instModal: {
+    width: '100%',
+    maxWidth: 380,
+    backgroundColor: COLORS.surface,
+    borderRadius: BORDER_RADIUS.lg,
+    padding: SPACING.xl,
+    ...SHADOWS.lg,
+  },
+  instTitle: {
+    fontSize: FONTS.sizes.xl,
+    fontWeight: FONTS.weights.bold,
+    color: COLORS.textPrimary,
+    marginBottom: SPACING.xs,
+    textAlign: 'center',
+  },
+  instSubtitle: {
+    fontSize: FONTS.sizes.sm,
+    color: COLORS.textSecondary,
+    marginBottom: SPACING.lg,
+    textAlign: 'center',
+  },
+  requisitoBanner: {
+    backgroundColor: COLORS.warning + '18',
+    borderLeftWidth: 4,
+    borderLeftColor: COLORS.warning,
+    borderRadius: BORDER_RADIUS.sm,
+    padding: SPACING.md,
+    marginBottom: SPACING.md,
+  },
+  requisitoTexto: {
+    fontSize: FONTS.sizes.sm,
+    fontWeight: FONTS.weights.semibold,
+    color: COLORS.textPrimary,
+  },
+  instItem: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    marginBottom: SPACING.md,
+    backgroundColor: COLORS.background,
+    padding: SPACING.md,
+    borderRadius: BORDER_RADIUS.md,
+  },
+  instNum: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    backgroundColor: COLORS.primary,
+    color: COLORS.textOnPrimary,
+    textAlign: 'center',
+    lineHeight: 28,
+    fontSize: FONTS.sizes.sm,
+    fontWeight: FONTS.weights.bold,
+    marginRight: SPACING.md,
+    overflow: 'hidden',
+  },
+  instText: {
+    flex: 1,
+    fontSize: FONTS.sizes.sm,
+    color: COLORS.textPrimary,
+    lineHeight: 20,
+  },
+  instBoton: {
+    backgroundColor: COLORS.primary,
+    padding: SPACING.md,
+    borderRadius: BORDER_RADIUS.md,
+    alignItems: 'center',
+    marginTop: SPACING.md,
+    ...SHADOWS.sm,
+  },
+  instBotonText: {
+    fontSize: FONTS.sizes.md,
+    fontWeight: FONTS.weights.bold,
+    color: COLORS.textOnPrimary,
+  },
+  // ---- Indicador de duración máxima en video ----
+  maxDurationBadge: {
+    alignSelf: 'center',
+    marginTop: SPACING.sm,
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    paddingHorizontal: SPACING.md,
+    paddingVertical: SPACING.xs,
+    borderRadius: BORDER_RADIUS.lg,
+  },
+  maxDurationText: {
+    color: '#ffcc00',
+    fontSize: 13,
+    fontWeight: FONTS.weights.bold,
+  },
+  // ---- Botón de abrir cámara en modo video ----
+  openCameraButtonVideo: {
+    backgroundColor: COLORS.error || '#d32f2f',
   },
 });
 

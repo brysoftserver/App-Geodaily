@@ -6,32 +6,45 @@ import React from 'react';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { COLORS, FONTS } from '../theme';
 import TerrenoMenuScreen from '../screens/terreno/TerrenoMenuScreen';
+import BeneficiariosListScreen from '../screens/terreno/BeneficiariosListScreen';
+import BeneficiarioDetailScreen from '../screens/terreno/BeneficiarioDetailScreen';
 import SeleccionarTipoFormulario from '../screens/terreno/SeleccionarTipoFormulario';
 import FormularioScreen from '../screens/terreno/FormularioScreen';
 import FormularioCaracterizacionScreen from '../screens/terreno/FormularioCaracterizacionScreen';
 import CamaraScreen from '../screens/terreno/CamaraScreen';
+import DocumentosScreen from '../screens/terreno/DocumentosScreen';
 import FirmaDigitalScreen from '../screens/terreno/FirmaDigitalScreen';
 import FirmaBeneficiarioScreen from '../screens/terreno/FirmaBeneficiarioScreen';
 import FirmaBiometricaScreen from '../screens/terreno/FirmaBiometricaScreen';
 import FormularioListScreen from '../screens/terreno/FormularioListScreen';
 import FormularioDetailScreen from '../screens/terreno/FormularioDetailScreen';
 import FormulariosIncompletosScreen from '../screens/terreno/FormulariosIncompletosScreen';
-import CalendarioScreen from '../screens/terreno/CalendarioScreen';
+import CalendarioScreen from '../screens/CalendarioGlobalScreen';
 import MapaScreen from '../screens/terreno/MapaScreen';
 import CapacitacionScreen from '../screens/terreno/CapacitacionScreen';
-import { TipoFormulario } from '../types';
+import { TipoFormulario, DatosBeneficiario, Formulario } from '../types';
 
 export type TerrenoStackParamList = {
   TerrenoMenu: undefined;
-  SeleccionarTipoFormulario: undefined;
+  BeneficiariosList: undefined;
+  BeneficiarioDetail: {
+    beneficiario: DatosBeneficiario;
+    visitas: Formulario[];
+  };
+  SeleccionarTipoFormulario: {
+    beneficiario?: DatosBeneficiario;
+  } | undefined;
   Formulario: { tipo: TipoFormulario; draftId?: string };
   FormularioCaracterizacion: { draftId?: string };
-  Camara: undefined;
+  Camara: { mode?: 'photo' | 'video' };
+  Documentos: undefined;
   FirmaDigital: undefined;
   FirmaBeneficiario: undefined;
   FirmaBiometrica: undefined;
-  TerrenoFormularioList: undefined;
-  FormularioDetail: { formulario: import('../types').Formulario };
+  TerrenoFormularioList: {
+    beneficiarioCedula?: string;
+  } | undefined;
+  FormularioDetail: { formulario: Formulario };
   FormulariosIncompletos: undefined;
   TerrenoCalendario: undefined;
   TerrenoMapa: undefined;
@@ -53,9 +66,8 @@ const TerrenoNavigator: React.FC = () => {
           fontSize: FONTS.sizes.lg,
         },
         headerShadowVisible: false,
-        contentStyle: {
-          backgroundColor: COLORS.background,
-        },
+        animation: 'slide_from_right',
+        animationDuration: 150,
       }}
     >
       <Stack.Screen
@@ -64,8 +76,20 @@ const TerrenoNavigator: React.FC = () => {
         options={{ title: 'GEODAILY - TERRENO' }}
       />
       <Stack.Screen
+        name="BeneficiariosList"
+        component={BeneficiariosListScreen}
+        options={{ title: 'Mis Beneficiarios' }}
+      />
+      <Stack.Screen
+        name="BeneficiarioDetail"
+        component={BeneficiarioDetailScreen}
+        options={({ route }: any) => ({
+          title: route.params?.beneficiario?.nombre || 'Beneficiario',
+        })}
+      />
+      <Stack.Screen
         name="SeleccionarTipoFormulario"
-        component={SeleccionarTipoFormulario}
+        component={SeleccionarTipoFormulario as any}
         options={{ title: 'Nuevo Formulario' }}
       />
       <Stack.Screen
@@ -80,8 +104,13 @@ const TerrenoNavigator: React.FC = () => {
       />
       <Stack.Screen
         name="Camara"
-        component={CamaraScreen}
+        component={CamaraScreen as any}
         options={{ title: 'Evidencia Fotográfica' }}
+      />
+      <Stack.Screen
+        name="Documentos"
+        component={DocumentosScreen}
+        options={{ title: 'Documentos de la Finca' }}
       />
       <Stack.Screen
         name="FirmaDigital"
@@ -100,7 +129,7 @@ const TerrenoNavigator: React.FC = () => {
       />
       <Stack.Screen
         name="TerrenoFormularioList"
-        component={FormularioListScreen}
+        component={FormularioListScreen as any}
         options={{ title: 'Historial' }}
       />
       <Stack.Screen

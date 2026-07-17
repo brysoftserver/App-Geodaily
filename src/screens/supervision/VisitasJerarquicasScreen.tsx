@@ -224,7 +224,7 @@ const VisitasJerarquicasScreen: React.FC<VisitasJerarquicasScreenProps> = ({ nav
   // Interceptar gesto/swipe de navegación (iOS) para subir nivel jerárquico
   useEffect(() => {
     const unsubscribe = navigation.addListener('beforeRemove', (e) => {
-      if (nivel === 'tecnicos') return; // dejar salir
+      if (nivelRef.current === 'tecnicos') return; // dejar salir
       e.preventDefault(); // prevenir salida
       // Subir un nivel (usar refs para evitar stale closure)
       if (nivelRef.current === 'visitas') {

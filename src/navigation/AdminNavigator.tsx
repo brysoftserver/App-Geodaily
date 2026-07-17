@@ -11,6 +11,10 @@ import SystemConfigScreen from '../screens/admin/SystemConfigScreen';
 import MapaGeneralScreen from '../screens/MapaGeneralScreen';
 import DashboardScreen from '../screens/supervision/DashboardScreen';
 import VisitasJerarquicasScreen from '../screens/supervision/VisitasJerarquicasScreen';
+import CalendarioScreen from '../screens/CalendarioGlobalScreen';
+import SupervisionFormularioListScreen from '../screens/supervision/FormularioListScreen';
+import FormularioDetailScreen from '../screens/terreno/FormularioDetailScreen';
+import BaseDatosBeneficiariosScreen from '../screens/supervision/BaseDatosBeneficiariosScreen';
 
 export type AdminStackParamList = {
   AdminMenu: undefined;
@@ -18,7 +22,11 @@ export type AdminStackParamList = {
   SystemConfig: undefined;
   AdminDashboard: undefined;
   AdminVisitasJerarquicas: undefined;
+  AdminCalendario: undefined;
+  AdminFormularioList: undefined;
   MapaGeneral: undefined;
+  SupervisionFormularioDetail: { formulario: import('../types').Formulario };
+  BaseDatosBeneficiarios: undefined;
 };
 
 const Stack = createNativeStackNavigator<AdminStackParamList>();
@@ -36,9 +44,8 @@ const AdminNavigator: React.FC = () => {
           fontSize: FONTS.sizes.lg,
         },
         headerShadowVisible: false,
-        contentStyle: {
-          backgroundColor: COLORS.background,
-        },
+        animation: 'slide_from_right',
+        animationDuration: 150,
       }}
     >
       <Stack.Screen
@@ -67,9 +74,29 @@ const AdminNavigator: React.FC = () => {
         options={{ title: 'Listado de técnicos y visitas' }}
       />
       <Stack.Screen
+        name="AdminCalendario"
+        component={CalendarioScreen}
+        options={{ title: 'Calendario General' }}
+      />
+      <Stack.Screen
+        name="AdminFormularioList"
+        component={SupervisionFormularioListScreen}
+        options={{ title: 'Formularios' }}
+      />
+      <Stack.Screen
         name="MapaGeneral"
         component={MapaGeneralScreen}
         options={{ title: 'Mapa General del Proyecto' }}
+      />
+      <Stack.Screen
+        name="SupervisionFormularioDetail"
+        component={FormularioDetailScreen as any}
+        options={{ title: 'Detalle del Formulario' }}
+      />
+      <Stack.Screen
+        name="BaseDatosBeneficiarios"
+        component={BaseDatosBeneficiariosScreen}
+        options={{ title: 'Base de Datos Beneficiarios' }}
       />
     </Stack.Navigator>
   );

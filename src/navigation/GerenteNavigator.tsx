@@ -9,11 +9,13 @@ import GerenteMenuScreen from '../screens/gerente/GerenteMenuScreen';
 import DashboardGerencialScreen from '../screens/gerente/DashboardGerencialScreen';
 import PerfilTecnicosScreen from '../screens/gerente/PerfilTecnicosScreen';
 import ConsolidadoScreen from '../screens/gerente/ConsolidadoScreen';
-import CronogramaScreen from '../screens/gerente/CronogramaScreen';
+import CalendarioScreen from '../screens/CalendarioGlobalScreen';
 import ProyeccionScreen from '../screens/gerente/ProyeccionScreen';
 import CapacitacionScreen from '../screens/gerente/CapacitacionScreen';
 import MapaTecnicosScreen from '../screens/gerente/MapaTecnicosScreen';
 import MapaGeneralScreen from '../screens/MapaGeneralScreen';
+import BaseDatosBeneficiariosScreen from '../screens/supervision/BaseDatosBeneficiariosScreen';
+import FormularioDetailScreen from '../screens/terreno/FormularioDetailScreen';
 
 export type GerenteStackParamList = {
   GerenteMenu: undefined;
@@ -25,6 +27,8 @@ export type GerenteStackParamList = {
   CapacitacionGerente: undefined;
   MapaTecnicos: undefined;
   MapaGeneral: undefined;
+  BaseDatosBeneficiarios: undefined;
+  SupervisionFormularioDetail: { formulario: import('../types').Formulario };
 };
 
 const Stack = createNativeStackNavigator<GerenteStackParamList>();
@@ -42,9 +46,8 @@ const GerenteNavigator: React.FC = () => {
           fontSize: FONTS.sizes.lg,
         },
         headerShadowVisible: false,
-        contentStyle: {
-          backgroundColor: COLORS.background,
-        },
+        animation: 'slide_from_right',
+        animationDuration: 150,
       }}
     >
       <Stack.Screen
@@ -69,8 +72,8 @@ const GerenteNavigator: React.FC = () => {
       />
       <Stack.Screen
         name="CronogramaGerente"
-        component={CronogramaScreen}
-        options={{ title: 'Cronograma General' }}
+        component={CalendarioScreen}
+        options={{ title: 'Calendario General' }}
       />
       <Stack.Screen
         name="Proyeccion"
@@ -91,6 +94,16 @@ const GerenteNavigator: React.FC = () => {
         name="MapaGeneral"
         component={MapaGeneralScreen}
         options={{ title: 'Mapa General del Proyecto' }}
+      />
+      <Stack.Screen
+        name="BaseDatosBeneficiarios"
+        component={BaseDatosBeneficiariosScreen}
+        options={{ title: 'Base de Datos Beneficiarios' }}
+      />
+      <Stack.Screen
+        name="SupervisionFormularioDetail"
+        component={FormularioDetailScreen as any}
+        options={{ title: 'Detalle del Formulario' }}
       />
     </Stack.Navigator>
   );

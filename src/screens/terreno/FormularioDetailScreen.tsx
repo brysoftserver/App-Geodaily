@@ -5,7 +5,7 @@
 // con miniaturas de evidencias y opciones de PDF.
 // ============================================================
 
-import React, { useState } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
   View,
   Text,
@@ -17,6 +17,8 @@ import {
   Platform,
   Linking,
   Dimensions,
+  Modal,
+  TextInput,
 } from 'react-native';
 import * as FileSystem from 'expo-file-system/legacy';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
@@ -29,11 +31,333 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Print from 'expo-print';
 import * as Sharing from 'expo-sharing';
 import { convertirFotosAHTML, generarSelloBiometrico } from '../../services/pdfLocal.service';
+import { useAuth } from '../../store/AuthContext';
+import { fetchRevisiones, registrarRevision, Revision } from '../../services/revisiones.service';
 
 type FormularioDetailScreenProps = {
   navigation: NativeStackNavigationProp<Record<string, any>>;
   route: RouteProp<Record<string, any> & { params: { formulario: Formulario } }, 'params'>;
 };
+
+// ============================================================
+// Sección de Revisión — flujo jerárquico de retroalimentación
+// (técnico ve el estado; supervisor/interventor/gerente/admin revisan)
+// ============================================================
+
+const ROL_LABEL: Record<string, string> = {
+  supervisor: 'Supervisor',
+  interventor: 'Interventor',
+  gerente: 'Gerente',
+  admin: 'Administrador',
+};
+
+const CONCEPTOS = ['Cumple', 'Cumple parcialmente', 'No cumple'];
+
+const SeccionRevision: React.FC<{ formularioId: string }> = ({ formularioId }) => {
+  const { user } = useAuth();
+  const rol = user?.rol || 'tecnico';
+  const esRevisor = ['supervisor', 'interventor', 'gerente', 'admin'].includes(rol);
+  const tieneFormularioDeRol = rol === 'supervisor' || rol === 'interventor';
+
+  const [revisiones, setRevisiones] = useState<Revision[]>([]);
+  const [enviando, setEnviando] = useState(false);
+  const [modalNovedad, setModalNovedad] = useState(false);
+  const [modalRolForm, setModalRolForm] = useState(false);
+  const [novedadTexto, setNovedadTexto] = useState('');
+  const [concepto, setConcepto] = useState(CONCEPTOS[0]);
+  const [observaciones, setObservaciones] = useState('');
+  const [recomendaciones, setRecomendaciones] = useState('');
+
+  const cargar = useCallback(async () => {
+    setRevisiones(await fetchRevisiones(formularioId));
+  }, [formularioId]);
+
+  useEffect(() => {
+    cargar();
+  }, [cargar]);
+
+  const estadoDe = (r: string): 'ok' | 'novedades' | null => {
+    if (revisiones.some((x) => x.revisor_rol === r && x.tipo === 'visto_bueno')) return 'ok';
+    if (revisiones.some((x) => x.revisor_rol === r && x.tipo === 'novedad')) return 'novedades';
+    return null;
+  };
+  const yaAprobePorMiRol = estadoDe(rol) === 'ok';
+  const yaLleneFormularioRol = revisiones.some((r) => r.revisor_rol === rol && r.tipo === 'formulario_rol');
+  const novedades = revisiones.filter((r) => r.tipo === 'novedad');
+
+  const enviarNovedad = async () => {
+    if (!novedadTexto.trim()) {
+      Alert.alert('Novedad vacía', 'Escribe la observación o corrección solicitada.');
+      return;
+    }
+    setEnviando(true);
+    try {
+      await registrarRevision(formularioId, 'novedad', novedadTexto.trim());
+      setNovedadTexto('');
+      setModalNovedad(false);
+      await cargar();
+      Alert.alert('✅ Novedad registrada', 'El técnico verá esta observación en el formulario.');
+    } catch (error) {
+      Alert.alert('No se pudo registrar', error instanceof Error ? error.message : String(error));
+    } finally {
+      setEnviando(false);
+    }
+  };
+
+  const enviarVistoBueno = async () => {
+    setEnviando(true);
+    try {
+      await registrarRevision(formularioId, 'visto_bueno');
+      await cargar();
+      Alert.alert('✅ Todo OK', 'Visto bueno registrado correctamente.');
+    } catch (error) {
+      Alert.alert('No se pudo aprobar', error instanceof Error ? error.message : String(error));
+    } finally {
+      setEnviando(false);
+    }
+  };
+
+  // Guardar el formulario pequeño del rol — independiente del Todo OK
+  const enviarFormularioRol = async () => {
+    setEnviando(true);
+    try {
+      await registrarRevision(formularioId, 'formulario_rol', undefined, {
+        concepto,
+        observaciones,
+        recomendaciones,
+        rol,
+      });
+      setModalRolForm(false);
+      await cargar();
+      Alert.alert('📋 Guardado', `Formulario de ${ROL_LABEL[rol]} registrado correctamente.`);
+    } catch (error) {
+      Alert.alert('No se pudo guardar', error instanceof Error ? error.message : String(error));
+    } finally {
+      setEnviando(false);
+    }
+  };
+
+  const handleTodoOK = () => {
+    Alert.alert('Dar visto bueno', '¿Confirmas que este formulario está correcto (Todo OK)?', [
+      { text: 'Cancelar', style: 'cancel' },
+      { text: 'Todo OK', onPress: () => enviarVistoBueno() },
+    ]);
+  };
+
+  const Chip = ({ rolChip }: { rolChip: 'supervisor' | 'interventor' }) => {
+    const est = estadoDe(rolChip);
+    return (
+      <View style={[rev.chip, est === 'ok' ? rev.chipOk : est === 'novedades' ? rev.chipNov : rev.chipPend]}>
+        <Text style={rev.chipText}>
+          {ROL_LABEL[rolChip]}: {est === 'ok' ? '✔ Todo OK' : est === 'novedades' ? '⚠ Novedades' : '— Pendiente'}
+        </Text>
+      </View>
+    );
+  };
+
+  return (
+    <View style={rev.section}>
+      <Text style={rev.title}>🔎 Revisión y Aprobación</Text>
+
+      {/* Estado jerárquico (visible para todos, incluido el técnico) */}
+      <View style={rev.chipsRow}>
+        <Chip rolChip="supervisor" />
+        <Chip rolChip="interventor" />
+      </View>
+
+      {/* Novedades registradas */}
+      {novedades.length > 0 && (
+        <View style={rev.novedadesBox}>
+          <Text style={rev.novedadesTitle}>⚠ Novedades ({novedades.length})</Text>
+          {novedades.map((n) => (
+            <View key={n.id} style={rev.novedadItem}>
+              <Text style={rev.novedadMeta}>
+                {ROL_LABEL[n.revisor_rol] || n.revisor_rol} · {n.revisor_nombre || ''} · {formatFecha(n.created_at)}
+              </Text>
+              <Text style={rev.novedadTexto}>{n.comentario}</Text>
+            </View>
+          ))}
+        </View>
+      )}
+      {novedades.length === 0 && revisiones.length === 0 && (
+        <Text style={rev.sinRevisiones}>Aún no hay revisiones para este formulario.</Text>
+      )}
+
+      {/* Acciones (solo roles superiores) — botones independientes */}
+      {esRevisor && (
+        <>
+          <View style={rev.botonesRow}>
+            <TouchableOpacity style={[rev.boton, rev.botonNovedad]} onPress={() => setModalNovedad(true)} disabled={enviando}>
+              <Text style={rev.botonTexto}>📝 Novedad</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[rev.boton, yaAprobePorMiRol ? rev.botonDeshabilitado : rev.botonOk]}
+              onPress={handleTodoOK}
+              disabled={enviando || yaAprobePorMiRol}
+            >
+              <Text style={rev.botonTexto}>
+                {yaAprobePorMiRol ? '✔ Ya aprobado por ti' : '✅ Todo OK'}
+              </Text>
+            </TouchableOpacity>
+          </View>
+          {tieneFormularioDeRol && (
+            <View style={rev.botonesRow}>
+              <TouchableOpacity
+                style={[rev.boton, rev.botonFormRol]}
+                onPress={() => setModalRolForm(true)}
+                disabled={enviando}
+              >
+                <Text style={rev.botonTexto}>
+                  {yaLleneFormularioRol ? `📋 Formulario de ${ROL_LABEL[rol]} ✓ (editar)` : `📋 Formulario de ${ROL_LABEL[rol]}`}
+                </Text>
+              </TouchableOpacity>
+            </View>
+          )}
+        </>
+      )}
+
+      {/* Modal: registrar novedad */}
+      <Modal visible={modalNovedad} transparent animationType="fade" onRequestClose={() => setModalNovedad(false)}>
+        <View style={rev.modalFondo}>
+          <View style={rev.modalCard}>
+            <Text style={rev.modalTitulo}>📝 Registrar Novedad</Text>
+            <Text style={rev.modalSub}>Describe la observación o corrección que el técnico debe atender:</Text>
+            <TextInput
+              style={rev.inputMultiline}
+              multiline
+              numberOfLines={4}
+              value={novedadTexto}
+              onChangeText={setNovedadTexto}
+              placeholder="Ej: Falta la foto del lote norte…"
+              placeholderTextColor={COLORS.textLight}
+            />
+            <View style={rev.modalBotones}>
+              <TouchableOpacity style={[rev.boton, rev.botonCancelar]} onPress={() => setModalNovedad(false)}>
+                <Text style={rev.botonTextoOscuro}>Cancelar</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={[rev.boton, rev.botonNovedad]} onPress={enviarNovedad} disabled={enviando}>
+                <Text style={rev.botonTexto}>{enviando ? 'Enviando…' : 'Registrar'}</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Modal: formulario pequeño del rol + visto bueno */}
+      <Modal visible={modalRolForm} transparent animationType="fade" onRequestClose={() => setModalRolForm(false)}>
+        <View style={rev.modalFondo}>
+          <ScrollView contentContainerStyle={rev.modalScroll}>
+            <View style={rev.modalCard}>
+              <Text style={rev.modalTitulo}>📋 Formulario de {ROL_LABEL[rol]}</Text>
+
+              <Text style={rev.campoLabel}>Concepto</Text>
+              <View style={rev.conceptosRow}>
+                {CONCEPTOS.map((c) => (
+                  <TouchableOpacity
+                    key={c}
+                    style={[rev.conceptoChip, concepto === c && rev.conceptoChipActivo]}
+                    onPress={() => setConcepto(c)}
+                  >
+                    <Text style={[rev.conceptoChipTexto, concepto === c && rev.conceptoChipTextoActivo]}>{c}</Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+
+              <Text style={rev.campoLabel}>Observaciones</Text>
+              <TextInput
+                style={rev.inputMultiline}
+                multiline
+                numberOfLines={3}
+                value={observaciones}
+                onChangeText={setObservaciones}
+                placeholder="Observaciones de la revisión…"
+                placeholderTextColor={COLORS.textLight}
+              />
+
+              <Text style={rev.campoLabel}>Recomendaciones</Text>
+              <TextInput
+                style={rev.inputMultiline}
+                multiline
+                numberOfLines={3}
+                value={recomendaciones}
+                onChangeText={setRecomendaciones}
+                placeholder="Recomendaciones para el técnico o el proyecto…"
+                placeholderTextColor={COLORS.textLight}
+              />
+
+              <View style={rev.modalBotones}>
+                <TouchableOpacity style={[rev.boton, rev.botonCancelar]} onPress={() => setModalRolForm(false)}>
+                  <Text style={rev.botonTextoOscuro}>Cancelar</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[rev.boton, rev.botonFormRol]}
+                  onPress={enviarFormularioRol}
+                  disabled={enviando}
+                >
+                  <Text style={rev.botonTexto}>{enviando ? 'Enviando…' : 'Guardar formulario'}</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          </ScrollView>
+        </View>
+      </Modal>
+    </View>
+  );
+};
+
+const rev = StyleSheet.create({
+  section: {
+    backgroundColor: COLORS.surface,
+    borderRadius: BORDER_RADIUS.lg,
+    padding: SPACING.md,
+    marginBottom: SPACING.md,
+    borderLeftWidth: 4,
+    borderLeftColor: COLORS.info,
+    ...SHADOWS.sm,
+  },
+  title: { fontSize: FONTS.sizes.lg, fontWeight: FONTS.weights.semibold, color: COLORS.textPrimary, marginBottom: SPACING.sm },
+  chipsRow: { flexDirection: 'row', gap: SPACING.sm, flexWrap: 'wrap', marginBottom: SPACING.sm },
+  chip: { paddingHorizontal: SPACING.sm, paddingVertical: 4, borderRadius: BORDER_RADIUS.full },
+  chipOk: { backgroundColor: COLORS.success + '22' },
+  chipNov: { backgroundColor: COLORS.warning + '22' },
+  chipPend: { backgroundColor: COLORS.divider },
+  chipText: { fontSize: FONTS.sizes.sm, color: COLORS.textPrimary },
+  novedadesBox: { marginBottom: SPACING.sm },
+  novedadesTitle: { fontSize: FONTS.sizes.md, fontWeight: FONTS.weights.semibold, color: COLORS.error, marginBottom: 4 },
+  novedadItem: { borderLeftWidth: 3, borderLeftColor: COLORS.error, paddingLeft: SPACING.sm, marginBottom: SPACING.xs },
+  novedadMeta: { fontSize: FONTS.sizes.xs, color: COLORS.textSecondary },
+  novedadTexto: { fontSize: FONTS.sizes.md, color: COLORS.textPrimary },
+  sinRevisiones: { fontSize: FONTS.sizes.sm, color: COLORS.textSecondary, marginBottom: SPACING.sm },
+  botonesRow: { flexDirection: 'row', gap: SPACING.sm, marginTop: SPACING.xs },
+  boton: { flex: 1, paddingVertical: SPACING.sm, borderRadius: BORDER_RADIUS.md, alignItems: 'center', paddingHorizontal: SPACING.sm },
+  botonNovedad: { backgroundColor: COLORS.info },
+  botonOk: { backgroundColor: COLORS.success },
+  botonFormRol: { backgroundColor: COLORS.roleSupervisor || '#6A1B9A' },
+  botonCancelar: { backgroundColor: COLORS.divider },
+  botonDeshabilitado: { backgroundColor: COLORS.textLight },
+  botonTexto: { color: '#fff', fontWeight: FONTS.weights.semibold, fontSize: FONTS.sizes.sm, textAlign: 'center' },
+  botonTextoOscuro: { color: COLORS.textPrimary, fontWeight: FONTS.weights.medium, fontSize: FONTS.sizes.sm },
+  modalFondo: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', padding: SPACING.lg },
+  modalScroll: { flexGrow: 1, justifyContent: 'center' },
+  modalCard: { backgroundColor: COLORS.surface, borderRadius: BORDER_RADIUS.lg, padding: SPACING.lg },
+  modalTitulo: { fontSize: FONTS.sizes.lg, fontWeight: FONTS.weights.bold, color: COLORS.textPrimary, marginBottom: SPACING.xs },
+  modalSub: { fontSize: FONTS.sizes.sm, color: COLORS.textSecondary, marginBottom: SPACING.sm },
+  inputMultiline: {
+    borderWidth: 1, borderColor: COLORS.border, borderRadius: BORDER_RADIUS.md,
+    padding: SPACING.sm, minHeight: 70, textAlignVertical: 'top',
+    fontSize: FONTS.sizes.md, color: COLORS.textPrimary, marginBottom: SPACING.sm,
+  },
+  modalBotones: { flexDirection: 'row', gap: SPACING.sm, marginTop: SPACING.xs },
+  campoLabel: { fontSize: FONTS.sizes.sm, fontWeight: FONTS.weights.semibold, color: COLORS.textSecondary, marginBottom: 4 },
+  conceptosRow: { flexDirection: 'row', gap: SPACING.xs, flexWrap: 'wrap', marginBottom: SPACING.sm },
+  conceptoChip: {
+    paddingHorizontal: SPACING.sm, paddingVertical: 6,
+    borderRadius: BORDER_RADIUS.full, borderWidth: 1, borderColor: COLORS.border,
+  },
+  conceptoChipActivo: { backgroundColor: COLORS.success, borderColor: COLORS.success },
+  conceptoChipTexto: { fontSize: FONTS.sizes.sm, color: COLORS.textPrimary },
+  conceptoChipTextoActivo: { color: '#fff', fontWeight: FONTS.weights.semibold },
+});
 
 const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, navigation: _navigation }) => {
   const { formulario } = route.params;
@@ -275,6 +599,22 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
     return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#039;');
   }
 
+  // Generar el PDF local: para la Encuesta Social AgroAmbiental se usa el
+  // generador canónico del servicio (52 preguntas oficiales, 2 columnas,
+  // clima, GPS, anexo de videos) — así "Ver PDF" desde cualquier rol
+  // produce el mismo documento que genera el técnico al completar.
+  const generarPdfUri = async (): Promise<string | null> => {
+    if (formulario.tipo === 'caracterizacion' || (formulario as any).caracterizacion_nueva) {
+      const { generarPDFLocal } = await import('../../services/pdfLocal.service');
+      const uri = await generarPDFLocal(formulario);
+      if (uri) return uri;
+      // Si el servicio falla, caer al generador local de esta pantalla
+    }
+    const html = await generarHtml();
+    const { uri } = await Print.printToFileAsync({ html });
+    return uri;
+  };
+
   const handleViewPDF = async () => {
     if (formulario.pdf_url) {
       const url = formulario.pdf_url.startsWith('http')
@@ -305,8 +645,8 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
     // Generar PDF local con expo-print y mostrarlo embebido
     setGeneratingPdf(true);
     try {
-      const html = await generarHtml();
-      const { uri } = await Print.printToFileAsync({ html });
+      const uri = await generarPdfUri();
+      if (!uri) throw new Error('sin uri');
       setPdfUri(uri);
       setShowPdf(true);
     } catch (e) {
@@ -326,8 +666,8 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
       // Si no hay pdfUri, generar primero
       setGeneratingPdf(true);
       try {
-        const html = await generarHtml();
-        const { uri } = await Print.printToFileAsync({ html });
+        const uri = await generarPdfUri();
+        if (!uri) throw new Error('sin uri');
         if (await Sharing.isAvailableAsync()) {
           await Sharing.shareAsync(uri);
         } else {
@@ -350,8 +690,8 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
   const handleDownloadPDF = async () => {
     setGeneratingPdf(true);
     try {
-      const html = await generarHtml();
-      const { uri } = await Print.printToFileAsync({ html });
+      const uri = await generarPdfUri();
+      if (!uri) throw new Error('sin uri');
 
       if (await Sharing.isAvailableAsync()) {
         await Sharing.shareAsync(uri);
@@ -388,6 +728,9 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
             {formulario.sincronizado ? '✓ Sincronizado' : '⏳ Pendiente'}
           </Text>
         </View>
+
+        {/* Revisión jerárquica: novedades y vistos buenos */}
+        <SeccionRevision formularioId={formulario.id} />
 
         {/* Caracterización Sociodemográfica */}
         {(formulario as any).caracterizacion_nueva && (() => {

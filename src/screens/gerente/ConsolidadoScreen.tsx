@@ -2,7 +2,7 @@
 // GEODAILY — Consolidador de Información (Gerencia)
 // ============================================================
 
-import React, { useMemo, useState } from 'react';
+import React, { useMemo, useState, useEffect, useCallback } from 'react';
 import {
   View,
   Text,
@@ -14,6 +14,8 @@ import {
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { COLORS, FONTS, SPACING, BORDER_RADIUS, SHADOWS } from '../../theme';
 import { useForm } from '../../store/FormContext';
+import { getFormulariosLocales } from '../../services/database';
+import { fetchFormulariosDelServidor } from '../../services/formularios.service';
 import FilterBar from '../../components/FilterBar';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
@@ -28,8 +30,30 @@ const FILTER_OPTIONS = [
 ];
 
 const ConsolidadoScreen: React.FC<ConsolidadoProps> = ({ navigation: _navigation }) => {
-  const { formularios } = useForm();
+  const { formularios, cargarFormularios } = useForm();
   const [filter, setFilter] = useState('all');
+
+  // Cargar datos propios (local + servidor) — sin esto la pantalla quedaba
+  // vacía si el gerente entraba directo desde el menú sin pasar antes por
+  // el Dashboard (que era quien llenaba el contexto).
+  const loadData = useCallback(async () => {
+    try {
+      const [locales, servidor] = await Promise.all([
+        getFormulariosLocales(),
+        fetchFormulariosDelServidor(),
+      ]);
+      const mapa = new Map<string, (typeof locales)[number]>();
+      for (const f of locales) mapa.set(f.id, f);
+      for (const f of servidor) mapa.set(f.id, { ...f, sincronizado: true });
+      cargarFormularios(Array.from(mapa.values()));
+    } catch (error) {
+      console.warn('[Consolidado] Error cargando formularios:', error);
+    }
+  }, [cargarFormularios]);
+
+  useEffect(() => {
+    loadData();
+  }, [loadData]);
 
   const filteredForms = useMemo(() => {
     if (filter === 'all') return formularios;
@@ -41,8 +65,8 @@ const ConsolidadoScreen: React.FC<ConsolidadoProps> = ({ navigation: _navigation
     if (total === 0) return null;
     const visitas = filteredForms.filter(f => f.tipo === 'visita_tecnica').length;
     const sincronizadas = filteredForms.filter(f => f.sincronizado).length;
-    const municipios = new Set(filteredForms.map(f => f.beneficiario.municipio)).size;
-    const tecnicos = new Set(filteredForms.map(f => f.tecnico.nombre)).size;
+    const municipios = new Set(filteredForms.map(f => f.beneficiario?.municipio || 'Desconocido')).size;
+    const tecnicos = new Set(filteredForms.map(f => f.tecnico?.nombre || 'Desconocido')).size;
     return { total, visitas, sincronizadas, pendientes: total - sincronizadas, municipios, tecnicos };
   }, [filteredForms]);
 
@@ -50,7 +74,7 @@ const ConsolidadoScreen: React.FC<ConsolidadoProps> = ({ navigation: _navigation
   const porMunicipio = useMemo(() => {
     const map: Record<string, number> = {};
     filteredForms.forEach(f => {
-      const m = f.beneficiario.municipio;
+      const m = f.beneficiario?.municipio || 'Desconocido';
       map[m] = (map[m] || 0) + 1;
     });
     return Object.entries(map).sort((a, b) => b[1] - a[1]);
@@ -60,7 +84,7 @@ const ConsolidadoScreen: React.FC<ConsolidadoProps> = ({ navigation: _navigation
   const porTecnico = useMemo(() => {
     const map: Record<string, number> = {};
     filteredForms.forEach(f => {
-      const t = f.tecnico.nombre;
+      const t = f.tecnico?.nombre || 'Desconocido';
       map[t] = (map[t] || 0) + 1;
     });
     return Object.entries(map).sort((a, b) => b[1] - a[1]);
@@ -70,7 +94,7 @@ const ConsolidadoScreen: React.FC<ConsolidadoProps> = ({ navigation: _navigation
     try {
       const headers = 'ID,Fecha,Tipo,Técnico,Beneficiario,Municipio,Vereda,Sincronizado';
       const rows = filteredForms.map(f =>
-        `${f.id},${f.created_at.split('T')[0]},${f.tipo},"${f.tecnico.nombre}","${f.beneficiario.nombre}","${f.beneficiario.municipio}","${f.beneficiario.vereda}",${f.sincronizado ? 'Sí' : 'No'}`
+        `${f.id},${f.created_at?.split('T')[0] || ''},${f.tipo},"${f.tecnico?.nombre || ''}","${f.beneficiario?.nombre || ''}","${f.beneficiario?.municipio || ''}","${f.beneficiario?.vereda || ''}",${f.sincronizado ? 'Sí' : 'No'}`
       );
       const csv = `\uFEFF${headers}\n${rows.join('\n')}`;
 

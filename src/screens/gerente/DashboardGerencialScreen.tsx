@@ -21,6 +21,7 @@ import { getFormulariosLocales } from '../../services/database';
 import { fetchFormulariosDelServidor } from '../../services/formularios.service';
 import MetricCard from '../../components/MetricCard';
 import LoadingSpinner from '../../components/LoadingSpinner';
+import { getLocalDateString } from '../../utils/formatters';
 
 type DashboardGerencialProps = {
   navigation: NativeStackNavigationProp<Record<string, any>>;
@@ -69,8 +70,8 @@ const DashboardGerencialScreen: React.FC<DashboardGerencialProps> = ({ navigatio
 
   const metrics = useMemo(() => {
     const total = formularios.length;
-    const hoy = new Date().toISOString().split('T')[0];
-    const visitasHoy = formularios.filter(f => (f.created_at || '').startsWith(hoy)).length;
+    const hoy = getLocalDateString();
+    const visitasHoy = formularios.filter(f => f.created_at && getLocalDateString(new Date(f.created_at)) === hoy).length;
     const sincronizadas = formularios.filter(f => f.sincronizado).length;
     const pendientes = total - sincronizadas;
     const tecnicosUnicos = new Set(formularios.map(f => f.tecnico?.nombre || '')).size;
@@ -81,7 +82,7 @@ const DashboardGerencialScreen: React.FC<DashboardGerencialProps> = ({ navigatio
   const chartData = useMemo(() => {
     const dateMap: Record<string, number> = {};
     formularios.forEach(f => {
-      const d = (f.created_at || '').split('T')[0];
+      const d = f.created_at ? getLocalDateString(new Date(f.created_at)) : '';
       if (d) dateMap[d] = (dateMap[d] || 0) + 1;
     });
     const sorted = Object.keys(dateMap).sort().slice(-14);
@@ -189,9 +190,9 @@ const DashboardGerencialScreen: React.FC<DashboardGerencialProps> = ({ navigatio
         <Text style={styles.chartTitle}>Últimas visitas registradas</Text>
         {formularios.slice(0, 8).map((form) => (
           <View key={form.id} style={styles.recentItem}>
-            <Text style={styles.recentName}>{form.beneficiario.nombre}</Text>
+            <Text style={styles.recentName}>{form.beneficiario?.nombre || '—'}</Text>
             <Text style={styles.recentMeta}>
-              {form.beneficiario.municipio} · {form.tecnico.nombre} ·{' '}
+              {form.beneficiario?.municipio || '—'} · {form.tecnico?.nombre || '—'} ·{' '}
               {form.tipo === 'visita_tecnica' ? 'Visita' : form.tipo === 'caracterizacion' ? 'Caracterización' : 'Plantación'}
             </Text>
           </View>

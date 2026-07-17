@@ -1,17 +1,24 @@
 // ============================================================
 // GEODAILY — Mapa Offline con MapLibre GL
 // ============================================================
-// Renderiza mapas offline usando teselas del servidor QGIS
-// a través de @maplibre/maplibre-react-native.
+// Con el dev client (módulo nativo de MapLibre compilado), este mapa usa
+// teselas raster reales (CartoDB/Esri) y soporta descarga real para uso sin
+// conexión vía OfflineManager (ver src/services/offlineMap.service.ts y el
+// botón ⬇️ en MapaScreen.tsx) — el técnico descarga la zona con señal antes
+// de salir a campo. Sin ese módulo nativo (ej. Expo Go), cae al fallback
+// WebView/Leaflet de más abajo, que siempre depende de internet.
 //
-// URL de teselas: /api/maps/tesela/{z}/{x}/{y}?capa=colombia
+// El estilo definido aquí (MAP_STYLE_RELIEVE/SATELITE) debe coincidir
+// exactamente con el que sirve backend/src/routes/maps.js en
+// GET /api/maps/style/:tipo — es lo que OfflineManager descarga; si
+// difieren, las teselas cacheadas no calzan con lo que se renderiza.
 // ============================================================
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { View, Text, StyleSheet, ActivityIndicator, NativeModules, Platform } from 'react-native';
 import { WebView } from 'react-native-webview';
+import NetInfo from '@react-native-community/netinfo';
 import { COLORS, FONTS, SPACING, BORDER_RADIUS } from '../theme';
-import { API_CONFIG } from '../theme';
 import { Coordenadas } from '../types';
 
 // Carga condicional de MapLibre (fallback si no hay módulo nativo)
@@ -82,25 +89,24 @@ interface MapViewOfflineProps {
 // ESTILOS DE MAPA
 // ============================================================
 
-// URL de teselas vectoriales PBF (OpenMapTiles schema) — para relieve
-const TILE_URL = `${API_CONFIG.BASE_URL}${API_CONFIG.ENDPOINTS.MAPS}/tesela/{z}/{x}/{y}?capa=colombia`;
-
-// Estilo: Relieve — vectorial con colores tierra (GEODAILY offline)
+// Estilo: Relieve — raster CartoDB Positron.
+// IMPORTANTE: debe ser exactamente el mismo estilo (misma fuente/URL de
+// teselas) que backend/src/routes/maps.js sirve en GET /api/maps/style/relieve,
+// que es lo que OfflineManager.createPack() descarga para uso sin conexión —
+// si difieren, las teselas cacheadas offline no coinciden con las que este
+// componente pide al renderizar, y el mapa se ve en blanco igual estando
+// "descargado". Antes esta capa tenía además una fuente vectorial que
+// apuntaba a una ruta backend inexistente (/tesela) y una capa "background"
+// opaca que tapaba por completo el raster — ambas eliminadas.
 const MAP_STYLE_RELIEVE = {
   version: 8 as const,
   name: 'GEODAILY - Relieve',
   sources: {
-    'geodaily-vector': {
-      type: 'vector' as const,
-      tiles: [TILE_URL],
-      minzoom: 0,
-      maxzoom: 14,
-      attribution: '© OpenStreetMap contributors | GEODAILY',
-    },
-    // Fallback online: CartoDB Positron (raster) se muestra si las teselas vectoriales fallan
     'carto-positron': {
       type: 'raster' as const,
-      tiles: ['https://a.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png'],
+      // Sin {r}: es una convención de Leaflet que MapLibre nativo NO
+      // sustituye (la enviaría literal en la URL).
+      tiles: ['https://a.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png'],
       tileSize: 256,
       minzoom: 0,
       maxzoom: 19,
@@ -108,20 +114,7 @@ const MAP_STYLE_RELIEVE = {
     },
   },
   layers: [
-    // Capa raster de respaldo (online) — se ve siempre como base
-    { id: 'carto-bg', source: 'carto-positron', type: 'raster', paint: { 'raster-opacity': 1 } },
-    { id: 'background', type: 'background', paint: { 'background-color': '#f8f4f0' } },
-    { id: 'landuse', source: 'geodaily-vector', 'source-layer': 'landuse', type: 'fill', minzoom: 4, paint: { 'fill-color': ['match', ['get', 'class'], 'residential', '#e8ddd3', 'commercial', '#e8ddd3', 'industrial', '#e8ddd3', 'cemetery', '#c3d9b7', 'military', '#e8ddd3', 'park', '#b6d9a8', 'hospital', '#f0d0d0', 'school', '#f0e8d0', 'wood', '#b6d9a8', 'grass', '#cde5c1', 'forest', '#a8cfa0', 'farmland', '#e5e8c3', 'orchard', '#dce5b6', 'quarry', '#d0d0d0', 'beach', '#f0e8d0', 'glacier', '#e8f0f8', /* default */ '#e8ddd3'], 'fill-opacity': 0.7 } },
-    { id: 'landcover', source: 'geodaily-vector', 'source-layer': 'landcover', type: 'fill', minzoom: 0, paint: { 'fill-color': ['match', ['get', 'class'], 'wood', '#b6d9a8', 'forest', '#a8cfa0', 'grass', '#cde5c1', 'wetland', '#b6cfe0', 'snow', '#f0f4f8', 'sand', '#f0e8d0', 'bare_rock', '#d8d0c8', 'scrub', '#d0dcc0', /* default */ '#dce5d0'], 'fill-opacity': 0.5 } },
-    { id: 'park', source: 'geodaily-vector', 'source-layer': 'park', type: 'fill', minzoom: 11, paint: { 'fill-color': '#b6d9a8', 'fill-opacity': 0.5 } },
-    { id: 'water', source: 'geodaily-vector', 'source-layer': 'water', type: 'fill', minzoom: 0, paint: { 'fill-color': '#a0c8e8', 'fill-opacity': 0.5 } },
-    { id: 'waterway', source: 'geodaily-vector', 'source-layer': 'waterway', type: 'line', minzoom: 8, paint: { 'line-color': '#a0c8e8', 'line-width': ['interpolate', ['linear'], ['zoom'], 8, 0.5, 14, 2] } },
-    { id: 'boundary', source: 'geodaily-vector', 'source-layer': 'boundary', type: 'line', minzoom: 3, paint: { 'line-color': '#888', 'line-width': ['interpolate', ['linear'], ['zoom'], 3, 0.5, 14, 2], 'line-dasharray': [4, 2] } },
-    { id: 'transportation', source: 'geodaily-vector', 'source-layer': 'transportation', type: 'line', minzoom: 4, paint: { 'line-color': ['match', ['get', 'class'], 'motorway', '#f08060', 'trunk', '#f0a060', 'primary', '#f0c060', 'secondary', '#f0e060', 'tertiary', '#e8e0c0', 'street', '#d0c8b0', 'path', '#c0b8a0', 'track', '#c0b8a0', 'rail', '#b0a090', 'pier', '#d0c8b0', 'bridge', '#d0c8b0', /* default */ '#d0c8b0'], 'line-width': ['interpolate', ['linear'], ['zoom'], 4, ['match', ['get', 'class'], 'motorway', 1, 'trunk', 0.8, 0.3], 14, ['match', ['get', 'class'], 'motorway', 6, 'trunk', 5, 'primary', 4, 'secondary', 3, 'tertiary', 2.5, 'street', 2, 1]] } },
-    { id: 'transportation-tunnel', source: 'geodaily-vector', 'source-layer': 'transportation', type: 'line', minzoom: 8, filter: ['==', ['get', 'brunnel'], 'tunnel'], paint: { 'line-color': '#d0c8b0', 'line-width': ['interpolate', ['linear'], ['zoom'], 8, 0.5, 14, 3], 'line-dasharray': [2, 2], 'line-opacity': 0.5 } },
-    { id: 'building', source: 'geodaily-vector', 'source-layer': 'building', type: 'fill', minzoom: 13, paint: { 'fill-color': '#d0c8b8', 'fill-opacity': 0.8, 'fill-outline-color': '#b0a898' } },
-    { id: 'aeroway', source: 'geodaily-vector', 'source-layer': 'aeroway', type: 'fill', minzoom: 11, paint: { 'fill-color': '#e8e0d8' } },
-    { id: 'place-city', source: 'geodaily-vector', 'source-layer': 'place', type: 'symbol', minzoom: 4, layout: { 'text-field': '{name:latin}', 'text-font': ['Open Sans Regular', 'Noto Sans Regular'], 'text-size': ['interpolate', ['linear'], ['zoom'], 4, 8, 14, 14], 'text-anchor': 'center', 'text-offset': [0, 0], 'text-max-width': 10, 'text-padding': 4 }, paint: { 'text-color': '#333', 'text-halo-color': '#fff', 'text-halo-width': 2 } },
+    { id: 'carto-bg', source: 'carto-positron', type: 'raster' as const, paint: { 'raster-opacity': 1 } },
   ],
 };
 
@@ -176,6 +169,19 @@ const MapViewOffline: React.FC<MapViewOfflineProps> = ({
   const [isLoaded, setIsLoaded] = useState(false);
   const hasNativeModule = !!MapLibreGL;
 
+  // Estado de conectividad — en el mapa nativo (con módulo MapLibre) no hay
+  // forma sencilla de detectar si una tesela falló al cargar, así que
+  // avisamos directamente cuando el dispositivo está offline: si el técnico
+  // descargó el área con antelación (OfflineManager), el mapa se ve igual;
+  // si no, es la señal más honesta de que puede verse incompleto.
+  const [isOffline, setIsOffline] = useState(false);
+  useEffect(() => {
+    const unsubscribe = NetInfo.addEventListener((state) => {
+      setIsOffline(!(state.isConnected && state.isInternetReachable !== false));
+    });
+    return () => unsubscribe();
+  }, []);
+
   // Altura del contenedor: '100%' usa flex, número usa altura fija
   const containerStyle = height === '100%'
     ? styles.containerFlex
@@ -201,6 +207,19 @@ const MapViewOffline: React.FC<MapViewOfflineProps> = ({
   // Web: iframe ref + ready state
   const webIframeRef = useRef<HTMLIFrameElement>(null);
   const [webIframeReady, setWebIframeReady] = useState(false);
+
+  // Fallback (WebView/iframe) depende 100% de internet (Leaflet + teselas
+  // externas) — si no carga en unos segundos, lo más probable es que no
+  // haya conexión. Mostrar un aviso claro en vez de dejar la pantalla en
+  // blanco sin explicación.
+  const [webLoadTimedOut, setWebLoadTimedOut] = useState(false);
+  useEffect(() => {
+    if (hasNativeModule) return; // no aplica al mapa nativo
+    setWebLoadTimedOut(false);
+    const timeout = setTimeout(() => setWebLoadTimedOut(true), 8000);
+    return () => clearTimeout(timeout);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hasNativeModule, mapStyle]);
 
   // Web: comunicación con el iframe vía postMessage
   const postMsg = useCallback((data: Record<string, any>) => {
@@ -610,6 +629,13 @@ const MapViewOffline: React.FC<MapViewOfflineProps> = ({
             style={{ width: '100%', height: '100%', border: 'none' }}
             title="Mapa GEODAILY"
           />
+          {webLoadTimedOut && !webIframeReady && (
+            <View style={styles.offlineOverlay} pointerEvents="none">
+              <Text style={styles.offlineOverlayIcon}>📡</Text>
+              <Text style={styles.offlineOverlayText}>Sin conexión</Text>
+              <Text style={styles.offlineOverlaySubtext}>No se pudo cargar el mapa ni hay un mapa descargado para esta zona. Verifica tu conexión a internet.</Text>
+            </View>
+          )}
         </View>
       );
     }
@@ -627,6 +653,13 @@ const MapViewOffline: React.FC<MapViewOfflineProps> = ({
           javaScriptEnabled={true}
           domStorageEnabled={true}
         />
+        {webLoadTimedOut && !webViewReady && (
+          <View style={styles.offlineOverlay} pointerEvents="none">
+            <Text style={styles.offlineOverlayIcon}>📡</Text>
+            <Text style={styles.offlineOverlayText}>Sin conexión</Text>
+            <Text style={styles.offlineOverlaySubtext}>No se pudo cargar el mapa ni hay un mapa descargado para esta zona. Verifica tu conexión a internet.</Text>
+          </View>
+        )}
       </View>
     );
   }
@@ -637,7 +670,7 @@ const MapViewOffline: React.FC<MapViewOfflineProps> = ({
     <View style={containerStyle}>
       <MLMapView
         style={StyleSheet.absoluteFill}
-        styleURL={MAP_STYLES[mapStyle]}
+        mapStyle={MAP_STYLES[mapStyle]}
         logoEnabled={false}
         attributionEnabled={false}
         compassEnabled={false}
@@ -780,6 +813,15 @@ const MapViewOffline: React.FC<MapViewOfflineProps> = ({
           <Text style={styles.loadingText}>Cargando mapa offline...</Text>
         </View>
       )}
+
+      {/* Aviso discreto de conectividad — si el área fue descargada antes
+          (OfflineManager) el mapa se sigue viendo igual; esto es solo
+          informativo, no bloquea el mapa como en el fallback WebView */}
+      {isLoaded && isOffline && (
+        <View style={styles.offlineBanner} pointerEvents="none">
+          <Text style={styles.offlineBannerText}>📡 Sin conexión — si descargaste este mapa antes, se sigue viendo</Text>
+        </View>
+      )}
     </View>
   );
 };
@@ -809,6 +851,43 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(255,255,255,0.8)',
     justifyContent: 'center',
     alignItems: 'center',
+  },
+  offlineOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(255,255,255,0.95)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: SPACING.lg,
+  },
+  offlineOverlayIcon: {
+    fontSize: 40,
+    marginBottom: SPACING.sm,
+  },
+  offlineOverlayText: {
+    fontSize: FONTS.sizes.lg,
+    fontWeight: FONTS.weights.bold,
+    color: COLORS.textPrimary,
+    marginBottom: SPACING.xs,
+  },
+  offlineOverlaySubtext: {
+    fontSize: FONTS.sizes.sm,
+    color: COLORS.textSecondary,
+    textAlign: 'center',
+  },
+  offlineBanner: {
+    position: 'absolute',
+    bottom: SPACING.sm,
+    left: SPACING.sm,
+    right: SPACING.sm,
+    backgroundColor: 'rgba(0,0,0,0.75)',
+    borderRadius: BORDER_RADIUS.sm,
+    paddingVertical: SPACING.xs,
+    paddingHorizontal: SPACING.sm,
+  },
+  offlineBannerText: {
+    color: '#fff',
+    fontSize: FONTS.sizes.xs,
+    textAlign: 'center',
   },
   loadingText: {
     marginTop: SPACING.sm,

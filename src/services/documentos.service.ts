@@ -15,7 +15,10 @@ export const subirDocumento = async (
   uri: string,
   descripcion?: string,
   categoria?: string,
-  nombre?: string
+  nombre?: string,
+  beneficiarioCedula?: string,
+  beneficiarioNombre?: string,
+  tipoFormulario?: string
 ): Promise<{ id: string; ruta: string; estado: string } | null> => {
   try {
     const formData = new FormData();
@@ -29,6 +32,9 @@ export const subirDocumento = async (
 
     if (descripcion) formData.append('descripcion', descripcion);
     if (categoria) formData.append('categoria', categoria);
+    if (beneficiarioCedula) formData.append('beneficiario_cedula', beneficiarioCedula);
+    if (beneficiarioNombre) formData.append('beneficiario_nombre', beneficiarioNombre);
+    if (tipoFormulario) formData.append('tipo_formulario', tipoFormulario);
 
     const response = await apiClient.post(
       API_CONFIG.ENDPOINTS.DOCUMENTOS + '/subir',
@@ -54,7 +60,10 @@ export const subirDocumento = async (
  * Subir múltiples documentos
  */
 export const subirMultiplesDocumentos = async (
-  archivos: { uri: string; nombre?: string; descripcion?: string }[]
+  archivos: { uri: string; nombre?: string; descripcion?: string }[],
+  beneficiarioCedula?: string,
+  beneficiarioNombre?: string,
+  tipoFormulario?: string
 ): Promise<{ estado: string; documentos?: Record<string, any>[] } | null> => {
   try {
     const formData = new FormData();
@@ -67,6 +76,10 @@ export const subirMultiplesDocumentos = async (
         name: archivo.nombre || `doc_${Date.now()}`,
       });
     }
+
+    if (beneficiarioCedula) formData.append('beneficiario_cedula', beneficiarioCedula);
+    if (beneficiarioNombre) formData.append('beneficiario_nombre', beneficiarioNombre);
+    if (tipoFormulario) formData.append('tipo_formulario', tipoFormulario);
 
     const response = await apiClient.post(
       API_CONFIG.ENDPOINTS.DOCUMENTOS + '/subir-multiple',

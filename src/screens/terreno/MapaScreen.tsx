@@ -28,17 +28,19 @@ import { useGPS } from '../../store/GPSContext';
 import MapViewOffline from '../../components/MapViewOffline';
 import { calcularArea, exportarKML, importarKML } from '../../services/kml.service';
 import { savePlantacion, saveMedicion, getPlantaciones } from '../../services/database';
-import { Plantacion, Coordenadas } from '../../types';
+import { isOfflineMapAvailable, descargarMapaOffline, listarPaquetesOffline, eliminarPaqueteOffline, OfflinePackInfo } from '../../services/offlineMap.service';
+import { Plantacion, Coordenadas, PuntoPoligono } from '../../types';
+import { PLANTAS_OPCIONES, getIconoEspecie } from '../../utils/constants';
 
 const STORAGE_KEY_MAP = '@geodaily/mapa_estado';
 
-type ModoMapa = 'navegar' | 'medir' | 'contar' | 'ruta';
+// Zona de trabajo del proyecto (Puerto Rico, Caquetá) — permite descargar
+// el mapa correcto para los técnicos sin importar desde dónde se esté
+// probando/preparando la descarga (ej. alguien en Florencia preparando el
+// mapa para técnicos que trabajan en Puerto Rico).
+const PUERTO_RICO_CENTRO: Coordenadas = { latitud: 1.914, longitud: -75.145 };
 
-interface PuntoPoligono {
-  latitud: number;
-  longitud: number;
-  orden: number;
-}
+type ModoMapa = 'navegar' | 'medir' | 'contar' | 'ruta';
 
 const MapaScreen: React.FC = () => {
   const insets = useSafeAreaInsets();
@@ -86,17 +88,12 @@ const MapaScreen: React.FC = () => {
     distanciaKm: number;
   } | null>(null);
 
-  // --- Estado para Conteo (rediseñado: dropdown + icono por planta) ---
+  // --- Estado para Conteo (polígono de plantación + selector de especie) ---
   const [mostrarPanelConteo, setMostrarPanelConteo] = useState(false);
   const [plantaSeleccionada, setPlantaSeleccionada] = useState<string>('Cacao');
   const [cantidadInput, setCantidadInput] = useState<string>('');
-  const PLANTAS_OPCIONES = [
-    { nombre: 'Cacao', icono: '🍫' },
-    { nombre: 'Plátano', icono: '🍌' },
-    { nombre: 'Abarco / Cedro / Caucho', icono: '🌳' },
-  ];
-  const getIconoFromNombre = (nombre: string): string =>
-    PLANTAS_OPCIONES.find((p) => p.nombre === nombre)?.icono || '🌱';
+  /** Polígono que el técnico va dibujando en modo conteo */
+  const [plantacionPoligono, setPlantacionPoligono] = useState<PuntoPoligono[]>([]);
 
   // --- Estado para Plantaciones (Fase B) ---
   const [plantaciones, setPlantaciones] = useState<Plantacion[]>([]);
@@ -107,7 +104,62 @@ const MapaScreen: React.FC = () => {
   // --- Tipo de mapa: relieve (CartoDB) o satélite ---
   const [tipoMapa, setTipoMapa] = useState<'relieve' | 'satelite'>('relieve');
 
+  // --- Descarga de mapa offline (solo disponible con dev client / build nativo) ---
+  const [descargandoMapa, setDescargandoMapa] = useState(false);
+  const [progresoDescarga, setProgresoDescarga] = useState(0);
+  const [mostrarModalPaquetes, setMostrarModalPaquetes] = useState(false);
+  const [paquetesOffline, setPaquetesOffline] = useState<OfflinePackInfo[]>([]);
 
+  const abrirGestionPaquetes = useCallback(async () => {
+    const paquetes = await listarPaquetesOffline();
+    setPaquetesOffline(paquetes);
+    setMostrarModalPaquetes(true);
+  }, []);
+
+  const handleEliminarPaquete = useCallback(async (name: string) => {
+    await eliminarPaqueteOffline(name);
+    setPaquetesOffline((prev) => prev.filter((p) => p.name !== name));
+  }, []);
+
+  const ejecutarDescarga = useCallback(async (centro: Coordenadas, radioKm: number) => {
+    setDescargandoMapa(true);
+    setProgresoDescarga(0);
+    const resultado = await descargarMapaOffline(centro, radioKm, tipoMapa, setProgresoDescarga);
+    setDescargandoMapa(false);
+    if (resultado.success) {
+      Alert.alert('✅ Mapa descargado', 'Ya puedes usar este mapa sin conexión.');
+    } else {
+      Alert.alert('Error', resultado.error || 'No se pudo descargar el mapa offline.');
+    }
+  }, [tipoMapa]);
+
+  const handleDescargarMapaOffline = useCallback(async () => {
+    if (!isOfflineMapAvailable()) {
+      Alert.alert(
+        'No disponible en esta versión',
+        'La descarga de mapas offline requiere la app instalada (no funciona en Expo Go). Pide la versión instalable al equipo técnico.'
+      );
+      return;
+    }
+    const centroActual = mapCenter ?? userLocation;
+    Alert.alert(
+      'Descargar mapa offline',
+      '¿Qué zona quieres descargar? Hazlo con WiFi si es posible.',
+      [
+        { text: 'Cancelar', style: 'cancel' },
+        {
+          text: '📍 Puerto Rico, Caquetá (zona de trabajo)',
+          onPress: () => ejecutarDescarga(PUERTO_RICO_CENTRO, 20),
+        },
+        ...(centroActual
+          ? [{
+              text: '📌 Mi ubicación actual (10km)',
+              onPress: () => ejecutarDescarga(centroActual, 10),
+            }]
+          : []),
+      ]
+    );
+  }, [mapCenter, userLocation, ejecutarDescarga]);
 
   // --- Persistencia automática: guardar al salir, restaurar al entrar ---
   const guardarEstadoMapa = useCallback(async () => {
@@ -217,6 +269,14 @@ const MapaScreen: React.FC = () => {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [getCurrentPosition, userLocation]);
 
+  // --- Calcular centroide de un polígono ---
+  const calcularCentroide = useCallback((puntos: PuntoPoligono[]): { lat: number; lon: number } => {
+    const n = puntos.length;
+    const lat = puntos.reduce((s, p) => s + p.latitud, 0) / n;
+    const lon = puntos.reduce((s, p) => s + p.longitud, 0) / n;
+    return { lat, lon };
+  }, []);
+
   // Manejar tap en el mapa
   const handleMapPress = useCallback(
     (latitud: number, longitud: number) => {
@@ -230,10 +290,11 @@ const MapaScreen: React.FC = () => {
         setResultadoArea(null);
         setMostrarResultado(false);
       } else if (modo === 'contar') {
-        // Abre panel con punto seleccionado
-        setPlantaSeleccionada('Cacao');
-        setCantidadInput('');
-        setMostrarPanelConteo(true);
+        // Agregar punto al polígono de plantación
+        setPlantacionPoligono((prev) => [
+          ...prev,
+          { latitud, longitud, orden: prev.length + 1 },
+        ]);
       }
     },
     [modo]
@@ -303,7 +364,35 @@ const MapaScreen: React.FC = () => {
     setMostrarResultado(false);
   }, []);
 
-  // --- Funciones de Conteo (rediseñado: dropdown + icono por planta) ---
+  /** Calcular centroide para la previsualización del polígono de plantación */
+  const getPlantacionCentroide = useCallback((): { lat: number; lon: number } | null => {
+    if (plantacionPoligono.length < 3) return null;
+    return calcularCentroide(plantacionPoligono);
+  }, [plantacionPoligono, calcularCentroide]);
+
+  // --- Funciones de Conteo (polígono → centroide → guardar) ---
+  const finalizarPoligonoPlantacion = useCallback(() => {
+    if (plantacionPoligono.length < 3) {
+      Alert.alert('Área muy pequeña', 'Debes marcar al menos 3 puntos para definir el área de plantación.');
+      return;
+    }
+    const centro = calcularCentroide(plantacionPoligono);
+    setUltimoPunto({ lat: centro.lat, lon: centro.lon });
+    setPlantaSeleccionada('Cacao');
+    setCantidadInput('');
+    setMostrarPanelConteo(true);
+  }, [plantacionPoligono, calcularCentroide]);
+
+  const deshacerUltimoPuntoPlantacion = useCallback(() => {
+    setPlantacionPoligono((prev) => prev.slice(0, -1));
+  }, []);
+
+  const cancelarPoligonoPlantacion = useCallback(() => {
+    setPlantacionPoligono([]);
+    setMostrarPanelConteo(false);
+    setUltimoPunto(null);
+  }, []);
+
   const guardarConteo = useCallback(async () => {
     const cantidad = parseInt(cantidadInput);
     if (!cantidad || cantidad <= 0) {
@@ -316,7 +405,8 @@ const MapaScreen: React.FC = () => {
       Alert.alert('Sin ubicación', 'Toca el mapa para seleccionar un punto.');
       return;
     }
-    const icono = getIconoFromNombre(plantaSeleccionada);
+    const icono = getIconoEspecie(plantaSeleccionada);
+    const poligonoData = plantacionPoligono.length >= 3 ? plantacionPoligono : undefined;
     const plantacion: Plantacion = {
       id: `plant_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
       usuario_id: user?.id || 'unknown',
@@ -327,17 +417,22 @@ const MapaScreen: React.FC = () => {
       timestamp: new Date().toISOString(),
       sincronizado: false,
       icono,
+      poligono: poligonoData,
     };
     await savePlantacion(plantacion);
     setPlantaciones((prev) => [...prev, plantacion]);
     // Intentar sincronizar al servidor si hay conexión
     syncNow().catch(() => {});
-    Alert.alert('✅ Conteo guardado', `${plantaSeleccionada}: ${cantidad} plantas\n${icono} Marcador agregado al mapa`);
+    Alert.alert(
+      '✅ Conteo guardado',
+      `${plantaSeleccionada}: ${cantidad} plantas\n${icono} Área de ${poligonoData ? plantacionPoligono.length : 1} punto(s) registrada`
+    );
     setCantidadInput('');
     setMostrarPanelConteo(false);
+    setPlantacionPoligono([]);
     setUltimoPunto(null);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [plantaSeleccionada, cantidadInput, ultimoPunto, userLocation, user?.id]);
+  }, [plantaSeleccionada, cantidadInput, ultimoPunto, userLocation, user?.id, plantacionPoligono]);
 
   // --- Funciones KML ---
   const handleExportarKML = useCallback(async () => {
@@ -373,6 +468,7 @@ const MapaScreen: React.FC = () => {
       }
       if (nuevoModo !== 'contar') {
         setMostrarPanelConteo(false);
+        setPlantacionPoligono([]);
       }
     },
     []
@@ -430,6 +526,7 @@ const MapaScreen: React.FC = () => {
           height={'100%'}
           mapStyle={tipoMapa}
           markers={[
+            // Puntos del polígono de medición
             ...poligono.map((p) => ({
               id: `p_${p.orden}`,
               latitud: p.latitud,
@@ -437,17 +534,99 @@ const MapaScreen: React.FC = () => {
               title: `Punto ${p.orden}`,
               color: modo === 'medir' ? COLORS.secondary : COLORS.primary,
             })),
+            // Puntos del polígono de plantación (conteo)
+            ...plantacionPoligono.map((p) => ({
+              id: `pp_${p.orden}`,
+              latitud: p.latitud,
+              longitud: p.longitud,
+              title: `Área punto ${p.orden}`,
+              color: '#2E7D32',
+            })),
+            // Centroide del polígono de plantación (icono difuminado)
+            ...(getPlantacionCentroide() ? [{
+              id: 'plantacion-centro',
+              latitud: getPlantacionCentroide()!.lat,
+              longitud: getPlantacionCentroide()!.lon,
+              title: 'Centro del área',
+              icon: getIconoEspecie(plantaSeleccionada),
+            }] : []),
+            // Plantaciones guardadas
             ...plantaciones.map((pl) => ({
               id: pl.id,
               latitud: pl.latitud,
               longitud: pl.longitud,
               title: `${pl.especie}: ${pl.cantidad} plantas`,
-              icon: (pl.icono || '🌱') as '🌱' | '🍫' | '🍌' | '🌳',
+              icon: (pl.icono || '🌱') as '🌱' | '�' | '🌳',
             })),
           ]}
           polyline={modo === 'ruta' ? tracking.posiciones.map(p => ({ latitud: p.latitud, longitud: p.longitud })) : undefined}
           startMarker={modo === 'ruta' && tracking.posiciones.length > 0 ? { latitud: tracking.posiciones[0].latitud, longitud: tracking.posiciones[0].longitud } : undefined}
           endMarker={modo === 'ruta' && tracking.posiciones.length > 0 ? { latitud: tracking.posiciones[tracking.posiciones.length - 1].latitud, longitud: tracking.posiciones[tracking.posiciones.length - 1].longitud } : undefined}
+          geojsonLayers={(() => {
+            const layers: Array<{
+              id: string;
+              features: Record<string, any>[];
+              fillColor?: string;
+              strokeColor?: string;
+              fillOpacity?: number;
+              strokeOpacity?: number;
+              strokeWidth?: number;
+            }> = [];
+
+            // Polígono EN DIBUJO (mientras el técnico marca los puntos)
+            if (plantacionPoligono.length >= 3) {
+              const coords = [
+                ...plantacionPoligono.map((p) => [p.longitud, p.latitud]),
+                [plantacionPoligono[0].longitud, plantacionPoligono[0].latitud],
+              ];
+              layers.push({
+                id: 'plantacion-dibujo',
+                features: [{
+                  type: 'Feature',
+                  geometry: { type: 'Polygon', coordinates: [coords] },
+                  properties: {},
+                }],
+                fillColor: 'rgba(46, 125, 50, 0.25)',
+                strokeColor: '#1B5E20',
+                strokeWidth: 2.5,
+                strokeOpacity: 0.8,
+                fillOpacity: 0.25,
+              });
+            }
+
+            // Polígonos de plantaciones YA GUARDADAS — quedan permanentes
+            // en el mapa, difuminados, con el ícono de la especie en el
+            // centroide (el marcador de la plantación es ese centro).
+            const featuresGuardadas = plantaciones
+              .filter((pl) => (pl.poligono?.length ?? 0) >= 3)
+              .map((pl) => {
+                const pts = pl.poligono || [];
+                return {
+                  type: 'Feature',
+                  geometry: {
+                    type: 'Polygon',
+                    coordinates: [[
+                      ...pts.map((p) => [p.longitud, p.latitud]),
+                      [pts[0].longitud, pts[0].latitud],
+                    ]],
+                  },
+                  properties: { especie: pl.especie },
+                };
+              });
+            if (featuresGuardadas.length > 0) {
+              layers.push({
+                id: 'plantaciones-guardadas',
+                features: featuresGuardadas,
+                fillColor: 'rgba(46, 125, 50, 0.18)',
+                strokeColor: '#2E7D32',
+                strokeWidth: 2,
+                strokeOpacity: 0.7,
+                fillOpacity: 0.18,
+              });
+            }
+
+            return layers.length > 0 ? layers : undefined;
+          })()}
           showUserLocation={true}
           userLocation={userLocation}
           interactive={true}
@@ -458,7 +637,7 @@ const MapaScreen: React.FC = () => {
         {ultimoPunto && (
           <View style={styles.coordsOverlay}>
             <Text style={styles.coordsLabel}>
-              {modo === 'medir' ? `Punto #${poligono.length}` : 'Coordenadas'}
+              {modo === 'medir' ? `Punto #${poligono.length}` : modo === 'contar' ? `Área punto #${plantacionPoligono.length}` : 'Coordenadas'}
             </Text>
             <Text style={styles.coordsValue}>
               Lat: {ultimoPunto.lat.toFixed(6)}
@@ -473,6 +652,13 @@ const MapaScreen: React.FC = () => {
                   : poligono.length === 2
                   ? '✅ Toca "Calcular" para ver la distancia lineal'
                   : 'Toca el mapa para agregar puntos al polígono'}
+              </Text>
+            )}
+            {modo === 'contar' && plantacionPoligono.length > 0 && (
+              <Text style={styles.coordsHint}>
+                {plantacionPoligono.length < 3
+                  ? `Toca el mapa para definir el área (${plantacionPoligono.length}/3 puntos)`
+                  : '✅ Área lista — presiona "Finalizar área" abajo'}
               </Text>
             )}
           </View>
@@ -552,17 +738,47 @@ const MapaScreen: React.FC = () => {
           </Text>
         </TouchableOpacity>
 
-        {/* Panel de Conteo (rediseñado: dropdown + icono por planta) */}
+        {/* Botón descargar mapa offline — mantener presionado para gestionar los ya descargados */}
+        <TouchableOpacity
+          style={styles.downloadMapButton}
+          onPress={handleDescargarMapaOffline}
+          onLongPress={abrirGestionPaquetes}
+          disabled={descargandoMapa}
+        >
+          <Text style={descargandoMapa ? styles.downloadProgressText : styles.mapTypeButtonText}>
+            {descargandoMapa ? `⏳${progresoDescarga}%` : '⬇️'}
+          </Text>
+        </TouchableOpacity>
+
+        {/* Panel de finalización de área (modo conteo — polígono listo) */}
+        {modo === 'contar' && plantacionPoligono.length >= 3 && !mostrarPanelConteo && (
+          <View style={styles.conteoPanelSimple}>
+            <Text style={styles.conteoTitle}>🌱 Área de plantación</Text>
+            <Text style={styles.conteoSubtitle}>
+              {plantacionPoligono.length} puntos · {getPlantacionCentroide()?.lat.toFixed(5)}, {getPlantacionCentroide()?.lon.toFixed(5)}
+            </Text>
+            <View style={styles.conteoAreaActions}>
+              <TouchableOpacity style={styles.conteoSaveBtn} onPress={finalizarPoligonoPlantacion}>
+                <Text style={styles.conteoSaveText}>Seleccionar especie y guardar</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.conteoCancelBtn} onPress={cancelarPoligonoPlantacion}>
+                <Text style={styles.conteoCancelText}>Cancelar</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        )}
+
+        {/* Panel de conteo (selector de especie + cantidad) */}
         {mostrarPanelConteo && ultimoPunto && (
           <View style={styles.conteoPanel}>
             <View style={styles.conteoHeader}>
               <View>
                 <Text style={styles.conteoTitle}>🌱 Conteo de Plantas</Text>
                 <Text style={styles.conteoSubtitle}>
-                  📍 {ultimoPunto.lat.toFixed(5)}, {ultimoPunto.lon.toFixed(5)}
+                  📍 Centro: {ultimoPunto.lat.toFixed(5)}, {ultimoPunto.lon.toFixed(5)} · {plantacionPoligono.length} puntos
                 </Text>
               </View>
-              <TouchableOpacity onPress={() => { setMostrarPanelConteo(false); setUltimoPunto(null); }}>
+              <TouchableOpacity onPress={cancelarPoligonoPlantacion}>
                 <Text style={styles.conteoClose}>✕</Text>
               </TouchableOpacity>
             </View>
@@ -606,7 +822,7 @@ const MapaScreen: React.FC = () => {
 
             <View style={styles.conteoPreview}>
               <Text style={styles.conteoPreviewText}>
-                Vista previa: {getIconoFromNombre(plantaSeleccionada)} {plantaSeleccionada}
+                Vista previa: {getIconoEspecie(plantaSeleccionada)} {plantaSeleccionada}
               </Text>
             </View>
 
@@ -615,7 +831,10 @@ const MapaScreen: React.FC = () => {
                 style={[styles.conteoSaveBtn, (!cantidadInput || parseInt(cantidadInput) <= 0) && styles.toolBtnDisabled]}
                 onPress={guardarConteo}
               >
-                <Text style={styles.conteoSaveText}>Guardar en este punto</Text>
+                <Text style={styles.conteoSaveText}>Guardar área de plantación</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.conteoCancelBtn} onPress={cancelarPoligonoPlantacion}>
+                <Text style={styles.conteoCancelText}>Cancelar</Text>
               </TouchableOpacity>
             </View>
           </View>
@@ -676,13 +895,38 @@ const MapaScreen: React.FC = () => {
           <>
             <View style={styles.toolInfo}>
               <Text style={styles.toolInfoText}>
-                {plantaciones.length} registro(s) guardados
+                {plantacionPoligono.length > 0
+                  ? `${plantacionPoligono.length} punto(s) · ${plantaciones.length} registro(s)`
+                  : `${plantaciones.length} registro(s) guardados`}
               </Text>
             </View>
-            {!mostrarPanelConteo && (
+            {plantacionPoligono.length > 0 && !mostrarPanelConteo && (
+              <>
+                <TouchableOpacity style={styles.toolBtn} onPress={deshacerUltimoPuntoPlantacion}>
+                  <Text style={styles.toolBtnLabel}>↩ Deshacer</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[
+                    styles.toolBtn,
+                    styles.toolBtnPrimary,
+                    plantacionPoligono.length < 3 && styles.toolBtnDisabled,
+                  ]}
+                  onPress={finalizarPoligonoPlantacion}
+                  disabled={plantacionPoligono.length < 3}
+                >
+                  <Text style={styles.toolBtnLabelPrimary}>
+                    {plantacionPoligono.length < 3 ? `Mín. 3 pts (${plantacionPoligono.length})` : '✅ Finalizar área'}
+                  </Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={styles.toolBtn} onPress={cancelarPoligonoPlantacion}>
+                  <Text style={styles.toolBtnLabel}>✕ Cancelar</Text>
+                </TouchableOpacity>
+              </>
+            )}
+            {plantacionPoligono.length === 0 && !mostrarPanelConteo && (
               <TouchableOpacity
                 style={[styles.toolBtn, styles.toolBtnPrimary]}
-                onPress={() => Alert.alert('🌱 Modo Conteo', 'Toca el mapa en el lugar donde quieras registrar las plantas.' )}
+                onPress={() => Alert.alert('🌱 Modo Conteo', 'Toca el mapa para comenzar a dibujar el área de plantación. Con 3+ puntos podrás finalizar y guardar.')}
               >
                 <Text style={styles.toolBtnLabelPrimary}>📍 Toca el mapa</Text>
               </TouchableOpacity>
@@ -748,6 +992,33 @@ const MapaScreen: React.FC = () => {
               onPress={() => setMostrarModalKML(false)}
             >
               <Text style={styles.modalBtnTextCancel}>Cancelar</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Modal: gestión de mapas offline descargados */}
+      <Modal visible={mostrarModalPaquetes} transparent animationType="fade">
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <Text style={styles.modalTitle}>⬇️ Mapas Descargados</Text>
+            {paquetesOffline.length === 0 ? (
+              <Text style={styles.emptyPacksText}>No has descargado ningún mapa offline todavía.</Text>
+            ) : (
+              paquetesOffline.map((pack) => (
+                <View key={pack.name} style={styles.packRow}>
+                  <Text style={styles.packName} numberOfLines={1}>{pack.name}</Text>
+                  <TouchableOpacity onPress={() => handleEliminarPaquete(pack.name)}>
+                    <Text style={styles.packDeleteIcon}>🗑️</Text>
+                  </TouchableOpacity>
+                </View>
+              ))
+            )}
+            <TouchableOpacity
+              style={[styles.modalBtn, styles.modalBtnCancel]}
+              onPress={() => setMostrarModalPaquetes(false)}
+            >
+              <Text style={styles.modalBtnTextCancel}>Cerrar</Text>
             </TouchableOpacity>
           </View>
         </View>
@@ -1024,6 +1295,35 @@ const styles = StyleSheet.create({
     fontWeight: FONTS.weights.semibold,
     color: COLORS.textOnPrimary,
   },
+  conteoCancelBtn: {
+    paddingHorizontal: SPACING.md,
+    paddingVertical: SPACING.sm + 2,
+    borderRadius: BORDER_RADIUS.md,
+    alignItems: 'center',
+    backgroundColor: COLORS.background,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+  },
+  conteoCancelText: {
+    fontSize: FONTS.sizes.sm,
+    fontWeight: FONTS.weights.medium,
+    color: COLORS.textSecondary,
+  },
+  conteoPanelSimple: {
+    position: 'absolute',
+    bottom: SPACING.md,
+    left: SPACING.md,
+    right: SPACING.md,
+    backgroundColor: COLORS.surface,
+    padding: SPACING.md,
+    borderRadius: BORDER_RADIUS.lg,
+    ...SHADOWS.lg,
+  },
+  conteoAreaActions: {
+    flexDirection: 'row',
+    gap: SPACING.sm,
+    marginTop: SPACING.sm,
+  },
   // --- Toolbar ---
   toolbar: {
     flexDirection: 'row',
@@ -1148,6 +1448,52 @@ const styles = StyleSheet.create({
   },
   mapTypeButtonText: {
     fontSize: 22,
+  },
+  // Estado de descarga dentro del mismo botón circular de 44px: el texto
+  // "⏳NN%" es más largo que un emoji solo, así que necesita fuente pequeña
+  // para no desbordarse.
+  downloadProgressText: {
+    fontSize: 10,
+    fontWeight: FONTS.weights.semibold,
+    color: COLORS.textPrimary,
+    textAlign: 'center',
+  },
+  emptyPacksText: {
+    fontSize: FONTS.sizes.sm,
+    color: COLORS.textSecondary,
+    textAlign: 'center',
+    paddingVertical: SPACING.md,
+  },
+  packRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: SPACING.sm,
+    borderBottomWidth: 1,
+    borderBottomColor: COLORS.divider,
+  },
+  packName: {
+    flex: 1,
+    fontSize: FONTS.sizes.sm,
+    color: COLORS.textPrimary,
+    marginRight: SPACING.sm,
+  },
+  packDeleteIcon: {
+    fontSize: 18,
+  },
+  downloadMapButton: {
+    position: 'absolute',
+    right: SPACING.sm,
+    top: SPACING.xl + 44 + SPACING.sm,
+    width: 44,
+    height: 44,
+    borderRadius: BORDER_RADIUS.full,
+    backgroundColor: COLORS.surface,
+    alignItems: 'center',
+    justifyContent: 'center',
+    ...SHADOWS.md,
+    elevation: 6,
+    zIndex: 10,
   },
 });
 

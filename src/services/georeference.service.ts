@@ -7,7 +7,8 @@ import { GeoReferencia } from '../types';
 import { API_CONFIG } from '../theme';
 
 /**
- * Obtener información de georreferenciación desde el servidor QGIS
+ * Obtener información de georreferenciación (UTM/MGRS/zona horaria) desde
+ * el backend Express — cálculo puramente matemático, no consulta QGIS/PostGIS.
  */
 export const getGeoreference = async (
   lat: number,
@@ -36,53 +37,6 @@ export const getGeoreference = async (
     // También fallback local si el servidor responde con error (404, 500, etc.)
     console.warn('[Geo] Error del servidor — usando cálculo local:', (error as any)?.response?.status || (error as any)?.message);
     return calcularGeoreferenciaLocal(lat, lon, alt);
-  }
-};
-
-/**
- * Guardar un punto en PostGIS
- */
-export const guardarPunto = async (
-  latitud: number,
-  longitud: number,
-  altitud?: number,
-  nombre?: string,
-  descripcion?: string
-): Promise<{ id: string } | null> => {
-  try {
-    const response = await apiClient.post(API_CONFIG.ENDPOINTS.GEOREFERENCE + '/guardar', {
-      latitud,
-      longitud,
-      altitud,
-      nombre,
-      descripcion,
-    });
-    return response.data;
-  } catch (error) {
-    if (isOfflineError(error)) {
-      console.warn('[Geo] Offline — punto no guardado en servidor');
-      return null;
-    }
-    throw error;
-  }
-};
-
-/**
- * Buscar puntos cercanos
- */
-export const getPuntosCercanos = async (
-  lat: number,
-  lon: number,
-  radioKm: number = 5
-): Promise<any[]> => {
-  try {
-    const response = await apiClient.get(API_CONFIG.ENDPOINTS.GEOREFERENCE + '/cercanos', {
-      params: { lat, lon, radio_km: radioKm },
-    });
-    return response.data.puntos || [];
-  } catch (error) {
-    if (isOfflineError(error)) return [];
-    throw error;
   }
 };
 

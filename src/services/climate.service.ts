@@ -7,7 +7,7 @@ import { ClimaActual, ResumenClimatico } from '../types';
 import { API_CONFIG } from '../theme';
 
 /**
- * Obtener clima actual desde el servidor QGIS
+ * Obtener clima actual desde el backend Express (no desde QGIS)
  */
 export const getClimaActual = async (
   lat: number,

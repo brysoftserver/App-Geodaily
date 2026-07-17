@@ -1,5 +1,5 @@
 // ============================================================
-// GEODAILY — Cliente API (Axios) para QGIS Server
+// GEODAILY — Cliente API (Axios) para el backend Express (no usa QGIS/PostGIS)
 // ============================================================
 
 import axios, { AxiosInstance, AxiosError, InternalAxiosRequestConfig } from 'axios';
@@ -16,6 +16,19 @@ let _inMemoryToken: string | null = null;
  */
 export const setApiAuthToken = (token: string | null) => {
   _inMemoryToken = token;
+};
+
+// --- Puente hacia AuthContext: permite que el interceptor de 401 notifique
+// a la UI para que reaccione (gate de login) sin que api.ts dependa de React ---
+let _onUnauthorized: (() => void) | null = null;
+
+/**
+ * Registrar el callback que AuthContext invoca cuando cualquier petición
+ * recibe un 401 — permite que la app salga de sesión inmediatamente en vez
+ * de que el sync en segundo plano falle en silencio para siempre.
+ */
+export const setUnauthorizedHandler = (handler: (() => void) | null) => {
+  _onUnauthorized = handler;
 };
 
 // Crear instancia Axios
@@ -63,23 +76,35 @@ apiClient.interceptors.request.use(
 apiClient.interceptors.response.use(
   (response) => response,
   async (error: AxiosError) => {
-    // 401 No autorizado — solo limpiar sesión si es un endpoint de autenticación
+    // 401 No autorizado.
+    //
+    // CLAVE para el trabajo en campo: NO sacar al técnico de la app por un 401
+    // que llega en segundo plano (sync/datos). Antes, cualquier 401 borraba la
+    // sesión y lo mandaba a la pantalla de login; si en ese momento estaba con
+    // señal intermitente, quedaba parado y con datos sin sincronizar atrapados.
+    //
+    // Ahora solo forzamos cierre de sesión cuando el 401 viene de un endpoint
+    // de AUTENTICACIÓN (login/verify) — ahí el rechazo del token es explícito y
+    // el técnico puede volver a entrar (incluso offline, con la credencial
+    // cacheada). Un 401 de sync se deja fallar en silencio: la sesión y los
+    // datos locales se conservan y se reintenta cuando haya red/reautenticación.
     if (error.response?.status === 401) {
       const requestUrl = error.config?.url || '';
-      const isAuthEndpoint = requestUrl.includes('/api/auth/');
+      const esEndpointAuth = requestUrl.includes(API_CONFIG.ENDPOINTS.AUTH);
 
-      if (isAuthEndpoint) {
+      if (esEndpointAuth) {
         try {
           await SecureStore.deleteItemAsync(STORAGE_KEYS.AUTH_TOKEN);
           await SecureStore.deleteItemAsync(STORAGE_KEYS.USER_DATA);
-          console.warn('[API] Token inválido en auth — sesión limpiada');
         } catch {
           // Ignorar errores de SecureStore
         }
+        setApiAuthToken(null);
+        console.warn(`[API] 401 en endpoint de auth (${requestUrl}) — sesión cerrada`);
+        _onUnauthorized?.();
       } else {
-        console.warn(
-          `[API] 401 en ${requestUrl} — NO se limpia sesión (endpoint no auth)`
-        );
+        // 401 en sync/datos — conservar sesión y datos, solo avisar.
+        console.warn(`[API] 401 en ${requestUrl} — se conserva la sesión (reintento posterior)`);
       }
     }
 

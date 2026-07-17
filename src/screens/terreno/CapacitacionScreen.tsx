@@ -87,19 +87,11 @@ const CapacitacionScreen: React.FC = () => {
         );
 
   const handleOpenMaterial = useCallback((material: MaterialCapacitacion) => {
+    // Los PDFs de capacitación aún no han sido publicados por el proyecto —
+    // ser honestos con el técnico en vez de simular una apertura.
     Alert.alert(
-      'Abrir material',
-      `¿Deseas abrir "${material.nombre}"?`,
-      [
-        { text: 'Cancelar', style: 'cancel' },
-        {
-          text: 'Abrir',
-          onPress: () => {
-            // Aquí se integraría la apertura del material (WebView, visor PDF, etc.)
-            Alert.alert('Material', `Abriendo: ${material.nombre}`);
-          },
-        },
-      ]
+      'Material pendiente de publicación',
+      `"${material.nombre}" estará disponible para descarga cuando el proyecto publique el material oficial.`
     );
   }, []);
 
@@ -112,7 +104,8 @@ const CapacitacionScreen: React.FC = () => {
       <ScrollView contentContainerStyle={styles.scrollContent}>
         <Text style={styles.pageTitle}>📚 Capacitaciones</Text>
         <Text style={styles.pageSubtitle}>
-          Material de formación y guías técnicas para técnicos de campo
+          Programa preliminar de formación — los materiales descargables se
+          habilitarán cuando el proyecto publique el contenido oficial
         </Text>
 
         {/* Filtro por tema */}

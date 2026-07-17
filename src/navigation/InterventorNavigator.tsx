@@ -8,9 +8,10 @@ import { COLORS, FONTS } from '../theme';
 import InterventorMenuScreen from '../screens/interventor/InterventorMenuScreen';
 import DashboardScreen from '../screens/supervision/DashboardScreen';
 import VisitasJerarquicasScreen from '../screens/supervision/VisitasJerarquicasScreen';
-import CalendarioScreen from '../screens/supervision/CalendarioScreen';
+import CalendarioScreen from '../screens/CalendarioGlobalScreen';
 import MapaGeneralScreen from '../screens/MapaGeneralScreen';
 import FormularioDetailScreen from '../screens/terreno/FormularioDetailScreen';
+import BaseDatosBeneficiariosScreen from '../screens/supervision/BaseDatosBeneficiariosScreen';
 
 export type InterventorStackParamList = {
   InterventorMenu: undefined;
@@ -19,6 +20,7 @@ export type InterventorStackParamList = {
   InterventorCalendario: undefined;
   InterventorMapaGeneral: undefined;
   InterventorFormularioDetail: { formulario: import('../types').Formulario };
+  BaseDatosBeneficiarios: undefined;
 };
 
 const Stack = createNativeStackNavigator<InterventorStackParamList>();
@@ -36,9 +38,8 @@ const InterventorNavigator: React.FC = () => {
           fontSize: FONTS.sizes.lg,
         },
         headerShadowVisible: false,
-        contentStyle: {
-          backgroundColor: COLORS.background,
-        },
+        animation: 'slide_from_right',
+        animationDuration: 150,
       }}
     >
       <Stack.Screen
@@ -70,6 +71,11 @@ const InterventorNavigator: React.FC = () => {
         name="InterventorFormularioDetail"
         component={FormularioDetailScreen as any}
         options={{ title: 'Detalle del Formulario' }}
+      />
+      <Stack.Screen
+        name="BaseDatosBeneficiarios"
+        component={BaseDatosBeneficiariosScreen}
+        options={{ title: 'Base de Datos Beneficiarios' }}
       />
     </Stack.Navigator>
   );

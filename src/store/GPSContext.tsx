@@ -5,7 +5,7 @@
 // Todas las pantallas consumen la misma posición GPS.
 // ============================================================
 
-import React, { createContext, useContext, useState, useRef, useCallback, useEffect } from 'react';
+import React, { createContext, useContext, useState, useRef, useCallback, useEffect, useMemo } from 'react';
 import * as Location from 'expo-location';
 import { Coordenadas } from '../types';
 
@@ -52,9 +52,9 @@ export const GPSProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
         const sub = await Location.watchPositionAsync(
           {
-            accuracy: Location.Accuracy.High,
-            timeInterval: 5000,
-            distanceInterval: 5,
+            accuracy: Location.Accuracy.Balanced,
+            timeInterval: 15000,
+            distanceInterval: 10,
           },
           (newPos) => {
             const { latitude, longitude, accuracy, altitude, heading } = newPos.coords;
@@ -131,15 +131,15 @@ export const GPSProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
   }, [state.userLocation]);
 
+  const contextValue = useMemo(() => ({
+    ...state,
+    getCurrentPosition,
+    siguiendo,
+    setSiguiendo,
+  }), [state, getCurrentPosition, siguiendo, setSiguiendo]);
+
   return (
-    <GPSContext.Provider
-      value={{
-        ...state,
-        getCurrentPosition,
-        siguiendo,
-        setSiguiendo,
-      }}
-    >
+    <GPSContext.Provider value={contextValue}>
       {children}
     </GPSContext.Provider>
   );

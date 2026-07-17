@@ -31,13 +31,31 @@ router.post('/subir', authenticateToken, upload.single('archivo'), async (req, r
       return res.status(400).json({ estado: 'error', mensaje: 'Archivo requerido' });
     }
 
-    const { descripcion, categoria } = req.body;
+    const { descripcion, categoria, beneficiario_cedula, beneficiario_nombre, tipo_formulario } = req.body;
     const ext = path.extname(req.file.originalname);
     const filename = `doc_${Date.now()}_${Math.random().toString(36).slice(2, 6)}${ext}`;
 
     // Validar que el usuario tenga rol y nombre de usuario
     const userRol = req.user?.rol || 'otros';
     const userUsuario = req.user?.usuario || req.user?.id?.toString() || 'desconocido';
+
+    // ─── Resolver datos del beneficiario para carpeta en MinIO ───
+    let benefItem = null;
+    let benefNombre = null;
+    if (beneficiario_cedula) {
+      try {
+        const benef = await db.queryOne(
+          'SELECT item, nombre_completo FROM beneficiarios WHERE cedula = $1',
+          [beneficiario_cedula.trim()]
+        );
+        if (benef) {
+          benefItem = benef.item;
+          benefNombre = beneficiario_nombre || benef.nombre_completo;
+        }
+      } catch (lookupErr) {
+        console.warn('[Documentos] Error buscando beneficiario:', lookupErr.message);
+      }
+    }
 
     // Subir a MinIO (con try-catch para no bloquear si MinIO no está disponible)
     try {
@@ -46,17 +64,37 @@ router.post('/subir', authenticateToken, upload.single('archivo'), async (req, r
         userUsuario,
         'documentos',
         filename,
-        req.file.buffer
+        req.file.buffer,
+        {
+          contentType: req.file.mimetype,
+          beneficiarioItem: benefItem,
+          beneficiarioNombre: benefNombre,
+          tipoFormulario: tipo_formulario,
+        }
       );
     } catch (storageErr) {
       console.error('[Documentos] Error al subir a MinIO (no crítico, continúa):', storageErr.message);
-      // No retornamos error — el documento se marca para sincronización posterior
     }
 
     // Guardar registro en PostgreSQL
     const bucket = process.env.MINIO_BUCKET || 'geodaily-archivos';
     const basePath = storage.getUserBasePath(userRol, userUsuario);
-    const minioPath = `${basePath}/documentos/${filename}`;
+    let minioPath;
+    if (benefItem && benefNombre) {
+      const subpath = storage.getBeneficiarySubpath(benefItem, benefNombre);
+      const formFolder = storage.getFormTypeFolder(tipo_formulario);
+      minioPath = formFolder ? `${basePath}/${subpath}/${formFolder}/documentos/${filename}` : `${basePath}/${subpath}/documentos/${filename}`;
+    } else {
+      minioPath = `${basePath}/documentos/${filename}`;
+    }
+
+    const metadataExtra = {
+      descripcion: descripcion || null,
+      categoria: categoria || null,
+      beneficiario_item: benefItem,
+      beneficiario_cedula: beneficiario_cedula || null,
+    };
+
     await db.query(
       `INSERT INTO archivos (usuario_id, tipo, filename, originalname, mimetype, size_bytes, minio_path, minio_bucket, metadata_json)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
@@ -69,7 +107,7 @@ router.post('/subir', authenticateToken, upload.single('archivo'), async (req, r
         req.file.size,
         minioPath,
         bucket,
-        JSON.stringify({ descripcion: descripcion || null, categoria: categoria || null }),
+        JSON.stringify(metadataExtra),
       ]
     );
 
@@ -110,6 +148,24 @@ router.post('/subir-multiple', authenticateToken, upload.array('archivos', 10), 
       return res.status(400).json({ estado: 'error', mensaje: 'Archivos requeridos' });
     }
 
+    const { beneficiario_cedula, beneficiario_nombre, tipo_formulario } = req.body;
+    let benefItem = null;
+    let benefNombre = null;
+    if (beneficiario_cedula) {
+      try {
+        const benef = await db.queryOne(
+          'SELECT item, nombre_completo FROM beneficiarios WHERE cedula = $1',
+          [beneficiario_cedula.trim()]
+        );
+        if (benef) {
+          benefItem = benef.item;
+          benefNombre = beneficiario_nombre || benef.nombre_completo;
+        }
+      } catch (lookupErr) {
+        console.warn('[Documentos] Error buscando beneficiario en subida múltiple:', lookupErr.message);
+      }
+    }
+
     const resultados = [];
 
     const userRol = req.user?.rol || 'otros';
@@ -121,14 +177,28 @@ router.post('/subir-multiple', authenticateToken, upload.array('archivos', 10), 
 
       try {
         await storage.uploadFile(
-          userRol, userUsuario, 'documentos', filename, file.buffer
+          userRol, userUsuario, 'documentos', filename, file.buffer,
+          {
+            contentType: file.mimetype,
+            beneficiarioItem: benefItem,
+            beneficiarioNombre: benefNombre,
+            tipoFormulario: tipo_formulario,
+          }
         );
       } catch (storageErr) {
         console.warn('[Documentos] Error subiendo a MinIO en lote:', storageErr.message);
       }
 
       const basePath = storage.getUserBasePath(userRol, userUsuario);
-      const minioPath = `${basePath}/documentos/${filename}`;
+      let minioPath;
+      if (benefItem && benefNombre) {
+        const subpath = storage.getBeneficiarySubpath(benefItem, benefNombre);
+        const formFolder = storage.getFormTypeFolder(tipo_formulario);
+        minioPath = formFolder ? `${basePath}/${subpath}/${formFolder}/documentos/${filename}` : `${basePath}/${subpath}/documentos/${filename}`;
+      } else {
+        minioPath = `${basePath}/documentos/${filename}`;
+      }
+
       const bucket = process.env.MINIO_BUCKET || 'geodaily-archivos';
 
       const archivoResult = await db.queryOne(
@@ -138,7 +208,7 @@ router.post('/subir-multiple', authenticateToken, upload.array('archivos', 10), 
         [
           req.user.id, 'other', filename, file.originalname,
           file.mimetype, file.size, minioPath, bucket,
-          JSON.stringify({}),
+          JSON.stringify({ beneficiario_item: benefItem, beneficiario_cedula: beneficiario_cedula || null }),
         ]
       );
 
@@ -185,6 +255,9 @@ router.get('/:id', authenticateToken, async (req, res) => {
     );
     if (!doc) {
       return res.status(404).json({ estado: 'error', mensaje: 'Documento no encontrado' });
+    }
+    if (req.user.rol !== 'admin' && doc.usuario_id !== req.user.id) {
+      return res.status(403).json({ estado: 'error', mensaje: 'No autorizado' });
     }
     res.json({ estado: 'ok', documento: doc });
   } catch (error) {

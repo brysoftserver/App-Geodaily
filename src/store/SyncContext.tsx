@@ -14,6 +14,7 @@ import React, {
   useCallback,
   useEffect,
   useRef,
+  useMemo,
 } from 'react';
 import { SyncStatus, Formulario } from '../types';
 import {
@@ -22,14 +23,19 @@ import {
   clearSyncQueueByFormId,
   getUnsyncedPhotos,
   markFotoAsSynced,
+  getUnsyncedVideos,
+  markVideoAsSynced,
   updateSyncAttempts,
   getSyncQueueItemByFormId,
+  resetSyncAttempts,
   getPlantacionesNoSincronizadas,
   getMedicionesNoSincronizadas,
   getTrackingNoSincronizado,
+  getVisitasProgramadasNoSincronizadas,
   marcarSincronizado,
 } from '../services/database';
 import { uploadPhoto } from '../services/photos.service';
+import { uploadVideo } from '../services/videos.service';
 import { generarPDF } from '../services/pdf.service';
 import apiClient from '../services/api';
 import { API_CONFIG } from '../theme';
@@ -108,6 +114,8 @@ interface SyncContextType extends SyncState {
   checkPending: () => Promise<void>;
   /** Devuelve el tiempo de espera recomendado (segundos) para un formulario */
   getBackoffSeconds: (formId: string) => Promise<number>;
+  /** Reintento manual: reinicia el contador de intentos de un formulario y relanza el sync */
+  reintentarFormulario: (formId: string) => Promise<void>;
 }
 
 const SyncContext = createContext<SyncContextType | undefined>(undefined);
@@ -159,6 +167,10 @@ export const SyncProvider: React.FC<{ children: React.ReactNode }> = ({
               foto.altitud || form.coordenadas.altitud,
               `Formulario ${form.id}`,
               `Foto de ${form.beneficiario.nombre}`,
+              form.beneficiario?.cedula || undefined,
+              form.beneficiario?.nombre || undefined,
+              foto.timestamp,
+              form.tipo,
             );
 
             if (resultado) {
@@ -177,6 +189,53 @@ export const SyncProvider: React.FC<{ children: React.ReactNode }> = ({
         return todasExitosas;
       } catch (err) {
         console.warn('[Sync] Error obteniendo fotos pendientes:', err);
+        return false;
+      }
+    },
+    [],
+  );
+
+  // ------------------------------------------------------------------
+  // Subir videos pendientes de un formulario (videos_locales → /api/videos,
+  // carpeta videos/ en MinIO con extensión .mp4 — separados de las fotos)
+  // ------------------------------------------------------------------
+
+  const subirVideosPendientes = useCallback(
+    async (form: Formulario): Promise<boolean> => {
+      try {
+        const videosPendientes = await getUnsyncedVideos(form.id);
+        if (videosPendientes.length === 0) return true; // sin videos pendientes
+
+        let todasExitosas = true;
+
+        for (const video of videosPendientes) {
+          try {
+            const resultado = await uploadVideo(
+              video.uri,
+              video.latitud || form.coordenadas.latitud,
+              video.longitud || form.coordenadas.longitud,
+              `Formulario ${form.id}`,
+              form.beneficiario?.cedula || undefined,
+              form.beneficiario?.nombre || undefined,
+              form.tipo,
+            );
+
+            if (resultado) {
+              await markVideoAsSynced(video.id);
+              console.log('[Sync] Video subido:', video.id);
+            } else {
+              console.warn('[Sync] Video devolvió null (offline?):', video.id);
+              todasExitosas = false;
+            }
+          } catch (err) {
+            console.warn('[Sync] Error subiendo video:', video.id, err);
+            todasExitosas = false;
+          }
+        }
+
+        return todasExitosas;
+      } catch (err) {
+        console.warn('[Sync] Error obteniendo videos pendientes:', err);
         return false;
       }
     },
@@ -262,28 +321,32 @@ export const SyncProvider: React.FC<{ children: React.ReactNode }> = ({
   // ------------------------------------------------------------------
 
   const sincronizarFormulario = useCallback(
-    async (form: Formulario): Promise<boolean> => {
+    async (form: Formulario): Promise<{ success: boolean; photosOk: boolean }> => {
       console.log('[Sync] Sincronizando formulario:', form.id);
 
-      // 1. Subir fotos
+      // 1. Subir fotos y videos
       const fotosOk = await subirFotosPendientes(form);
       if (!fotosOk) {
-        console.warn('[Sync] Algunas fotos no se subieron — continuando de todas formas');
+        console.warn('[Sync] Algunas fotos no se subieron — el formulario se reintentará');
+      }
+      const videosOk = await subirVideosPendientes(form);
+      if (!videosOk) {
+        console.warn('[Sync] Algunos videos no se subieron — el formulario se reintentará');
       }
 
       // 2. Guardar formulario en PostGIS
       const formOk = await guardarFormularioEnServidor(form);
       if (!formOk) {
         console.error('[Sync] Error crítico: formulario no guardado en servidor');
-        return false;
+        return { success: false, photosOk: fotosOk && videosOk };
       }
 
       // 3. Generar PDF (no crítico — puede fallar y reintentarse)
       await generarPDFServidor(form);
 
-      return true;
+      return { success: true, photosOk: fotosOk && videosOk };
     },
-    [subirFotosPendientes, guardarFormularioEnServidor, generarPDFServidor],
+    [subirFotosPendientes, subirVideosPendientes, guardarFormularioEnServidor, generarPDFServidor],
   );
 
   // ------------------------------------------------------------------
@@ -313,6 +376,37 @@ export const SyncProvider: React.FC<{ children: React.ReactNode }> = ({
       }
     } catch (err: any) {
       console.warn('[Sync] Error sincronizando plantaciones:', err?.message);
+    }
+    return fallaron;
+  }, []);
+
+  // ------------------------------------------------------------------
+  // Sincronizar visitas programadas pendientes
+  // ------------------------------------------------------------------
+
+  const sincronizarVisitasProgramadas = useCallback(async (): Promise<string[]> => {
+    const fallaron: string[] = [];
+    try {
+      const pendientes = await getVisitasProgramadasNoSincronizadas();
+      if (pendientes.length === 0) return fallaron;
+
+      console.log(`[Sync] Subiendo ${pendientes.length} visita(s) programada(s)...`);
+      const response = await apiClient.post(
+        API_CONFIG.ENDPOINTS.VISITAS_PROGRAMADAS + '/sync',
+        { visitas: pendientes },
+        { timeout: 15000 }
+      );
+
+      if (response.data?.estado === 'ok') {
+        for (const v of pendientes) {
+          await marcarSincronizado('visitas_programadas', v.id);
+        }
+        console.log(`[Sync] ${pendientes.length} visita(s) programada(s) sincronizada(s)`);
+      } else {
+        pendientes.forEach(v => fallaron.push(v.id));
+      }
+    } catch (err: any) {
+      console.warn('[Sync] Error sincronizando visitas programadas:', err?.message);
     }
     return fallaron;
   }, []);
@@ -385,13 +479,14 @@ export const SyncProvider: React.FC<{ children: React.ReactNode }> = ({
 
   const checkPending = useCallback(async () => {
     try {
-      const [forms, plantas, mediciones, tracking] = await Promise.all([
+      const [forms, plantas, mediciones, tracking, visitas] = await Promise.all([
         getPendingSyncForms(),
         getPlantacionesNoSincronizadas(),
         getMedicionesNoSincronizadas(),
         getTrackingNoSincronizado(),
+        getVisitasProgramadasNoSincronizadas(),
       ]);
-      const total = forms.length + plantas.length + mediciones.length + tracking.length;
+      const total = forms.length + plantas.length + mediciones.length + tracking.length + visitas.length;
       dispatch({ type: 'SET_PENDING', count: total });
     } catch {
       // Ignorar errores al verificar pendientes
@@ -410,9 +505,21 @@ export const SyncProvider: React.FC<{ children: React.ReactNode }> = ({
     const failedIds: string[] = [];
 
     try {
-      const pendingForms = await getPendingSyncForms();
+      const [pendingForms, pendingPlantaciones, pendingMediciones, pendingTracking, pendingVisitas] = await Promise.all([
+        getPendingSyncForms(),
+        getPlantacionesNoSincronizadas(),
+        getMedicionesNoSincronizadas(),
+        getTrackingNoSincronizado(),
+        getVisitasProgramadasNoSincronizadas(),
+      ]);
 
-      if (pendingForms.length === 0) {
+      if (
+        pendingForms.length === 0 &&
+        pendingPlantaciones.length === 0 &&
+        pendingMediciones.length === 0 &&
+        pendingTracking.length === 0 &&
+        pendingVisitas.length === 0
+      ) {
         dispatch({
           type: 'SYNC_SUCCESS',
           timestamp: new Date().toISOString(),
@@ -421,7 +528,7 @@ export const SyncProvider: React.FC<{ children: React.ReactNode }> = ({
         return;
       }
 
-      console.log(`[Sync] Iniciando sync de ${pendingForms.length} formulario(s)`);
+      console.log(`[Sync] Iniciando sync: ${pendingForms.length} formulario(s), ${pendingPlantaciones.length} plantación(es), ${pendingMediciones.length} medición(es), ${pendingTracking.length} posición(es), ${pendingVisitas.length} visita(s) programada(s)`);
 
       // 1. Sincronizar plantaciones
       const plantacionesFallidas = await sincronizarPlantaciones();
@@ -434,6 +541,10 @@ export const SyncProvider: React.FC<{ children: React.ReactNode }> = ({
       // 3. Sincronizar tracking
       const trackingFallido = await sincronizarTracking();
       failedIds.push(...trackingFallido.map(id => `track-${id}`));
+
+      // 3b. Sincronizar visitas programadas
+      const visitasFallidas = await sincronizarVisitasProgramadas();
+      failedIds.push(...visitasFallidas.map(id => `visita-${id}`));
 
       // 4. Sincronizar formularios (uno por uno con backoff)
       for (const form of pendingForms) {
@@ -458,9 +569,9 @@ export const SyncProvider: React.FC<{ children: React.ReactNode }> = ({
           await new Promise((resolve) => setTimeout(resolve, espera * 1000));
         }
 
-        const success = await sincronizarFormulario(form);
+        const { success, photosOk } = await sincronizarFormulario(form);
 
-        if (success) {
+        if (success && photosOk) {
           await markAsSynced(form.id);
           await clearSyncQueueByFormId(form.id);
           console.log('[Sync] Formulario sincronizado OK:', form.id);
@@ -469,7 +580,7 @@ export const SyncProvider: React.FC<{ children: React.ReactNode }> = ({
           await updateSyncAttempts(form.id, nuevosIntentos);
           failedIds.push(form.id);
           console.warn(
-            `[Sync] Formulario ${form.id} falló. Intento ${nuevosIntentos}/${MAX_RETRIES}`,
+            `[Sync] Formulario ${form.id} ${!success ? 'falló' : 'sincronizó pero con fotos pendientes'}. Intento ${nuevosIntentos}/${MAX_RETRIES}`,
           );
         }
       }
@@ -507,6 +618,15 @@ export const SyncProvider: React.FC<{ children: React.ReactNode }> = ({
   }, [checkPending, sincronizarFormulario]);
 
   // ------------------------------------------------------------------
+  // reintentarFormulario — reintento manual desde la UI
+  // ------------------------------------------------------------------
+
+  const reintentarFormulario = useCallback(async (formId: string) => {
+    await resetSyncAttempts(formId);
+    await syncNow();
+  }, [syncNow]);
+
+  // ------------------------------------------------------------------
   // Efecto: verificar pendientes al montar el provider
   // ------------------------------------------------------------------
 
@@ -526,15 +646,16 @@ export const SyncProvider: React.FC<{ children: React.ReactNode }> = ({
   // Render
   // ================================================================
 
+  const syncValue = useMemo(() => ({
+    ...state,
+    syncNow,
+    checkPending,
+    getBackoffSeconds,
+    reintentarFormulario,
+  }), [state, syncNow, checkPending, getBackoffSeconds, reintentarFormulario]);
+
   return (
-    <SyncContext.Provider
-      value={{
-        ...state,
-        syncNow,
-        checkPending,
-        getBackoffSeconds,
-      }}
-    >
+    <SyncContext.Provider value={syncValue}>
       {children}
     </SyncContext.Provider>
   );

@@ -223,4 +223,66 @@ router.get('/veredas', authenticateToken, async (req, res) => {
   }
 });
 
+// ============================================================
+// Estilos de mapa (MapLibre Style Spec) — para renderizar Y para que
+// OfflineManager.createPack() del cliente pueda descargar un paquete
+// offline apuntando a una URL real.
+//
+// SIN authenticateToken a propósito: los SDKs nativos de mapas (MapLibre/
+// Mapbox) que descargan estilos/teselas para caché offline generalmente no
+// soportan adjuntar un header Authorization personalizado en esas
+// peticiones. El estilo solo referencia fuentes de teselas ya públicas
+// (CartoDB, Esri) — no expone datos privados de la app.
+//
+// Reemplaza el antiguo intento de servir teselas vectoriales propias vía
+// /tesela (esa ruta nunca existió; QGIS no tiene datos base cargados —
+// documentado en MapViewOffline.tsx). Aquí solo se sirven las capas raster
+// que sí funcionan hoy.
+// ============================================================
+
+const MAP_STYLES = {
+  relieve: {
+    version: 8,
+    name: 'GEODAILY - Relieve',
+    sources: {
+      'carto-positron': {
+        type: 'raster',
+        // Sin {r}: convención de Leaflet que MapLibre nativo no sustituye.
+        tiles: ['https://a.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png'],
+        tileSize: 256,
+        minzoom: 0,
+        maxzoom: 19,
+        attribution: '© OpenStreetMap contributors, © CARTO',
+      },
+    },
+    layers: [
+      { id: 'carto-bg', source: 'carto-positron', type: 'raster', paint: { 'raster-opacity': 1 } },
+    ],
+  },
+  satelite: {
+    version: 8,
+    name: 'GEODAILY - Satélite',
+    sources: {
+      satellite: {
+        type: 'raster',
+        tiles: ['https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'],
+        tileSize: 256,
+        attribution: '© Esri, Maxar, Earthstar Geographics',
+      },
+    },
+    layers: [
+      { id: 'satellite-layer', source: 'satellite', type: 'raster', paint: { 'raster-opacity': 1 } },
+    ],
+  },
+};
+
+// GET /api/maps/style/:tipo — Estilo de mapa (relieve | satelite)
+router.get('/style/:tipo', (req, res) => {
+  const estilo = MAP_STYLES[req.params.tipo];
+  if (!estilo) {
+    return res.status(404).json({ estado: 'error', mensaje: 'Estilo no encontrado. Usa "relieve" o "satelite".' });
+  }
+  res.json(estilo);
+});
+
 module.exports = router;

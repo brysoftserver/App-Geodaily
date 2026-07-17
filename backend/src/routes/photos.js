@@ -8,6 +8,7 @@ const path = require('path');
 const { authenticateToken } = require('../middleware/auth');
 const db = require('../database');
 const storage = require('../storage');
+const { aplicarMarcaAgua } = require('../watermark');
 
 const router = express.Router();
 
@@ -30,32 +31,92 @@ router.post('/subir', authenticateToken, upload.single('archivo'), async (req, r
       return res.status(400).json({ estado: 'error', mensaje: 'Archivo requerido' });
     }
 
-    const { latitud, longitud, altitud, nombre, descripcion } = req.body;
-    const ext = path.extname(req.file.originalname) || '.jpg';
-    const filename = `foto_${Date.now()}_${Math.random().toString(36).slice(2, 6)}${ext}`;
+    const { latitud, longitud, altitud, nombre, descripcion, beneficiario_cedula, beneficiario_nombre, timestamp_captura, tipo_formulario } = req.body;
+
+    // ─── Marca de agua de evidencia (fecha de captura + GPS + ubicación +
+    // clima a la hora de la toma). Nunca bloquea la subida: si falla,
+    // se guarda la foto original. Solo aplica a formatos de imagen que
+    // sharp puede recomponer (jpeg/png/webp — no HEIC/GIF).
+    let bufferFinal = req.file.buffer;
+    let mimetypeFinal = req.file.mimetype;
+    let extFinal = path.extname(req.file.originalname) || '.jpg';
+    if (/jpeg|jpg|png|webp/i.test(req.file.mimetype)) {
+      const { buffer: marcado, marcada } = await aplicarMarcaAgua(req.file.buffer, {
+        latitud,
+        longitud,
+        altitud,
+        timestampCaptura: timestamp_captura,
+      });
+      if (marcada) {
+        bufferFinal = marcado;
+        mimetypeFinal = 'image/jpeg'; // la marca re-codifica a JPEG
+        extFinal = '.jpg';
+      }
+    }
+
+    const filename = `foto_${Date.now()}_${Math.random().toString(36).slice(2, 6)}${extFinal}`;
 
     // Validar datos de usuario (fallback seguro)
     const userRol = req.user?.rol || 'otros';
     const userUsuario = req.user?.usuario || req.user?.id?.toString() || 'desconocido';
 
-    // Subir a MinIO (con try-catch para no bloquear si MinIO no está disponible)
+    // ─── Resolver datos del beneficiario para carpeta en MinIO ───
+    let benefItem = null;
+    let benefNombre = null;
+    if (beneficiario_cedula) {
+      try {
+        const benef = await db.queryOne(
+          'SELECT item, nombre_completo FROM beneficiarios WHERE cedula = $1',
+          [beneficiario_cedula.trim()]
+        );
+        if (benef) {
+          benefItem = benef.item;
+          benefNombre = beneficiario_nombre || benef.nombre_completo;
+        }
+      } catch (lookupErr) {
+        console.warn('[Photos] Error buscando beneficiario:', lookupErr.message);
+      }
+    }
+
+    // Subir a MinIO
+    const storageMeta = {
+      contentType: mimetypeFinal,
+      beneficiarioItem: benefItem,
+      beneficiarioNombre: benefNombre,
+      tipoFormulario: tipo_formulario,
+    };
     try {
       await storage.uploadFile(
         userRol,
         userUsuario,
         'fotos',
         filename,
-        req.file.buffer
+        bufferFinal,
+        storageMeta
       );
     } catch (storageErr) {
       console.error('[Photos] Error al subir a MinIO (no crítico, continúa):', storageErr.message);
-      // No retornamos error — la foto se marca para sincronización posterior
     }
 
     // Guardar registro en PostgreSQL
     const bucket = process.env.MINIO_BUCKET || 'geodaily-archivos';
     const basePath = storage.getUserBasePath(userRol, userUsuario);
-    const minioPath = `${basePath}/fotos/${filename}`;
+    let minioPath;
+    if (benefItem && benefNombre) {
+      const subpath = storage.getBeneficiarySubpath(benefItem, benefNombre);
+      const formFolder = storage.getFormTypeFolder(tipo_formulario);
+      minioPath = formFolder ? `${basePath}/${subpath}/${formFolder}/fotos/${filename}` : `${basePath}/${subpath}/fotos/${filename}`;
+    } else {
+      minioPath = `${basePath}/fotos/${filename}`;
+    }
+
+    const metadataExtra = {
+      nombre: nombre || null,
+      descripcion: descripcion || null,
+      beneficiario_item: benefItem,
+      beneficiario_cedula: beneficiario_cedula || null,
+    };
+
     await db.query(
       `INSERT INTO archivos (usuario_id, tipo, filename, originalname, mimetype, size_bytes, minio_path, minio_bucket, latitud, longitud, altitud, metadata_json)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
@@ -64,14 +125,14 @@ router.post('/subir', authenticateToken, upload.single('archivo'), async (req, r
         'foto',
         filename,
         req.file.originalname,
-        req.file.mimetype,
-        req.file.size,
+        mimetypeFinal,
+        bufferFinal.length,
         minioPath,
         bucket,
         latitud ? parseFloat(latitud) : null,
         longitud ? parseFloat(longitud) : null,
         altitud ? parseFloat(altitud) : null,
-        JSON.stringify({ nombre: nombre || null, descripcion: descripcion || null }),
+        JSON.stringify(metadataExtra),
       ]
     );
 
@@ -112,6 +173,9 @@ router.get('/:id', authenticateToken, async (req, res) => {
     );
     if (!foto) {
       return res.status(404).json({ estado: 'error', mensaje: 'Foto no encontrada' });
+    }
+    if (req.user.rol !== 'admin' && foto.usuario_id !== req.user.id) {
+      return res.status(403).json({ estado: 'error', mensaje: 'No autorizado' });
     }
 
     res.json({

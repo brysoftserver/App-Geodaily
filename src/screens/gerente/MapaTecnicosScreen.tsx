@@ -6,7 +6,7 @@
 // tracking_posiciones en SQLite.
 // ============================================================
 
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useRef } from 'react';
 import {
   View,
   Text,
@@ -18,8 +18,9 @@ import {
   ActivityIndicator,
 } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
-import { COLORS, FONTS, SPACING, BORDER_RADIUS, SHADOWS } from '../../theme';
+import { COLORS, FONTS, SPACING, BORDER_RADIUS, SHADOWS, API_CONFIG } from '../../theme';
 import { getUltimasPosicionesTecnicos } from '../../services/database';
+import apiClient from '../../services/api';
 import MapViewOffline from '../../components/MapViewOffline';
 
 type MapaTecnicosProps = {
@@ -42,17 +43,35 @@ const MapaTecnicosScreen: React.FC<MapaTecnicosProps> = ({ navigation: _navigati
   const [tecnicos, setTecnicos] = useState<TecnicoUbicacion[]>([]);
   const [loading, setLoading] = useState(true);
   const [lastUpdate, setLastUpdate] = useState<string>('');
+  const lastLoadRef = useRef(0);
 
   const cargarPosiciones = useCallback(async () => {
+    lastLoadRef.current = Date.now();
     try {
       setLoading(true);
-      const posiciones = await getUltimasPosicionesTecnicos();
+
+      // Fuente principal: el SERVIDOR (las posiciones las reportan los
+      // teléfonos de los técnicos vía /api/tracking/sync; la BD local del
+      // gerente no las tiene). Sin conexión, se cae a la BD local como
+      // último recurso.
+      let posiciones: Record<string, any>[] = [];
+      try {
+        const response = await apiClient.get(`${API_CONFIG.ENDPOINTS.TRACKING}/ultimas`);
+        posiciones = (response.data?.posiciones || []).map((p: Record<string, any>) => ({
+          ...p,
+          tecnico_nombre: p.usuario_nombre || p.usuario_login,
+        }));
+      } catch (error) {
+        console.warn('[MapaTecnicos] Sin conexión al servidor, usando datos locales:', error);
+        posiciones = await getUltimasPosicionesTecnicos();
+      }
+
       const tecnicosMap = posiciones.map((p: Record<string, any>) => ({
         usuario_id: p.usuario_id,
-        latitud: p.latitud,
-        longitud: p.longitud,
-        altitud: p.altitud,
-        precision_gps: p.precision_gps,
+        latitud: Number(p.latitud),
+        longitud: Number(p.longitud),
+        altitud: p.altitud != null ? Number(p.altitud) : undefined,
+        precision_gps: p.precision_gps ?? p.precision_metros,
         velocidad: p.velocidad,
         heading: p.heading,
         timestamp: p.timestamp,
@@ -67,9 +86,11 @@ const MapaTecnicosScreen: React.FC<MapaTecnicosProps> = ({ navigation: _navigati
     }
   }, []);
 
-  // Recargar al enfocar la pantalla
+  // Recargar al enfocar la pantalla — pero no si ya se cargó hace menos de 20s
+  // (evita el freeze perceptible al entrar/salir repetidamente de la pantalla)
   useFocusEffect(
     useCallback(() => {
+      if (Date.now() - lastLoadRef.current < 20000) return;
       cargarPosiciones();
     }, [cargarPosiciones])
   );

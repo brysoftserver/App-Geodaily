@@ -19,6 +19,13 @@ router.post('/sync', authenticateToken, async (req, res) => {
     let sincronizadas = 0;
     for (const p of plantaciones) {
       const id = p.id || `plant-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+      // Extraer icono y polígono de la plantación para guardarlos en metadata_json
+      const metadataBase = p.metadata_json || p.datos || {};
+      const metadata = {
+        ...metadataBase,
+        icono: p.icono || null,
+        poligono: p.poligono || null,
+      };
       await db.query(
         `INSERT INTO plantaciones (id, usuario_id, formulario_id, especie, cantidad, latitud, longitud, altitud, metadata_json, timestamp)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
@@ -35,7 +42,7 @@ router.post('/sync', authenticateToken, async (req, res) => {
           p.latitud || 0,
           p.longitud || 0,
           p.altitud || null,
-          JSON.stringify(p.metadata_json || p.datos || {}),
+          JSON.stringify(metadata),
           p.timestamp || p.timestamp_dispositivo || new Date().toISOString(),
         ]
       );

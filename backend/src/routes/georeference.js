@@ -1,5 +1,8 @@
 // ============================================================
 // Georeference Routes — UTM, MGRS, zonas horarias
+// Cálculo matemático local — NO consulta QGIS ni PostGIS pese al nombre
+// del stack documentado en el README; esos servicios están desconectados
+// del flujo de datos de la app.
 // ============================================================
 
 const express = require('express');
@@ -63,34 +66,7 @@ router.get('/', authenticateToken, (req, res) => {
     codigo_mgrs: calcularMGRS(latNum, lonNum),
     zona_horaria: calcularZonaHoraria(lonNum),
     pais: 'Colombia',
-    fuente: 'cálculo local (mock)',
-  });
-});
-
-// GET /api/georeference/cercanos?lat=X&lon=Y&radio_km=Z
-router.get('/cercanos', authenticateToken, (req, res) => {
-  res.json({
-    puntos: [
-      { id: 'punto-001', nombre: 'Finca El Paraíso', lat: 1.5, lon: -76.5 },
-      { id: 'punto-002', nombre: 'Vereda Bajo Cuembí', lat: 1.6, lon: -76.4 },
-    ],
-  });
-});
-
-// GET /api/georeference/direccion?lat=X&lon=Y
-router.get('/direccion', authenticateToken, (req, res) => {
-  const { lat, lon } = req.query;
-  if (!lat || !lon) {
-    return res.status(400).json({ estado: 'error', mensaje: 'lat y lon requeridos' });
-  }
-  res.json({
-    direccion: 'Vereda San José, Municipio de Puerto Asís',
-    departamento: 'Putumayo',
-    municipio: 'Puerto Asís',
-    vereda: 'San José',
-    codigo_postal: '860001',
-    pais: 'Colombia',
-    fuente: 'OpenStreetMap (mock)',
+    fuente: 'cálculo local (backend, sin QGIS/PostGIS)',
   });
 });
 

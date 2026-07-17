@@ -2,11 +2,18 @@
 // GEODAILY — Contexto de Autenticación
 // ============================================================
 
-import React, { createContext, useContext, useReducer, useCallback, useEffect } from 'react';
+import React, { createContext, useContext, useReducer, useCallback, useEffect, useMemo } from 'react';
 import * as SecureStore from 'expo-secure-store';
 import { Usuario, UserRole } from '../types';
-import { loginUser, logoutUser, verifyToken } from '../services/auth';
-import { setApiAuthToken } from '../services/api';
+import {
+  loginUser,
+  logoutUser,
+  verifyToken,
+  guardarCredencialOffline,
+  intentarLoginOffline,
+  limpiarCredencialOffline,
+} from '../services/auth';
+import { setApiAuthToken, setUnauthorizedHandler } from '../services/api';
 import { STORAGE_KEYS } from '../utils/constants';
 
 // --- Estado ---
@@ -85,7 +92,15 @@ const AuthContext = createContext<AuthContextType | undefined>(undefined);
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [state, dispatch] = useReducer(authReducer, initialState);
 
-  // Restaurar sesión al iniciar
+  // Restaurar sesión al iniciar.
+  //
+  // Estrategia offline-first: restaurar de inmediato desde SecureStore sin
+  // esperar al servidor — un técnico en campo debe poder entrar a la app al
+  // instante aunque no tenga señal. La verificación contra el servidor pasa
+  // a ser una revalidación EN SEGUNDO PLANO que solo actúa si el servidor
+  // rechaza el token explícitamente ('invalid'); si no se pudo contactar
+  // ('offline'), la sesión local se mantiene tal cual — no desloguear a
+  // alguien solo porque no hay internet para verificar.
   useEffect(() => {
     const restoreSession = async () => {
       try {
@@ -93,18 +108,24 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         const userData = await SecureStore.getItemAsync(STORAGE_KEYS.USER_DATA);
 
         if (token && userData) {
-          const isValid = await verifyToken(token);
-          if (isValid) {
-            const user = JSON.parse(userData) as Usuario;
-            // También establecer en memoria para el cliente API
-            setApiAuthToken(user.token);
-            dispatch({ type: 'RESTORE_TOKEN', user });
-            return;
-          }
-          // Token inválido — limpiar datos corruptos
-          await SecureStore.deleteItemAsync(STORAGE_KEYS.AUTH_TOKEN);
-          await SecureStore.deleteItemAsync(STORAGE_KEYS.USER_DATA);
-          console.warn('[Auth] Token inválido — datos de sesión limpiados');
+          const user = JSON.parse(userData) as Usuario;
+          setApiAuthToken(user.token);
+          dispatch({ type: 'RESTORE_TOKEN', user });
+
+          // Revalidación en segundo plano — no bloquea el acceso a la app
+          verifyToken(token).then(async (resultado) => {
+            if (resultado === 'invalid') {
+              await SecureStore.deleteItemAsync(STORAGE_KEYS.AUTH_TOKEN);
+              await SecureStore.deleteItemAsync(STORAGE_KEYS.USER_DATA);
+              console.warn('[Auth] Token rechazado por el servidor — sesión cerrada');
+              setApiAuthToken(null);
+              dispatch({ type: 'LOGOUT' });
+            } else if (resultado === 'offline') {
+              console.log('[Auth] Sin conexión para revalidar token — se mantiene la sesión local');
+            }
+            // 'valid' → nada que hacer, ya restaurada arriba
+          });
+          return;
         }
         dispatch({ type: 'RESTORE_TOKEN', user: null });
       } catch {
@@ -112,6 +133,18 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }
     };
     restoreSession();
+  }, []);
+
+  // Registrar el handler de 401 global — el interceptor de api.ts lo invoca
+  // cuando cualquier petición recibe un token inválido/expirado, para que la
+  // app salga de sesión de inmediato (SecureStore ya fue limpiado por api.ts)
+  useEffect(() => {
+    setUnauthorizedHandler(() => {
+      console.warn('[Auth] Sesión invalidada por el servidor (401) — cerrando sesión');
+      setApiAuthToken(null);
+      dispatch({ type: 'LOGOUT' });
+    });
+    return () => setUnauthorizedHandler(null);
   }, []);
 
   const login = useCallback(async (usuario: string, contrasena: string) => {
@@ -142,13 +175,38 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           // En Expo Go SecureStore podría no estar disponible
         }
 
+        // Cachear credencial para permitir login offline futuro en campo
+        await guardarCredencialOffline(usuario, contrasena, user);
+
         dispatch({ type: 'LOGIN_SUCCESS', user });
-      } else {
-        dispatch({ type: 'LOGIN_FAILURE', error: result.error || 'Error de autenticación' });
+        return;
       }
+
+      // El servidor respondió pero rechazó las credenciales (usuario/clave
+      // incorrectos) — no intentar offline, es un rechazo explícito.
+      dispatch({ type: 'LOGIN_FAILURE', error: result.error || 'Error de autenticación' });
     } catch (error) {
-      console.error('[Auth] Error en login:', error);
-      dispatch({ type: 'LOGIN_FAILURE', error: 'Error de conexión con el servidor' });
+      // Falló la conexión con el servidor — intentar login OFFLINE con la
+      // credencial cacheada de la última sesión online. Así un técnico en
+      // campo puede reingresar sin señal aunque haya cerrado sesión.
+      console.warn('[Auth] Login online falló, intentando offline:', error);
+      const offlineUser = await intentarLoginOffline(usuario, contrasena);
+      if (offlineUser) {
+        setApiAuthToken(offlineUser.token);
+        try {
+          await SecureStore.setItemAsync(STORAGE_KEYS.AUTH_TOKEN, offlineUser.token);
+          await SecureStore.setItemAsync(STORAGE_KEYS.USER_DATA, JSON.stringify(offlineUser));
+        } catch (storageError) {
+          console.warn('[Auth] SecureStore no disponible (offline):', storageError);
+        }
+        console.log('[Auth] Sesión restaurada en modo OFFLINE');
+        dispatch({ type: 'LOGIN_SUCCESS', user: offlineUser });
+        return;
+      }
+      dispatch({
+        type: 'LOGIN_FAILURE',
+        error: 'Sin conexión y sin sesión guardada en este dispositivo. Conéctate a internet para iniciar sesión la primera vez.',
+      });
     }
   }, []);
 
@@ -157,6 +215,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       await logoutUser();
       await SecureStore.deleteItemAsync(STORAGE_KEYS.AUTH_TOKEN);
       await SecureStore.deleteItemAsync(STORAGE_KEYS.USER_DATA);
+      // Logout EXPLÍCITO del usuario → sí borramos la credencial offline.
+      // (Un 401 de red NO llega aquí: solo dispara dispatch LOGOUT vía
+      // setUnauthorizedHandler, dejando la credencial intacta para reingresar.)
+      await limpiarCredencialOffline();
     } finally {
       setApiAuthToken(null);
       dispatch({ type: 'LOGOUT' });
@@ -167,7 +229,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     return state.user?.rol || null;
   }, [state.user]);
 
-  const value: AuthContextType = {
+  const value = useMemo<AuthContextType>(() => ({
     ...state,
     login,
     logout,
@@ -177,7 +239,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     isInterventor: state.user?.rol === 'interventor',
     isGerente: state.user?.rol === 'gerente',
     isAdmin: state.user?.rol === 'admin',
-  };
+  }), [state, login, logout, getRole]);
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 };

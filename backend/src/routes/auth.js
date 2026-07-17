@@ -58,7 +58,11 @@ router.post('/login', async (req, res) => {
       rol: user.rol,
     };
 
-    const token = jwt.sign(tokenPayload, JWT_SECRET, { expiresIn: '24h' });
+    // 365 días: los técnicos trabajan en campo sin señal por semanas seguidas,
+    // no deben perder la sesión por no poder reconectar a tiempo. La sesión
+    // local + login offline cubren los cortes; el token largo evita que una
+    // reconexión tardía dispare un 401 que los saque de la app.
+    const token = jwt.sign(tokenPayload, JWT_SECRET, { expiresIn: '365d' });
 
     // Asegurar carpetas en MinIO al hacer login
     try {
@@ -131,6 +135,19 @@ router.get('/usuarios', authenticateToken, async (req, res) => {
   } catch (error) {
     console.error('[Auth] Listar usuarios error:', error);
     res.status(500).json({ success: false, error: 'Error al listar usuarios' });
+  }
+});
+
+// GET /api/auth/tecnicos — Listar solo técnicos activos (cualquier rol autenticado)
+router.get('/tecnicos', authenticateToken, async (req, res) => {
+  try {
+    const tecnicos = await db.queryAll(
+      "SELECT id, usuario, nombre, cedula, email, telefono FROM usuarios WHERE rol = 'tecnico' AND activo = TRUE ORDER BY nombre"
+    );
+    res.json({ success: true, total: tecnicos.length, tecnicos });
+  } catch (error) {
+    console.error('[Auth] Listar técnicos error:', error);
+    res.status(500).json({ success: false, error: 'Error al listar técnicos' });
   }
 });
 

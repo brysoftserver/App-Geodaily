@@ -38,20 +38,6 @@ const FilterBar: React.FC<FilterBarProps> = ({
         showsHorizontalScrollIndicator={false}
         contentContainerStyle={styles.scrollContent}
       >
-        <TouchableOpacity
-          style={[styles.chip, selected === null && styles.chipSelected]}
-          onPress={() => onSelect(null)}
-        >
-          <Text
-            style={[
-              styles.chipText,
-              selected === null && styles.chipTextSelected,
-            ]}
-          >
-            Todos
-          </Text>
-        </TouchableOpacity>
-
         {options.map((option) => (
           <TouchableOpacity
             key={option.value}

@@ -52,6 +52,14 @@ const MENU_ITEMS = [
     color: COLORS.success,
     screen: 'InterventorMapaGeneral',
   },
+  {
+    id: 'beneficiarios',
+    title: 'Base de Datos Beneficiarios',
+    subtitle: '300 beneficiarios, asignación a técnicos',
+    icon: '👤',
+    color: COLORS.roleInterventor,
+    screen: 'BaseDatosBeneficiarios',
+  },
 ];
 
 const InterventorMenuScreen: React.FC<InterventorMenuScreenProps> = ({ navigation }) => {
@@ -65,11 +73,11 @@ const InterventorMenuScreen: React.FC<InterventorMenuScreenProps> = ({ navigatio
     <ScrollView style={styles.container} contentContainerStyle={styles.content}>
       {/* Header de usuario */}
       <ImageBackground source={require('../../../Logos_imagenes/fondo_login_geo_daily.png')} style={styles.userHeader}>
-        <ImageBackground source={require('../../../Logos_imagenes/fondo_login_geo_daily.png')} style={[styles.avatar, { overflow: 'hidden' }]} imageStyle={{ borderRadius: 24 }}>
+        <View style={[styles.avatar, { overflow: 'hidden' }]}>
           <Text style={styles.avatarText}>
             {user?.nombre?.charAt(0)?.toUpperCase() || 'I'}
           </Text>
-        </ImageBackground>
+        </View>
         <View style={styles.userInfo}>
           <Text style={styles.userName}>{user?.nombre || 'Interventor'}</Text>
           <Text style={styles.userRole}>Interventor de Terreno</Text>
@@ -102,7 +110,7 @@ const InterventorMenuScreen: React.FC<InterventorMenuScreenProps> = ({ navigatio
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: COLORS.background,
+    backgroundColor: COLORS.surface,
   },
   content: {
     flexGrow: 1,

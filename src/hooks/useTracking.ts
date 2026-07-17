@@ -243,12 +243,15 @@ export const useTracking = (
   const posicionesHoy = useCallback(async (): Promise<PosicionTracking[]> => {
     try {
       const database = await initDb();
-      const hoy = new Date().toISOString().split('T')[0];
+      // Medianoche LOCAL (no UTC) expresada como instante ISO, para comparar
+      // correctamente contra timestamps almacenados en UTC (Colombia es UTC-5)
+      const medianocheLocal = new Date();
+      medianocheLocal.setHours(0, 0, 0, 0);
       const rows = await database.getAllAsync<any>(
         `SELECT * FROM tracking_posiciones
          WHERE usuario_id = ? AND timestamp >= ?
          ORDER BY timestamp ASC`,
-        [usuarioId, hoy]
+        [usuarioId, medianocheLocal.toISOString()]
       );
       return rows.map((r: Record<string, any>) => ({
         id: r.id,

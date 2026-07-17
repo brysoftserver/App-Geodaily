@@ -26,7 +26,7 @@ function base64ToBuffer(dataUri) {
 // POST /api/firmas/subir — Subir una firma (base64) a MinIO
 router.post('/subir', authenticateToken, async (req, res) => {
   try {
-    const { tipo, data } = req.body; // tipo: 'beneficiario' | 'tecnico'
+    const { tipo, data, beneficiario_cedula, beneficiario_nombre, tipo_formulario } = req.body; // tipo: 'beneficiario' | 'tecnico'
 
     if (!data || !tipo) {
       return res.status(400).json({
@@ -53,6 +53,24 @@ router.post('/subir', authenticateToken, async (req, res) => {
     const timestamp = Date.now();
     const filename = `firma_${tipo}_${timestamp}.png`;
 
+    // ─── Resolver datos del beneficiario para carpeta en MinIO ───
+    let benefItem = null;
+    let benefNombre = null;
+    if (beneficiario_cedula) {
+      try {
+        const benef = await db.queryOne(
+          'SELECT item, nombre_completo FROM beneficiarios WHERE cedula = $1',
+          [beneficiario_cedula.trim()]
+        );
+        if (benef) {
+          benefItem = benef.item;
+          benefNombre = beneficiario_nombre || benef.nombre_completo;
+        }
+      } catch (lookupErr) {
+        console.warn('[Firmas] Error buscando beneficiario:', lookupErr.message);
+      }
+    }
+
     // Subir a MinIO
     await storage.uploadFile(
       req.user.rol,
@@ -60,13 +78,32 @@ router.post('/subir', authenticateToken, async (req, res) => {
       'firmas',
       filename,
       converted.buffer,
-      { contentType: converted.mimetype }
+      {
+        contentType: converted.mimetype,
+        beneficiarioItem: benefItem,
+        beneficiarioNombre: benefNombre,
+        tipoFormulario: tipo_formulario,
+      }
     );
 
     // Guardar registro en PostgreSQL
     const bucket = process.env.MINIO_BUCKET || 'geodaily-archivos';
     const basePath = storage.getUserBasePath(req.user.rol, req.user.usuario);
-    const minioPath = `${basePath}/firmas/${filename}`;
+    let minioPath;
+    if (benefItem && benefNombre) {
+      const subpath = storage.getBeneficiarySubpath(benefItem, benefNombre);
+      const formFolder = storage.getFormTypeFolder(tipo_formulario);
+      minioPath = formFolder ? `${basePath}/${subpath}/${formFolder}/firmas/${filename}` : `${basePath}/${subpath}/firmas/${filename}`;
+    } else {
+      minioPath = `${basePath}/firmas/${filename}`;
+    }
+
+    const metadataExtra = {
+      tipo_firma: tipo,
+      beneficiario_item: benefItem,
+      beneficiario_cedula: beneficiario_cedula || null,
+    };
+
     await db.query(
       `INSERT INTO archivos (usuario_id, tipo, filename, originalname, mimetype, size_bytes, minio_path, minio_bucket, metadata_json)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
@@ -115,7 +152,7 @@ router.post('/subir', authenticateToken, async (req, res) => {
 // POST /api/firmas/guardar-en-formulario — Sube firma Y la asocia a un formulario
 router.post('/guardar-en-formulario', authenticateToken, async (req, res) => {
   try {
-    const { formulario_id, tipo, data } = req.body;
+    const { formulario_id, tipo, data, beneficiario_cedula, beneficiario_nombre, tipo_formulario } = req.body;
 
     if (!formulario_id || !data || !tipo) {
       return res.status(400).json({
@@ -133,6 +170,24 @@ router.post('/guardar-en-formulario', authenticateToken, async (req, res) => {
       });
     }
 
+    // ─── Resolver datos del beneficiario para carpeta en MinIO ───
+    let benefItem = null;
+    let benefNombre = null;
+    if (beneficiario_cedula) {
+      try {
+        const benef = await db.queryOne(
+          'SELECT item, nombre_completo FROM beneficiarios WHERE cedula = $1',
+          [beneficiario_cedula.trim()]
+        );
+        if (benef) {
+          benefItem = benef.item;
+          benefNombre = beneficiario_nombre || benef.nombre_completo;
+        }
+      } catch (lookupErr) {
+        console.warn('[Firmas] Error buscando beneficiario:', lookupErr.message);
+      }
+    }
+
     const timestamp = Date.now();
     const filename = `firma_${tipo}_${formulario_id}_${timestamp}.png`;
 
@@ -142,11 +197,24 @@ router.post('/guardar-en-formulario', authenticateToken, async (req, res) => {
       'firmas',
       filename,
       converted.buffer,
-      { contentType: converted.mimetype }
+      {
+        contentType: converted.mimetype,
+        beneficiarioItem: benefItem,
+        beneficiarioNombre: benefNombre,
+        tipoFormulario: tipo_formulario,
+      }
     );
 
     const basePath = storage.getUserBasePath(req.user.rol, req.user.usuario);
-    const minioPath = `${basePath}/firmas/${filename}`;
+    let minioPath;
+    if (benefItem && benefNombre) {
+      const subpath = storage.getBeneficiarySubpath(benefItem, benefNombre);
+      const formFolder = storage.getFormTypeFolder(tipo_formulario);
+      minioPath = formFolder ? `${basePath}/${subpath}/${formFolder}/firmas/${filename}` : `${basePath}/${subpath}/firmas/${filename}`;
+    } else {
+      minioPath = `${basePath}/firmas/${filename}`;
+    }
+
     const bucket = process.env.MINIO_BUCKET || 'geodaily-archivos';
 
     // Guardar en archivos
@@ -158,7 +226,12 @@ router.post('/guardar-en-formulario', authenticateToken, async (req, res) => {
         req.user.id, 'firma', filename, `firma_${tipo}.png`,
         converted.mimetype, converted.buffer.length,
         minioPath, bucket,
-        JSON.stringify({ tipo_firma: tipo, formulario_id }),
+        JSON.stringify({
+          tipo_firma: tipo,
+          formulario_id,
+          beneficiario_item: benefItem,
+          beneficiario_cedula: beneficiario_cedula || null,
+        }),
       ]
     );
     const firmaId = archivoResult?.id || `firma-${timestamp}`;
@@ -195,6 +268,9 @@ router.get('/:id', authenticateToken, async (req, res) => {
     );
     if (!firma) {
       return res.status(404).json({ estado: 'error', mensaje: 'Firma no encontrada' });
+    }
+    if (req.user.rol !== 'admin' && firma.usuario_id !== req.user.id) {
+      return res.status(403).json({ estado: 'error', mensaje: 'No autorizado' });
     }
     res.json({ estado: 'ok', firma });
   } catch (error) {

@@ -84,6 +84,14 @@ const MENU_ITEMS = [
     color: COLORS.success,
     screen: 'MapaGeneral',
   },
+  {
+    id: 'beneficiarios',
+    title: 'Base de Datos Beneficiarios',
+    subtitle: '300 beneficiarios, asignación a técnicos',
+    icon: '👤',
+    color: COLORS.roleGerente,
+    screen: 'BaseDatosBeneficiarios',
+  },
 ];
 
 const GerenteMenuScreen: React.FC<GerenteMenuProps> = ({ navigation }) => {
@@ -97,11 +105,11 @@ const GerenteMenuScreen: React.FC<GerenteMenuProps> = ({ navigation }) => {
     <ScrollView style={styles.container} contentContainerStyle={styles.content}>
       {/* Header de usuario */}
       <ImageBackground source={require('../../../Logos_imagenes/fondo_login_geo_daily.png')} style={styles.header}>
-        <ImageBackground source={require('../../../Logos_imagenes/fondo_login_geo_daily.png')} style={[styles.avatar, { overflow: 'hidden' }]} imageStyle={{ borderRadius: 24 }}>
+        <View style={[styles.avatar, { overflow: 'hidden' }]}>
           <Text style={styles.avatarText}>
             {user?.nombre?.charAt(0)?.toUpperCase() || 'G'}
           </Text>
-        </ImageBackground>
+        </View>
         <View style={styles.userInfo}>
           <Text style={styles.userName}>{user?.nombre || 'Gerente'}</Text>
           <Text style={styles.userRole}>Gerente de Operaciones</Text>
@@ -135,7 +143,7 @@ const GerenteMenuScreen: React.FC<GerenteMenuProps> = ({ navigation }) => {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: COLORS.background,
+    backgroundColor: COLORS.surface,
   },
   content: {
     flexGrow: 1,

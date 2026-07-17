@@ -2,7 +2,7 @@
 // GEODAILY — Proyección de Producción (Gerencia)
 // ============================================================
 
-import React, { useMemo, useState } from 'react';
+import React, { useMemo, useState, useEffect, useCallback } from 'react';
 import {
   View,
   Text,
@@ -14,6 +14,9 @@ import {
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { BarChart } from 'react-native-chart-kit';
 import { COLORS, FONTS, SPACING, BORDER_RADIUS, SHADOWS } from '../../theme';
+import { Formulario } from '../../types';
+import { getFormulariosLocales } from '../../services/database';
+import { fetchFormulariosDelServidor } from '../../services/formularios.service';
 
 type ProyeccionProps = {
   navigation: NativeStackNavigationProp<Record<string, any>>;
@@ -27,29 +30,63 @@ const ARBOLES_POR_HA = 1200; // densidad típica cacao
 
 const ProyeccionScreen: React.FC<ProyeccionProps> = ({ navigation: _navigation }) => {
   const [periodo, setPeriodo] = useState<'3m' | '6m' | '12m'>('12m');
+  const [formularios, setFormularios] = useState<Formulario[]>([]);
 
-  // Este módulo de proyección estaba basado en el formulario de Plantación
-  // que ha sido eliminado. Se muestra información informativa.
-  const areaHa = 0;
-  const arbolesEstimados = 0;
-  const produccionAnualKg = 0;
+  // Cargar formularios reales (local + servidor)
+  const loadData = useCallback(async () => {
+    try {
+      const [locales, servidor] = await Promise.all([
+        getFormulariosLocales(),
+        fetchFormulariosDelServidor(),
+      ]);
+      const mapa = new Map<string, Formulario>();
+      for (const f of locales) mapa.set(f.id, f);
+      for (const f of servidor) mapa.set(f.id, f);
+      setFormularios(Array.from(mapa.values()));
+    } catch (error) {
+      console.warn('[Proyeccion] Error cargando formularios:', error);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadData();
+  }, [loadData]);
+
+  // Área REAL registrada: hectáreas reportadas en el paso sociodemográfico,
+  // contando una sola vez a cada beneficiario (por cédula) aunque tenga
+  // varias visitas.
+  const areaHa = useMemo(() => {
+    const porBeneficiario = new Map<string, number>();
+    for (const f of formularios) {
+      const cedula = f.beneficiario?.cedula;
+      const ha = Number(f.sociodemografico?.hectareas);
+      if (cedula && ha > 0) porBeneficiario.set(cedula, ha);
+    }
+    let total = 0;
+    porBeneficiario.forEach((ha) => { total += ha; });
+    return Math.round(total * 10) / 10;
+  }, [formularios]);
+
+  const arbolesEstimados = Math.round(areaHa * ARBOLES_POR_HA);
+  const produccionAnualKg = Math.round(areaHa * ESTIMACION_KG_HA);
 
   const factorPeriodo = periodo === '3m' ? 0.25 : periodo === '6m' ? 0.5 : 1;
-  const produccionPeriodo = produccionAnualKg * factorPeriodo;
+  const produccionPeriodo = Math.round(produccionAnualKg * factorPeriodo);
 
-  // Proyección mensual (sin datos)
+  // Proyección mensual: estimación anual repartida uniforme entre los meses
   const proyeccionMensual = useMemo(() => {
     const meses = ['Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic'];
     const actual = new Date().getMonth();
+    const mensual = Math.round(produccionAnualKg / 12);
     const datos: number[] = [];
     const labels: string[] = [];
     for (let i = 0; i < 12; i++) {
       const idx = (actual + i) % 12;
       labels.push(meses[idx]);
-      datos.push(0);
+      datos.push(mensual);
     }
     return { labels, datos };
-  }, []);
+  }, [produccionAnualKg]);
 
   const chartConfig = {
     backgroundColor: COLORS.surface,
@@ -65,7 +102,11 @@ const ProyeccionScreen: React.FC<ProyeccionProps> = ({ navigation: _navigation }
   return (
     <ScrollView style={styles.container} contentContainerStyle={styles.content}>
       <Text style={styles.title}>Proyección de Producción</Text>
-      <Text style={styles.subtitle}>El formulario de Plantación ha sido eliminado. Esta sección está en desuso.</Text>
+      <Text style={styles.subtitle}>
+        {areaHa > 0
+          ? `Estimación basada en ${areaHa} ha reales registradas en las caracterizaciones`
+          : 'Aún no hay hectáreas registradas en las caracterizaciones — la proyección se calculará a medida que los técnicos completen formularios'}
+      </Text>
 
       {/* Selector de período */}
       <View style={styles.periodRow}>

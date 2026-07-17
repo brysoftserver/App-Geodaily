@@ -72,6 +72,7 @@
       "expo-local-authentication",
       "expo-file-system",
       "expo-updates",
+      "@maplibre/maplibre-react-native",
       [
         "expo-build-properties",
         {

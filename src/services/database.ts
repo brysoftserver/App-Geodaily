@@ -101,6 +101,29 @@ export const initDatabase = async (): Promise<void> => {
           sincronizada INTEGER DEFAULT 0,
           FOREIGN KEY (formulario_id) REFERENCES formularios(id)
         );
+
+        CREATE TABLE IF NOT EXISTS videos_locales (
+          id TEXT PRIMARY KEY,
+          formulario_id TEXT NOT NULL,
+          uri TEXT NOT NULL,
+          latitud REAL,
+          longitud REAL,
+          timestamp TEXT NOT NULL,
+          sincronizada INTEGER DEFAULT 0,
+          FOREIGN KEY (formulario_id) REFERENCES formularios(id)
+        );
+
+        CREATE TABLE IF NOT EXISTS beneficiarios (
+          item INTEGER PRIMARY KEY,
+          corregimiento TEXT NOT NULL,
+          vereda TEXT NOT NULL,
+          nombre_completo TEXT NOT NULL,
+          cedula TEXT NOT NULL DEFAULT '',
+          tecnico_asignado_id TEXT,
+          tecnico_asignado_nombre TEXT,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
       `),
       5000,
       'Crear tablas'
@@ -128,6 +151,40 @@ export const initDatabase = async (): Promise<void> => {
       console.log('[DB] Columna caracterizacion_nueva_json agregada a formularios');
     } catch {
       // Ya existe, ignorar
+    }
+
+    // Migración: verificar que beneficiarios tenga columna item
+    // (corrige BDs creadas con schema antiguo de runMigrations)
+    try {
+      const tables = await db.getAllAsync<{ name: string }>(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='beneficiarios'"
+      );
+      if (tables.length > 0) {
+        const columns = await db.getAllAsync<{ name: string }>(
+          'PRAGMA table_info(beneficiarios)'
+        );
+        const hasItem = columns.some((c: any) => c.name === 'item');
+        if (!hasItem) {
+          console.log('[DB] Migrando tabla beneficiarios desde schema antiguo...');
+          await db.execAsync('ALTER TABLE beneficiarios RENAME TO beneficiarios_sociodemograficos');
+          await db.execAsync(`
+            CREATE TABLE IF NOT EXISTS beneficiarios (
+              item INTEGER PRIMARY KEY,
+              corregimiento TEXT NOT NULL,
+              vereda TEXT NOT NULL,
+              nombre_completo TEXT NOT NULL,
+              cedula TEXT NOT NULL DEFAULT '',
+              tecnico_asignado_id TEXT,
+              tecnico_asignado_nombre TEXT,
+              created_at TEXT NOT NULL,
+              updated_at TEXT NOT NULL
+            )
+          `);
+          console.log('[DB] Tabla beneficiarios migrada exitosamente');
+        }
+      }
+    } catch (e) {
+      console.warn('[DB] No se pudo verificar schema de beneficiarios:', e);
     }
 
     // Ejecutar migraciones de nuevas tablas
@@ -310,8 +367,9 @@ const addToSyncQueue = async (
   accion: string,
   formulario: Formulario
 ): Promise<void> => {
-  if (!db) return;
-  await db.runAsync(
+  const database = await ensureDb();
+  if (!database) return;
+  await database.runAsync(
     `INSERT INTO sync_queue (formulario_id, accion, payload_json, created_at)
      VALUES (?, ?, ?, ?)`,
     [formularioId, accion, JSON.stringify(formulario), new Date().toISOString()]
@@ -319,15 +377,17 @@ const addToSyncQueue = async (
 };
 
 export const getSyncQueue = async (): Promise<Record<string, any>[]> => {
-  if (!db) return [];
-  return await db.getAllAsync<Record<string, any>>(
+  const database = await ensureDb();
+  if (!database) return [];
+  return await database.getAllAsync<Record<string, any>>(
     'SELECT * FROM sync_queue ORDER BY created_at ASC'
   );
 };
 
 export const clearSyncQueueItem = async (id: number): Promise<void> => {
-  if (!db) return;
-  await db.runAsync('DELETE FROM sync_queue WHERE id = ?', [id]);
+  const database = await ensureDb();
+  if (!database) return;
+  await database.runAsync('DELETE FROM sync_queue WHERE id = ?', [id]);
 };
 
 // --- Fotos locales ---
@@ -338,8 +398,9 @@ export const saveFotoLocal = async (
   uri: string,
   coordenadas?: Coordenadas
 ): Promise<void> => {
-  if (!db) return;
-  await db.runAsync(
+  const database = await ensureDb();
+  if (!database) return;
+  await database.runAsync(
     `INSERT OR REPLACE INTO fotos_locales (id, formulario_id, uri, latitud, longitud, altitud, timestamp)
      VALUES (?, ?, ?, ?, ?, ?, ?)`,
     [
@@ -358,8 +419,9 @@ export const saveFotoLocal = async (
  * Marcar una foto local como sincronizada
  */
 export const markFotoAsSynced = async (id: string): Promise<void> => {
-  if (!db) return;
-  await db.runAsync(
+  const database = await ensureDb();
+  if (!database) return;
+  await database.runAsync(
     'UPDATE fotos_locales SET sincronizada = 1 WHERE id = ?',
     [id]
   );
@@ -371,9 +433,60 @@ export const markFotoAsSynced = async (id: string): Promise<void> => {
 export const getUnsyncedPhotos = async (
   formularioId: string
 ): Promise<Record<string, any>[]> => {
-  if (!db) return [];
-  return await db.getAllAsync<Record<string, any>>(
+  const database = await ensureDb();
+  if (!database) return [];
+  return await database.getAllAsync<Record<string, any>>(
     'SELECT * FROM fotos_locales WHERE formulario_id = ? AND sincronizada = 0',
+    [formularioId]
+  );
+};
+
+// --- Videos locales ---
+
+export const saveVideoLocal = async (
+  id: string,
+  formularioId: string,
+  uri: string,
+  coordenadas?: Coordenadas
+): Promise<void> => {
+  const database = await ensureDb();
+  if (!database) return;
+  await database.runAsync(
+    `INSERT OR REPLACE INTO videos_locales (id, formulario_id, uri, latitud, longitud, timestamp)
+     VALUES (?, ?, ?, ?, ?, ?)`,
+    [
+      id,
+      formularioId,
+      uri,
+      coordenadas?.latitud || null,
+      coordenadas?.longitud || null,
+      new Date().toISOString(),
+    ]
+  );
+};
+
+/**
+ * Marcar un video local como sincronizado
+ */
+export const markVideoAsSynced = async (id: string): Promise<void> => {
+  const database = await ensureDb();
+  if (!database) return;
+  await database.runAsync(
+    'UPDATE videos_locales SET sincronizada = 1 WHERE id = ?',
+    [id]
+  );
+};
+
+/**
+ * Obtener videos locales pendientes de sincronizar
+ */
+export const getUnsyncedVideos = async (
+  formularioId: string
+): Promise<Record<string, any>[]> => {
+  const database = await ensureDb();
+  if (!database) return [];
+  return await database.getAllAsync<Record<string, any>>(
+    'SELECT * FROM videos_locales WHERE formulario_id = ? AND sincronizada = 0',
     [formularioId]
   );
 };
@@ -385,8 +498,9 @@ export const updateSyncAttempts = async (
   formularioId: string,
   intentos: number
 ): Promise<void> => {
-  if (!db) return;
-  await db.runAsync(
+  const database = await ensureDb();
+  if (!database) return;
+  await database.runAsync(
     'UPDATE sync_queue SET intentos = ? WHERE formulario_id = ?',
     [intentos, formularioId]
   );
@@ -398,8 +512,9 @@ export const updateSyncAttempts = async (
 export const getSyncQueueItemByFormId = async (
   formularioId: string
 ): Promise<Record<string, any> | null> => {
-  if (!db) return null;
-  return await db.getFirstAsync<Record<string, any>>(
+  const database = await ensureDb();
+  if (!database) return null;
+  return await database.getFirstAsync<Record<string, any>>(
     'SELECT * FROM sync_queue WHERE formulario_id = ?',
     [formularioId]
   );
@@ -411,9 +526,22 @@ export const getSyncQueueItemByFormId = async (
 export const clearSyncQueueByFormId = async (
   formularioId: string
 ): Promise<void> => {
-  if (!db) return;
-  await db.runAsync(
+  const database = await ensureDb();
+  if (!database) return;
+  await database.runAsync(
     'DELETE FROM sync_queue WHERE formulario_id = ?',
+    [formularioId]
+  );
+};
+
+/**
+ * Reiniciar el contador de intentos de sync para un formulario (reintento manual)
+ */
+export const resetSyncAttempts = async (formularioId: string): Promise<void> => {
+  const database = await ensureDb();
+  if (!database) return;
+  await database.runAsync(
+    'UPDATE sync_queue SET intentos = 0 WHERE formulario_id = ?',
     [formularioId]
   );
 };
@@ -465,28 +593,6 @@ export const runMigrations = async (): Promise<void> => {
   if (!db) return;
   try {
     await db.execAsync(`
-      -- Beneficiarios con datos sociodemográficos
-      CREATE TABLE IF NOT EXISTS beneficiarios (
-        cedula TEXT PRIMARY KEY,
-        nombre TEXT NOT NULL,
-        telefono TEXT,
-        departamento TEXT,
-        municipio TEXT,
-        vereda TEXT,
-        finca TEXT,
-        genero TEXT,
-        escolaridad TEXT,
-        etnia TEXT,
-        personas_cargo INTEGER DEFAULT 0,
-        hectareas REAL DEFAULT 0,
-        vive_en_finca INTEGER DEFAULT 1,
-        asociado INTEGER DEFAULT 0,
-        asociacion_nombre TEXT,
-        telefono_emergencia TEXT,
-        created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL
-      );
-
       -- Documentos digitales de fincas
       CREATE TABLE IF NOT EXISTS documentos_finca (
         id TEXT PRIMARY KEY,
@@ -566,7 +672,20 @@ export const runMigrations = async (): Promise<void> => {
         cantidad INTEGER NOT NULL,
         timestamp TEXT NOT NULL,
         sincronizado INTEGER DEFAULT 0,
-        icono TEXT DEFAULT '🌱'
+        icono TEXT DEFAULT '🌱',
+        poligono_json TEXT DEFAULT NULL
+      );
+
+      -- Visitas programadas (compartidas entre el equipo vía servidor)
+      CREATE TABLE IF NOT EXISTS visitas_programadas (
+        id TEXT PRIMARY KEY,
+        usuario_id TEXT,
+        titulo TEXT,
+        ubicacion TEXT,
+        fecha TEXT NOT NULL,
+        estado TEXT DEFAULT 'pendiente',
+        timestamp TEXT NOT NULL,
+        sincronizado INTEGER DEFAULT 0
       );
 
       -- Cache local de geometrías de veredas (se descarga una vez)
@@ -599,6 +718,14 @@ export const runMigrations = async (): Promise<void> => {
     try {
       await db.runAsync('ALTER TABLE plantaciones ADD COLUMN sincronizado INTEGER DEFAULT 0');
       console.log('[DB] Columna sincronizado agregada a plantaciones');
+    } catch {
+      // Ya existe, ignorar
+    }
+
+    // Migración: agregar columna poligono_json a plantaciones (BDs antiguas)
+    try {
+      await db.runAsync('ALTER TABLE plantaciones ADD COLUMN poligono_json TEXT DEFAULT NULL');
+      console.log('[DB] Columna poligono_json agregada a plantaciones');
     } catch {
       // Ya existe, ignorar
     }
@@ -697,9 +824,10 @@ export const savePlantacion = async (
   const database = await ensureDb();
   if (!database) return;
   try {
+    const poligonoJson = plantacion.poligono ? JSON.stringify(plantacion.poligono) : null;
     await database.runAsync(
-      `INSERT OR REPLACE INTO plantaciones (id, usuario_id, latitud, longitud, especie, cantidad, timestamp, sincronizado, icono)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT OR REPLACE INTO plantaciones (id, usuario_id, latitud, longitud, especie, cantidad, timestamp, sincronizado, icono, poligono_json)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         plantacion.id,
         plantacion.usuario_id,
@@ -710,6 +838,7 @@ export const savePlantacion = async (
         plantacion.timestamp,
         plantacion.sincronizado ? 1 : 0,
         plantacion.icono || '🌱',
+        poligonoJson,
       ]
     );
   } catch (error) {
@@ -744,6 +873,7 @@ export const getPlantaciones = async (
       timestamp: r.timestamp,
       sincronizado: r.sincronizado === 1,
       icono: r.icono || '🌱',
+      poligono: r.poligono_json ? JSON.parse(r.poligono_json) : undefined,
     }));
   } catch (error) {
     console.error('[DB] Error al obtener plantaciones:', error);
@@ -842,6 +972,106 @@ export const deletePlantacionLocal = async (id: string): Promise<void> => {
     console.log('[DB] Plantación local eliminada:', id);
   } catch (error) {
     console.error('[DB] Error al eliminar plantación local:', error);
+    throw error;
+  }
+};
+
+// === Funciones para Visitas Programadas (compartidas) ===
+
+/**
+ * Guardar una visita programada (crear o actualizar)
+ */
+export const saveVisitaProgramada = async (
+  visita: import('../types').VisitaProgramada
+): Promise<void> => {
+  const database = await ensureDb();
+  if (!database) return;
+  try {
+    await database.runAsync(
+      `INSERT OR REPLACE INTO visitas_programadas (id, usuario_id, titulo, ubicacion, fecha, estado, timestamp, sincronizado)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        visita.id,
+        visita.usuario_id || null,
+        visita.titulo,
+        visita.ubicacion,
+        visita.fecha,
+        visita.estado || 'pendiente',
+        new Date().toISOString(),
+        visita.sincronizado ? 1 : 0,
+      ]
+    );
+  } catch (error) {
+    console.error('[DB] Error al guardar visita programada:', error);
+    throw error;
+  }
+};
+
+/**
+ * Obtener visitas programadas. Si se provee usuarioId, filtra solo las de
+ * ese usuario (técnico); si no, devuelve todas (roles superiores).
+ */
+export const getVisitasProgramadas = async (
+  usuarioId?: string
+): Promise<import('../types').VisitaProgramada[]> => {
+  const database = await ensureDb();
+  if (!database) return [];
+  try {
+    const query = usuarioId
+      ? 'SELECT * FROM visitas_programadas WHERE usuario_id = ? ORDER BY fecha ASC'
+      : 'SELECT * FROM visitas_programadas ORDER BY fecha ASC';
+    const rows = await database.getAllAsync<Record<string, any>>(query, usuarioId ? [usuarioId] : []);
+    return rows.filter(Boolean).map((r: Record<string, any>) => ({
+      id: r.id,
+      usuario_id: r.usuario_id,
+      titulo: r.titulo,
+      ubicacion: r.ubicacion,
+      fecha: r.fecha,
+      estado: r.estado || 'pendiente',
+      sincronizado: r.sincronizado === 1,
+    }));
+  } catch (error) {
+    console.error('[DB] Error al obtener visitas programadas:', error);
+    return [];
+  }
+};
+
+/**
+ * Obtener visitas programadas pendientes de sincronizar
+ */
+export const getVisitasProgramadasNoSincronizadas = async (): Promise<import('../types').VisitaProgramada[]> => {
+  const database = await ensureDb();
+  if (!database) return [];
+  try {
+    const rows = await database.getAllAsync<Record<string, any>>(
+      'SELECT * FROM visitas_programadas WHERE sincronizado = 0 ORDER BY fecha ASC'
+    );
+    return rows.filter(Boolean).map((r: Record<string, any>) => ({
+      id: r.id,
+      usuario_id: r.usuario_id,
+      titulo: r.titulo,
+      ubicacion: r.ubicacion,
+      fecha: r.fecha,
+      estado: r.estado || 'pendiente',
+      sincronizado: false,
+    }));
+  } catch (error) {
+    console.error('[DB] Error al obtener visitas programadas no sincronizadas:', error);
+    return [];
+  }
+};
+
+/**
+ * Eliminar una visita programada local por ID
+ */
+export const deleteVisitaProgramadaLocal = async (id: string): Promise<void> => {
+  const database = await ensureDb();
+  if (!database) return;
+  try {
+    await database.runAsync('DELETE FROM visitas_programadas WHERE id = ?', [id]);
+    console.log('[DB] Visita programada local eliminada:', id);
+  } catch (error) {
+    console.error('[DB] Error al eliminar visita programada local:', error);
     throw error;
   }
 };
