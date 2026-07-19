@@ -33,10 +33,14 @@ import {
   getMedicionesNoSincronizadas,
   getTrackingNoSincronizado,
   getVisitasProgramadasNoSincronizadas,
+  getDocumentosNoSincronizados,
+  getEvidenciasPendientes,
+  marcarDocumentoSincronizado,
   marcarSincronizado,
 } from '../services/database';
 import { uploadPhoto } from '../services/photos.service';
 import { uploadVideo } from '../services/videos.service';
+import { subirDocumento } from '../services/documentos.service';
 import { generarPDF } from '../services/pdf.service';
 import { limpiarEvidenciasAntiguas } from '../services/mediaStorage.service';
 import apiClient from '../services/api';
@@ -46,8 +50,15 @@ import { API_CONFIG } from '../theme';
 // Constantes
 // ==================================================================
 
-/** Máximo de reintentos por formulario antes de abandonar */
-const MAX_RETRIES = 3;
+/**
+ * Máximo de reintentos por formulario antes de abandonar.
+ *
+ * Era 3 con backoff lineal de 5/10/15 s: con señal intermitente los tres
+ * intentos se consumían en menos de un minuto y el formulario quedaba
+ * abandonado hasta que el técnico encontrara el botón de reintento manual.
+ * En campo eso es trabajo de un día en riesgo, así que se amplía el margen.
+ */
+const MAX_RETRIES = 10;
 
 // ==================================================================
 // Estado
@@ -139,12 +150,14 @@ export const SyncProvider: React.FC<{ children: React.ReactNode }> = ({
   // Utilitarios
   // ------------------------------------------------------------------
 
-  /** Tiempo de backoff: intentos × 5 segundos, máximo 60 */
+  /** Backoff exponencial: 5, 10, 20, 40… segundos, con tope de 5 minutos */
   const getBackoffSeconds = useCallback(async (formId: string): Promise<number> => {
     try {
       const item = await getSyncQueueItemByFormId(formId);
       if (!item) return 0;
-      return Math.min((item.intentos || 0) * 5, 60);
+      const intentos = item.intentos || 0;
+      if (intentos === 0) return 0;
+      return Math.min(5 * Math.pow(2, intentos - 1), 300);
     } catch {
       return 0;
     }
@@ -253,6 +266,122 @@ export const SyncProvider: React.FC<{ children: React.ReactNode }> = ({
     },
     [],
   );
+
+  // ------------------------------------------------------------------
+  // Subir evidencias huérfanas
+  // ------------------------------------------------------------------
+  // Barrido de seguridad: sube las fotos y videos que siguen pendientes
+  // aunque su formulario ya esté marcado como sincronizado. Sin esto, una
+  // sola foto que fallara quedaba fuera del ciclo para siempre.
+
+  const subirEvidenciasHuerfanas = useCallback(async (): Promise<void> => {
+    try {
+      const { fotos, videos } = await getEvidenciasPendientes();
+      if (fotos.length === 0 && videos.length === 0) return;
+
+      console.log(
+        `[Sync] Barrido de evidencias: ${fotos.length} foto(s), ${videos.length} video(s)`,
+      );
+
+      for (const foto of fotos) {
+        try {
+          const r = await uploadPhoto(
+            foto.uri,
+            foto.latitud ?? undefined,
+            foto.longitud ?? undefined,
+            foto.altitud ?? undefined,
+            `Formulario ${foto.formulario_id}`,
+            undefined,
+            undefined,
+            undefined,
+            foto.timestamp,
+            undefined,
+            foto.formulario_id,
+          );
+          if (r) {
+            await markFotoAsSynced(foto.id, { archivoId: r.id, ruta: r.ruta });
+          }
+        } catch {
+          // se reintenta en el próximo ciclo
+        }
+      }
+
+      for (const video of videos) {
+        try {
+          const r = await uploadVideo(
+            video.uri,
+            video.latitud ?? undefined,
+            video.longitud ?? undefined,
+            `Formulario ${video.formulario_id}`,
+            undefined,
+            undefined,
+            undefined,
+            video.formulario_id,
+          );
+          if (r) {
+            await markVideoAsSynced(video.id, { archivoId: r.id, ruta: r.ruta });
+          }
+        } catch {
+          // se reintenta en el próximo ciclo
+        }
+      }
+    } catch (err) {
+      console.warn('[Sync] Error en el barrido de evidencias:', err);
+    }
+  }, []);
+
+  // ------------------------------------------------------------------
+  // Subir documentos de finca pendientes
+  // ------------------------------------------------------------------
+  // Antes NO existía: los documentos capturados sin señal (el caso normal en
+  // campo) se quedaban en SQLite para siempre mientras la app afirmaba
+  // "guardado (local + MinIO)". Títulos de predio y cédulas escaneadas que
+  // nunca salían del teléfono.
+
+  const sincronizarDocumentos = useCallback(async (): Promise<string[]> => {
+    const fallidos: string[] = [];
+    try {
+      const pendientes = await getDocumentosNoSincronizados();
+      if (pendientes.length === 0) return fallidos;
+
+      console.log(`[Sync] ${pendientes.length} documento(s) de finca pendientes`);
+
+      for (const doc of pendientes) {
+        try {
+          const mimeType =
+            doc.tipo === 'pdf'
+              ? 'application/pdf'
+              : doc.tipo === 'foto'
+                ? 'image/jpeg'
+                : 'application/octet-stream';
+
+          const resultado = await subirDocumento(
+            doc.uri,
+            doc.descripcion || undefined,
+            doc.tipo,
+            doc.nombre,
+            doc.beneficiario_cedula || undefined,
+            undefined,
+            undefined,
+            mimeType
+          );
+
+          if (resultado) {
+            await marcarDocumentoSincronizado(doc.id);
+            console.log('[Sync] Documento subido:', doc.nombre);
+          } else {
+            fallidos.push(doc.id);
+          }
+        } catch (err) {
+          console.warn('[Sync] Error subiendo documento:', doc.id, err);
+          fallidos.push(doc.id);
+        }
+      }
+    } catch (err) {
+      console.warn('[Sync] Error obteniendo documentos pendientes:', err);
+    }
+    return fallidos;
+  }, []);
 
   // ------------------------------------------------------------------
   // Guardar formulario completo en PostGIS
@@ -524,12 +653,13 @@ export const SyncProvider: React.FC<{ children: React.ReactNode }> = ({
     const failedIds: string[] = [];
 
     try {
-      const [pendingForms, pendingPlantaciones, pendingMediciones, pendingTracking, pendingVisitas] = await Promise.all([
+      const [pendingForms, pendingPlantaciones, pendingMediciones, pendingTracking, pendingVisitas, pendingDocumentos] = await Promise.all([
         getPendingSyncForms(),
         getPlantacionesNoSincronizadas(),
         getMedicionesNoSincronizadas(),
         getTrackingNoSincronizado(),
         getVisitasProgramadasNoSincronizadas(),
+        getDocumentosNoSincronizados(),
       ]);
 
       if (
@@ -537,7 +667,8 @@ export const SyncProvider: React.FC<{ children: React.ReactNode }> = ({
         pendingPlantaciones.length === 0 &&
         pendingMediciones.length === 0 &&
         pendingTracking.length === 0 &&
-        pendingVisitas.length === 0
+        pendingVisitas.length === 0 &&
+        pendingDocumentos.length === 0
       ) {
         dispatch({
           type: 'SYNC_SUCCESS',
@@ -565,6 +696,10 @@ export const SyncProvider: React.FC<{ children: React.ReactNode }> = ({
       const visitasFallidas = await sincronizarVisitasProgramadas();
       failedIds.push(...visitasFallidas.map(id => `visita-${id}`));
 
+      // 3c. Documentos de la finca (títulos de predio, cédulas escaneadas)
+      const documentosFallidos = await sincronizarDocumentos();
+      failedIds.push(...documentosFallidos.map(id => `doc-${id}`));
+
       // 4. Sincronizar formularios (uno por uno con backoff)
       for (const form of pendingForms) {
         // Verificar reintentos
@@ -579,30 +714,48 @@ export const SyncProvider: React.FC<{ children: React.ReactNode }> = ({
           continue;
         }
 
-        // Backoff: esperar si ha fallado antes
+        // Antes había aquí un `await setTimeout(intentos * 5s)` DENTRO del
+        // bucle: con 10 formularios en reintento 2 el ciclo se bloqueaba 100
+        // segundos y los últimos de la cola no llegaban a intentarse si la
+        // ventana de señal era corta. La espera entre reintentos la marca
+        // ahora el tiempo entre ciclos de sync, no una pausa bloqueante.
         if (intentosActuales > 0) {
-          const espera = Math.min(intentosActuales * 5, 60);
           console.log(
-            `[Sync] Reintento ${intentosActuales}/${MAX_RETRIES} para ${form.id}. Esperando ${espera}s...`,
+            `[Sync] Reintento ${intentosActuales}/${MAX_RETRIES} para ${form.id}`,
           );
-          await new Promise((resolve) => setTimeout(resolve, espera * 1000));
         }
 
         const { success, photosOk } = await sincronizarFormulario(form);
 
-        if (success && photosOk) {
+        if (success) {
+          // El formulario YA está en PostGIS. Se marca como sincronizado
+          // aunque falte alguna foto: antes se exigía `success && photosOk`,
+          // así que una sola foto fallida dejaba el formulario "pendiente"
+          // para siempre y cada reintento lo reenviaba entero al servidor.
           await markAsSynced(form.id);
           await clearSyncQueueByFormId(form.id);
-          console.log('[Sync] Formulario sincronizado OK:', form.id);
+          if (photosOk) {
+            console.log('[Sync] Formulario sincronizado OK:', form.id);
+          } else {
+            // Las fotos siguen en su propia cola (`fotos_locales`) y se
+            // reintentan solas en el próximo ciclo.
+            console.warn(
+              `[Sync] Formulario ${form.id} guardado; quedan evidencias por subir`,
+            );
+          }
         } else {
           const nuevosIntentos = intentosActuales + 1;
           await updateSyncAttempts(form.id, nuevosIntentos);
           failedIds.push(form.id);
           console.warn(
-            `[Sync] Formulario ${form.id} ${!success ? 'falló' : 'sincronizó pero con fotos pendientes'}. Intento ${nuevosIntentos}/${MAX_RETRIES}`,
+            `[Sync] Formulario ${form.id} falló. Intento ${nuevosIntentos}/${MAX_RETRIES}`,
           );
         }
       }
+
+      // 5. Barrido final de evidencias pendientes (de formularios ya
+      //    sincronizados cuyas fotos no llegaron a subir en su momento)
+      await subirEvidenciasHuerfanas();
 
       // Resultado final
       if (failedIds.length === 0) {
@@ -639,7 +792,7 @@ export const SyncProvider: React.FC<{ children: React.ReactNode }> = ({
       isSyncing.current = false;
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [checkPending, sincronizarFormulario]);
+  }, [checkPending, sincronizarFormulario, sincronizarDocumentos, subirEvidenciasHuerfanas]);
 
   // ------------------------------------------------------------------
   // reintentarFormulario — reintento manual desde la UI

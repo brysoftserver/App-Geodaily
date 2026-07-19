@@ -236,7 +236,25 @@ router.post('/guardar-en-formulario', authenticateToken, async (req, res) => {
     );
     const firmaId = archivoResult?.id || `firma-${timestamp}`;
 
-    // Actualizar el formulario con la ruta de la firma
+    // Actualizar el formulario con la ruta de la firma.
+    // Se comprueba la PROPIEDAD: sin esto, cualquier usuario autenticado que
+    // conociera un formulario_id podía sobrescribir la firma de un formulario
+    // de otro técnico. Los roles de supervisión sí pueden corregir.
+    const ROLES_SUPERVISION = ['supervisor', 'interventor', 'gerente', 'admin'];
+    const propietario = await db.queryOne(
+      'SELECT usuario_id FROM formularios WHERE id = $1',
+      [formulario_id]
+    );
+    if (!propietario) {
+      return res.status(404).json({ estado: 'error', mensaje: 'Formulario no encontrado' });
+    }
+    if (propietario.usuario_id !== req.user.id && !ROLES_SUPERVISION.includes(req.user.rol)) {
+      return res.status(403).json({
+        estado: 'error',
+        mensaje: 'No autorizado para modificar este formulario',
+      });
+    }
+
     const campo = tipo === 'beneficiario' ? 'firma_beneficiario' : 'firma_tecnico';
     await db.query(
       `UPDATE formularios SET ${campo} = $1, updated_at = NOW() WHERE id = $2`,
@@ -269,7 +287,11 @@ router.get('/:id', authenticateToken, async (req, res) => {
     if (!firma) {
       return res.status(404).json({ estado: 'error', mensaje: 'Firma no encontrada' });
     }
-    if (req.user.rol !== 'admin' && firma.usuario_id !== req.user.id) {
+    // Roles de supervisión ven la evidencia de cualquier técnico. Antes solo
+    // 'admin' era excepción, así que un supervisor listaba los archivos y
+    // recibía 403 al abrir cualquiera de ellos.
+    const ROLES_SUPERVISION = ['supervisor', 'interventor', 'gerente', 'admin'];
+    if (!ROLES_SUPERVISION.includes(req.user.rol) && firma.usuario_id !== req.user.id) {
       return res.status(403).json({ estado: 'error', mensaje: 'No autorizado' });
     }
     res.json({ estado: 'ok', firma });

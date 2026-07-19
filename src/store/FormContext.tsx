@@ -33,6 +33,7 @@ type FormAction =
   | { type: 'SET_CARACTERIZACION_NUEVA'; data: DatosCaracterizacionNueva }
   | { type: 'SET_COORDENADAS'; data: Coordenadas }
   | { type: 'ADD_FOTO'; foto: FotoGeotag }
+  | { type: 'REMOVE_FOTO'; fotoId: string }
   | { type: 'SET_FIRMA_BENEFICIARIO'; firma: string }
   | { type: 'SET_FIRMA_TECNICO'; firma: string }
   | { type: 'SET_HUELLA'; value: boolean }
@@ -116,6 +117,20 @@ function formReducer(state: FormState, action: FormAction): FormState {
         },
       };
 
+    // Sin esta acción, "eliminar foto" solo tocaba el estado local de la
+    // pantalla: la evidencia seguía en el formulario, se subía a MinIO, entraba
+    // en el PDF y reaparecía al reenfocar la cámara.
+    case 'REMOVE_FOTO':
+      return {
+        ...state,
+        formularioActual: {
+          ...state.formularioActual,
+          fotos: (state.formularioActual?.fotos || []).filter(
+            (f) => f.id !== action.fotoId
+          ),
+        },
+      };
+
     case 'SET_FIRMA_BENEFICIARIO':
       return {
         ...state,
@@ -174,6 +189,7 @@ interface FormContextType extends FormState {
   setCaracterizacionNueva: (data: DatosCaracterizacionNueva) => void;
   setCoordenadas: (data: Coordenadas) => void;
   addFoto: (foto: FotoGeotag) => void;
+  removeFotoDelFormulario: (fotoId: string) => void;
   setFirmaBeneficiario: (firma: string) => void;
   setFirmaTecnico: (firma: string) => void;
   setHuella: (value: boolean) => void;
@@ -218,6 +234,10 @@ export const FormProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const addFoto = useCallback((foto: FotoGeotag) => {
     dispatch({ type: 'ADD_FOTO', foto });
+  }, []);
+
+  const removeFotoDelFormulario = useCallback((fotoId: string) => {
+    dispatch({ type: 'REMOVE_FOTO', fotoId });
   }, []);
 
   const setFirmaBeneficiario = useCallback((firma: string) => {
@@ -290,6 +310,7 @@ export const FormProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setCaracterizacionNueva,
     setCoordenadas,
     addFoto,
+    removeFotoDelFormulario,
     setFirmaBeneficiario,
     setFirmaTecnico,
     setHuella,
@@ -300,7 +321,7 @@ export const FormProvider: React.FC<{ children: React.ReactNode }> = ({ children
     state,
     iniciarFormulario, setTecnico, setBeneficiario, setActividad,
     setSociodemografico, setCaracterizacionNueva, setCoordenadas,
-    addFoto, setFirmaBeneficiario, setFirmaTecnico, setHuella,
+    addFoto, removeFotoDelFormulario, setFirmaBeneficiario, setFirmaTecnico, setHuella,
     finalizarFormulario, cancelarFormulario, cargarFormularios,
   ]);
 

@@ -33,6 +33,7 @@ import {
   saveDocumentoLocal,
   deleteDocumentoLocal,
   vincularDocumentosHuerfanos,
+  marcarDocumentoSincronizado,
 } from '../../services/database';
 import apiClient, { isOfflineError } from '../../services/api';
 import { persistirEvidencia } from '../../services/mediaStorage.service';
@@ -113,27 +114,39 @@ const DocumentosScreen: React.FC<DocumentosScreenProps> = ({ navigation, route }
   ) => {
     setSubiendoDoc(true);
 
-    // 1. Subir a MinIO si hay buffer
+    // 1. Guardar SIEMPRE en local primero. Es la copia que garantiza que el
+    //    documento no se pierde; la subida es un extra que puede fallar.
+    try {
+      await saveDocumentoLocal(nuevoDoc);
+      setDocumentos(prev => [nuevoDoc, ...prev]);
+    } catch (e) {
+      console.error('[Documentos] Error al guardar en SQLite:', e);
+      Alert.alert('Error', 'No se pudo guardar el documento en la base de datos local.');
+      setSubiendoDoc(false);
+      return;
+    }
+
+    // 2. Intentar subir a MinIO. Si falla, el documento queda en la cola
+    //    (sincronizado = 0) y SyncContext lo reintenta al recuperar señal.
+    let subido = false;
     if (bufferParaSubida) {
       setSubiendoDocAMinIO(true);
-      const minioOk = await subirDocAMinIO(bufferParaSubida, nuevoDoc.descripcion);
-      if (!minioOk) {
-        Alert.alert('Advertencia', 'El documento se guardó localmente pero no se pudo subir a MinIO. Se sincronizará después.');
+      subido = await subirDocAMinIO(bufferParaSubida, nuevoDoc.descripcion);
+      if (subido) {
+        await marcarDocumentoSincronizado(nuevoDoc.id);
       }
       setSubiendoDocAMinIO(false);
     }
 
-    // 2. Guardar en SQLite local
-    try {
-      await saveDocumentoLocal(nuevoDoc);
-      setDocumentos(prev => [nuevoDoc, ...prev]);
-      Alert.alert('✅ Documento guardado', `${nuevoDoc.nombre} se ha guardado correctamente (local + MinIO).`);
-    } catch (e) {
-      console.error('[Documentos] Error al guardar en SQLite:', e);
-      Alert.alert('Error', 'No se pudo guardar el documento en la base de datos local.');
-    } finally {
-      setSubiendoDoc(false);
-    }
+    // El mensaje ahora dice la verdad: antes afirmaba "local + MinIO" incluso
+    // sin conexión, y el documento no salía nunca del teléfono.
+    Alert.alert(
+      '✅ Documento guardado',
+      subido
+        ? `${nuevoDoc.nombre} se guardó en el dispositivo y en el servidor.`
+        : `${nuevoDoc.nombre} se guardó en el dispositivo. Se subirá al servidor automáticamente cuando haya conexión.`
+    );
+    setSubiendoDoc(false);
   };
 
   // ─── Subir un documento a MinIO (vía /api/documentos/subir) ─────
@@ -172,8 +185,11 @@ const DocumentosScreen: React.FC<DocumentosScreenProps> = ({ navigation, route }
       return true;
     } catch (error) {
       if (isOfflineError(error)) {
-        console.warn('[Documentos] Offline — documento quedó pendiente');
-        return true; // Se sincronizará después
+        // Devuelve false a propósito: así el documento NO se marca como
+        // sincronizado y queda en la cola para reintentar. Antes devolvía
+        // true y el documento no se subía jamás.
+        console.warn('[Documentos] Offline — documento queda en la cola de sincronización');
+        return false;
       }
       console.error('[Documentos] Error al subir a MinIO:', error);
       return false;
@@ -414,10 +430,16 @@ const DocumentosScreen: React.FC<DocumentosScreenProps> = ({ navigation, route }
                     })}
                   </Text>
                 </View>
-                <Text style={styles.docSynced}>✅</Text>
+                <Text style={styles.docSynced}>
+                  {doc.sincronizado ? '✅' : '⏳'}
+                </Text>
               </TouchableOpacity>
             ))}
-            <Text style={styles.docsSavedText}>✓ Todos los documentos guardados (local + MinIO)</Text>
+            <Text style={styles.docsSavedText}>
+              {documentos.every((d) => d.sincronizado)
+                ? '✓ Todos los documentos están en el dispositivo y en el servidor'
+                : `✓ Guardados en el dispositivo · ⏳ ${documentos.filter((d) => !d.sincronizado).length} pendiente(s) de subir`}
+            </Text>
             <Text style={styles.docHint}>👆 Mantén presionado para eliminar un documento</Text>
           </View>
         )}

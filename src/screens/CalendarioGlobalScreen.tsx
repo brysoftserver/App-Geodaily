@@ -256,17 +256,22 @@ const CalendarioGlobalScreen: React.FC<CalendarioGlobalScreenProps> = ({ navigat
     const state = navigation.getState();
     const currentRoute = state?.routes?.[state.index];
     const routeName = currentRoute?.name ?? '';
-    let detailScreen = 'SupervisionFormularioDetail';
-
-    if (routeName.startsWith('Interventor')) {
-      detailScreen = 'InterventorFormularioDetail';
-    } else if (routeName.startsWith('Terreno')) {
-      detailScreen = 'TerrenoFormularioDetail';
-    } else if (routeName.startsWith('Gerente')) {
-      detailScreen = 'GerenteFormularioDetail';
-    } else if (routeName.startsWith('Admin')) {
-      detailScreen = 'AdminFormularioDetail';
-    }
+    // Nombres REALES registrados en cada navigator. Antes se derivaban del
+    // prefijo de la ruta y salían nombres inexistentes:
+    //   TerrenoCalendario → 'TerrenoFormularioDetail'  (no existe)
+    //   AdminCalendario   → 'AdminFormularioDetail'    (no existe)
+    // El gerente funcionaba solo por casualidad (su ruta es 'CronogramaGerente',
+    // no empieza por 'Gerente', así que caía al valor por defecto).
+    // Resultado: tocar una visita del calendario no hacía nada para técnico
+    // ni para admin.
+    const DETALLE_POR_NAVIGATOR: Record<string, string> = {
+      TerrenoCalendario: 'FormularioDetail',
+      SupervisionCalendario: 'SupervisionFormularioDetail',
+      InterventorCalendario: 'InterventorFormularioDetail',
+      CronogramaGerente: 'SupervisionFormularioDetail',
+      AdminCalendario: 'SupervisionFormularioDetail',
+    };
+    const detailScreen = DETALLE_POR_NAVIGATOR[routeName] ?? 'SupervisionFormularioDetail';
 
     // Navigate with type-safe approach: cast navigation to any for
     // cross-navigator navigation (different param lists per stack)

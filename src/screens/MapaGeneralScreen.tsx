@@ -26,7 +26,8 @@ import MapItemList from '../components/mapa/MapItemList';
 import { useAuth } from '../store/AuthContext';
 import { useGPS } from '../store/GPSContext';
 import { useSyncMapData } from '../hooks/useSyncMapData';
-import { COLORS, FONTS, SPACING, BORDER_RADIUS, API_CONFIG } from '../theme';
+import { COLORS, FONTS, SPACING, BORDER_RADIUS } from '../theme';
+import apiClient from '../services/api';
 import { Coordenadas } from '../types';
 import { getIconoEspecie } from '../utils/constants';
 import {
@@ -156,11 +157,15 @@ const MapaGeneralScreen: React.FC<{ navigation?: Record<string, any> }> = ({ nav
         }
       }
 
-      // 2. Descargar del servidor
-      const res = await fetch(`${API_CONFIG.BASE_URL}/api/maps/veredas`);
-      if (res.ok) {
-        const data = await res.json();
-        if (data.veredas && data.veredas.length > 0) {
+      // 2. Descargar del servidor.
+      //    Antes usaba `fetch` crudo SIN cabecera Authorization: el endpoint
+      //    exige token, devolvía 401, y como solo se miraba `res.ok` fallaba
+      //    en silencio — el mapa se quedaba sin la capa de veredas y ni
+      //    siquiera caía al respaldo del caché.
+      const resp = await apiClient.get('/api/maps/veredas', { timeout: 20000 });
+      {
+        const data = resp.data;
+        if (data?.veredas && data.veredas.length > 0) {
           const features = data.veredas.map((v: Record<string, any>) => ({
             ...v,
             geometry: v.geometry || { type: 'MultiPolygon', coordinates: [] },

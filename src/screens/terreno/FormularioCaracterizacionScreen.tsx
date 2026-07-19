@@ -14,6 +14,7 @@ import {
   Alert,
   Platform,
   ActivityIndicator,
+  AppState,
   Switch,
 } from 'react-native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
@@ -65,11 +66,9 @@ import {
   MANEJO_RESIDUOS_OPTS,
 } from '../../utils/constants';
 import { guardarBorrador, getBorrador, FormDraft } from '../../store/FormDraftStore';
-import { subirFirma } from '../../services/firmas.service';
-import { uploadPhoto } from '../../services/photos.service';
-import { uploadVideo } from '../../services/videos.service';
 import {
   saveFormularioLocal,
+  getFormularioById,
   getDb,
   saveFotoLocal,
   saveVideoLocal,
@@ -462,6 +461,87 @@ const EncuestaSocialAgroambientalScreen: React.FC<Props> = ({ navigation, route 
     }));
   }, []);
 
+  // ─── Autoguardado silencioso ─────────────────────────────
+  // Sin esto, un crash o que Android mate la app a mitad de la encuesta perdía
+  // TODO lo no guardado a mano: 20-40 minutos de trabajo con el beneficiario
+  // delante. Guarda solo el borrador (sin subidas ni alertas) cada 60 s y al
+  // pasar la app a segundo plano.
+  const autoguardarRef = useRef<(() => Promise<void>) | null>(null);
+
+  useEffect(() => {
+    autoguardarRef.current = async () => {
+      try {
+        const draftIdActual = formIdRef.current || formularioActual?.id;
+        if (!draftIdActual) return;
+        // Nada que guardar todavía: evita crear borradores vacíos
+        if (!data.productor_nombre?.trim() && !data.documento?.trim()) return;
+
+        const currentForm = formularioRef.current || formularioActual;
+        const draft: FormDraft = {
+          id: draftIdActual,
+          tipo: 'caracterizacion',
+          step: 0,
+          tecnico: {
+            usuario_id: user?.id || '',
+            nombre: data.tecnico_responsable,
+            cedula: user?.cedula || '',
+            telefono: data.telefono,
+            email: user?.email || '',
+          },
+          beneficiario: {
+            nombre: data.productor_nombre,
+            cedula: data.documento,
+            telefono: data.telefono,
+            departamento: 'Caquetá',
+            municipio: data.municipio,
+            vereda: data.vereda,
+            finca: data.caracterizacion_finca.nombre_finca || '',
+          },
+          actividad: {
+            descripcion: 'Encuesta Social AgroAmbiental',
+            observaciones: data.recomendaciones.recomendaciones_tecnicas,
+            recomendaciones: data.recomendaciones.recomendaciones_ambientales,
+          },
+          caracterizacion_nueva: data as any,
+          coordenadas: coordenadas || undefined,
+          fotos: currentForm?.fotos || [],
+          firma_beneficiario: currentForm?.firma_beneficiario || '',
+          firma_tecnico: currentForm?.firma_tecnico || '',
+          huella_beneficiario: currentForm?.huella_beneficiario || false,
+          selectedDepartamento: 'Caquetá',
+          selectedActividad: '',
+          otraActividadText: '',
+          descripcionDetallada: '',
+          updated_at: new Date().toISOString(),
+        };
+        await guardarBorrador(draft);
+        console.log('[Carac] Autoguardado:', draftIdActual);
+      } catch (e) {
+        console.warn('[Carac] Autoguardado falló:', e);
+      }
+    };
+  });
+
+  useEffect(() => {
+    const intervalo = setInterval(() => {
+      autoguardarRef.current?.();
+    }, 60000);
+
+    const sub = AppState.addEventListener('change', (estado) => {
+      // 'inactive' cubre iOS al deslizar hacia el multitarea
+      if (estado === 'background' || estado === 'inactive') {
+        autoguardarRef.current?.();
+      }
+    });
+
+    return () => {
+      clearInterval(intervalo);
+      sub.remove();
+      // Último guardado al salir de la pantalla
+      autoguardarRef.current?.();
+    };
+  }, []);
+
   // ─── Guardar borrador ────────────────────────────────────
   const guardarBorradorHandler = useCallback(async () => {
     setIsSaving(true);
@@ -530,17 +610,18 @@ const EncuestaSocialAgroambientalScreen: React.FC<Props> = ({ navigation, route 
         }
       } catch { /* ignorar */ }
 
+      // Encolar evidencias para sincronización.
+      // NO se suben aquí: antes se llamaba a uploadPhoto/uploadVideo/subirFirma
+      // directamente sin marcar la evidencia como sincronizada, así que
+      // SyncContext la volvía a subir — y cada pulsación de "Guardar borrador"
+      // repetía la subida. Ya hay duplicados reales en MinIO por esto.
+      // Ahora la cola es el ÚNICO camino de subida.
       try {
-        if (firmaBenefActual) subirFirma('beneficiario', firmaBenefActual, data.documento || undefined, data.productor_nombre || undefined, 'caracterizacion').catch(() => {});
-        if (firmaTecActual) subirFirma('tecnico', firmaTecActual, data.documento || undefined, data.productor_nombre || undefined, 'caracterizacion').catch(() => {});
         for (const foto of fotosActuales) {
-          // Videos → videos_locales + /api/videos (carpeta videos/, .mp4)
           if (foto.tipo === 'video') {
             saveVideoLocal(foto.id, draftIdActual, foto.uri, foto.coordenadas).catch(() => {});
-            uploadVideo(foto.uri, foto.coordenadas?.latitud, foto.coordenadas?.longitud, `Encuesta ${draftIdActual}`, data.documento || undefined, data.productor_nombre || undefined, 'caracterizacion', draftIdActual).catch(() => {});
           } else {
             saveFotoLocal(foto.id, draftIdActual, foto.uri, foto.coordenadas).catch(() => {});
-            uploadPhoto(foto.uri, foto.coordenadas?.latitud, foto.coordenadas?.longitud, foto.coordenadas?.altitud, `Encuesta ${draftIdActual}`, undefined, data.documento || undefined, data.productor_nombre || undefined, foto.timestamp, 'caracterizacion', draftIdActual).catch(() => {});
           }
         }
       } catch { /* ignorar */ }
@@ -585,20 +666,18 @@ const EncuestaSocialAgroambientalScreen: React.FC<Props> = ({ navigation, route 
     try {
       const currentForm = formularioRef.current || formularioActual;
       const fotosParaUpload = currentForm?.fotos || [];
-      const firmaBenefParaUpload = currentForm?.firma_beneficiario || '';
-      const firmaTecParaUpload = currentForm?.firma_tecnico || '';
       const formId = formIdRef.current || 'encuesta-' + Date.now();
 
+      // Encolar evidencias. Las firmas viajan en base64 dentro del propio
+      // formulario (el backend las sube a MinIO en /guardar), y las fotos y
+      // videos los sube SyncContext desde la cola marcándolos como
+      // sincronizados. Subirlos también aquí generaba duplicados.
       try {
-        if (firmaBenefParaUpload) subirFirma('beneficiario', firmaBenefParaUpload, data.documento || undefined, data.productor_nombre || undefined, 'caracterizacion').catch(() => {});
-        if (firmaTecParaUpload) subirFirma('tecnico', firmaTecParaUpload, data.documento || undefined, data.productor_nombre || undefined, 'caracterizacion').catch(() => {});
         for (const foto of fotosParaUpload) {
           if (foto.tipo === 'video') {
             saveVideoLocal(foto.id, formId, foto.uri, foto.coordenadas).catch(() => {});
-            uploadVideo(foto.uri, foto.coordenadas?.latitud, foto.coordenadas?.longitud, `Encuesta ${formId}`, data.documento || undefined, data.productor_nombre || undefined, 'caracterizacion', formId).catch(() => {});
           } else {
             saveFotoLocal(foto.id, formId, foto.uri, foto.coordenadas).catch(() => {});
-            uploadPhoto(foto.uri, foto.coordenadas?.latitud, foto.coordenadas?.longitud, foto.coordenadas?.altitud, `Encuesta ${formId}`, undefined, data.documento || undefined, data.productor_nombre || undefined, foto.timestamp, 'caracterizacion', formId).catch(() => {});
           }
         }
       } catch { /* ignorar */ }
@@ -714,7 +793,27 @@ const EncuestaSocialAgroambientalScreen: React.FC<Props> = ({ navigation, route 
       form.pdf_url = pdfUrl || form.pdf_url;
       (form as any).caracterizacion_nueva = data;
 
-      try { await saveFormularioLocal(form); } catch { /* ignorar */ }
+      // El guardado local es el punto de no retorno: si falla, se ABORTA y se
+      // conserva el borrador. Antes el error se tragaba y el borrador se
+      // borraba igual, así que la encuesta completa desaparecía en silencio.
+      try {
+        await saveFormularioLocal(form);
+        // Verificar que la fila existe de verdad antes de tocar el borrador
+        const verificado = await getFormularioById(form.id);
+        if (!verificado) {
+          throw new Error('El formulario no aparece en la base local tras guardarlo');
+        }
+      } catch (errGuardado) {
+        console.error('[Carac] Error guardando el formulario:', errGuardado);
+        setIsSubmitting(false);
+        Alert.alert(
+          'No se pudo guardar',
+          'No fue posible guardar el formulario en este dispositivo. ' +
+            'Tu borrador sigue intacto: ciérralo, vuelve a abrirlo e inténtalo de nuevo. ' +
+            'Si persiste, libera espacio en el teléfono.'
+        );
+        return;
+      }
 
       // 5. Vincular documentos capturados con ID temporal al formulario real
       //    y, sobre todo, a la cédula del beneficiario para que queden como
@@ -742,14 +841,26 @@ const EncuestaSocialAgroambientalScreen: React.FC<Props> = ({ navigation, route 
         console.warn('[Carac] No se pudieron actualizar documentos:', e);
       }
 
-      // 6. Eliminar borrador
-      if (draftId) {
-        try {
-          const { eliminarBorrador } = await import('../../store/FormDraftStore');
-          await eliminarBorrador(draftId);
-        } catch {
-          // Ignorar error al eliminar borrador
+      // 6. Eliminar el borrador.
+      //    Se borran TODOS los ids con los que pudo haberse guardado, no solo
+      //    el parámetro de ruta: al abrir un formulario nuevo `draftId` es
+      //    undefined, así que el borrador creado con "Guardar borrador" nunca
+      //    se eliminaba. Quedaba para siempre en "Formularios Incompletos" y,
+      //    si el técnico lo reabría y completaba, generaba un DUPLICADO.
+      try {
+        const { eliminarBorrador } = await import('../../store/FormDraftStore');
+        const idsBorrador = Array.from(
+          new Set(
+            [draftId, formIdRef.current, formularioActual?.id, form.id].filter(
+              (id): id is string => !!id
+            )
+          )
+        );
+        for (const id of idsBorrador) {
+          await eliminarBorrador(id);
         }
+      } catch {
+        // Ignorar error al eliminar borrador
       }
 
       // 7. Sincronizar con el servidor (best-effort). Si no hay conexión el

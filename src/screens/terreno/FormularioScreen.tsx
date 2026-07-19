@@ -28,7 +28,14 @@ import {
 } from '../../utils/constants';
 import { guardarBorrador, getBorrador, FormDraft } from '../../store/FormDraftStore';
 import { TipoFormulario, DatosTecnico, DatosBeneficiario, DatosSociodemograficos, ActividadRealizada } from '../../types';
-import { saveFormularioLocal, getDb, saveFotoLocal, saveVideoLocal } from '../../services/database';
+import {
+  saveFormularioLocal,
+  getFormularioById,
+  getDb,
+  saveFotoLocal,
+  saveVideoLocal,
+  vincularDocumentosHuerfanos,
+} from '../../services/database';
 import { buscarBeneficiarioPorCedula } from '../../services/beneficiarios.service';
 import { useSync } from '../../store/SyncContext';
 import { subirFirma } from '../../services/firmas.service';
@@ -508,34 +515,66 @@ const FormularioScreen: React.FC<FormularioScreenProps> = ({ navigation, route }
       form.pdf_url = pdfUrl || form.pdf_url;
 
       // ---- PASO 4: Persistir a SQLite ----
+      // Punto de no retorno: si falla se ABORTA y se conserva el borrador.
       try {
         await saveFormularioLocal(form);
+        const verificado = await getFormularioById(form.id);
+        if (!verificado) {
+          throw new Error('El formulario no aparece en la base local tras guardarlo');
+        }
         console.log('[Formulario] Formulario persistido en SQLite:', form.id);
       } catch (dbError) {
         console.error('[Formulario] Error al persistir en SQLite:', dbError);
+        setIsSubmitting(false);
+        Alert.alert(
+          'No se pudo guardar',
+          'No fue posible guardar el formulario en este dispositivo. ' +
+            'Tu borrador sigue intacto: ciérralo, vuelve a abrirlo e inténtalo de nuevo. ' +
+            'Si persiste, libera espacio en el teléfono.'
+        );
+        return;
       }
 
       // ---- PASO 5: Re-asignar documentos vinculados con ID temporal ----
+      // Antes la condición hacía `SET formulario_id = X WHERE formulario_id = X`
+      // (un no-op) cuando el id empezaba por 'draft-', y los documentos
+      // capturados como 'sin-formulario' quedaban huérfanos para siempre.
+      // Además nunca se rellenaba `beneficiario_cedula`, así que no aparecían
+      // en la ficha del beneficiario (la consulta canónica es por cédula).
       try {
+        const cedula = beneficiario.cedula?.trim() || undefined;
         const db = getDb();
         if (db) {
-          await db.runAsync(
-            "UPDATE documentos_finca SET formulario_id = ? WHERE formulario_id = ?",
-            [form.id, form.id.startsWith('draft-') ? form.id : 'sin-formulario']
+          const idsTemporales = [form.id, 'sin-formulario'].filter(
+            (id) => id !== form.id || form.id.startsWith('draft-')
           );
+          for (const idTemp of idsTemporales) {
+            if (idTemp === form.id) continue;
+            await db.runAsync(
+              "UPDATE documentos_finca SET formulario_id = ?, beneficiario_cedula = COALESCE(NULLIF(beneficiario_cedula,''), ?) WHERE formulario_id = ?",
+              [form.id, cedula || null, idTemp]
+            );
+          }
         }
+        await vincularDocumentosHuerfanos(form.id, cedula);
       } catch (e) {
         console.warn('[Formulario] No se pudieron re-asignar documentos:', e);
       }
 
-      // ---- PASO 6: Eliminar borrador si existe ----
-      if (draftId) {
-        try {
-          const { eliminarBorrador } = await import('../../store/FormDraftStore');
-          await eliminarBorrador(draftId);
-        } catch {
-          // Ignorar error al eliminar borrador
+      // ---- PASO 6: Eliminar borrador ----
+      // Se borran todos los ids posibles: con `draftId` solo (el parámetro de
+      // ruta) los borradores creados al guardar progreso quedaban huérfanos y
+      // reaparecían en "Formularios Incompletos", generando duplicados.
+      try {
+        const { eliminarBorrador } = await import('../../store/FormDraftStore');
+        const idsBorrador = Array.from(
+          new Set([draftId, formularioActual?.id, form.id].filter((id): id is string => !!id))
+        );
+        for (const id of idsBorrador) {
+          await eliminarBorrador(id);
         }
+      } catch {
+        // Ignorar error al eliminar borrador
       }
 
       setIsSubmitting(false);

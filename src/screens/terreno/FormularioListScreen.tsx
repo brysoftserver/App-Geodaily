@@ -42,6 +42,9 @@ const isValidFormulario = (f: Record<string, any>): f is import('../../types').F
   if (!f || !f.id || !f.tipo) return false;
   if (!f.beneficiario || typeof f.beneficiario !== 'object') return false;
   if (!f.beneficiario.nombre) return false;
+  // También el técnico: el detalle lo lee y un formulario del servidor con
+  // tecnico_json vacío daba pantalla blanca sin recuperación posible.
+  if (!f.tecnico || typeof f.tecnico !== 'object') return false;
   // Coordenadas pueden ser opcionales, pero si existen deben ser válidas
   return true;
 };
@@ -56,13 +59,18 @@ const FormularioListScreen: React.FC<FormularioListScreenProps> = ({ navigation,
   const [estadosRevision, setEstadosRevision] = useState<Record<string, EstadoRevision>>({});
 
   // Filtrar por beneficiario si viene como parámetro
+  // `undefined` = sin filtro (historial completo). Una cadena VACÍA sí es un
+  // filtro: son los beneficiarios sin cédula registrada. Antes la cadena vacía
+  // era falsy y se mostraban TODOS los formularios del técnico bajo el nombre
+  // de ese beneficiario — visitas de otras fincas atribuidas a esta.
   const beneficiarioCedula = route?.params?.beneficiarioCedula;
+  const filtrarPorBeneficiario = beneficiarioCedula !== undefined;
   const formulariosFiltrados = useMemo(() => {
-    if (!beneficiarioCedula) return formularios;
+    if (!filtrarPorBeneficiario) return formularios;
     return formularios.filter(
-      (f) => f.beneficiario?.cedula === beneficiarioCedula
+      (f) => (f.beneficiario?.cedula || '') === (beneficiarioCedula || '')
     );
-  }, [formularios, beneficiarioCedula]);
+  }, [formularios, beneficiarioCedula, filtrarPorBeneficiario]);
 
   /** Lee la BD local y publica al contexto */
   const publicarLocales = useCallback(async () => {

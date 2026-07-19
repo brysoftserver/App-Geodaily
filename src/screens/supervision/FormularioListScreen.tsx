@@ -15,7 +15,8 @@ import {
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { COLORS, FONTS, SPACING, BORDER_RADIUS } from '../../theme';
 import { useForm } from '../../store/FormContext';
-import { getFormulariosLocales } from '../../services/database';
+import { getFormulariosLocales, mergeFormulariosDelServidor } from '../../services/database';
+import { fetchFormulariosDelServidor } from '../../services/formularios.service';
 import { Formulario, FiltrosFormulario } from '../../types';
 import FormCard from '../../components/FormCard';
 import FilterBar from '../../components/FilterBar';
@@ -47,13 +48,29 @@ const FormularioListScreen: React.FC<FormularioListScreenProps> = ({ navigation 
 
   const loadForms = useCallback(async () => {
     try {
+      // Mostrar lo local de inmediato
       const localForms = await getFormulariosLocales();
-      // Siempre actualizar contexto (limpia datos si el listado está vacío)
       cargarFormularios(localForms);
     } catch (error) {
       console.warn('[Supervision Listado] Error cargando:', error);
     } finally {
       setIsLoading(false);
+    }
+
+    // Traer del servidor y fusionar. Los roles de supervisión/admin NUNCA
+    // diligencian formularios en su dispositivo, así que leyendo solo SQLite
+    // local esta pantalla salía SIEMPRE vacía.
+    try {
+      const remotos = await fetchFormulariosDelServidor();
+      if (remotos.length > 0) {
+        const aplicados = await mergeFormulariosDelServidor(remotos);
+        if (aplicados > 0) {
+          cargarFormularios(await getFormulariosLocales());
+        }
+      }
+    } catch (e) {
+      console.warn('[Supervision Listado] No se pudo traer del servidor:', e);
+    } finally {
       setRefreshing(false);
     }
   }, [cargarFormularios]);
@@ -93,11 +110,11 @@ const FormularioListScreen: React.FC<FormularioListScreenProps> = ({ navigation 
 
   const handleFormPress = (form: Formulario) => {
     Alert.alert(
-      form.beneficiario.nombre,
+      form.beneficiario?.nombre || 'Sin beneficiario',
       `Tipo: ${form.tipo === 'visita_tecnica' ? 'Visita Técnica' : form.tipo === 'caracterizacion' ? 'Caracterización' : 'Plantación'}\n` +
-        `Técnico: ${form.tecnico.nombre}\n` +
-        `Municipio: ${form.beneficiario.municipio}\n` +
-        `Actividad: ${form.actividad.descripcion}\n` +
+        `Técnico: ${form.tecnico?.nombre || '—'}\n` +
+        `Municipio: ${form.beneficiario?.municipio || '—'}\n` +
+        `Actividad: ${form.actividad?.descripcion || '—'}\n` +
         `Fecha: ${form.created_at}\n` +
         `Estado: ${form.sincronizado ? '✓ Sincronizado' : '⏳ Pendiente'}` +
         (form.pdf_url ? '\n\nPDF disponible' : ''),

@@ -68,6 +68,24 @@ router.post('/guardar', authenticateToken, async (req, res) => {
     const clima = formulario.clima || {};
     const fotos = formulario.fotos || [];
 
+    // El tipo debe respetar el CHECK del esquema. Antes se usaba
+    // `|| 'desconocido'`, que lo viola y provoca un 500 genérico: el técnico
+    // perdía el envío sin saber por qué.
+    const TIPOS_VALIDOS = ['visita', 'visita_tecnica', 'caracterizacion', 'capacitacion'];
+    if (!TIPOS_VALIDOS.includes(formulario.tipo)) {
+      return res.status(400).json({
+        estado: 'error',
+        mensaje: `Tipo de formulario inválido: "${formulario.tipo}". Válidos: ${TIPOS_VALIDOS.join(', ')}`,
+      });
+    }
+
+    // Solo se guarda la URL del PDF si es remota: los formularios traen la ruta
+    // LOCAL del teléfono (file:///...), que no sirve para nadie más.
+    const pdfUrlRemoto =
+      typeof formulario.pdf_url === 'string' && !formulario.pdf_url.startsWith('file://')
+        ? formulario.pdf_url
+        : null;
+
     const existente = await db.queryOne('SELECT id FROM formularios WHERE id = $1', [formulario.id]);
 
     // Subir firmas base64 a MinIO si vienen en ese formato
@@ -103,11 +121,13 @@ router.post('/guardar', authenticateToken, async (req, res) => {
           coordenadas_json = $8, georeferencia_json = $9,
           clima_json = $10, fotos_json = $11,
           firma_beneficiario = $12, firma_tecnico = $13,
-          huella_beneficiario = $14, sincronizado = TRUE,
+          huella_beneficiario = $14,
+          pdf_url = COALESCE($15, pdf_url),
+          sincronizado = TRUE,
           updated_at = NOW()
-         WHERE id = $15`,
+         WHERE id = $16`,
         [
-          formulario.tipo || 'desconocido',
+          formulario.tipo,
           req.user.id,
           JSON.stringify(tecnico),
           JSON.stringify(beneficiario),
@@ -121,6 +141,7 @@ router.post('/guardar', authenticateToken, async (req, res) => {
           firmaBeneficiario,
           firmaTecnico,
           formulario.huella_beneficiario || false,
+          pdfUrlRemoto,
           formulario.id,
         ]
       );
@@ -132,11 +153,12 @@ router.post('/guardar', authenticateToken, async (req, res) => {
            sociodemografico_json, caracterizacion_nueva_json,
            coordenadas_json, georeferencia_json, clima_json,
            fotos_json, firma_beneficiario, firma_tecnico,
-           huella_beneficiario, sincronizado, created_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, TRUE, $16)`,
+           huella_beneficiario, pdf_url, sincronizado, created_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, TRUE,
+                 COALESCE($17::timestamp, NOW()))`,
         [
           formulario.id,
-          formulario.tipo || 'desconocido',
+          formulario.tipo,
           req.user.id,
           JSON.stringify(tecnico),
           JSON.stringify(beneficiario),
@@ -150,6 +172,9 @@ router.post('/guardar', authenticateToken, async (req, res) => {
           firmaBeneficiario,
           firmaTecnico,
           formulario.huella_beneficiario || false,
+          pdfUrlRemoto,
+          // COALESCE en el SQL: pasar null ANULABA el DEFAULT now() y dejaba
+          // formularios sin fecha, rompiendo el orden y los conteos.
           formulario.created_at ? new Date(formulario.created_at) : null,
         ]
       );

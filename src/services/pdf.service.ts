@@ -20,8 +20,14 @@ export const generarPDF = async (
       { responseType: 'json', timeout: 30000 }
     );
 
-    if (response.data?.pdf_url) {
-      return `${API_CONFIG.BASE_URL}${response.data.pdf_url}`;
+    // El backend responde `pdf_ruta` (ruta en MinIO). Leer `pdf_url` daba
+    // siempre null: el PDF sí se generaba y subía, pero el sync lo daba por
+    // fallido y `formularios.pdf_url` se quedaba vacío para siempre.
+    const ruta = response.data?.pdf_ruta || response.data?.pdf_url;
+    if (ruta) {
+      return typeof ruta === 'string' && ruta.startsWith('http')
+        ? ruta
+        : `${API_CONFIG.BASE_URL}${ruta}`;
     }
     return null;
   } catch (error) {

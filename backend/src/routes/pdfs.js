@@ -510,7 +510,11 @@ router.get('/:id', authenticateToken, async (req, res) => {
     if (!pdfRecord) {
       return res.status(404).json({ estado: 'error', mensaje: 'PDF no encontrado' });
     }
-    if (req.user.rol !== 'admin' && pdfRecord.usuario_id !== req.user.id) {
+    // Roles de supervisión ven la evidencia de cualquier técnico. Antes solo
+    // 'admin' era excepción, así que un supervisor listaba los archivos y
+    // recibía 403 al abrir cualquiera de ellos.
+    const ROLES_SUPERVISION = ['supervisor', 'interventor', 'gerente', 'admin'];
+    if (!ROLES_SUPERVISION.includes(req.user.rol) && pdfRecord.usuario_id !== req.user.id) {
       return res.status(403).json({ estado: 'error', mensaje: 'No autorizado' });
     }
 

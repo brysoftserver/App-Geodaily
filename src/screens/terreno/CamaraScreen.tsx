@@ -34,8 +34,9 @@ import { COLORS, FONTS, SPACING, BORDER_RADIUS, SHADOWS } from '../../theme';
 import { formatCoordenadas } from '../../utils/formatters';
 import LoadingSpinner from '../../components/LoadingSpinner';
 import VideoPlayerModal from '../../components/VideoPlayerModal';
+import { eliminarArchivoLocal } from '../../services/mediaStorage.service';
 import { FotoGeotag } from '../../types';
-import { saveFotoLocal, saveVideoLocal } from '../../services/database';
+import { saveFotoLocal, saveVideoLocal, deleteEvidenciaLocal } from '../../services/database';
 
 type CamaraScreenProps = {
   navigation: NativeStackNavigationProp<Record<string, any>>;
@@ -54,7 +55,7 @@ const CamaraScreen: React.FC<CamaraScreenProps> = ({ navigation, route }) => {
   const [modoVideo, setModoVideo] = useState(esVideo);
   const [isRecording, setIsRecording] = useState(false);
   const { capturarFoto, removeFoto, fotos, isLoading, setFotos } = useCamera();
-  const { addFoto, formularioActual } = useForm();
+  const { addFoto, removeFotoDelFormulario, formularioActual } = useForm();
   const { climaActual, isLoading: climaLoading, error: climaError, fetchClimate } = useClimate();
   const cameraRef = useRef<CameraView>(null);
   const insets = useSafeAreaInsets();
@@ -84,8 +85,10 @@ const CamaraScreen: React.FC<CamaraScreenProps> = ({ navigation, route }) => {
   // (evita stale closures — mismo patrón que VisitasJerarquicasScreen)
   const fotosRef = useRef(fotos);
   const fotosGuardadasRef = useRef(fotosGuardadas);
+  const formularioActualRef = useRef(formularioActual);
   useEffect(() => { fotosRef.current = fotos; }, [fotos]);
   useEffect(() => { fotosGuardadasRef.current = fotosGuardadas; }, [fotosGuardadas]);
+  useEffect(() => { formularioActualRef.current = formularioActual; }, [formularioActual]);
 
   // Interceptar salida (botón atrás nativo, swipe, etc.) si hay fotos sin guardar —
   // antes se perdían silenciosamente porque solo "Continuar" las guardaba
@@ -103,7 +106,15 @@ const CamaraScreen: React.FC<CamaraScreenProps> = ({ navigation, route }) => {
           {
             text: 'Guardar',
             onPress: async () => {
-              await guardarFotosEnContexto();
+              const ok = await guardarFotosEnContexto();
+              if (!ok) {
+                // No salir si el guardado falló: sería perder la evidencia
+                Alert.alert(
+                  'No se pudieron guardar',
+                  'Las fotos siguen aquí. Revisa el espacio disponible e inténtalo de nuevo.'
+                );
+                return;
+              }
               navigation.dispatch(e.data.action);
             },
           },
@@ -260,11 +271,23 @@ const CamaraScreen: React.FC<CamaraScreenProps> = ({ navigation, route }) => {
     }
   };
 
+  // IMPORTANTE: lee SIEMPRE de las refs, nunca del estado.
+  // El listener de 'beforeRemove' se registra una sola vez (deps [navigation])
+  // y captura la versión de esta función del PRIMER render. Si leyera el estado,
+  // vería `fotos = []`, saldría por "nada que guardar" y el técnico perdería
+  // todas las fotos justo al pulsar "Guardar" al salir.
   const guardarFotosEnContexto = async (): Promise<boolean> => {
-    const sinGuardar = fotos.filter((f) => !fotosGuardadas.has(f.id));
+    const fotosActuales = fotosRef.current;
+    const guardadasActuales = fotosGuardadasRef.current;
+    const sinGuardar = fotosActuales.filter((f) => !guardadasActuales.has(f.id));
     if (sinGuardar.length === 0) return true;
     try {
-      const formId = formularioActual?.id;
+      const formId = formularioActualRef.current?.id;
+      if (!formId) {
+        console.warn(
+          '[Camara] Sin formulario en curso: las evidencias quedan en memoria y se encolarán al completar el formulario'
+        );
+      }
       for (const foto of sinGuardar) {
         addFoto(foto);
         if (formId) {
@@ -282,7 +305,7 @@ const CamaraScreen: React.FC<CamaraScreenProps> = ({ navigation, route }) => {
           }
         }
       }
-      setFotosGuardadas(new Set(fotos.map((f) => f.id)));
+      setFotosGuardadas(new Set(fotosActuales.map((f) => f.id)));
       return true;
     } catch (err) {
       console.error('[Camara] Error al guardar fotos/videos:', err);
@@ -302,8 +325,14 @@ const CamaraScreen: React.FC<CamaraScreenProps> = ({ navigation, route }) => {
   const handleDeleteFoto = (foto: FotoGeotag) => {
     Alert.alert('Eliminar foto', '¿Estás seguro de eliminar esta foto?', [
       { text: 'Cancelar', style: 'cancel' },
-      { text: 'Eliminar', onPress: () => {
-        removeFoto(foto.id);
+      { text: 'Eliminar', onPress: async () => {
+        // Borrado COMPLETO. Antes solo se quitaba del estado de la pantalla:
+        // la foto seguía en el formulario, se subía a MinIO, salía en el PDF
+        // y reaparecía al reenfocar la cámara.
+        removeFoto(foto.id);                 // estado local del hook
+        removeFotoDelFormulario(foto.id);    // formulario en curso (contexto)
+        await deleteEvidenciaLocal(foto.id); // cola de sincronización
+        await eliminarArchivoLocal(foto.uri); // archivo en disco
         setFotosGuardadas((prev) => {
           const next = new Set(prev);
           next.delete(foto.id);
@@ -586,7 +615,11 @@ const CamaraScreen: React.FC<CamaraScreenProps> = ({ navigation, route }) => {
                     {item.tipo === 'video' && (
                       <Text style={styles.fotoVideoTag}>🎥 Video</Text>
                     )}
-                    {ubicacionesFotos[item.id] ? (
+                    {item.metadata?.sinUbicacion ? (
+                      <Text style={styles.fotoSinUbicacion}>
+                        ⚠️ Sin ubicación GPS
+                      </Text>
+                    ) : ubicacionesFotos[item.id] ? (
                       <>
                         <Text style={styles.fotoUbicacionNombre}>
                           {ubicacionesFotos[item.id].municipio}
@@ -930,6 +963,11 @@ const styles = StyleSheet.create({
     fontSize: 10,
     color: '#fff',
     fontFamily: 'monospace',
+  },
+  fotoSinUbicacion: {
+    fontSize: 11,
+    color: COLORS.warning,
+    fontWeight: FONTS.weights.bold,
   },
   fotoUbicacionNombre: {
     fontSize: 12,

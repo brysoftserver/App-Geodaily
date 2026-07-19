@@ -69,8 +69,8 @@ Backend: **QGIS Server** (`:8088` vía nginx) + **Mock API Express** (`:8089`)
 
 - Node.js 22.x (recomendado: [fnm](https://github.com/Schniz/fnm))
 - npm 10+
-- Backend QGIS corriendo en `192.168.1.20:8088`
-- Backend Mock Express en `192.168.1.20:8089`
+- Backend QGIS corriendo en `192.168.80.20:8088`
+- Backend Mock Express en `192.168.80.20:8089`
 
 ### 1. Instalar dependencias
 
@@ -117,7 +117,7 @@ npx expo start --dev-client --port 8082
 
 | Red del teléfono | URL a ingresar en el dev client |
 |---|---|
-| Misma LAN que el servidor | `http://192.168.1.20:8082` (o escanear el QR) |
+| Misma LAN que el servidor | `http://192.168.80.20:8082` (o escanear el QR) |
 | Datos móviles / otra red | `https://geodaily-dev.brysoftsas.com` (vía Cloudflare Tunnel) |
 
 En la pantalla inicial del dev client, usar **"Enter URL manually"** e ingresar la URL según la tabla. Los datos de la app (login, formularios) siempre van a `https://geodaily-api.brysoftsas.com`, independiente de la red.
@@ -140,7 +140,7 @@ Las actualizaciones de código JS siguen llegando igual que con Expo Go (recarga
 
 ---
 
-## 🌐 Backend Mock Express (`192.168.1.20:8089`)
+## 🌐 Backend Mock Express (`192.168.80.20:8089`)
 
 | Endpoint | Método | Descripción |
 |----------|--------|-------------|
@@ -214,8 +214,8 @@ que Node 22 no puede procesar nativamente. Se requieren dos hooks:
 
 ### Infraestructura (`geodaily-api.brysoftsas.com`)
 
-El túnel de Cloudflare corre en el CT dedicado **Gateway-Cloudflare (192.168.1.19)**
-y enruta hacia este servidor (192.168.1.20). Los hostnames públicos son de **un
+El túnel de Cloudflare corre en el CT dedicado **Gateway-Cloudflare (192.168.80.19)**
+y enruta hacia este servidor (192.168.80.20). Los hostnames públicos son de **un
 solo nivel** (`geodaily-api`, no `api.geodaily`) porque el certificado gratuito
 de Cloudflare (`*.brysoftsas.com`) no cubre subdominios de dos niveles.
 
@@ -224,8 +224,8 @@ de Cloudflare (`*.brysoftsas.com`) no cubre subdominios de dos niveles.
 | **Backend API** | Express.js | `:8089` |
 | **Almacenamiento** | MinIO (Docker) | `:9000` (API), `:9001` (Console) |
 | **Base de Datos** | PostgreSQL | `:5432` |
-| **API pública** | `geodaily-api.brysoftsas.com` → `192.168.1.20:8089` | Cloudflare Tunnel (sin puertos abiertos) |
-| **Metro/dev** | `geodaily-dev.brysoftsas.com` → `192.168.1.20:8082` | Cloudflare Tunnel (solo desarrollo) |
+| **API pública** | `geodaily-api.brysoftsas.com` → `192.168.80.20:8089` | Cloudflare Tunnel (sin puertos abiertos) |
+| **Metro/dev** | `geodaily-dev.brysoftsas.com` → `192.168.80.20:8082` | Cloudflare Tunnel (solo desarrollo) |
 | **HTTPS** | Cloudflare (automático) | — |
 
 ### Configuración de Producción

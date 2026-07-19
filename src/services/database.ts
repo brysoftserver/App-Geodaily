@@ -12,24 +12,74 @@ let dbFailedOnce = false; // evita reintentar si ya falló (web)
  * Asegura que la BD esté abierta.
  * Si `db` es null (ej. tras Fast Refresh), la reabre automáticamente.
  */
+/**
+ * Espera mínima entre reintentos de apertura, para no machacar el disco
+ * cuando la BD está momentáneamente ocupada.
+ */
+const REINTENTO_DB_MS = 3000;
+let ultimoIntentoDb = 0;
+
 const ensureDb = async (): Promise<SQLite.SQLiteDatabase | null> => {
   if (db) return db;
-  if (dbFailedOnce) return null; // no reintentar si ya falló
+
+  // Antes existía una bandera `dbFailedOnce` que, tras UN solo fallo
+  // transitorio (p.ej. el timeout de 3 s en un teléfono lento arrancando en
+  // frío), dejaba la base muerta para el resto de la sesión: todas las
+  // funciones devolvían vacío o no-op en silencio y el técnico perdía cada
+  // formulario que levantara a partir de entonces. Ahora se reintenta siempre,
+  // limitando la frecuencia.
+  const ahora = Date.now();
+  if (ahora - ultimoIntentoDb < REINTENTO_DB_MS) return null;
+  ultimoIntentoDb = ahora;
+
   try {
     db = await withTimeout(
       SQLite.openDatabaseAsync('geodaily.db'),
-      3000,
+      5000,
       'ensureDb openDatabaseAsync'
     );
-    await withTimeout(runMigrations(), 3000, 'ensureDb runMigrations');
+    // Crear tablas base + migraciones. `initDatabase` puede no haber llegado a
+    // completarse (o haber fallado), así que aquí se asegura el esquema entero,
+    // no solo las migraciones — si no, quedaban tablas como `formularios` sin crear.
+    await withTimeout(crearEsquemaBase(), 8000, 'ensureDb crearEsquemaBase');
+    await withTimeout(runMigrations(), 5000, 'ensureDb runMigrations');
+    dbFailedOnce = false;
     console.log('[DB] Reconexión automática exitosa');
     return db;
   } catch (error) {
     console.error('[DB] Error al reconectar BD:', error);
     dbFailedOnce = true;
+    db = null;
     return null;
   }
 };
+
+/**
+ * Eliminar una evidencia (foto o video) de la cola local de sincronización.
+ *
+ * Sin esto, "eliminar foto" solo la quitaba de la pantalla: la fila seguía en
+ * `fotos_locales` y el sincronizador la subía a MinIO igualmente.
+ *
+ * @returns true si se eliminó alguna fila
+ */
+export const deleteEvidenciaLocal = async (fotoId: string): Promise<boolean> => {
+  const database = await ensureDb();
+  if (!database) return false;
+  try {
+    const f = await database.runAsync('DELETE FROM fotos_locales WHERE id = ?', [fotoId]);
+    const v = await database.runAsync('DELETE FROM videos_locales WHERE id = ?', [fotoId]);
+    return (f.changes || 0) + (v.changes || 0) > 0;
+  } catch (e) {
+    console.warn('[DB] No se pudo eliminar la evidencia local:', fotoId, e);
+    return false;
+  }
+};
+
+/** ¿La base local está operativa? Para que la UI pueda avisar al técnico. */
+export const isDbDisponible = (): boolean => db !== null;
+
+/** ¿Hubo algún fallo de BD en esta sesión? */
+export const huboFalloDb = (): boolean => dbFailedOnce;
 
 /**
  * Timeout promisificado para evitar que SQLite cuelgue en web
@@ -44,21 +94,16 @@ const withTimeout = <T>(promise: Promise<T>, ms: number, label: string): Promise
 };
 
 /**
- * Inicializar la base de datos local
- * NOTA: En web, expo-sqlite requiere WASM que Metro no resuelve.
- * Si falla o expira, se ignora para que la app cargue igual.
+ * Crear las tablas base del esquema local.
+ *
+ * Se extrajo de `initDatabase` para poder invocarla también desde
+ * `ensureDb`: si `initDatabase` fallaba a mitad, la reconexión solo corría
+ * `runMigrations` y tablas como `formularios` no llegaban a existir nunca,
+ * dejando la app sin persistencia y sin ningún aviso.
  */
-export const initDatabase = async (): Promise<void> => {
-  try {
-    db = await withTimeout(
-      SQLite.openDatabaseAsync('geodaily.db'),
-      5000,
-      'openDatabaseAsync'
-    );
-
-    // Crear tablas
-    await withTimeout(
-      db.execAsync(`
+const crearEsquemaBase = async (): Promise<void> => {
+  if (!db) return;
+  await db.execAsync(`
         CREATE TABLE IF NOT EXISTS formularios (
           id TEXT PRIMARY KEY,
           tipo TEXT NOT NULL,
@@ -124,10 +169,24 @@ export const initDatabase = async (): Promise<void> => {
           created_at TEXT NOT NULL,
           updated_at TEXT NOT NULL
         );
-      `),
+  `);
+};
+
+/**
+ * Inicializar la base de datos local
+ * NOTA: En web, expo-sqlite requiere WASM que Metro no resuelve.
+ * Si falla o expira, se ignora para que la app cargue igual.
+ */
+export const initDatabase = async (): Promise<void> => {
+  try {
+    db = await withTimeout(
+      SQLite.openDatabaseAsync('geodaily.db'),
       5000,
-      'Crear tablas'
+      'openDatabaseAsync'
     );
+
+    // Crear tablas base (idempotente)
+    await withTimeout(crearEsquemaBase(), 8000, 'Crear tablas');
 
     // Migración: agregar columna usuario_id si no existe
     try {
@@ -205,8 +264,12 @@ export const saveFormularioLocal = async (
 ): Promise<void> => {
   const database = await ensureDb();
   if (!database) {
-    console.warn('[DB] BD local no disponible — no se guardó el formulario localmente');
-    return;
+    // Antes hacía `console.warn` + `return`, así que el llamador creía que el
+    // formulario estaba guardado y a continuación borraba el borrador: la
+    // encuesta completa desaparecía sin dejar rastro. Debe fallar de verdad.
+    throw new Error(
+      'La base de datos local no está disponible — el formulario NO se guardó'
+    );
   }
 
   try {
@@ -574,6 +637,36 @@ export const getUnsyncedPhotos = async (
   );
 };
 
+/**
+ * TODAS las evidencias pendientes de subir, sin importar el formulario.
+ *
+ * Necesario porque un formulario puede quedar marcado como sincronizado
+ * mientras alguna de sus fotos sigue pendiente: al dejar de aparecer en
+ * `getPendingSyncForms`, esas evidencias quedaban huérfanas del ciclo de
+ * sincronización y no se subían jamás.
+ */
+export const getEvidenciasPendientes = async (): Promise<{
+  fotos: Record<string, any>[];
+  videos: Record<string, any>[];
+}> => {
+  const database = await ensureDb();
+  if (!database) return { fotos: [], videos: [] };
+  try {
+    const [fotos, videos] = await Promise.all([
+      database.getAllAsync<Record<string, any>>(
+        "SELECT * FROM fotos_locales WHERE sincronizada = 0 AND formulario_id != ''"
+      ),
+      database.getAllAsync<Record<string, any>>(
+        "SELECT * FROM videos_locales WHERE sincronizada = 0 AND formulario_id != ''"
+      ),
+    ]);
+    return { fotos, videos };
+  } catch (e) {
+    console.warn('[DB] Error leyendo evidencias pendientes:', e);
+    return { fotos: [], videos: [] };
+  }
+};
+
 // --- Videos locales ---
 
 export const saveVideoLocal = async (
@@ -796,6 +889,31 @@ export const saveDocumentoLocal = async (doc: DocumentoFinca): Promise<void> => 
   );
 };
 
+/** Documentos de finca pendientes de subir al servidor */
+export const getDocumentosNoSincronizados = async (): Promise<DocumentoFinca[]> => {
+  const database = await ensureDb();
+  if (!database) return [];
+  try {
+    return (await database.getAllAsync<any>(
+      'SELECT * FROM documentos_finca WHERE sincronizado = 0 OR sincronizado IS NULL ORDER BY created_at ASC'
+    )) as DocumentoFinca[];
+  } catch (e) {
+    console.warn('[DB] Error leyendo documentos pendientes:', e);
+    return [];
+  }
+};
+
+/** Marcar un documento de finca como subido al servidor */
+export const marcarDocumentoSincronizado = async (id: string): Promise<void> => {
+  const database = await ensureDb();
+  if (!database) return;
+  try {
+    await database.runAsync('UPDATE documentos_finca SET sincronizado = 1 WHERE id = ?', [id]);
+  } catch (e) {
+    console.warn('[DB] No se pudo marcar el documento como sincronizado:', id, e);
+  }
+};
+
 /** Eliminar un documento de finca */
 export const deleteDocumentoLocal = async (id: string): Promise<void> => {
   const database = await ensureDb();
@@ -864,7 +982,8 @@ export const runMigrations = async (): Promise<void> => {
         uri TEXT NOT NULL,
         nombre TEXT,
         descripcion TEXT,
-        created_at TEXT NOT NULL
+        created_at TEXT NOT NULL,
+        sincronizado INTEGER DEFAULT 0
       );
 
       -- Tracking de posiciones GPS
@@ -972,6 +1091,17 @@ export const runMigrations = async (): Promise<void> => {
           // Ya existe, ignorar
         }
       }
+    }
+
+    // Migración: cola de sincronización de documentos de finca.
+    // La tabla no tenía estado de sincronización y SyncContext ni la miraba:
+    // un documento capturado sin señal (el caso normal en campo) NUNCA llegaba
+    // al servidor, mientras la app decía "guardado (local + MinIO)".
+    try {
+      await db.runAsync('ALTER TABLE documentos_finca ADD COLUMN sincronizado INTEGER DEFAULT 0');
+      console.log('[DB] Columna sincronizado agregada a documentos_finca');
+    } catch {
+      // Ya existe, ignorar
     }
 
     // Migración: documentos de finca por beneficiario (no por visita).

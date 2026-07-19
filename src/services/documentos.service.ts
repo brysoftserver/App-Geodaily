@@ -18,7 +18,9 @@ export const subirDocumento = async (
   nombre?: string,
   beneficiarioCedula?: string,
   beneficiarioNombre?: string,
-  tipoFormulario?: string
+  tipoFormulario?: string,
+  /** MIME real del archivo; sin esto todo viajaba como octet-stream */
+  mimeType?: string
 ): Promise<{ id: string; ruta: string; estado: string } | null> => {
   try {
     const formData = new FormData();
@@ -26,7 +28,7 @@ export const subirDocumento = async (
     // @ts-expect-error — React Native FormData
     formData.append('archivo', {
       uri,
-      type: 'application/octet-stream',
+      type: mimeType || 'application/octet-stream',
       name: nombre || `doc_${Date.now()}`,
     });
 

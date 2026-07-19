@@ -54,7 +54,7 @@ db.initSchema()
 const PROD_DOMAIN = process.env.PROD_DOMAIN || 'https://geodaily-api.brysoftsas.com';
 const corsOptions = {
   origin: [
-    'http://192.168.1.20:8082',
+    'http://192.168.80.20:8082',
     'http://localhost:8082',
     'http://localhost:8081',
     PROD_DOMAIN,
@@ -100,7 +100,7 @@ app.use((err, _req, res, _next) => {
   res.status(500).json({ estado: 'error', mensaje: err.message || 'Error interno del servidor' });
 });
 
-const HOST = process.env.HOST || `http://192.168.1.20:${PORT}`;
+const HOST = process.env.HOST || `http://192.168.80.20:${PORT}`;
 app.listen(PORT, () => {
   console.log(`\n========================================`);
   console.log(`  🌱 GEODAILY API — Puerto ${PORT}`);

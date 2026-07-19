@@ -925,7 +925,7 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
         {/* Datos del Técnico */}
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>👤 Datos del Técnico</Text>
-          <View style={styles.row}><Text style={styles.label}>Nombre:</Text><Text style={styles.value}>{formulario.tecnico.nombre}</Text></View>
+          <View style={styles.row}><Text style={styles.label}>Nombre:</Text><Text style={styles.value}>{formulario.tecnico?.nombre || '—'}</Text></View>
           <View style={styles.row}><Text style={styles.label}>Cédula:</Text><Text style={styles.value}>{formulario.tecnico.cedula}</Text></View>
           <View style={styles.row}><Text style={styles.label}>Teléfono:</Text><Text style={styles.value}>{formulario.tecnico.telefono || '—'}</Text></View>
           <View style={styles.row}><Text style={styles.label}>Email:</Text><Text style={styles.value}>{formulario.tecnico.email || '—'}</Text></View>
@@ -934,7 +934,7 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
         {/* Datos del Beneficiario */}
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>👥 Datos del Beneficiario</Text>
-          <View style={styles.row}><Text style={styles.label}>Nombre:</Text><Text style={styles.value}>{formulario.beneficiario.nombre}</Text></View>
+          <View style={styles.row}><Text style={styles.label}>Nombre:</Text><Text style={styles.value}>{formulario.beneficiario?.nombre || '—'}</Text></View>
           <View style={styles.row}><Text style={styles.label}>Cédula:</Text><Text style={styles.value}>{formulario.beneficiario.cedula || '—'}</Text></View>
           <View style={styles.row}><Text style={styles.label}>Teléfono:</Text><Text style={styles.value}>{formulario.beneficiario.telefono || '—'}</Text></View>
           <View style={styles.row}><Text style={styles.label}>Depto:</Text><Text style={styles.value}>{formulario.beneficiario.departamento || '—'}</Text></View>
@@ -957,10 +957,10 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
         {formulario.coordenadas && (
           <View style={styles.section}>
             <Text style={styles.sectionTitle}>📍 Ubicación</Text>
-            <View style={styles.row}><Text style={styles.label}>Latitud:</Text><Text style={styles.value}>{formulario.coordenadas.latitud.toFixed(6)}</Text></View>
-            <View style={styles.row}><Text style={styles.label}>Longitud:</Text><Text style={styles.value}>{formulario.coordenadas.longitud.toFixed(6)}</Text></View>
+            <View style={styles.row}><Text style={styles.label}>Latitud:</Text><Text style={styles.value}>{formulario.coordenadas?.latitud?.toFixed(6) ?? '—'}</Text></View>
+            <View style={styles.row}><Text style={styles.label}>Longitud:</Text><Text style={styles.value}>{formulario.coordenadas?.longitud?.toFixed(6) ?? '—'}</Text></View>
             {formulario.coordenadas.altitud && (
-              <View style={styles.row}><Text style={styles.label}>Altitud:</Text><Text style={styles.value}>{formulario.coordenadas.altitud.toFixed(1)} m</Text></View>
+              <View style={styles.row}><Text style={styles.label}>Altitud:</Text><Text style={styles.value}>{formulario.coordenadas?.altitud?.toFixed(1) ?? '—'} m</Text></View>
             )}
           </View>
         )}

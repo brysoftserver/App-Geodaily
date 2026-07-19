@@ -31,6 +31,9 @@ interface CapacitacionItem {
   completada: boolean;
 }
 
+// ⚠️ CONTENIDO DE DEMOSTRACIÓN — estas capacitaciones son datos de ejemplo
+// escritos a mano, no vienen de la base de datos ni del servidor. Existe una
+// tabla `capacitaciones` en SQLite que esta pantalla todavía no consulta.
 const MOCK_CAPACITACIONES: CapacitacionItem[] = [
   {
     id: 'cap-001',
@@ -104,8 +107,9 @@ const CapacitacionScreen: React.FC = () => {
       <ScrollView contentContainerStyle={styles.scrollContent}>
         <Text style={styles.pageTitle}>📚 Capacitaciones</Text>
         <Text style={styles.pageSubtitle}>
-          Programa preliminar de formación — los materiales descargables se
-          habilitarán cuando el proyecto publique el contenido oficial
+          ⚠️ Contenido de ejemplo. Las capacitaciones que ves abajo son una
+          muestra del formato, no el programa real: se cargarán cuando el
+          proyecto publique el contenido oficial.
         </Text>
 
         {/* Filtro por tema */}

@@ -43,7 +43,7 @@ export const generarPDFLocal = async (
     // 3. Generar sello de verificación biométrica (con gráfico de huella SVG)
     const selloBiometricoHtml = formulario.huella_beneficiario
       ? generarSelloBiometrico(formulario.beneficiario.nombre)
-      : `<div class="evidencia-item"><p class="evidencia-label">🖐️ Huella Biométrica</p><p class="no-data">No registrada</p></div>`;
+      : `<div class="evidencia-item"><p class="evidencia-label">🖐️ Certificación biométrica del técnico</p><p class="no-data">No registrada</p></div>`;
 
     // 4. Construir HTML completo según el tipo de formulario
     let html: string;
@@ -204,13 +204,13 @@ export function generarSelloBiometrico(nombreBeneficiario: string): string {
           <img src="${huellaDataUri}" alt="Huella" class="huella-sello-img" />
           <div class="huella-sello-titles">
             <div class="huella-sello-verificado">✅ VERIFICADO</div>
-            <div class="huella-sello-label">Registro Biométrico</div>
+            <div class="huella-sello-label">Certificación biométrica del técnico</div>
           </div>
         </div>
         <div class="huella-sello-body">
           <table class="huella-sello-table">
-            <tr><td class="huella-sello-label-cell">Beneficiario:</td><td class="huella-sello-value-cell"><strong>${escapeHtml(nombreBeneficiario)}</strong></td></tr>
-            <tr><td class="huella-sello-label-cell">Método:</td><td class="huella-sello-value-cell">Autenticación biométrica (huella dactilar)</td></tr>
+            <tr><td class="huella-sello-label-cell">Visita a:</td><td class="huella-sello-value-cell"><strong>${escapeHtml(nombreBeneficiario)}</strong></td></tr>
+            <tr><td class="huella-sello-label-cell">Método:</td><td class="huella-sello-value-cell">Huella dactilar del técnico en el dispositivo</td></tr>
             <tr><td class="huella-sello-label-cell">Fecha:</td><td class="huella-sello-value-cell">${fechaHoy}</td></tr>
             <tr><td class="huella-sello-label-cell">Estado:</td><td class="huella-sello-value-cell"><span class="huella-sello-exitoso">Exitoso</span></td></tr>
           </table>

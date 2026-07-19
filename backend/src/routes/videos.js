@@ -257,7 +257,11 @@ router.get('/:id', authenticateToken, async (req, res) => {
     if (!video) {
       return res.status(404).json({ estado: 'error', mensaje: 'Video no encontrado' });
     }
-    if (req.user.rol !== 'admin' && video.usuario_id !== req.user.id) {
+    // Roles de supervisión ven la evidencia de cualquier técnico. Antes solo
+    // 'admin' era excepción, así que un supervisor listaba los archivos y
+    // recibía 403 al abrir cualquiera de ellos.
+    const ROLES_SUPERVISION = ['supervisor', 'interventor', 'gerente', 'admin'];
+    if (!ROLES_SUPERVISION.includes(req.user.rol) && video.usuario_id !== req.user.id) {
       return res.status(403).json({ estado: 'error', mensaje: 'No autorizado' });
     }
     res.json({ estado: 'ok', video });

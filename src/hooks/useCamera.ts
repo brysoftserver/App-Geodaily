@@ -33,11 +33,21 @@ export const useCamera = () => {
       setState((prev) => ({ ...prev, isLoading: true, error: null }));
 
       try {
-        // Usar coordenadas externas si se proporcionan, o las cacheadas, o pedir GPS
-        let coords: Coordenadas | null = coordsExternas || coordenadas;
+        // Pedir SIEMPRE una posición fresca. Antes se reutilizaba la caché de
+        // `useLocation` (que no tiene watch continuo), así que solo la primera
+        // foto consultaba el GPS: el técnico recorría la finca y las 10 fotos
+        // quedaban con las mismas coordenadas. El geotag —razón de ser del
+        // módulo— era falso a partir de la segunda foto.
+        let coords: Coordenadas | null = coordsExternas || null;
         if (!coords) {
-          coords = await getCurrentPosition();
+          try {
+            coords = await getCurrentPosition();
+          } catch (gpsErr) {
+            console.warn('[Camara] No se pudo obtener GPS fresco:', gpsErr);
+          }
         }
+        // Último recurso: la última posición conocida, mejor que nada
+        if (!coords) coords = coordenadas;
 
         const id = generarId();
 
@@ -45,6 +55,14 @@ export const useCamera = () => {
         // Android puede vaciar cacheDirectory sin avisar y en campo eso
         // significaba perder fotos y videos aún sin sincronizar.
         const uriPersistente = await persistirEvidencia(uri, id, esVideo);
+
+        // Sin GPS se marca explícitamente. Antes se guardaba {0,0} —el Golfo de
+        // Guinea— sin avisar, y esa evidencia acababa en el mapa y en el PDF
+        // como un punto perfectamente válido.
+        const sinUbicacion = !coords;
+        if (sinUbicacion) {
+          console.warn('[Camara] Evidencia capturada SIN ubicación GPS:', id);
+        }
 
         const foto: FotoGeotag = {
           id,
@@ -54,6 +72,7 @@ export const useCamera = () => {
           timestamp: new Date().toISOString(),
           metadata: {
             source: 'camera',
+            sinUbicacion,
           },
         };
 

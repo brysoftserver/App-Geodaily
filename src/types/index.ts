@@ -285,6 +285,8 @@ export interface DocumentoFinca {
   formulario_id: string;
   /** Dueño real del documento: la finca/beneficiario. Persiste entre visitas. */
   beneficiario_cedula?: string;
+  /** 0/1 — si ya se subió al servidor. Los documentos capturados sin señal quedan en cola. */
+  sincronizado?: number | boolean;
   tipo: 'foto' | 'pdf' | 'kml' | 'otro';
   uri: string;
   nombre: string;

@@ -16,6 +16,7 @@ import {
   TextInput,
   Alert,
   Modal,
+  AppState,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useFocusEffect } from '@react-navigation/native';
@@ -28,6 +29,7 @@ import { useGPS } from '../../store/GPSContext';
 import MapViewOffline from '../../components/MapViewOffline';
 import { calcularArea, exportarKML, importarKML } from '../../services/kml.service';
 import { savePlantacion, saveMedicion, getPlantaciones } from '../../services/database';
+import * as DocumentPicker from 'expo-document-picker';
 import { isOfflineMapAvailable, descargarMapaOffline, listarPaquetesOffline, eliminarPaqueteOffline, OfflinePackInfo } from '../../services/offlineMap.service';
 import { Plantacion, Coordenadas, PuntoPoligono } from '../../types';
 import { PLANTAS_OPCIONES, getIconoEspecie } from '../../utils/constants';
@@ -166,6 +168,10 @@ const MapaScreen: React.FC = () => {
     try {
       const estado = {
         poligono,
+        // Faltaba: el técnico marcaba 15 puntos del área de plantación, salía
+        // a la cámara y al volver el polígono estaba vacío mientras `modo`
+        // sí se restauraba — un estado incoherente que parecía fallo aleatorio.
+        plantacionPoligono,
         resultadoArea,
         resultadoDistancia,
         mostrarResultado,
@@ -179,7 +185,7 @@ const MapaScreen: React.FC = () => {
     } catch (e) {
       console.warn('[Mapa] Error al guardar estado:', e);
     }
-  }, [poligono, resultadoArea, resultadoDistancia, mostrarResultado, ultimoPunto, modo, tipoMapa, mapCenter, userLocation]);
+  }, [poligono, plantacionPoligono, resultadoArea, resultadoDistancia, mostrarResultado, ultimoPunto, modo, tipoMapa, mapCenter, userLocation]);
 
   // Cargar plantaciones del usuario desde SQLite
   const cargarPlantaciones = useCallback(async () => {
@@ -206,6 +212,7 @@ const MapaScreen: React.FC = () => {
           if (json && activo) {
             const estado = JSON.parse(json);
             if (estado.poligono) setPoligono(estado.poligono);
+            if (estado.plantacionPoligono) setPlantacionPoligono(estado.plantacionPoligono);
             if (estado.resultadoArea) {
               setResultadoArea(estado.resultadoArea);
               if (estado.mostrarResultado) setMostrarResultado(true);
@@ -235,6 +242,18 @@ const MapaScreen: React.FC = () => {
       };
     }, []) // ← Deps vacío: solo corre al obtener/perder foco, estable
   );
+
+  // Guardar también al pasar a segundo plano: antes el estado del mapa solo
+  // se guardaba al PERDER EL FOCO, así que si Android mataba la app estando
+  // en el mapa se perdía el polígono de medición entero.
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (estado) => {
+      if (estado === 'background' || estado === 'inactive') {
+        guardarEstadoMapaRef.current();
+      }
+    });
+    return () => sub.remove();
+  }, []);
 
   // Centrar en ubicación actual y seguir en tiempo real
   const centrarEnGPS = useCallback(async () => {
@@ -322,11 +341,38 @@ const MapaScreen: React.FC = () => {
       Alert.alert('Insuficiente', 'Se necesitan al menos 2 puntos para medir una distancia.');
       return;
     }
+    // ID determinista a partir de los puntos: pulsar "Calcular" dos veces
+    // sobre el mismo polígono insertaba DOS filas distintas y ambas se
+    // sincronizaban, inflando los datos de área del proyecto.
+    const idMedicion =
+      'med_' +
+      poligono
+        .map((p) => `${p.latitud.toFixed(6)},${p.longitud.toFixed(6)}`)
+        .join('|')
+        .split('')
+        .reduce((h, c) => ((h << 5) - h + c.charCodeAt(0)) | 0, 0)
+        .toString(36)
+        .replace('-', 'n');
+
     if (poligono.length === 2) {
       // Distancia lineal entre 2 puntos
       const d = calcularDistanciaHaversine(poligono[0], poligono[1]);
       setResultadoDistancia({ distanciaMetros: d, distanciaKm: d / 1000 });
       setResultadoArea(null);
+      // Antes las distancias solo se mostraban en pantalla y se perdían: no
+      // llegaban ni a SQLite ni al servidor. Se guardan como medición sin
+      // área, con la distancia en el perímetro.
+      saveMedicion({
+        id: idMedicion,
+        usuario_id: user?.id,
+        area_hectareas: 0,
+        area_metros2: 0,
+        perimetro_metros: d,
+        puntos: poligono.map((p) => ({ latitud: p.latitud, longitud: p.longitud })),
+        sincronizado: false,
+      })
+        .then(() => { syncNow().catch(() => {}); })
+        .catch((e) => console.warn('[Mapa] No se pudo guardar la distancia:', e));
     } else {
       // Área (3+ puntos)
       const area = calcularArea(poligono);
@@ -334,7 +380,7 @@ const MapaScreen: React.FC = () => {
       setResultadoDistancia(null);
       // Persistir medición en SQLite
       saveMedicion({
-        id: `med_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+        id: idMedicion,
         usuario_id: user?.id,
         area_hectareas: area.areaHectareas,
         area_metros2: area.areaMetros2,
@@ -445,17 +491,42 @@ const MapaScreen: React.FC = () => {
     setMostrarModalKML(false);
   }, [poligono]);
 
+  // Antes llamaba a `importarKML('')` con URI vacía: fallaba dentro de su
+  // propio try/catch, descartaba el resultado y mostraba una instrucción que
+  // no llevaba a ninguna parte. La opción figuraba en la UI como si funcionara.
   const handleImportarKML = useCallback(async () => {
     try {
-      const result = await importarKML(''); // eslint-disable-line @typescript-eslint/no-unused-vars
-      // Note: real implementation would use DocumentPicker
-      Alert.alert(
-        'Importar KML',
-        'Selecciona un archivo .kml desde el explorador de archivos del dispositivo.'
-      );
+      const seleccion = await DocumentPicker.getDocumentAsync({
+        type: ['application/vnd.google-earth.kml+xml', 'application/xml', 'text/xml', '*/*'],
+        copyToCacheDirectory: true,
+      });
+      if (seleccion.canceled || !seleccion.assets?.length) return;
+
+      const archivo = seleccion.assets[0];
+      if (!archivo.name?.toLowerCase().endsWith('.kml')) {
+        Alert.alert('Archivo no válido', 'Selecciona un archivo con extensión .kml');
+        return;
+      }
+
+      const result = await importarKML(archivo.uri);
+      if (!result || result.puntos.length === 0) {
+        Alert.alert(
+          'No se pudo leer el KML',
+          'El archivo no contiene coordenadas reconocibles.'
+        );
+        return;
+      }
+
+      setPoligono(result.puntos.map((p, i) => ({ ...p, orden: i })));
+      setModo('medir');
       setMostrarModalKML(false);
+      Alert.alert(
+        '✅ KML importado',
+        `"${result.nombre}" — ${result.puntos.length} punto(s) cargados. Pulsa "Calcular" para obtener el área.`
+      );
     } catch (error) {
       console.warn('[Mapa] Error al importar KML:', error);
+      Alert.alert('Error', 'No se pudo importar el archivo KML.');
     }
   }, []);
 

@@ -105,11 +105,17 @@ const FirmaBiometricaScreen: React.FC<FirmaBiometricaScreenProps> = ({ navigatio
 
     setIsLoading(true);
     try {
+      // IMPORTANTE — límite real de esta tecnología:
+      // expo-local-authentication solo puede validar las huellas registradas
+      // en el TELÉFONO, es decir las del técnico. No puede verificar la
+      // identidad del beneficiario. Con `disableDeviceFallback: false` incluso
+      // bastaba teclear el PIN del técnico para dar la huella por válida.
+      // Se deja como certificación biométrica DEL TÉCNICO (atestigua que
+      // estuvo presente en la visita), sin PIN como atajo.
       const result = await LocalAuthentication.authenticateAsync({
-        promptMessage: 'Coloca el dedo del beneficiario en el escáner',
-        fallbackLabel: 'Usar código de acceso',
+        promptMessage: 'Confirma con tu huella que realizaste esta visita',
         cancelLabel: 'Cancelar',
-        disableDeviceFallback: false,
+        disableDeviceFallback: true,
       });
 
       if (result.success) {
@@ -182,7 +188,7 @@ const FirmaBiometricaScreen: React.FC<FirmaBiometricaScreenProps> = ({ navigatio
   // Guardar huella en FormContext
   const handleGuardarHuella = () => {
     setHuella(true);
-    Alert.alert('✅ Guardada', 'Huella del beneficiario guardada correctamente.');
+    Alert.alert('✅ Guardada', 'Certificación biométrica del técnico registrada.');
   };
 
   // Volver con confirmación si hay cambios sin guardar
@@ -206,7 +212,7 @@ const FirmaBiometricaScreen: React.FC<FirmaBiometricaScreenProps> = ({ navigatio
         showsVerticalScrollIndicator={true}
       >
         <Text style={styles.title}>Registro Biométrico</Text>
-        <Text style={styles.subtitle}>Huella dactilar del beneficiario</Text>
+        <Text style={styles.subtitle}>Certificación biométrica del técnico</Text>
 
         {/* Selector de tipo de scanner */}
         <View style={styles.scannerSelector}>
@@ -232,13 +238,18 @@ const FirmaBiometricaScreen: React.FC<FirmaBiometricaScreenProps> = ({ navigatio
                 !isScannerUSBConectado && styles.scannerOptionDisabled,
               ]}
               onPress={() => {
-                if (!isScannerUSBConectado) {
-                  Alert.alert(
-                    'Scanner USB no detectado',
-                    'Conecta el scanner de huella por USB-C y asegúrate de que el dispositivo sea compatible. Si ya lo conectaste, reinicia la app.'
-                  );
-                  return;
-                }
+                // El soporte para scanner USB-C NO está implementado:
+                // `checkUSBScanner` es un placeholder que siempre devuelve
+                // false, así que `handleUSBScannerAuth` es código inalcanzable.
+                // El mensaje anterior pedía "reiniciar la app" para algo que
+                // no iba a funcionar nunca. Se dice la verdad.
+                Alert.alert(
+                  'Función no disponible',
+                  'La lectura con scanner USB-C externo aún no está implementada en esta versión. Usa el sensor del dispositivo.'
+                );
+                return;
+                // eslint-disable-next-line no-unreachable
+                if (!isScannerUSBConectado) return;
                 setScannerTipo('usb_externo');
               }}
             >
@@ -277,8 +288,8 @@ const FirmaBiometricaScreen: React.FC<FirmaBiometricaScreenProps> = ({ navigatio
             {isLoading
               ? 'Escaneando...'
               : isAuthenticated
-                ? 'Huella registrada exitosamente'
-                : 'Coloca el dedo del beneficiario en el escáner'}
+                ? 'Certificación biométrica registrada'
+                : 'Confirma con tu huella que realizaste esta visita'}
           </Text>
         </View>
 

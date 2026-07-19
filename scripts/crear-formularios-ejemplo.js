@@ -4,7 +4,7 @@
 // ============================================================
 const http = require('http');
 
-const API = 'http://192.168.1.20:8089';
+const API = 'http://192.168.80.20:8089';
 
 const TECNICOS = [
   { nombre: 'Rodrigo Zuleta Velasquez', cedula: '1006530738', telefono: '3144210470', usuario: 'rodrigo.zuleta' },
@@ -60,7 +60,7 @@ function login() {
   return new Promise((resolve, reject) => {
     const data = JSON.stringify({ usuario: 'supervisor1', contrasena: '123456' });
     const req = http.request({
-      hostname: '192.168.1.20',
+      hostname: '192.168.80.20',
       port: 8089,
       path: '/api/auth/login',
       method: 'POST',
@@ -88,7 +88,7 @@ function guardarFormulario(token, form) {
   return new Promise((resolve, reject) => {
     const data = JSON.stringify(form);
     const req = http.request({
-      hostname: '192.168.1.20',
+      hostname: '192.168.80.20',
       port: 8089,
       path: '/api/formularios/guardar',
       method: 'POST',
