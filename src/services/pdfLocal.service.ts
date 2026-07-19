@@ -14,6 +14,7 @@ import {
   construirSeccionesEncuesta,
   SeccionResuelta,
 } from '../utils/encuestaSchema';
+import { membreteAperturaHtml, membreteCierreHtml, membreteCss } from '../utils/membrete';
 
 /**
  * Generar PDF local con fotos, firmas y huella embebidas
@@ -54,10 +55,13 @@ export const generarPDFLocal = async (
     }
 
     // 5. Generar PDF con expo-print
+    // Carta (612 × 792 pt), igual que el membrete oficial de ACPR.
+    // Antes se generaba en A4, así que el encabezado y el pie no cuadraban
+    // con el formato impreso de la entidad.
     const { uri } = await Print.printToFileAsync({
       html,
-      width: 595.28, // A4 width in points
-      height: 841.89, // A4 height
+      width: 612,
+      height: 792,
     });
 
     // 6. Renombrar PDF con formato: TECNICO-BENEFICIARIO-VEREDA-FECHA.pdf
@@ -321,21 +325,25 @@ function construirHTML(
   <title>Visita Técnica — ${escapeHtml(form.beneficiario.nombre)}</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
-    body {
-      font-family: 'Helvetica Neue', Arial, sans-serif;
-      margin: 32px;
-      color: #2d3436;
-      line-height: 1.5;
-    }
-    /* --- HEADER --- */
-    .header {
+    ${membreteCss()}
+    /* Título del documento, subordinado al membrete institucional */
+    .doc-titulo {
       text-align: center;
-      border-bottom: 3px solid #1B5E20;
-      padding-bottom: 14px;
-      margin-bottom: 20px;
+      border-bottom: 2px solid #1B5E20;
+      padding-bottom: 6px;
+      margin-bottom: 12px;
     }
-    .header h1 { color: #1B5E20; font-size: 22px; margin-bottom: 2px; }
-    .header p { color: #636e72; font-size: 12px; }
+    .doc-titulo h1 {
+      color: #1B5E20; font-size: 13pt; letter-spacing: 0.3px; margin-bottom: 3px;
+    }
+    .doc-titulo p { color: #444; font-size: 8.5pt; }
+    body {
+      font-family: 'Arial Narrow', Arial, sans-serif;
+      /* Márgenes reales los fija @page, para no invadir encabezado ni pie */
+      margin: 0;
+      color: #2d3436;
+      line-height: 1.4;
+    }
     /* --- GRID 2 COLUMNAS --- */
     .grid-2 {
       display: grid;
@@ -419,10 +427,12 @@ function construirHTML(
       margin-bottom: 6px;
     }
     .foto-img {
+      /* object-fit:cover recortaba la foto y en una evidencia de campo se
+         perdía parte de lo fotografiado; contain la muestra completa. */
       width: 100%;
-      height: auto;
-      max-height: 200px;
-      object-fit: cover;
+      height: 5.2cm;
+      object-fit: contain;
+      background: #f4f4f4;
       border-radius: 4px;
       display: block;
     }
@@ -448,8 +458,12 @@ function construirHTML(
     }
     .firma-item .evidencia-label { font-size: 11px; color: #6c5ce7; }
     .firma-img {
-      max-width: 100%;
-      max-height: 80px;
+      /* Alto fijo con contain: las firmas llegan en proporciones muy
+         distintas y a 80 px quedaban diminutas o deformadas. */
+      width: 100%;
+      height: 2.6cm;
+      object-fit: contain;
+      background: #fff;
       border: 1px dashed #b2bec3;
       border-radius: 4px;
       padding: 6px;
@@ -511,16 +525,23 @@ function construirHTML(
       text-align: center; font-size: 10px; color: #b2bec3;
     }
     @media print {
-      .grid-2 { break-inside: avoid; }
+      /* La rejilla puede partirse entre páginas; las tarjetas y las fotos no,
+         para que ningún bloque quede cortado por la mitad. */
+      .grid-2 { break-inside: auto; }
       .card { break-inside: avoid; }
-      .photo-grid { break-inside: avoid; }
+      .photo-grid { break-inside: auto; }
     }
   </style>
 </head>
 <body>
-  <div class="header">
-    <h1>🌱 GEODAILY — Formulario de Visita Técnica</h1>
-    <p><strong>ID:</strong> ${escapeHtml(form.id)} · <strong>Fecha:</strong> ${formatFecha(form.created_at)}</p>
+  ${membreteAperturaHtml()}
+
+  <div class="doc-titulo">
+    <h1>FORMULARIO DE VISITA TÉCNICA</h1>
+    <p><strong>Beneficiario:</strong> ${escapeHtml(form.beneficiario?.nombre || '—')}
+       &nbsp;·&nbsp; <strong>C.C.:</strong> ${escapeHtml(form.beneficiario?.cedula || '—')}
+       &nbsp;·&nbsp; <strong>Vereda:</strong> ${escapeHtml(form.beneficiario?.vereda || '—')}
+       &nbsp;·&nbsp; <strong>Fecha:</strong> ${formatFecha(form.created_at)}</p>
   </div>
 
   <!-- FILA 1: Técnico + Beneficiario -->
@@ -601,6 +622,7 @@ function construirHTML(
     <p>Documento generado por GEODAILY — ${new Date().toISOString()}</p>
     <p>Este es un documento digital válido como evidencia de campo.</p>
   </div>
+  ${membreteCierreHtml()}
 </body>
 </html>`;
 }
@@ -699,20 +721,24 @@ function construirHTMLCaracterizacion(
   <title>Caracterización Sociodemográfica — ${escapeHtml(c.productor_nombre || form.id)}</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
-    body {
-      font-family: 'Helvetica Neue', Arial, sans-serif;
-      margin: 40px;
-      color: #2d3436;
-      line-height: 1.6;
-    }
-    .header {
+    ${membreteCss()}
+    /* Título del documento, subordinado al membrete institucional */
+    .doc-titulo {
       text-align: center;
-      border-bottom: 3px solid #1B5E20;
-      padding-bottom: 16px;
-      margin-bottom: 24px;
+      border-bottom: 2px solid #1B5E20;
+      padding-bottom: 6px;
+      margin-bottom: 12px;
     }
-    .header h1 { color: #1B5E20; font-size: 22px; margin-bottom: 4px; }
-    .header p { color: #636e72; font-size: 13px; }
+    .doc-titulo h1 {
+      color: #1B5E20; font-size: 13pt; letter-spacing: 0.3px; margin-bottom: 3px;
+    }
+    .doc-titulo p { color: #444; font-size: 8.5pt; }
+    body {
+      font-family: 'Arial Narrow', Arial, sans-serif;
+      margin: 0;
+      color: #2d3436;
+      line-height: 1.45;
+    }
     .section {
       margin: 20px 0;
       padding: 16px 20px;
@@ -756,7 +782,8 @@ function construirHTMLCaracterizacion(
     }
     .photo-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
     .foto-item { padding: 10px; background: #fff; border-radius: 6px; border: 1px solid #e0e0e0; break-inside: avoid; }
-    .foto-img { width: 100%; height: auto; max-height: 200px; object-fit: cover; border-radius: 4px; display: block; }
+    /* contain en vez de cover: no recorta la evidencia fotográfica */
+    .foto-img { width: 100%; height: 5.2cm; object-fit: contain; background: #f4f4f4; border-radius: 4px; display: block; }
     .foto-coords { font-size: 10px; color: #636e72; font-family: monospace; margin-top: 3px; }
     .foto-heading { font-size: 10px; color: #0984e3; font-family: monospace; }
     .evidencia-item { margin: 12px 0; padding: 12px; background: #fff; border-radius: 6px; border: 1px solid #e0e0e0; page-break-inside: avoid; }
@@ -764,7 +791,7 @@ function construirHTMLCaracterizacion(
     .firmas-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 8px; }
     .firma-item { padding: 12px; background: #fff; border-radius: 6px; border: 1px solid #e0e0e0; break-inside: avoid; }
     .firma-item .evidencia-label { font-size: 11px; color: #6c5ce7; }
-    .firma-img { max-width: 100%; max-height: 80px; border: 1px dashed #b2bec3; border-radius: 4px; padding: 6px; background: #fff; display: block; margin: 0 auto; }
+    .firma-img { width: 100%; height: 2.6cm; object-fit: contain; border: 1px dashed #b2bec3; border-radius: 4px; padding: 4px; background: #fff; display: block; margin: 0 auto; }
     .huella-sello { margin: 16px 0; page-break-inside: avoid; }
     .huella-sello-inner {
       background: linear-gradient(135deg, #f0fdf4 0%, #dcfce7 100%);
@@ -786,13 +813,25 @@ function construirHTMLCaracterizacion(
     .huella-sello-stamp { display: inline-block; font-size: 14px; font-weight: bold; color: #15803d; letter-spacing: 1px; border: 2px solid #15803d; border-radius: 6px; padding: 4px 16px; transform: rotate(-2deg); }
     .no-data { font-size: 12px; color: #b2bec3; font-style: italic; padding: 8px 0; }
     .footer { margin-top: 40px; padding-top: 16px; border-top: 1px solid #e0e0e0; text-align: center; font-size: 11px; color: #b2bec3; }
-    @media print { .foto-img { max-width: 100%; } .section { break-inside: avoid; } }
+    @media print {
+      .foto-img { max-width: 100%; }
+      /* Las secciones SÍ pueden partirse: con break-inside:avoid una sección
+         que no cabía saltaba entera y dejaba media página vacía. Lo que no se
+         parte es cada pregunta (.q) ni cada evidencia (.foto-item). */
+      .section { break-inside: auto; }
+      .section h2 { break-after: avoid; }
+    }
   </style>
 </head>
 <body>
-  <div class="header">
-    <h1>🌱 GEODAILY — Encuesta Social AgroAmbiental</h1>
-    <p><strong>ID:</strong> ${escapeHtml(form.id)} | <strong>Productor:</strong> ${escapeHtml(c.productor_nombre || '—')} | <strong>Fecha:</strong> ${escapeHtml(c.fecha || formatFecha(form.created_at))}</p>
+  ${membreteAperturaHtml()}
+
+  <div class="doc-titulo">
+    <h1>ENCUESTA SOCIAL AGROAMBIENTAL</h1>
+    <p><strong>Productor:</strong> ${escapeHtml(c.productor_nombre || '—')}
+       &nbsp;·&nbsp; <strong>C.C.:</strong> ${escapeHtml(c.documento || '—')}
+       &nbsp;·&nbsp; <strong>Vereda:</strong> ${escapeHtml(c.vereda || '—')}
+       &nbsp;·&nbsp; <strong>Fecha:</strong> ${escapeHtml(c.fecha || formatFecha(form.created_at))}</p>
   </div>
 
   <!-- Encuesta completa (52 preguntas) desde el esquema canónico -->
@@ -856,6 +895,7 @@ function construirHTMLCaracterizacion(
     <p>Documento generado por GEODAILY — ${new Date().toISOString()}</p>
     <p>Este es un documento digital válido como evidencia de campo.</p>
   </div>
+  ${membreteCierreHtml()}
 </body>
 </html>`;
 }
