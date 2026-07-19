@@ -15,9 +15,9 @@ import {
   StyleSheet,
   Alert,
   Platform,
-  Linking,
   Dimensions,
   Modal,
+  Pressable,
   TextInput,
 } from 'react-native';
 import * as FileSystem from 'expo-file-system/legacy';
@@ -25,11 +25,18 @@ import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { RouteProp } from '@react-navigation/native';
 import { WebView } from 'react-native-webview';
 import { COLORS, FONTS, SPACING, BORDER_RADIUS, SHADOWS, API_CONFIG } from '../../theme';
-import { Formulario, DatosCaracterizacionNueva } from '../../types';
+import { Formulario, DatosCaracterizacionNueva, FotoGeotag } from '../../types';
+import VideoPlayerModal from '../../components/VideoPlayerModal';
+import {
+  resolverEvidenciasRemotas,
+  cabecerasDeArchivo,
+} from '../../services/archivos.service';
 import { formatFecha } from '../../utils/formatters';
+import { construirSeccionesEncuesta, esEncuestaSocial } from '../../utils/encuestaSchema';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Print from 'expo-print';
 import * as Sharing from 'expo-sharing';
+import * as IntentLauncher from 'expo-intent-launcher';
 import { convertirFotosAHTML, generarSelloBiometrico } from '../../services/pdfLocal.service';
 import { useAuth } from '../../store/AuthContext';
 import { fetchRevisiones, registrarRevision, Revision } from '../../services/revisiones.service';
@@ -365,6 +372,46 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
   const [generatingPdf, setGeneratingPdf] = useState(false);
   const [pdfUri, setPdfUri] = useState<string | null>(null);
   const [showPdf, setShowPdf] = useState(false);
+  /** Evidencia abierta en visor ampliado (null = cerrado) */
+  const [fotoPreview, setFotoPreview] = useState<FotoGeotag | null>(null);
+  const [videoPreview, setVideoPreview] = useState<FotoGeotag | null>(null);
+  /**
+   * Evidencias recuperadas del servidor cuando los archivos locales no
+   * existen (formulario abierto desde otro teléfono). null = usar las
+   * del formulario, que están en este dispositivo.
+   */
+  const [evidenciasRemotas, setEvidenciasRemotas] = useState<FotoGeotag[] | null>(null);
+  /** Cabeceras de autenticación para descargar evidencias de la API */
+  const [authHeaders, setAuthHeaders] = useState<Record<string, string>>({});
+
+  // Las evidencias mostradas: locales si están, remotas si no
+  const evidencias = evidenciasRemotas ?? formulario.fotos ?? [];
+  /** Una evidencia servida por la API necesita la cabecera Authorization */
+  const fuenteEvidencia = useCallback(
+    (uri: string) =>
+      uri.startsWith('http') ? { uri, headers: authHeaders } : { uri },
+    [authHeaders]
+  );
+
+  useEffect(() => {
+    let cancelado = false;
+    (async () => {
+      try {
+        const [headers, remotas] = await Promise.all([
+          cabecerasDeArchivo(),
+          resolverEvidenciasRemotas(formulario.id, formulario.fotos),
+        ]);
+        if (cancelado) return;
+        setAuthHeaders(headers);
+        if (remotas) setEvidenciasRemotas(remotas);
+      } catch (e) {
+        console.warn('[Detalle] No se pudieron resolver las evidencias:', e);
+      }
+    })();
+    return () => {
+      cancelado = true;
+    };
+  }, [formulario.id, formulario.fotos]);
   const { height: SCREEN_HEIGHT } = Dimensions.get('window');
   const PDF_HEIGHT = SCREEN_HEIGHT * 0.55;
 
@@ -615,40 +662,92 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
     return uri;
   };
 
-  const handleViewPDF = async () => {
-    if (formulario.pdf_url) {
-      const url = formulario.pdf_url.startsWith('http')
-        ? formulario.pdf_url
-        : `${API_CONFIG.BASE_URL}${formulario.pdf_url}`;
-      // Descargar PDF remoto para mostrarlo embebido en lugar de abrir navegador
-      setGeneratingPdf(true);
-      try {
-        if (!FileSystem.documentDirectory) {
-          throw new Error('documentDirectory no disponible');
-        }
-        const { uri: localUri } = await FileSystem.downloadAsync(url, FileSystem.documentDirectory + 'pdf_preview.pdf');
-        setPdfUri(localUri);
-        setShowPdf(true);
-      } catch {
-        // Fallback: abrir en navegador si no se puede descargar
-        try {
-          await Linking.openURL(url);
-        } catch {
-          Alert.alert('Error', 'No se pudo abrir el PDF');
-        }
-      } finally {
-        setGeneratingPdf(false);
-      }
+  /**
+   * Mostrar un PDF ya existente en disco.
+   *
+   * El WebView de Android NO tiene visor de PDF nativo: al cargar un
+   * file://…/x.pdf mostraba una pantalla en blanco — por eso "Ver PDF"
+   * parecía no hacer nada. En Android se abre con el visor del sistema
+   * mediante un content:// URI; en iOS el WKWebView sí renderiza PDFs,
+   * así que allí se mantiene la vista previa embebida.
+   */
+  const mostrarPdf = async (uri: string) => {
+    if (Platform.OS !== 'android') {
+      setPdfUri(uri);
+      setShowPdf(true);
       return;
     }
 
-    // Generar PDF local con expo-print y mostrarlo embebido
+    try {
+      // Android exige content:// — un file:// lanza FileUriExposedException
+      const contentUri = await FileSystem.getContentUriAsync(uri);
+      await IntentLauncher.startActivityAsync('android.intent.action.VIEW', {
+        data: contentUri,
+        flags: 1, // FLAG_GRANT_READ_URI_PERMISSION
+        type: 'application/pdf',
+      });
+    } catch (e) {
+      console.warn('[PDF] Sin visor de PDF instalado, ofreciendo compartir:', e);
+      // Sin app lectora de PDF: ofrecer abrir/guardar por otra vía
+      try {
+        if (await Sharing.isAvailableAsync()) {
+          await Sharing.shareAsync(uri, {
+            mimeType: 'application/pdf',
+            UTI: 'com.adobe.pdf',
+          });
+        } else {
+          Alert.alert(
+            'No se puede abrir el PDF',
+            'No hay un lector de PDF instalado en este dispositivo. Usa "Descargar PDF" para guardarlo.'
+          );
+        }
+      } catch {
+        Alert.alert('Error', 'No se pudo abrir el PDF');
+      }
+    }
+  };
+
+  const handleViewPDF = async () => {
     setGeneratingPdf(true);
     try {
+      // 1. Si el PDF ya está en este dispositivo, abrirlo directamente.
+      //    Al completar un formulario se guarda la ruta LOCAL (file://) en
+      //    pdf_url; tratarla como URL de servidor obligaba a regenerar el
+      //    PDF entero cada vez — lento y sin sentido estando offline.
+      if (formulario.pdf_url?.startsWith('file://')) {
+        const info = await FileSystem.getInfoAsync(formulario.pdf_url);
+        if (info.exists) {
+          await mostrarPdf(formulario.pdf_url);
+          return;
+        }
+        console.warn('[PDF] El PDF local ya no existe, regenerando');
+      }
+
+      // 2. Si hay PDF en el servidor, descargarlo a disco
+      if (formulario.pdf_url && !formulario.pdf_url.startsWith('file://')) {
+        const url = formulario.pdf_url.startsWith('http')
+          ? formulario.pdf_url
+          : `${API_CONFIG.BASE_URL}${formulario.pdf_url}`;
+        try {
+          if (!FileSystem.documentDirectory) {
+            throw new Error('documentDirectory no disponible');
+          }
+          const { uri: localUri } = await FileSystem.downloadAsync(
+            url,
+            FileSystem.documentDirectory + 'pdf_preview.pdf'
+          );
+          await mostrarPdf(localUri);
+          return;
+        } catch {
+          // Sin conexión o descarga fallida: se regenera localmente abajo
+          console.warn('[PDF] No se pudo descargar el remoto, generando local');
+        }
+      }
+
+      // 3. Generar el PDF localmente (mismo documento que "Descargar PDF")
       const uri = await generarPdfUri();
       if (!uri) throw new Error('sin uri');
-      setPdfUri(uri);
-      setShowPdf(true);
+      await mostrarPdf(uri);
     } catch (e) {
       Alert.alert('Error', 'No se pudo generar el PDF');
     } finally {
@@ -706,7 +805,7 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
   };
 
   const evidenciaCount = [
-    ...(formulario.fotos || []),
+    ...evidencias,
     ...(formulario.firma_beneficiario ? [true] : []),
     ...(formulario.firma_tecnico ? [true] : []),
     ...(formulario.huella_beneficiario ? [true] : []),
@@ -732,111 +831,46 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
         {/* Revisión jerárquica: novedades y vistos buenos */}
         <SeccionRevision formularioId={formulario.id} />
 
-        {/* Caracterización Sociodemográfica */}
-        {(formulario as any).caracterizacion_nueva && (() => {
-          const c = (formulario as any).caracterizacion_nueva;
-          const cs = c.componente_social || {};
-          const cp = c.componente_productivo || {};
-          const ca = c.componente_agroambiental || {};
-          const asuelo = c.analisis_suelo || {};
-          const rec = c.recomendaciones || {};
-
-          const Field = ({ label, value }: { label: string; value?: string }) =>
-            value ? <View style={styles.row}><Text style={styles.label}>{label}:</Text><Text style={styles.value}>{value}</Text></View> : null;
-
-          return (
-            <>
-              {/* Datos Generales */}
-              <View style={styles.section}>
-                <Text style={styles.sectionTitle}>📋 Datos Generales</Text>
-                <Field label="Municipio" value={c.municipio} />
-                <Field label="Fecha" value={c.fecha} />
-                <Field label="Vereda" value={c.vereda} />
-                <Field label="N° Encuesta" value={c.encuesta_numero} />
-                <Field label="Productor" value={c.productor_nombre} />
-                <Field label="Documento" value={c.documento} />
-                <Field label="Teléfono" value={c.telefono} />
-                <Field label="Técnico" value={c.tecnico_responsable} />
-                <Field label="Cédula del Técnico" value={c.tecnico_cedula} />
-                <Field label="Finca / Predio" value={c.finca} />
-              </View>
-
-              {/* Componente Social */}
-              {['nivel_educativo','personas_nucleo','fuente_ingresos','servicios_publicos','participa_organizacion','mano_obra'].some(k => cs[k]) && (
-                <View style={styles.section}>
-                  <Text style={styles.sectionTitle}>🤝 Componente Social</Text>
-                  <Field label="Nivel educativo" value={cs.nivel_educativo} />
-                  <Field label="Personas en el núcleo familiar" value={cs.personas_nucleo} />
-                  <Field label="Fuente de ingresos" value={cs.fuente_ingresos} />
-                  <Field label="Acceso a servicios públicos" value={cs.servicios_publicos} />
-                  <Field label="Participa en organización" value={cs.participa_organizacion} />
-                  <Field label="Mano de obra utilizada" value={cs.mano_obra} />
-                </View>
-              )}
-
-              {/* Componente Productivo */}
-              {['actividad_productiva','acceso_agua','sistemas_riego','asistencia_tecnica'].some(k => cp[k]) && (
-                <View style={styles.section}>
-                  <Text style={styles.sectionTitle}>🌾 Componente Productivo</Text>
-                  <Field label="Actividad productiva principal" value={cp.actividad_productiva} />
-                  <Field label="Acceso permanente al agua" value={cp.acceso_agua} />
-                  <Field label="Dispone de sistemas de riego" value={cp.sistemas_riego} />
-                  <Field label="Ha recibido asistencia técnica" value={cp.asistencia_tecnica} />
-                </View>
-              )}
-
-              {/* Componente Agroambiental */}
-              {['procesos_erosion','fuentes_hidricas','areas_conservacion','practicas_conservacion','manejo_residuos'].some(k => ca[k]) && (
-                <View style={styles.section}>
-                  <Text style={styles.sectionTitle}>🌿 Componente Agroambiental</Text>
-                  <Field label="Procesos de erosión" value={ca.procesos_erosion} />
-                  <Field label="Fuentes hídricas en la finca" value={ca.fuentes_hidricas} />
-                  <Field label="Áreas de conservación" value={ca.areas_conservacion} />
-                  <Field label="Prácticas de conservación" value={ca.practicas_conservacion} />
-                  <Field label="Manejo de residuos" value={ca.manejo_residuos} />
-                </View>
-              )}
-
-              {/* Análisis de Suelo */}
-              {['observacion_suelo','textura','color','drenaje','profundidad','piedras','compactacion','cobertura','evidencia_erosion'].some(k => asuelo[k]) && (
-                <View style={styles.section}>
-                  <Text style={styles.sectionTitle}>🧪 Análisis de Suelo</Text>
-                  <Field label="Observación del suelo" value={asuelo.observacion_suelo} />
-                  <Field label="Textura predominante" value={asuelo.textura} />
-                  <Field label="Color predominante" value={asuelo.color} />
-                  <Field label="Drenaje del suelo" value={asuelo.drenaje} />
-                  <Field label="Profundidad efectiva" value={asuelo.profundidad} />
-                  <Field label="Presencia de piedras" value={asuelo.piedras} />
-                  <Field label="Compactación del suelo" value={asuelo.compactacion} />
-                  <Field label="Cobertura del suelo" value={asuelo.cobertura} />
-                  <Field label="Evidencia de erosión" value={asuelo.evidencia_erosion} />
-                </View>
-              )}
-
-              {/* Recomendaciones */}
-              {(rec.recomendaciones_tecnicas || rec.recomendaciones_ambientales) && (
-                <View style={styles.section}>
-                  <Text style={styles.sectionTitle}>📋 Recomendaciones del Técnico</Text>
-                  {rec.recomendaciones_tecnicas && (
-                    <View style={styles.row}><Text style={styles.value}>{rec.recomendaciones_tecnicas}</Text></View>
-                  )}
-                  {rec.recomendaciones_ambientales && (
-                    <View style={styles.row}><Text style={styles.value}>{rec.recomendaciones_ambientales}</Text></View>
+        {/* Encuesta Social AgroAmbiental — resumen COMPLETO (52 preguntas).
+            Las secciones vienen del esquema canónico compartido con el
+            generador de PDF, así el detalle y el documento siempre coinciden. */}
+        {esEncuestaSocial(formulario) &&
+          construirSeccionesEncuesta(
+            (formulario as any).caracterizacion_nueva,
+            formulario
+          ).map((seccion) => (
+            <View key={seccion.titulo} style={styles.section}>
+              <Text style={styles.sectionTitle}>{seccion.titulo}</Text>
+              {seccion.preguntas.map((pregunta) => (
+                <View key={`${seccion.titulo}-${pregunta.numero}-${pregunta.texto}`} style={styles.pregunta}>
+                  <Text style={styles.preguntaTexto}>
+                    {pregunta.numero === '\u2022' ? '' : `${pregunta.numero}. `}
+                    {pregunta.texto}
+                  </Text>
+                  <Text
+                    style={[
+                      styles.preguntaValor,
+                      !pregunta.valor && styles.preguntaValorVacio,
+                    ]}
+                  >
+                    {pregunta.valor || 'Sin responder'}
+                  </Text>
+                  {!!pregunta.observacion && (
+                    <Text style={styles.preguntaObs}>Obs: {pregunta.observacion}</Text>
                   )}
                 </View>
-              )}
-            </>
-          );
-        })()}
+              ))}
+            </View>
+          ))}
 
         {/* Resumen de evidencias */}
         <View style={styles.evidenciasSummary}>
           <Text style={styles.evidenciasSummaryTitle}>📸 Evidencias ({evidenciaCount})</Text>
           <Text style={styles.evidenciasSummaryItem}>
-            • {formulario.fotos?.filter(f => f.tipo !== 'video').length || 0} foto(s)
+            • {evidencias.filter(f => f.tipo !== 'video').length} foto(s)
           </Text>
           <Text style={styles.evidenciasSummaryItem}>
-            • {formulario.fotos?.filter(f => f.tipo === 'video').length || 0} video(s)
+            • {evidencias.filter(f => f.tipo === 'video').length} video(s)
           </Text>
           <Text style={styles.evidenciasSummaryItem}>
             • Firma beneficiario: {formulario.firma_beneficiario ? '✓' : '✗'}
@@ -850,26 +884,39 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
         </View>
 
         {/* Fotos/Videos en miniatura */}
-        {formulario.fotos && formulario.fotos.length > 0 && (
+        {evidencias.length > 0 && (
           <View style={styles.fotosSection}>
-            <Text style={styles.sectionTitle}>Evidencias capturadas ({formulario.fotos.length})</Text>
+            <Text style={styles.sectionTitle}>
+              Evidencias capturadas ({evidencias.length})
+              {evidenciasRemotas ? ' · desde el servidor' : ''}
+            </Text>
             <ScrollView horizontal showsHorizontalScrollIndicator={false}>
-              {formulario.fotos.map((foto) => (
-                <View key={foto.id} style={styles.fotoThumbContainer}>
+              {evidencias.map((foto) => (
+                <TouchableOpacity
+                  key={foto.id}
+                  style={styles.fotoThumbContainer}
+                  // Los videos abren el reproductor; las fotos, el visor ampliado
+                  onPress={() =>
+                    foto.tipo === 'video'
+                      ? setVideoPreview(foto)
+                      : setFotoPreview(foto)
+                  }
+                  activeOpacity={0.8}
+                >
                   {foto.tipo === 'video' ? (
                     <View style={styles.videoThumb}>
                       <Text style={styles.videoThumbIcon}>▶️</Text>
                     </View>
                   ) : (
                     <Image
-                      source={{ uri: foto.uri }}
+                      source={fuenteEvidencia(foto.uri)}
                       style={styles.fotoThumb}
                     />
                   )}
                   {foto.tipo === 'video' && (
                     <Text style={styles.videoThumbLabel}>🎥</Text>
                   )}
-                </View>
+                </TouchableOpacity>
               ))}
             </ScrollView>
           </View>
@@ -950,6 +997,50 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
           />
         </View>
       )}
+
+      {/* 🎥 Reproductor de video de evidencia */}
+      <VideoPlayerModal
+        uri={videoPreview?.uri ?? null}
+        visible={!!videoPreview}
+        onClose={() => setVideoPreview(null)}
+        headers={authHeaders}
+        subtitulo={
+          videoPreview
+            ? `📅 ${formatFecha(videoPreview.timestamp)}${
+                videoPreview.coordenadas
+                  ? `  ·  📍 ${videoPreview.coordenadas.latitud?.toFixed(6)}, ${videoPreview.coordenadas.longitud?.toFixed(6)}`
+                  : ''
+              }`
+            : undefined
+        }
+      />
+
+      {/* 📸 Visor de foto ampliada */}
+      <Modal
+        visible={!!fotoPreview}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setFotoPreview(null)}
+      >
+        <Pressable style={styles.fotoModalOverlay} onPress={() => setFotoPreview(null)}>
+          {fotoPreview && (
+            <>
+              <Image
+                source={fuenteEvidencia(fotoPreview.uri)}
+                style={styles.fotoModalImage}
+                resizeMode="contain"
+              />
+              <Text style={styles.fotoModalInfo}>
+                📅 {formatFecha(fotoPreview.timestamp)}
+                {fotoPreview.coordenadas
+                  ? `  ·  📍 ${fotoPreview.coordenadas.latitud?.toFixed(6)}, ${fotoPreview.coordenadas.longitud?.toFixed(6)}`
+                  : ''}
+              </Text>
+              <Text style={styles.fotoModalHint}>Toca para cerrar</Text>
+            </>
+          )}
+        </Pressable>
+      </Modal>
 
       {/* Botones inferiores */}
       <View style={[styles.bottomBar, { paddingBottom: insets.bottom + SPACING.sm }]}>
@@ -1035,6 +1126,33 @@ const styles = StyleSheet.create({
     marginBottom: SPACING.xs,
     textTransform: 'uppercase',
   },
+  // --- Preguntas de la encuesta (resumen completo) ---
+  pregunta: {
+    paddingVertical: SPACING.xs,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: COLORS.border,
+  },
+  preguntaTexto: {
+    fontSize: FONTS.sizes.xs,
+    color: COLORS.textSecondary,
+    marginBottom: 2,
+  },
+  preguntaValor: {
+    fontSize: FONTS.sizes.sm,
+    fontWeight: FONTS.weights.medium,
+    color: COLORS.textPrimary,
+  },
+  preguntaValorVacio: {
+    color: COLORS.textSecondary,
+    fontStyle: 'italic',
+    fontWeight: FONTS.weights.regular,
+  },
+  preguntaObs: {
+    fontSize: FONTS.sizes.xs,
+    color: COLORS.textSecondary,
+    fontStyle: 'italic',
+    marginTop: 2,
+  },
   fotoThumb: {
     width: 100,
     height: 100,
@@ -1045,6 +1163,28 @@ const styles = StyleSheet.create({
   fotoThumbContainer: {
     position: 'relative',
     marginRight: SPACING.sm,
+  },
+  fotoModalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.92)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: SPACING.md,
+  },
+  fotoModalImage: {
+    width: '100%',
+    height: '75%',
+  },
+  fotoModalInfo: {
+    color: COLORS.surface,
+    fontSize: FONTS.sizes.sm,
+    textAlign: 'center',
+    marginTop: SPACING.md,
+  },
+  fotoModalHint: {
+    color: 'rgba(255,255,255,0.6)',
+    fontSize: FONTS.sizes.xs,
+    marginTop: SPACING.xs,
   },
   videoThumb: {
     width: 100,

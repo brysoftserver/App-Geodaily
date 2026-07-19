@@ -74,7 +74,13 @@ const BeneficiarioDetailScreen: React.FC<BeneficiarioDetailScreenProps> = ({ nav
         });
         break;
       case 'documentos':
-        navigation.navigate('Documentos');
+        // Los documentos son de la finca (beneficiario), no de una visita:
+        // sin estos parámetros la pantalla mostraba los del formulario en
+        // curso, que puede ser de otro beneficiario o no existir.
+        navigation.navigate('Documentos', {
+          beneficiarioCedula: beneficiario.cedula,
+          beneficiarioNombre: beneficiario.nombre,
+        });
         break;
     }
   };

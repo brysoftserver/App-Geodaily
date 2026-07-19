@@ -16,6 +16,7 @@ import React, {
   useRef,
   useMemo,
 } from 'react';
+import NetInfo from '@react-native-community/netinfo';
 import { SyncStatus, Formulario } from '../types';
 import {
   getPendingSyncForms,
@@ -37,6 +38,7 @@ import {
 import { uploadPhoto } from '../services/photos.service';
 import { uploadVideo } from '../services/videos.service';
 import { generarPDF } from '../services/pdf.service';
+import { limpiarEvidenciasAntiguas } from '../services/mediaStorage.service';
 import apiClient from '../services/api';
 import { API_CONFIG } from '../theme';
 
@@ -130,6 +132,8 @@ export const SyncProvider: React.FC<{ children: React.ReactNode }> = ({
   const [state, dispatch] = useReducer(syncReducer, initialState);
   const isSyncing = useRef(false);
   const abortController = useRef<AbortController | null>(null);
+  /** Último estado de conectividad conocido — para detectar offline→online */
+  const wasConnected = useRef<boolean | null>(null);
 
   // ------------------------------------------------------------------
   // Utilitarios
@@ -171,11 +175,15 @@ export const SyncProvider: React.FC<{ children: React.ReactNode }> = ({
               form.beneficiario?.nombre || undefined,
               foto.timestamp,
               form.tipo,
+              form.id,
             );
 
             if (resultado) {
-              await markFotoAsSynced(foto.id);
-              console.log('[Sync] Foto subida:', foto.id);
+              await markFotoAsSynced(foto.id, {
+                archivoId: resultado.id,
+                ruta: resultado.ruta,
+              });
+              console.log('[Sync] Foto subida:', foto.id, '→', resultado.ruta);
             } else {
               console.warn('[Sync] Foto devolvió null (offline?):', foto.id);
               todasExitosas = false;
@@ -218,11 +226,15 @@ export const SyncProvider: React.FC<{ children: React.ReactNode }> = ({
               form.beneficiario?.cedula || undefined,
               form.beneficiario?.nombre || undefined,
               form.tipo,
+              form.id,
             );
 
             if (resultado) {
-              await markVideoAsSynced(video.id);
-              console.log('[Sync] Video subido:', video.id);
+              await markVideoAsSynced(video.id, {
+                archivoId: resultado.id,
+                ruta: resultado.ruta,
+              });
+              console.log('[Sync] Video subido:', video.id, '→', resultado.ruta);
             } else {
               console.warn('[Sync] Video devolvió null (offline?):', video.id);
               todasExitosas = false;
@@ -255,16 +267,23 @@ export const SyncProvider: React.FC<{ children: React.ReactNode }> = ({
           tecnico: form.tecnico,
           beneficiario: form.beneficiario,
           actividad: form.actividad,
-          coordenadas: {
-            latitud: form.coordenadas.latitud,
-            longitud: form.coordenadas.longitud,
-            altitud: form.coordenadas.altitud,
-            precision_gps: form.coordenadas.precision_gps,
-            timestamp: form.coordenadas.timestamp,
-          },
+          // La encuesta completa (52 preguntas) vive aquí. Sin este campo el
+          // servidor recibía el formulario vacío de respuestas y el
+          // multi-dispositivo mostraba solo el cascarón.
+          sociodemografico: form.sociodemografico || null,
+          caracterizacion_nueva: (form as any).caracterizacion_nueva || null,
+          coordenadas: form.coordenadas
+            ? {
+                latitud: form.coordenadas.latitud,
+                longitud: form.coordenadas.longitud,
+                altitud: form.coordenadas.altitud,
+                precision_gps: form.coordenadas.precision_gps,
+                timestamp: form.coordenadas.timestamp,
+              }
+            : null,
           georeferencia: form.georeferencia || null,
           clima: form.clima || null,
-          fotos: form.fotos.map((f) => ({
+          fotos: (form.fotos || []).map((f) => ({
             id: f.id,
             uri: f.uri,
             coordenadas: f.coordenadas,
@@ -606,6 +625,11 @@ export const SyncProvider: React.FC<{ children: React.ReactNode }> = ({
       }
 
       await checkPending();
+
+      // Liberar espacio: borra evidencias de más de 30 días que el
+      // servidor ya confirmó. Siguen viéndose en el detalle, que las
+      // vuelve a traer de MinIO. Nunca toca lo que está sin sincronizar.
+      limpiarEvidenciasAntiguas().catch(() => { /* no es crítico */ });
     } catch (err: any) {
       dispatch({
         type: 'SYNC_ERROR',
@@ -633,6 +657,29 @@ export const SyncProvider: React.FC<{ children: React.ReactNode }> = ({
   useEffect(() => {
     checkPending();
   }, [checkPending]);
+
+  // ------------------------------------------------------------------
+  // Efecto: auto-sincronizar en la transición offline→online.
+  // Vive en el provider (siempre montado) y no en una pantalla, para que
+  // el técnico en campo suba lo pendiente apenas recupere señal, sin
+  // depender de que abra el menú o el mapa.
+  // ------------------------------------------------------------------
+
+  useEffect(() => {
+    const unsubscribe = NetInfo.addEventListener((netState) => {
+      const isOnlineNow =
+        !!netState.isConnected && netState.isInternetReachable !== false;
+      const cameOnline = isOnlineNow && wasConnected.current !== true;
+      wasConnected.current = isOnlineNow;
+
+      if (cameOnline) {
+        console.log('[Sync] Conexión recuperada — sincronizando pendientes...');
+        syncNow().catch(() => { /* la cola reintenta */ });
+      }
+    });
+
+    return () => unsubscribe();
+  }, [syncNow]);
 
   // Limpiar al desmontar
   useEffect(() => {

@@ -18,6 +18,23 @@ export const setApiAuthToken = (token: string | null) => {
   _inMemoryToken = token;
 };
 
+/**
+ * Obtener el token JWT actual.
+ *
+ * Necesario para cargar evidencias (fotos/videos) desde la API: los
+ * componentes <Image> y <VideoView> hacen la petición HTTP por su cuenta,
+ * fuera de axios, así que hay que pasarles la cabecera Authorization.
+ */
+export const getApiAuthToken = async (): Promise<string | null> => {
+  try {
+    const token = await SecureStore.getItemAsync(STORAGE_KEYS.AUTH_TOKEN);
+    if (token) return token;
+  } catch {
+    // SecureStore no disponible (Expo Go / web) — usar el de memoria
+  }
+  return _inMemoryToken;
+};
+
 // --- Puente hacia AuthContext: permite que el interceptor de 401 notifique
 // a la UI para que reaccione (gate de login) sin que api.ts dependa de React ---
 let _onUnauthorized: (() => void) | null = null;

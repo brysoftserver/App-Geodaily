@@ -281,7 +281,10 @@ export interface PosicionTracking {
 /** Documento digital de finca */
 export interface DocumentoFinca {
   id: string;
+  /** Visita que capturó el documento (referencia histórica) */
   formulario_id: string;
+  /** Dueño real del documento: la finca/beneficiario. Persiste entre visitas. */
+  beneficiario_cedula?: string;
   tipo: 'foto' | 'pdf' | 'kml' | 'otro';
   uri: string;
   nombre: string;

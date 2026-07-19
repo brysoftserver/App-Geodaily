@@ -20,7 +20,8 @@ import { COLORS, FONTS, SPACING, BORDER_RADIUS } from '../../theme';
 import { useForm } from '../../store/FormContext';
 import { useAuth } from '../../store/AuthContext';
 import { useSync } from '../../store/SyncContext';
-import { getFormulariosLocales } from '../../services/database';
+import { getFormulariosLocales, mergeFormulariosDelServidor } from '../../services/database';
+import { fetchFormulariosDelServidor } from '../../services/formularios.service';
 import { fetchResumenRevisiones, EstadoRevision } from '../../services/revisiones.service';
 import { Formulario } from '../../types';
 import FormCard from '../../components/FormCard';
@@ -63,30 +64,50 @@ const FormularioListScreen: React.FC<FormularioListScreenProps> = ({ navigation,
     );
   }, [formularios, beneficiarioCedula]);
 
+  /** Lee la BD local y publica al contexto */
+  const publicarLocales = useCallback(async () => {
+    const localForms = await getFormulariosLocales(user?.id);
+    // Filtrar formularios inválidos para evitar white screen
+    const validForms = localForms.filter(isValidFormulario);
+    if (validForms.length < localForms.length) {
+      console.warn(
+        `[Listado] Se omitieron ${localForms.length - validForms.length} formularios inválidos`
+      );
+    }
+    // Siempre actualizar contexto, incluso si está vacío (limpia datos de otro usuario)
+    cargarFormularios(validForms);
+  }, [cargarFormularios, user?.id]);
+
   const loadForms = useCallback(async () => {
     try {
       // Estado de revisiones (novedades / vistos buenos) — best effort,
       // si no hay conexión simplemente no se muestran badges
       fetchResumenRevisiones().then(setEstadosRevision).catch(() => {});
 
-      // Técnico solo ve sus propios formularios
-      const localForms = await getFormulariosLocales(user?.id);
-      // Filtrar formularios inválidos para evitar white screen
-      const validForms = localForms.filter(isValidFormulario);
-      if (validForms.length < localForms.length) {
-        console.warn(
-          `[Listado] Se omitieron ${localForms.length - validForms.length} formularios inválidos`
-        );
-      }
-      // Siempre actualizar contexto, incluso si está vacío (limpia datos de otro usuario)
-      cargarFormularios(validForms);
+      // 1. Mostrar lo local de inmediato — el técnico en campo no espera red
+      await publicarLocales();
     } catch (error) {
       console.warn('[Listado] Error cargando formularios locales:', error);
     } finally {
       setIsLoading(false);
+    }
+
+    // 2. En segundo plano: traer del servidor, fusionar y refrescar.
+    //    Esto es lo que permite que un técnico vea sus formularios al
+    //    iniciar sesión en un teléfono distinto. Offline devuelve [] y
+    //    la vista simplemente se queda con lo local.
+    try {
+      const remotos = await fetchFormulariosDelServidor();
+      if (remotos.length > 0) {
+        const aplicados = await mergeFormulariosDelServidor(remotos);
+        if (aplicados > 0) await publicarLocales();
+      }
+    } catch (e) {
+      console.warn('[Listado] No se pudo traer del servidor, usando local:', e);
+    } finally {
       setRefreshing(false);
     }
-  }, [cargarFormularios, user?.id]);
+  }, [publicarLocales]);
 
   useEffect(() => {
     loadForms();

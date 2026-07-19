@@ -138,5 +138,6 @@ export const API_CONFIG = {
     FIRMAS: '/api/firmas',
     DOCUMENTOS: '/api/documentos',
     VIDEOS: '/api/videos',
+    ARCHIVOS: '/api/archivos',
   },
 };

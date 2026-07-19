@@ -324,6 +324,7 @@ const FormularioScreen: React.FC<FormularioScreenProps> = ({ navigation, route }
             beneficiario.cedula || undefined,
             beneficiario.nombre || undefined,
             'visita_tecnica',
+            formId,
           ).catch(() => {});
         } else {
           saveFotoLocal(foto.id, formId, foto.uri, foto.coordenadas).catch(() => {});
@@ -338,6 +339,7 @@ const FormularioScreen: React.FC<FormularioScreenProps> = ({ navigation, route }
             beneficiario.nombre || undefined,
             foto.timestamp,
             'visita_tecnica',
+            formId,
           ).catch(() => {});
         }
       }
@@ -444,10 +446,10 @@ const FormularioScreen: React.FC<FormularioScreenProps> = ({ navigation, route }
         for (const foto of fotosParaUpload) {
           if (foto.tipo === 'video') {
             saveVideoLocal(foto.id, formId, foto.uri, foto.coordenadas).catch(() => {});
-            uploadVideo(foto.uri, foto.coordenadas?.latitud, foto.coordenadas?.longitud, `Formulario ${formId}`, beneficiario.cedula || undefined, beneficiario.nombre || undefined, 'visita_tecnica').catch(() => {});
+            uploadVideo(foto.uri, foto.coordenadas?.latitud, foto.coordenadas?.longitud, `Formulario ${formId}`, beneficiario.cedula || undefined, beneficiario.nombre || undefined, 'visita_tecnica', formId).catch(() => {});
           } else {
             saveFotoLocal(foto.id, formId, foto.uri, foto.coordenadas).catch(() => {});
-            uploadPhoto(foto.uri, foto.coordenadas?.latitud, foto.coordenadas?.longitud, foto.coordenadas?.altitud, `Formulario ${formId}`, undefined, beneficiario.cedula || undefined, beneficiario.nombre || undefined, foto.timestamp, 'visita_tecnica').catch(() => {});
+            uploadPhoto(foto.uri, foto.coordenadas?.latitud, foto.coordenadas?.longitud, foto.coordenadas?.altitud, `Formulario ${formId}`, undefined, beneficiario.cedula || undefined, beneficiario.nombre || undefined, foto.timestamp, 'visita_tecnica', formId).catch(() => {});
           }
         }
       } catch {

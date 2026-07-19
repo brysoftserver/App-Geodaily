@@ -28,16 +28,40 @@ import { useForm } from '../../store/FormContext';
 import { COLORS, FONTS, SPACING, BORDER_RADIUS, SHADOWS, API_CONFIG } from '../../theme';
 import { DocumentoFinca } from '../../types';
 import * as DocumentPicker from 'expo-document-picker';
-import { getDb } from '../../services/database';
+import {
+  getDocumentosDeBeneficiario,
+  saveDocumentoLocal,
+  deleteDocumentoLocal,
+  vincularDocumentosHuerfanos,
+} from '../../services/database';
 import apiClient, { isOfflineError } from '../../services/api';
+import { persistirEvidencia } from '../../services/mediaStorage.service';
 
 type DocumentosScreenProps = {
   navigation: NativeStackNavigationProp<Record<string, any>>;
+  route?: {
+    params?: {
+      /** Beneficiario dueño de los documentos. Si no viene, se toma del formulario en curso. */
+      beneficiarioCedula?: string;
+      beneficiarioNombre?: string;
+    };
+  };
 };
 
-const DocumentosScreen: React.FC<DocumentosScreenProps> = ({ navigation }) => {
+const DocumentosScreen: React.FC<DocumentosScreenProps> = ({ navigation, route }) => {
   const { formularioActual } = useForm();
   const insets = useSafeAreaInsets();
+
+  // El dueño de los documentos es el beneficiario. Puede venir por
+  // navegación (desde la ficha del beneficiario) o del formulario en curso.
+  const cedulaBeneficiario =
+    route?.params?.beneficiarioCedula?.trim() ||
+    formularioActual?.beneficiario?.cedula?.trim() ||
+    '';
+  const nombreBeneficiario =
+    route?.params?.beneficiarioNombre ||
+    formularioActual?.beneficiario?.nombre ||
+    '';
 
   const [documentos, setDocumentos] = useState<DocumentoFinca[]>([]);
   const [subiendoDoc, setSubiendoDoc] = useState(false);
@@ -54,47 +78,33 @@ const DocumentosScreen: React.FC<DocumentosScreenProps> = ({ navigation }) => {
   const cargarDocumentos = useCallback(async () => {
     try {
       setLoading(true);
-      const db = getDb();
-      const formId = formularioActual?.id;
-      if (db && formId) {
-        const docs = await db.getAllAsync<any>(
-          'SELECT * FROM documentos_finca WHERE formulario_id = ? ORDER BY created_at DESC',
-          [formId]
-        );
-        if (docs && docs.length > 0) {
-          setDocumentos(docs as DocumentoFinca[]);
-        }
-      }
+      // Se consulta por beneficiario: los documentos de la finca persisten
+      // entre visitas y no dependen del formulario que los capturó.
+      const docs = await getDocumentosDeBeneficiario(
+        cedulaBeneficiario || undefined,
+        formularioActual?.id
+      );
+      setDocumentos(docs);
     } catch (e) {
       console.warn('[Documentos] Error al cargar documentos:', e);
     } finally {
       setLoading(false);
     }
-  }, [formularioActual?.id]);
+  }, [cedulaBeneficiario, formularioActual?.id]);
 
   useEffect(() => {
     cargarDocumentos();
   }, [cargarDocumentos]);
 
-  // ─── Actualizar documentos con 'sin-formulario' ────────────
+  // ─── Vincular documentos huérfanos al formulario/beneficiario ────
   useEffect(() => {
-    const actualizarFormId = async () => {
-      const formId = formularioActual?.id;
-      if (!formId || formId === 'sin-formulario') return;
-      try {
-        const db = getDb();
-        if (db) {
-          await db.runAsync(
-            "UPDATE documentos_finca SET formulario_id = ? WHERE formulario_id = 'sin-formulario' OR formulario_id IS NULL OR formulario_id = ''",
-            [formId]
-          );
-        }
-      } catch (e) {
-        // Ignorar
-      }
-    };
-    actualizarFormId();
-  }, [formularioActual?.id]);
+    const formId = formularioActual?.id;
+    if (!formId || formId === 'sin-formulario') return;
+    vincularDocumentosHuerfanos(formId, cedulaBeneficiario || undefined)
+      .then(cargarDocumentos)
+      .catch(() => { /* no bloquea la pantalla */ });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [formularioActual?.id, cedulaBeneficiario]);
 
   // ─── Guardar documento en SQLite y opcionalmente subir a MinIO ──
   const guardarDocumento = async (
@@ -115,15 +125,8 @@ const DocumentosScreen: React.FC<DocumentosScreenProps> = ({ navigation }) => {
 
     // 2. Guardar en SQLite local
     try {
-      const db = getDb();
-      if (db) {
-        await db.runAsync(
-          `INSERT OR REPLACE INTO documentos_finca (id, formulario_id, tipo, uri, nombre, descripcion, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?)`,
-          [nuevoDoc.id, nuevoDoc.formulario_id, nuevoDoc.tipo, nuevoDoc.uri, nuevoDoc.nombre, nuevoDoc.descripcion || null, nuevoDoc.created_at]
-        );
-      }
-      setDocumentos(prev => [...prev, nuevoDoc]);
+      await saveDocumentoLocal(nuevoDoc);
+      setDocumentos(prev => [nuevoDoc, ...prev]);
       Alert.alert('✅ Documento guardado', `${nuevoDoc.nombre} se ha guardado correctamente (local + MinIO).`);
     } catch (e) {
       console.error('[Documentos] Error al guardar en SQLite:', e);
@@ -150,8 +153,8 @@ const DocumentosScreen: React.FC<DocumentosScreenProps> = ({ navigation }) => {
       if (descripcion) formData.append('descripcion', descripcion);
 
       // Pasar datos del beneficiario para estructurar carpetas en MinIO
-      const benefCedula = formularioActual?.beneficiario?.cedula;
-      const benefNombre = formularioActual?.beneficiario?.nombre;
+      const benefCedula = cedulaBeneficiario;
+      const benefNombre = nombreBeneficiario;
       const tipoFormulario = formularioActual?.tipo;
       if (benefCedula) formData.append('beneficiario_cedula', benefCedula);
       if (benefNombre) formData.append('beneficiario_nombre', benefNombre);
@@ -188,19 +191,27 @@ const DocumentosScreen: React.FC<DocumentosScreenProps> = ({ navigation }) => {
       if (!result.canceled && result.assets && result.assets.length > 0) {
         const asset = result.assets[0];
         const esPdf = asset.name?.toLowerCase().endsWith('.pdf');
+        const docId = 'doc-' + Date.now();
+        const nombreDoc = asset.name || `documento_${Date.now()}`;
+
+        // DocumentPicker copia a caché (copyToCacheDirectory), así que se
+        // mueve a almacenamiento persistente antes de registrarlo.
+        const uriPersistente = await persistirEvidencia(asset.uri, docId);
+
         const nuevoDoc: DocumentoFinca = {
-          id: 'doc-' + Date.now(),
+          id: docId,
           formulario_id: formularioActual?.id || 'sin-formulario',
+          beneficiario_cedula: cedulaBeneficiario || undefined,
           tipo: esPdf ? 'pdf' : 'foto',
-          uri: asset.uri,
-          nombre: asset.name || `documento_${Date.now()}`,
+          uri: uriPersistente,
+          nombre: nombreDoc,
           descripcion: '',
           created_at: new Date().toISOString(),
         };
 
         await guardarDocumento(nuevoDoc, {
-          uri: asset.uri,
-          nombre: asset.name || `documento_${Date.now()}`,
+          uri: uriPersistente,
+          nombre: nombreDoc,
           mimeType: esPdf ? 'application/pdf' : 'image/jpeg',
         });
       }
@@ -232,11 +243,19 @@ const DocumentosScreen: React.FC<DocumentosScreenProps> = ({ navigation }) => {
       });
       if (foto?.uri) {
         const nombre = `documento_foto_${Date.now()}.jpg`;
+        const docId = 'doc-' + Date.now();
+
+        // Sacar el documento de la caché del sistema: Android puede
+        // vaciarla sin avisar y son documentos de la finca, no simples
+        // fotos de apoyo.
+        const uriPersistente = await persistirEvidencia(foto.uri, docId);
+
         const nuevoDoc: DocumentoFinca = {
-          id: 'doc-' + Date.now(),
+          id: docId,
           formulario_id: formularioActual?.id || 'sin-formulario',
+          beneficiario_cedula: cedulaBeneficiario || undefined,
           tipo: 'foto', // ← Sigue siendo un documento (tipo foto)
-          uri: foto.uri,
+          uri: uriPersistente,
           nombre,
           descripcion: '',
           created_at: new Date().toISOString(),
@@ -244,7 +263,7 @@ const DocumentosScreen: React.FC<DocumentosScreenProps> = ({ navigation }) => {
 
         setShowCamera(false);
         await guardarDocumento(nuevoDoc, {
-          uri: foto.uri,
+          uri: uriPersistente,
           nombre,
           mimeType: 'image/jpeg',
         });
@@ -266,10 +285,7 @@ const DocumentosScreen: React.FC<DocumentosScreenProps> = ({ navigation }) => {
         style: 'destructive',
         onPress: async () => {
           try {
-            const db = getDb();
-            if (db) {
-              await db.runAsync('DELETE FROM documentos_finca WHERE id = ?', [doc.id]);
-            }
+            await deleteDocumentoLocal(doc.id);
             setDocumentos(prev => prev.filter(d => d.id !== doc.id));
           } catch (e) {
             console.error('[Documentos] Error al eliminar:', e);

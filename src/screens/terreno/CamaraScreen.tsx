@@ -33,6 +33,7 @@ import { useForm } from '../../store/FormContext';
 import { COLORS, FONTS, SPACING, BORDER_RADIUS, SHADOWS } from '../../theme';
 import { formatCoordenadas } from '../../utils/formatters';
 import LoadingSpinner from '../../components/LoadingSpinner';
+import VideoPlayerModal from '../../components/VideoPlayerModal';
 import { FotoGeotag } from '../../types';
 import { saveFotoLocal, saveVideoLocal } from '../../services/database';
 
@@ -64,6 +65,7 @@ const CamaraScreen: React.FC<CamaraScreenProps> = ({ navigation, route }) => {
 
   // ---- Estado para previsualización de foto a pantalla completa ----
   const [fotoPreview, setFotoPreview] = useState<FotoGeotag | null>(null);
+  const [videoPreview, setVideoPreview] = useState<FotoGeotag | null>(null);
 
   // Sincronizar fotos desde FormContext cada vez que la pantalla obtiene foco
   // (para que no se pierdan al ir a otra pantalla y volver)
@@ -373,7 +375,8 @@ const CamaraScreen: React.FC<CamaraScreenProps> = ({ navigation, route }) => {
 
         // 4. Grabación finalizada (por stopRecording o por maxDuration)
         if (video?.uri) {
-          const nuevaFoto = await capturarFoto(video.uri);
+          // esVideo=true → se persiste con extensión .mp4
+          const nuevaFoto = await capturarFoto(video.uri, undefined, true);
           if (nuevaFoto) {
             nuevaFoto.tipo = 'video';
             resolverUbicacion(
@@ -563,7 +566,11 @@ const CamaraScreen: React.FC<CamaraScreenProps> = ({ navigation, route }) => {
                 <TouchableOpacity
                   key={item.id}
                   style={styles.fotoCard}
-                  onPress={() => item.tipo !== 'video' && setFotoPreview(item)}
+                  onPress={() =>
+                    item.tipo === 'video'
+                      ? setVideoPreview(item)
+                      : setFotoPreview(item)
+                  }
                   onLongPress={() => handleDeleteFoto(item)}
                   activeOpacity={0.8}
                 >
@@ -671,6 +678,22 @@ const CamaraScreen: React.FC<CamaraScreenProps> = ({ navigation, route }) => {
           )}
         </Pressable>
       </Modal>
+
+      {/* ---- Reproductor de video a pantalla completa ---- */}
+      <VideoPlayerModal
+        uri={videoPreview?.uri ?? null}
+        visible={!!videoPreview}
+        onClose={() => setVideoPreview(null)}
+        subtitulo={
+          videoPreview
+            ? `📅 ${new Date(videoPreview.timestamp).toLocaleString('es-CO')}  ·  📍 ${formatCoordenadas(
+                videoPreview.coordenadas.latitud,
+                videoPreview.coordenadas.longitud,
+                6
+              )}`
+            : undefined
+        }
+      />
     </View>
   );
 };

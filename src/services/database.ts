@@ -3,7 +3,7 @@
 // ============================================================
 
 import * as SQLite from 'expo-sqlite';
-import { Formulario, Coordenadas } from '../types';
+import { Formulario, Coordenadas, DocumentoFinca } from '../types';
 
 let db: SQLite.SQLiteDatabase | null = null;
 let dbFailedOnce = false; // evita reintentar si ya falló (web)
@@ -287,6 +287,133 @@ export const getFormulariosLocales = async (usuarioId?: string): Promise<Formula
 };
 
 /**
+ * Evidencias locales que ya se pueden borrar del dispositivo.
+ *
+ * Triple garantía antes de considerar una evidencia descartable:
+ *  1. está marcada como sincronizada,
+ *  2. tiene `archivo_id`, es decir el servidor confirmó la subida y se
+ *     puede recuperar desde MinIO,
+ *  3. es más antigua que `diasMinimos`.
+ *
+ * Sin las tres condiciones el archivo se conserva: es preferible ocupar
+ * espacio que perder evidencia de campo.
+ */
+export const getEvidenciasPurgables = async (
+  diasMinimos = 30
+): Promise<string[]> => {
+  const database = await ensureDb();
+  if (!database) return [];
+
+  const limite = new Date(Date.now() - diasMinimos * 24 * 60 * 60 * 1000).toISOString();
+
+  try {
+    const rows = await database.getAllAsync<{ uri: string }>(
+      `SELECT uri FROM fotos_locales
+        WHERE sincronizada = 1 AND archivo_id IS NOT NULL AND archivo_id != '' AND timestamp < ?
+       UNION ALL
+       SELECT uri FROM videos_locales
+        WHERE sincronizada = 1 AND archivo_id IS NOT NULL AND archivo_id != '' AND timestamp < ?`,
+      [limite, limite]
+    );
+    return rows.map((r) => r.uri).filter(Boolean);
+  } catch (e) {
+    console.warn('[DB] Error buscando evidencias purgables:', e);
+    return [];
+  }
+};
+
+/**
+ * Fusionar formularios traídos del servidor con los locales.
+ *
+ * Regla de conflicto: gana el `updated_at` más reciente. Así el trabajo
+ * hecho offline en este dispositivo nunca es pisado por una copia vieja
+ * del servidor, y a la vez un dispositivo nuevo recibe todo el historial
+ * del técnico al iniciar sesión.
+ *
+ * Los formularios que entran del servidor se marcan como sincronizados
+ * para que no vuelvan a encolarse para subida.
+ *
+ * @returns cuántos formularios se insertaron o actualizaron desde el servidor
+ */
+export const mergeFormulariosDelServidor = async (
+  remotos: Formulario[]
+): Promise<number> => {
+  const database = await ensureDb();
+  if (!database) {
+    console.warn('[DB] BD local no disponible — merge omitido');
+    return 0;
+  }
+  if (!remotos || remotos.length === 0) return 0;
+
+  let aplicados = 0;
+
+  for (const remoto of remotos) {
+    if (!remoto?.id) continue;
+    try {
+      const local = await database.getFirstAsync<Record<string, any>>(
+        'SELECT id, updated_at, sincronizado FROM formularios WHERE id = ?',
+        [remoto.id]
+      );
+
+      // Si existe local y es igual o más nuevo, conservar el local
+      if (local?.updated_at && remoto.updated_at) {
+        const tLocal = Date.parse(local.updated_at);
+        const tRemoto = Date.parse(remoto.updated_at);
+        if (Number.isFinite(tLocal) && Number.isFinite(tRemoto) && tLocal >= tRemoto) {
+          continue;
+        }
+      }
+
+      // El servidor devuelve usuario_id como columna propia; si el técnico
+      // embebido no lo trae, usarlo como respaldo para que el filtrado por
+      // usuario en getFormulariosLocales siga funcionando.
+      const usuarioId =
+        remoto.tecnico?.usuario_id || (remoto as any).usuario_id || null;
+
+      await database.runAsync(
+        `INSERT OR REPLACE INTO formularios (
+          id, tipo, tecnico_json, beneficiario_json, actividad_json,
+          sociodemografico_json, caracterizacion_nueva_json, coordenadas_json,
+          georeferencia_json, clima_json, fotos_json,
+          firma_beneficiario, firma_tecnico, huella_beneficiario,
+          pdf_url, sincronizado, usuario_id, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)`,
+        [
+          remoto.id,
+          remoto.tipo,
+          JSON.stringify(remoto.tecnico || {}),
+          JSON.stringify(remoto.beneficiario || {}),
+          JSON.stringify(remoto.actividad || {}),
+          remoto.sociodemografico ? JSON.stringify(remoto.sociodemografico) : null,
+          (remoto as any).caracterizacion_nueva
+            ? JSON.stringify((remoto as any).caracterizacion_nueva)
+            : null,
+          remoto.coordenadas ? JSON.stringify(remoto.coordenadas) : null,
+          remoto.georeferencia ? JSON.stringify(remoto.georeferencia) : null,
+          remoto.clima ? JSON.stringify(remoto.clima) : null,
+          JSON.stringify(remoto.fotos || []),
+          remoto.firma_beneficiario || null,
+          remoto.firma_tecnico || null,
+          remoto.huella_beneficiario ? 1 : 0,
+          remoto.pdf_url || null,
+          usuarioId,
+          remoto.created_at,
+          remoto.updated_at,
+        ]
+      );
+      aplicados++;
+    } catch (e) {
+      console.warn('[DB] No se pudo fusionar formulario del servidor:', remoto.id, e);
+    }
+  }
+
+  if (aplicados > 0) {
+    console.log(`[DB] ${aplicados} formulario(s) traídos del servidor`);
+  }
+  return aplicados;
+};
+
+/**
  * Obtener un formulario por ID
  */
 export const getFormularioById = async (
@@ -418,12 +545,18 @@ export const saveFotoLocal = async (
 /**
  * Marcar una foto local como sincronizada
  */
-export const markFotoAsSynced = async (id: string): Promise<void> => {
+export const markFotoAsSynced = async (
+  id: string,
+  remoto?: { archivoId?: string; ruta?: string }
+): Promise<void> => {
   const database = await ensureDb();
   if (!database) return;
+  // Se guarda la referencia en MinIO (id de archivo y ruta) para poder
+  // recuperar la evidencia desde otro dispositivo: la `uri` local apunta
+  // al almacenamiento del teléfono que la capturó y allí no existe.
   await database.runAsync(
-    'UPDATE fotos_locales SET sincronizada = 1 WHERE id = ?',
-    [id]
+    'UPDATE fotos_locales SET sincronizada = 1, archivo_id = ?, ruta_remota = ? WHERE id = ?',
+    [remoto?.archivoId || null, remoto?.ruta || null, id]
   );
 };
 
@@ -468,12 +601,15 @@ export const saveVideoLocal = async (
 /**
  * Marcar un video local como sincronizado
  */
-export const markVideoAsSynced = async (id: string): Promise<void> => {
+export const markVideoAsSynced = async (
+  id: string,
+  remoto?: { archivoId?: string; ruta?: string }
+): Promise<void> => {
   const database = await ensureDb();
   if (!database) return;
   await database.runAsync(
-    'UPDATE videos_locales SET sincronizada = 1 WHERE id = ?',
-    [id]
+    'UPDATE videos_locales SET sincronizada = 1, archivo_id = ?, ruta_remota = ? WHERE id = ?',
+    [remoto?.archivoId || null, remoto?.ruta || null, id]
   );
 };
 
@@ -589,20 +725,146 @@ const deserializeFormulario = (row: Record<string, any>): Formulario => {
 /**
  * Ejecuta migraciones para crear nuevas tablas del sistema
  */
+// ==================================================================
+// Documentos de la finca
+// ==================================================================
+// Los documentos pertenecen al BENEFICIARIO, no a una visita puntual.
+// Se consultan por cédula para que sigan disponibles en toda visita
+// posterior a la misma finca.
+
+/**
+ * Documentos de una finca. Si se pasa `formularioId`, también incluye los
+ * documentos de esa visita que todavía no tienen cédula asignada (recién
+ * capturados o provenientes de BDs antiguas).
+ */
+export const getDocumentosDeBeneficiario = async (
+  cedula?: string,
+  formularioId?: string
+): Promise<DocumentoFinca[]> => {
+  const database = await ensureDb();
+  if (!database) return [];
+
+  const cedulaLimpia = cedula?.trim();
+  try {
+    if (cedulaLimpia && formularioId) {
+      return (await database.getAllAsync<any>(
+        `SELECT * FROM documentos_finca
+         WHERE beneficiario_cedula = ?
+            OR (formulario_id = ? AND (beneficiario_cedula IS NULL OR beneficiario_cedula = ''))
+         ORDER BY created_at DESC`,
+        [cedulaLimpia, formularioId]
+      )) as DocumentoFinca[];
+    }
+    if (cedulaLimpia) {
+      return (await database.getAllAsync<any>(
+        'SELECT * FROM documentos_finca WHERE beneficiario_cedula = ? ORDER BY created_at DESC',
+        [cedulaLimpia]
+      )) as DocumentoFinca[];
+    }
+    if (formularioId) {
+      return (await database.getAllAsync<any>(
+        'SELECT * FROM documentos_finca WHERE formulario_id = ? ORDER BY created_at DESC',
+        [formularioId]
+      )) as DocumentoFinca[];
+    }
+    return [];
+  } catch (e) {
+    console.warn('[DB] Error leyendo documentos de finca:', e);
+    return [];
+  }
+};
+
+/** Guardar (o reemplazar) un documento de finca */
+export const saveDocumentoLocal = async (doc: DocumentoFinca): Promise<void> => {
+  const database = await ensureDb();
+  if (!database) throw new Error('BD local no disponible');
+
+  await database.runAsync(
+    `INSERT OR REPLACE INTO documentos_finca
+       (id, formulario_id, beneficiario_cedula, tipo, uri, nombre, descripcion, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    [
+      doc.id,
+      doc.formulario_id,
+      doc.beneficiario_cedula?.trim() || null,
+      doc.tipo,
+      doc.uri,
+      doc.nombre,
+      doc.descripcion || null,
+      doc.created_at,
+    ]
+  );
+};
+
+/** Eliminar un documento de finca */
+export const deleteDocumentoLocal = async (id: string): Promise<void> => {
+  const database = await ensureDb();
+  if (!database) return;
+  await database.runAsync('DELETE FROM documentos_finca WHERE id = ?', [id]);
+};
+
+/**
+ * Vincular documentos huérfanos (capturados antes de que existiera el ID
+ * definitivo del formulario) al formulario y beneficiario correctos.
+ *
+ * IMPORTANTE: se filtra por cédula del beneficiario. Sin ese filtro, los
+ * documentos huérfanos de CUALQUIER finca se reasignaban a la primera que
+ * abriera la pantalla — contaminación cruzada entre beneficiarios.
+ */
+export const vincularDocumentosHuerfanos = async (
+  formularioId: string,
+  cedula?: string
+): Promise<void> => {
+  const database = await ensureDb();
+  if (!database) return;
+  if (!formularioId || formularioId === 'sin-formulario') return;
+
+  const cedulaLimpia = cedula?.trim();
+  try {
+    if (cedulaLimpia) {
+      // Huérfanos de ESTA finca: por cédula ya asignada, o por el marcador
+      // temporal 'sin-formulario' que aún no tiene dueño.
+      await database.runAsync(
+        `UPDATE documentos_finca
+            SET formulario_id = ?, beneficiario_cedula = ?
+          WHERE (beneficiario_cedula = ? OR formulario_id = ?)
+            AND (formulario_id = 'sin-formulario' OR formulario_id IS NULL
+                 OR formulario_id = '' OR beneficiario_cedula IS NULL
+                 OR beneficiario_cedula = '')`,
+        [formularioId, cedulaLimpia, cedulaLimpia, formularioId]
+      );
+    } else {
+      // Sin cédula no se puede desambiguar: solo se tocan los documentos
+      // de este mismo formulario, nunca los de otras fincas.
+      await database.runAsync(
+        `UPDATE documentos_finca SET formulario_id = ?
+          WHERE formulario_id = ?`,
+        [formularioId, formularioId]
+      );
+    }
+  } catch (e) {
+    console.warn('[DB] No se pudieron vincular documentos huérfanos:', e);
+  }
+};
+
 export const runMigrations = async (): Promise<void> => {
   if (!db) return;
   try {
     await db.execAsync(`
       -- Documentos digitales de fincas
+      -- Los documentos pertenecen al BENEFICIARIO (la finca), no a una
+      -- visita concreta: persisten entre formularios y nunca se pierden.
+      -- formulario_id se conserva como referencia de la visita que los
+      -- capturó, pero la consulta canónica es por beneficiario_cedula.
       CREATE TABLE IF NOT EXISTS documentos_finca (
         id TEXT PRIMARY KEY,
         formulario_id TEXT NOT NULL,
+        beneficiario_cedula TEXT,
         tipo TEXT NOT NULL,
         uri TEXT NOT NULL,
         nombre TEXT,
         descripcion TEXT,
-        created_at TEXT NOT NULL,
-        FOREIGN KEY (formulario_id) REFERENCES formularios(id)
+        created_at TEXT NOT NULL
       );
 
       -- Tracking de posiciones GPS
@@ -698,6 +960,65 @@ export const runMigrations = async (): Promise<void> => {
         fuente TEXT DEFAULT 'overpass'
       );
     `);
+
+    // Migración: referencia remota de las evidencias en MinIO.
+    // La `uri` local solo sirve en el teléfono que capturó la evidencia;
+    // guardar el id de archivo y la ruta permite recuperarla desde otro.
+    for (const tabla of ['fotos_locales', 'videos_locales']) {
+      for (const columna of ['archivo_id TEXT', 'ruta_remota TEXT']) {
+        try {
+          await db.runAsync(`ALTER TABLE ${tabla} ADD COLUMN ${columna}`);
+        } catch {
+          // Ya existe, ignorar
+        }
+      }
+    }
+
+    // Migración: documentos de finca por beneficiario (no por visita).
+    // Antes los documentos colgaban solo de formulario_id, así que en la
+    // siguiente visita a la misma finca "desaparecían". Ahora se anclan a
+    // la cédula del beneficiario y persisten para siempre.
+    try {
+      await db.runAsync('ALTER TABLE documentos_finca ADD COLUMN beneficiario_cedula TEXT');
+      console.log('[DB] Columna beneficiario_cedula agregada a documentos_finca');
+    } catch {
+      // Ya existe, ignorar
+    }
+
+    // Backfill: rellenar la cédula de los documentos históricos a partir
+    // del formulario que los capturó. Solo toca filas sin cédula.
+    try {
+      const huerfanos = await db.getAllAsync<{ id: string; formulario_id: string }>(
+        `SELECT id, formulario_id FROM documentos_finca
+         WHERE (beneficiario_cedula IS NULL OR beneficiario_cedula = '')
+           AND formulario_id IS NOT NULL AND formulario_id != ''`
+      );
+      let rellenados = 0;
+      for (const doc of huerfanos) {
+        const form = await db.getFirstAsync<{ beneficiario_json: string }>(
+          'SELECT beneficiario_json FROM formularios WHERE id = ?',
+          [doc.formulario_id]
+        );
+        if (!form?.beneficiario_json) continue;
+        try {
+          const cedula = JSON.parse(form.beneficiario_json)?.cedula;
+          if (cedula) {
+            await db.runAsync(
+              'UPDATE documentos_finca SET beneficiario_cedula = ? WHERE id = ?',
+              [String(cedula).trim(), doc.id]
+            );
+            rellenados++;
+          }
+        } catch {
+          // JSON corrupto — dejar el documento sin cédula, no se pierde
+        }
+      }
+      if (rellenados > 0) {
+        console.log(`[DB] Backfill: ${rellenados} documento(s) vinculados a su beneficiario`);
+      }
+    } catch (e) {
+      console.warn('[DB] No se pudo hacer backfill de documentos_finca:', e);
+    }
 
     // Migración: agregar columna icono si no existe (BDs previas a Fase B+)
     try {

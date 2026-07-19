@@ -247,6 +247,51 @@ async function initSchema() {
     }
   }
 
+  // Migración: vincular las evidencias (fotos/videos) a su formulario.
+  // Sin esta columna no se pueden recuperar las evidencias de una visita
+  // desde otro dispositivo — la app solo guarda la ruta local del teléfono
+  // que las capturó.
+  try {
+    await query(`ALTER TABLE archivos ADD COLUMN formulario_id TEXT`);
+    console.log('[DB] ✅ Columna formulario_id agregada a archivos');
+  } catch (err) {
+    if (!err.message.includes('already exists')) {
+      console.error('[DB] Error agregando formulario_id a archivos:', err.message);
+    }
+  }
+
+  try {
+    await query(`CREATE INDEX IF NOT EXISTS idx_archivos_formulario ON archivos(formulario_id)`);
+  } catch (err) {
+    console.error('[DB] Error creando índice idx_archivos_formulario:', err.message);
+  }
+
+  // Backfill: las evidencias subidas antes de esta versión no traen
+  // formulario_id, pero la app guardaba el id en metadata_json->>'nombre'
+  // con el formato "Formulario <id>" o "Encuesta <id>". Se recupera de ahí
+  // para que las visitas históricas también se puedan revisar desde otro
+  // dispositivo. Solo toca filas sin formulario_id.
+  try {
+    // El EXISTS es obligatorio: archivos.formulario_id tiene FK a
+    // formularios(id), así que solo se vinculan los que realmente existen
+    // (un borrador que nunca se sincronizó no tiene fila).
+    const res = await query(
+      `UPDATE archivos a
+          SET formulario_id = substring(a.metadata_json->>'nombre' from '^(?:Formulario|Encuesta) (.+)$')
+        WHERE a.formulario_id IS NULL
+          AND a.metadata_json->>'nombre' ~ '^(?:Formulario|Encuesta) .+$'
+          AND EXISTS (
+            SELECT 1 FROM formularios f
+             WHERE f.id = substring(a.metadata_json->>'nombre' from '^(?:Formulario|Encuesta) (.+)$')
+          )`
+    );
+    if (res?.rowCount > 0) {
+      console.log(`[DB] ✅ Backfill: ${res.rowCount} evidencia(s) vinculadas a su formulario`);
+    }
+  } catch (err) {
+    console.error('[DB] Error en backfill de archivos.formulario_id:', err.message);
+  }
+
   await seedBeneficiarios();
 
   console.log('[DB] ✅ Esquema de base de datos inicializado');

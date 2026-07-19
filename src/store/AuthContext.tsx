@@ -11,6 +11,7 @@ import {
   verifyToken,
   guardarCredencialOffline,
   intentarLoginOffline,
+  existeCredencialOffline,
   limpiarCredencialOffline,
 } from '../services/auth';
 import { setApiAuthToken, setUnauthorizedHandler } from '../services/api';
@@ -147,6 +148,19 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     return () => setUnauthorizedHandler(null);
   }, []);
 
+  /** Activar la sesión recuperada de la credencial cacheada (sin red) */
+  const activarSesionOffline = useCallback(async (offlineUser: Usuario) => {
+    setApiAuthToken(offlineUser.token);
+    try {
+      await SecureStore.setItemAsync(STORAGE_KEYS.AUTH_TOKEN, offlineUser.token);
+      await SecureStore.setItemAsync(STORAGE_KEYS.USER_DATA, JSON.stringify(offlineUser));
+    } catch (storageError) {
+      console.warn('[Auth] SecureStore no disponible (offline):', storageError);
+    }
+    console.log('[Auth] Sesión restaurada en modo OFFLINE');
+    dispatch({ type: 'LOGIN_SUCCESS', user: offlineUser });
+  }, []);
+
   const login = useCallback(async (usuario: string, contrasena: string) => {
     dispatch({ type: 'LOGIN_START' });
     try {
@@ -182,6 +196,26 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         return;
       }
 
+      // No se pudo contactar al servidor → login OFFLINE con la credencial
+      // cacheada. `loginUser` captura sus errores y NO lanza, así que este
+      // camino debe resolverse aquí: antes solo estaba en el `catch` de
+      // abajo, que nunca se ejecutaba, y el técnico sin señal quedaba
+      // bloqueado aunque tuviera su credencial guardada.
+      if (result.offline) {
+        const offlineUser = await intentarLoginOffline(usuario, contrasena);
+        if (offlineUser) {
+          await activarSesionOffline(offlineUser);
+          return;
+        }
+        dispatch({
+          type: 'LOGIN_FAILURE',
+          error: await existeCredencialOffline(usuario)
+            ? 'Contraseña incorrecta. Sin señal, se valida contra la última contraseña usada en este dispositivo.'
+            : 'Sin conexión y sin sesión guardada en este dispositivo. Conéctate a internet para iniciar sesión la primera vez.',
+        });
+        return;
+      }
+
       // El servidor respondió pero rechazó las credenciales (usuario/clave
       // incorrectos) — no intentar offline, es un rechazo explícito.
       dispatch({ type: 'LOGIN_FAILURE', error: result.error || 'Error de autenticación' });
@@ -192,15 +226,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       console.warn('[Auth] Login online falló, intentando offline:', error);
       const offlineUser = await intentarLoginOffline(usuario, contrasena);
       if (offlineUser) {
-        setApiAuthToken(offlineUser.token);
-        try {
-          await SecureStore.setItemAsync(STORAGE_KEYS.AUTH_TOKEN, offlineUser.token);
-          await SecureStore.setItemAsync(STORAGE_KEYS.USER_DATA, JSON.stringify(offlineUser));
-        } catch (storageError) {
-          console.warn('[Auth] SecureStore no disponible (offline):', storageError);
-        }
-        console.log('[Auth] Sesión restaurada en modo OFFLINE');
-        dispatch({ type: 'LOGIN_SUCCESS', user: offlineUser });
+        await activarSesionOffline(offlineUser);
         return;
       }
       dispatch({
@@ -208,7 +234,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         error: 'Sin conexión y sin sesión guardada en este dispositivo. Conéctate a internet para iniciar sesión la primera vez.',
       });
     }
-  }, []);
+  }, [activarSesionOffline]);
 
   const logout = useCallback(async () => {
     try {

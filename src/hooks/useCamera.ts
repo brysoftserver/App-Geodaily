@@ -6,6 +6,7 @@ import { useState, useCallback } from 'react';
 import { useLocation } from './useLocation';
 import { FotoGeotag, Coordenadas } from '../types';
 import { generarId } from '../utils/formatters';
+import { persistirEvidencia } from '../services/mediaStorage.service';
 
 interface CameraState {
   fotoActual: FotoGeotag | null;
@@ -24,7 +25,11 @@ export const useCamera = () => {
   });
 
   const capturarFoto = useCallback(
-    async (uri: string, coordsExternas?: Coordenadas): Promise<FotoGeotag | null> => {
+    async (
+      uri: string,
+      coordsExternas?: Coordenadas,
+      esVideo = false
+    ): Promise<FotoGeotag | null> => {
       setState((prev) => ({ ...prev, isLoading: true, error: null }));
 
       try {
@@ -34,9 +39,17 @@ export const useCamera = () => {
           coords = await getCurrentPosition();
         }
 
+        const id = generarId();
+
+        // Sacar la evidencia de la caché del sistema ANTES de registrarla:
+        // Android puede vaciar cacheDirectory sin avisar y en campo eso
+        // significaba perder fotos y videos aún sin sincronizar.
+        const uriPersistente = await persistirEvidencia(uri, id, esVideo);
+
         const foto: FotoGeotag = {
-          id: generarId(),
-          uri,
+          id,
+          uri: uriPersistente,
+          tipo: esVideo ? 'video' : 'foto',
           coordenadas: coords || { latitud: 0, longitud: 0 },
           timestamp: new Date().toISOString(),
           metadata: {

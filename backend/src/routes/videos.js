@@ -30,7 +30,7 @@ router.post('/subir', authenticateToken, upload.single('archivo'), async (req, r
       return res.status(400).json({ estado: 'error', mensaje: 'Archivo de video requerido' });
     }
 
-    const { descripcion, latitud, longitud, beneficiario_cedula, beneficiario_nombre, tipo_formulario } = req.body;
+    const { descripcion, latitud, longitud, beneficiario_cedula, beneficiario_nombre, tipo_formulario, formulario_id } = req.body;
     const ext = path.extname(req.file.originalname) || '.mp4';
     const filename = `video_${Date.now()}_${Math.random().toString(36).slice(2, 6)}${ext}`;
 
@@ -83,13 +83,19 @@ router.post('/subir', authenticateToken, upload.single('archivo'), async (req, r
       descripcion: descripcion || null,
       beneficiario_item: benefItem,
       beneficiario_cedula: beneficiario_cedula || null,
+      // Ver nota en photos.js: la evidencia suele subirse antes que el
+      // formulario, así que el vínculo también se guarda en metadata.
+      formulario_id: formulario_id || null,
     };
 
+    // Ver nota en photos.js: el SELECT evita violar la FK cuando el video
+    // llega antes que el formulario.
     await db.query(
-      `INSERT INTO archivos (usuario_id, tipo, filename, originalname, mimetype, size_bytes, minio_path, minio_bucket, latitud, longitud, metadata_json)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+      `INSERT INTO archivos (usuario_id, formulario_id, tipo, filename, originalname, mimetype, size_bytes, minio_path, minio_bucket, latitud, longitud, metadata_json)
+       VALUES ($1, (SELECT id FROM formularios WHERE id = $2), $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
       [
         req.user.id,
+        formulario_id || null,
         'video',
         filename,
         req.file.originalname,

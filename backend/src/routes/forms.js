@@ -155,6 +155,27 @@ router.post('/guardar', authenticateToken, async (req, res) => {
       );
     }
 
+    // Vincular las evidencias que llegaron ANTES que el formulario.
+    // En campo las fotos y videos se suben apenas hay señal, mientras el
+    // formulario puede tardar en sincronizar; en ese momento la FK impide
+    // rellenar archivos.formulario_id, así que el vínculo queda en
+    // metadata_json y se reconcilia aquí, ya con el formulario existente.
+    try {
+      const vinculadas = await db.query(
+        `UPDATE archivos
+            SET formulario_id = $1
+          WHERE formulario_id IS NULL
+            AND metadata_json->>'formulario_id' = $1`,
+        [formulario.id]
+      );
+      if (vinculadas?.rowCount > 0) {
+        console.log(`[Forms] ${vinculadas.rowCount} evidencia(s) vinculadas a ${formulario.id}`);
+      }
+    } catch (linkErr) {
+      // No debe impedir guardar el formulario
+      console.warn('[Forms] No se pudieron vincular evidencias:', linkErr.message);
+    }
+
     // Registrar en actividad
     await db.query(
       'INSERT INTO actividad_log (usuario_id, accion, detalle_json) VALUES ($1, $2, $3)',

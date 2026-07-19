@@ -37,7 +37,7 @@ export type TerrenoStackParamList = {
   Formulario: { tipo: TipoFormulario; draftId?: string };
   FormularioCaracterizacion: { draftId?: string };
   Camara: { mode?: 'photo' | 'video' };
-  Documentos: undefined;
+  Documentos: { beneficiarioCedula?: string; beneficiarioNombre?: string } | undefined;
   FirmaDigital: undefined;
   FirmaBeneficiario: undefined;
   FirmaBiometrica: undefined;

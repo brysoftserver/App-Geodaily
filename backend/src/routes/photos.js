@@ -31,7 +31,7 @@ router.post('/subir', authenticateToken, upload.single('archivo'), async (req, r
       return res.status(400).json({ estado: 'error', mensaje: 'Archivo requerido' });
     }
 
-    const { latitud, longitud, altitud, nombre, descripcion, beneficiario_cedula, beneficiario_nombre, timestamp_captura, tipo_formulario } = req.body;
+    const { latitud, longitud, altitud, nombre, descripcion, beneficiario_cedula, beneficiario_nombre, timestamp_captura, tipo_formulario, formulario_id } = req.body;
 
     // ─── Marca de agua de evidencia (fecha de captura + GPS + ubicación +
     // clima a la hora de la toma). Nunca bloquea la subida: si falla,
@@ -115,13 +115,21 @@ router.post('/subir', authenticateToken, upload.single('archivo'), async (req, r
       descripcion: descripcion || null,
       beneficiario_item: benefItem,
       beneficiario_cedula: beneficiario_cedula || null,
+      // Se guarda también en metadata porque la evidencia suele subirse
+      // ANTES de que el formulario exista en el servidor (flujo offline).
+      // La columna formulario_id se rellena luego, al guardar el formulario.
+      formulario_id: formulario_id || null,
     };
 
+    // formulario_id permite recuperar la evidencia desde otro dispositivo.
+    // El SELECT evita violar la FK cuando la foto llega antes que el
+    // formulario (caso normal offline): queda NULL y se vincula después.
     await db.query(
-      `INSERT INTO archivos (usuario_id, tipo, filename, originalname, mimetype, size_bytes, minio_path, minio_bucket, latitud, longitud, altitud, metadata_json)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+      `INSERT INTO archivos (usuario_id, formulario_id, tipo, filename, originalname, mimetype, size_bytes, minio_path, minio_bucket, latitud, longitud, altitud, metadata_json)
+       VALUES ($1, (SELECT id FROM formularios WHERE id = $2), $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
       [
         req.user.id,
+        formulario_id || null,
         'foto',
         filename,
         req.file.originalname,

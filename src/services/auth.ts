@@ -21,6 +21,13 @@ export interface AuthResult {
     token: string;
   };
   error?: string;
+  /**
+   * true cuando el login falló por falta de conexión, NO porque el
+   * servidor rechazara las credenciales. Es la señal que usa AuthContext
+   * para caer al login offline: sin esto, un técnico sin señal quedaba
+   * bloqueado aunque tuviera su credencial cacheada.
+   */
+  offline?: boolean;
 }
 
 /**
@@ -59,16 +66,34 @@ export const loginUser = async (
       error: data.error || 'Error de autenticación',
     };
   } catch (error: any) {
-    if (error?.response?.data?.error) {
-      return { success: false, error: error.response.data.error };
+    const status = error?.response?.status;
+
+    // Solo un 4xx es un rechazo EXPLÍCITO de las credenciales. Cualquier
+    // otra cosa (sin red, timeout, DNS, 5xx) significa que el servidor no
+    // llegó a decidir nada, así que el técnico debe poder entrar con su
+    // credencial cacheada en vez de quedarse bloqueado en campo.
+    const esRechazoDeCredenciales =
+      typeof status === 'number' && status >= 400 && status < 500;
+
+    if (esRechazoDeCredenciales) {
+      const mensaje =
+        error?.response?.data?.error ||
+        error?.response?.data?.detail ||
+        'Usuario o contraseña incorrectos';
+      return { success: false, error: mensaje };
     }
-    if (error?.response?.data?.detail) {
-      return { success: false, error: error.response.data.detail };
-    }
+
     if (error?.message?.includes('Network') || error?.isOffline) {
-      return { success: false, error: 'Sin conexión al servidor' };
+      return { success: false, error: 'Sin conexión al servidor', offline: true };
     }
-    return { success: false, error: 'Error de conexión con el servidor' };
+
+    return {
+      success: false,
+      error: status
+        ? `El servidor no está disponible (error ${status})`
+        : 'Error de conexión con el servidor',
+      offline: true,
+    };
   }
 };
 

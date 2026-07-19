@@ -2,29 +2,16 @@
 // GEODAILY — Hook de Sincronización Offline
 // ============================================================
 
-import { useEffect, useCallback, useRef } from 'react';
+import { useEffect, useCallback } from 'react';
 import NetInfo from '@react-native-community/netinfo';
 import { useSync } from '../store/SyncContext';
 
 export const useOfflineSync = () => {
   const { syncNow, checkPending, status, pendingCount, lastSync } = useSync();
-  const wasConnected = useRef<boolean | null>(null);
 
-  // Escuchar cambios de conectividad — solo sincronizar en la transición offline→online
-  useEffect(() => {
-    const unsubscribe = NetInfo.addEventListener((netState) => {
-      const isOnlineNow = !!netState.isConnected && netState.isInternetReachable !== false;
-      const cameOnline = isOnlineNow && wasConnected.current !== true;
-      wasConnected.current = isOnlineNow;
-
-      if (cameOnline) {
-        console.log('[Sync] Conexión detectada — sincronizando...');
-        syncNow();
-      }
-    });
-
-    return () => unsubscribe();
-  }, [syncNow]);
+  // El auto-sync por reconexión vive ahora en SyncContext (a nivel de
+  // provider, siempre montado). Aquí ya no se registra otro listener para
+  // no duplicar ciclos de sincronización.
 
   // Verificar pendientes periódicamente
   useEffect(() => {

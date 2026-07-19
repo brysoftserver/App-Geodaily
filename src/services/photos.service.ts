@@ -18,8 +18,10 @@ export const uploadPhoto = async (
   beneficiarioCedula?: string,
   beneficiarioNombre?: string,
   timestampCaptura?: string,
-  tipoFormulario?: string
-): Promise<{ id: string; estado: string } | null> => {
+  tipoFormulario?: string,
+  /** Vincula la evidencia al formulario para poder recuperarla desde otro dispositivo */
+  formularioId?: string
+): Promise<{ id: string; estado: string; ruta?: string; filename?: string } | null> => {
   try {
     const formData = new FormData();
 
@@ -41,6 +43,7 @@ export const uploadPhoto = async (
     if (beneficiarioCedula) formData.append('beneficiario_cedula', beneficiarioCedula);
     if (beneficiarioNombre) formData.append('beneficiario_nombre', beneficiarioNombre);
     if (tipoFormulario) formData.append('tipo_formulario', tipoFormulario);
+    if (formularioId) formData.append('formulario_id', formularioId);
 
     const response = await apiClient.post(
       API_CONFIG.ENDPOINTS.PHOTOS + '/subir',

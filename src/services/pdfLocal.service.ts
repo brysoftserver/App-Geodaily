@@ -10,6 +10,10 @@ import * as FileSystem from 'expo-file-system/legacy';
 import { manipulateAsync, SaveFormat } from 'expo-image-manipulator';
 import { Formulario, FotoGeotag } from '../types';
 import { formatFecha, formatCoordenadas } from '../utils/formatters';
+import {
+  construirSeccionesEncuesta,
+  SeccionResuelta,
+} from '../utils/encuestaSchema';
 
 /**
  * Generar PDF local con fotos, firmas y huella embebidas
@@ -613,14 +617,10 @@ function construirHTMLCaracterizacion(
 ): string {
   const c = (form as any).caracterizacion_nueva || {};
 
-  // Sub-componentes de la Encuesta Social AgroAmbiental (texto oficial)
-  const cs = c.componente_social || {};
-  const cf = c.caracterizacion_finca || {};
-  const cp = c.componente_productivo || {};
-  const asuelo = c.analisis_suelo || {};
-  const ca = c.componente_agroambiental || {};
-  const rec = c.recomendaciones || {};
-  const aco = c.acompaniamiento || {};
+  // Las 52 preguntas oficiales vienen del esquema canónico compartido
+  // (src/utils/encuestaSchema.ts), el mismo que usa la pantalla de
+  // "Detalle del Formulario". Así el PDF y la app nunca divergen.
+  const seccionesEncuesta = construirSeccionesEncuesta(c, form);
 
   // Bloque pregunta+respuesta (siempre se imprime — la encuesta completa)
   const q = (num: string, texto: string, respuesta?: string | null) => `
@@ -629,147 +629,35 @@ function construirHTMLCaracterizacion(
       <div class="q-a">${respuesta ? escapeHtml(respuesta) : '—'}</div>
     </div>`;
 
-  // Respuesta + "Especifique" opcional en la misma celda
-  const conOtro = (val?: string, otro?: string) =>
-    val ? (otro ? `${val} — ${otro}` : val) : '';
-
-  const seccion = (titulo: string, contenido: string) => `
+  /** Renderiza una sección resuelta del esquema compartido */
+  const renderSeccion = (sec: SeccionResuelta): string => {
+    if (sec.textoLargo) {
+      return `
     <div class="section">
-      <h2>${titulo}</h2>
-      <div class="cols">${contenido}</div>
+      <h2>${escapeHtml(sec.titulo)}</h2>
+      ${sec.preguntas.map((pr) => `
+      <div class="q-full"><div class="q-t">${pr.numero}. ${escapeHtml(pr.texto)}</div>
+      <div class="desc-detallada">${escapeHtml(pr.valor || '—')}</div></div>`).join('')}
     </div>`;
-
-  // ---- Encabezado oficial ----
-  const datosGenerales = `
-    ${q('•', 'Fecha', c.fecha || formatFecha(form.created_at))}
-    ${q('•', 'Municipio', c.municipio)}
-    ${q('•', 'Vereda', c.vereda)}
-    ${q('•', 'Nombre del productor', c.productor_nombre)}
-    ${q('•', 'Edad (años)', c.edad)}
-    ${q('•', 'Sexo', conOtro(c.sexo, c.sexo_otro))}
-    ${q('•', 'Documento (C.C.)', c.documento)}
-    ${q('•', 'Teléfono', c.telefono)}
-    ${q('•', 'Técnico responsable', c.tecnico_responsable || form.tecnico?.nombre)}
-    ${q('•', 'Ubicación del predio', c.ubicacion_predio)}
-  `;
-
-  // ---- COMPONENTE SOCIAL (1-17) ----
-  const componenteSocial = seccion('COMPONENTE SOCIAL', [
-    q('1', 'Se reconoce como:', conOtro(cs.reconocimiento, cs.reconocimiento_otro)),
-    q('2', 'Nivel educativo del productor', cs.nivel_educativo),
-    q('3', '¿Ha participado antes en Escuelas de Campo (ECA)?', cs.participo_eca),
-    q('4', '¿Cuántas personas, incluyéndose usted, hacen parte de su núcleo familiar?', cs.personas_nucleo ? `${cs.personas_nucleo} personas` : ''),
-    q('5', 'Principal fuente de ingresos', conOtro(cs.fuente_ingresos, cs.fuente_ingresos_otra)),
-    q('6', '¿Cual es su ocupación secundaria?', conOtro(cs.ocupacion_secundaria, cs.ocupacion_secundaria_otro)),
-    q('7', 'Participa en alguna organización o asociación', conOtro(cs.participa_organizacion, cs.organizacion_cual)),
-    q('8', '¿A qué asociaciones u organizaciones se encuentra afiliado?', conOtro(cs.tipo_asociacion, cs.tipo_asociacion_otro)),
-    q('9', '¿Cuál es el rol en la organización que está afiliado(a)?', cs.rol_asociacion),
-    q('10', 'En donde está ubicada la vivienda principal de su núcleo familiar', conOtro(cs.vivienda_ubicacion, cs.vivienda_ubicacion_otra)),
-    q('11', '¿Su vivienda cuenta con energía?', cs.energia_electrica),
-    q('12', '¿Su vivienda cuenta con energía?', conOtro(cs.tipo_energia, cs.tipo_energia_otro)),
-    q('13', '¿De dónde obtiene principalmente el agua para el consumo humano?', conOtro(cs.agua_consumo, cs.agua_consumo_otro)),
-    q('14', '¿Cuenta con algunos de estos elementos? (respuesta multiple)', cs.elementos_tecnologicos),
-    q('15', '¿Cuenta con señal de celular en su vivienda?', cs.senal_celular),
-    q('16', '¿Quiénes trabajan en su finca?', conOtro(cs.quienes_trabajan, cs.quienes_trabajan_otro)),
-    q('17', '¿Qué medio de transporte utiliza?', conOtro(cs.medio_transporte, cs.medio_transporte_otro)),
-  ].join(''));
-
-  // ---- CARACTERIZACION DE LA FINCA (18-26) ----
-  const coordFinca = cf.latitud && cf.longitud
-    ? `Lat: ${cf.latitud}  Lon: ${cf.longitud}${cf.altitud ? `  Alt: ${cf.altitud} m` : ''}`
-    : '';
-  const divisiones = [
-    cf.division_bosque ? `Bosque: ${cf.division_bosque} ha` : '',
-    cf.division_agricola ? `Agrícola: ${cf.division_agricola} ha` : '',
-    cf.division_pecuaria ? `Pecuaria: ${cf.division_pecuaria} ha` : '',
-    cf.division_instalaciones ? `Instalaciones: ${cf.division_instalaciones} ha` : '',
-  ].filter(Boolean).join(' · ');
-  const actividadesFinca = [
-    conOtro(cf.actividades_finca, cf.actividades_finca_otro),
-    cf.actividades_agricolas ? `Agrícolas: ${conOtro(cf.actividades_agricolas, cf.actividades_agricolas_otro)}` : '',
-    cf.actividades_pecuarias ? `Pecuarias: ${conOtro(cf.actividades_pecuarias, cf.actividades_pecuarias_otro)}` : '',
-  ].filter(Boolean).join(' | ');
-  const caracterizacionFinca = seccion('CARACTERIZACION DE LA FINCA', [
-    q('18', 'Nombre de la finca', cf.nombre_finca),
-    q('19', 'Coordenada de la finca', coordFinca),
-    q('20', '¿Cuál es el área total de la finca en hectáreas?', cf.area_total ? `${cf.area_total} ha` : ''),
-    q('21', '¿Cómo está dividida en hectáreas?', divisiones),
-    q('22', 'Medio de salida de productos al centro poblado más cercano', cf.medio_salida),
-    q('23', 'Distancia aproximada del predio al centro poblado', cf.distancia_km ? `${cf.distancia_km} km` : ''),
-    q('24', 'Observaciones de la descripción llegada al predio (desde cabecera municipal)', cf.distancia_observaciones),
-    q('25', '¿Realiza aprovechamiento productivo de manera directa?', conOtro(cf.aprovechamiento_directo, cf.aprovechamiento_porque ? `Porque: ${cf.aprovechamiento_porque}` : '')),
-    q('26', '¿Cuáles son las actividades que realiza en su finca?', actividadesFinca),
-  ].join(''));
-
-  // ---- COMPONENTE PRODUCTIVO (27-30) ----
-  const componenteProductivo = seccion('COMPONENTE PRODUCTIVO', [
-    q('27', '¿Cual es la actividad principal productiva de la finca?', conOtro(cp.actividad_principal, cp.actividad_principal_cual)),
-    q('28', '¿El predio cuenta con acceso permanente al agua?', cp.acceso_agua),
-    q('29', '¿Dispone de sistemas de riego?', cp.sistemas_riego),
-    q('30', '¿Ha recibido asistencia técnica en los últimos dos años?', cp.asistencia_tecnica),
-  ].join(''));
-
-  // ---- SECCIÓN DE SUELO (31-41) ----
-  const coordIntervencion = asuelo.intervencion_latitud && asuelo.intervencion_longitud
-    ? `Lat: ${asuelo.intervencion_latitud}  Lon: ${asuelo.intervencion_longitud}${asuelo.intervencion_altitud ? `  Alt: ${asuelo.intervencion_altitud} m` : ''}`
-    : '';
-  const seccionSuelo = seccion('SECCIÓN DE SUELO', [
-    q('31', 'Ubicación del área de intervención del proyecto', coordIntervencion),
-    q('32', '¿Ha realizado alguna vez análisis de suelo en su predio?', asuelo.analisis_realizado),
-    q('33', '¿Cuál es la textura predominante en el suelo? Selección multiple', asuelo.textura),
-    q('34', '¿Qué coloración predomina en el suelo?', asuelo.color),
-    q('35', '¿Qué tipo de drenaje hay en el suelo?', asuelo.drenaje),
-    q('36', '¿Cuál es la profundidad efectiva del suelo?', asuelo.profundidad),
-    q('37', '¿Existe alguna presencia de piedras o fragmentos rocosos?', asuelo.piedras),
-    q('38', '¿Cuál es el estado de la compactación del suelo?', asuelo.compactacion),
-    q('39', '¿Qué presencia de cobertura presenta el suelo?', asuelo.cobertura),
-    q('40', '¿Se evidencia algún tipo de erosión en el suelo?', asuelo.erosion),
-    q('41', '¿Cual es el grado de Pendiente del terreno?', asuelo.pendiente ? `${asuelo.pendiente} °` : ''),
-  ].join(''));
-
-  // ---- COMPONENTE AGROAMBIENTAL (42-49) ----
-  const componenteAgro = seccion('COMPONENTE AGROAMBIENTAL', [
-    q('42', '¿El predio presenta procesos de erosión?', ca.procesos_erosion),
-    q('43', '¿Existen fuentes hídricas dentro o cerca del predio?', ca.fuentes_hidricas),
-    q('44', '¿El predio cuenta con áreas de conservación o protección?', ca.areas_conservacion),
-    q('45', '¿Realiza prácticas de conservación del suelo?', ca.practicas_conservacion),
-    q('46', '¿Utiliza algún tipo agroquímico?', ca.uso_agroquimicos),
-    q('47', '¿Qué tipo de agroquímicos utiliza?', conOtro(ca.tipo_agroquimicos, ca.tipo_agroquimicos_otro)),
-    q('48', 'Mencione qué tipo de herbicidas utiliza', ca.herbicidas_cuales),
-    q('49', '¿Realiza manejo de residuos de agroquímicos?', ca.manejo_residuos),
-  ].join(''));
-
-  // ---- RECOMENDACIONES DEL TÉCNICO (50-52) — ancho completo por ser texto largo ----
-  const recomendacionesHtml = `
-    <div class="section">
-      <h2>RECOMENDACIONES DEL TÉCNICO</h2>
-      <div class="q-full"><div class="q-t">50. Recomendaciones técnicas para el sistema productivo:</div>
-      <div class="desc-detallada">${escapeHtml(rec.recomendaciones_tecnicas || '—')}</div></div>
-      <div class="q-full"><div class="q-t">51. Compromisos adquiridos sobre el desarrollo del estado actual del terreno:</div>
-      <div class="desc-detallada">${escapeHtml(rec.compromisos_productor || '—')}</div></div>
-      <div class="q-full"><div class="q-t">52. Recomendaciones ambientales y de conservación:</div>
-      <div class="desc-detallada">${escapeHtml(rec.recomendaciones_ambientales || '—')}</div></div>
-    </div>`;
-
-  // ---- DESARROLLO ACOMPAÑAMIENTO TECNICO (7 ítems oficiales) ----
-  const itemAco = (num: string, texto: string, si?: boolean, no?: boolean, obs?: string, extra?: string) => `
+    }
+    const filas = sec.preguntas
+      .map((pr) => `
     <div class="q">
-      <div class="q-t">${num}. ${escapeHtml(texto)}</div>
-      <div class="q-a">${si ? 'Sí' : no ? 'No' : '—'}${extra ? ` · ${escapeHtml(extra)}` : ''}${obs ? `<br/><em>Obs: ${escapeHtml(obs)}</em>` : ''}</div>
+      <div class="q-t">${pr.numero}. ${escapeHtml(pr.texto)}</div>
+      <div class="q-a">${pr.valor ? escapeHtml(pr.valor) : '—'}${
+        pr.observacion ? `<br/><em>Obs: ${escapeHtml(pr.observacion)}</em>` : ''
+      }</div>
+    </div>`)
+      .join('');
+    return `
+    <div class="section">
+      <h2>${escapeHtml(sec.titulo)}</h2>
+      <div class="cols">${filas}</div>
     </div>`;
-  const geoAco = aco.georef_latitud && aco.georef_longitud
-    ? `Lat: ${aco.georef_latitud}  Lon: ${aco.georef_longitud}${aco.georef_altitud ? `  Alt: ${aco.georef_altitud} m` : ''}`
-    : '';
-  const acompanamientoHtml = seccion('DESARROLLO ACOMPAÑAMIENTO TECNICO', [
-    itemAco('1', 'Socialización de actividades del proyecto al productor, mediante presentación digital.', aco.actividades_realizadas_si, aco.actividades_realizadas_no, aco.actividades_realizadas_obs),
-    itemAco('2', 'Realización de selección y delimitación técnica del terreno para la implementación del cultivo de cacao en arreglo agroforestal con plátano y maderable.', aco.manejo_plagas_si, aco.manejo_plagas_no, aco.manejo_plagas_obs),
-    itemAco('3', 'Realización de muestreo de suelo, teniendo en cuenta: criterios de homogeneidad, uso actual del terreno, topografía y condiciones agroecológicas.', aco.manejo_suelo_si, aco.manejo_suelo_no, aco.manejo_suelo_obs),
-    itemAco('4', 'Punto de georeferenciación del terreno donde se realizará la implementación del cultivo de cacao en arreglo agroforestal con plátano y maderable.', aco.manejo_agua_si, aco.manejo_agua_no, aco.manejo_agua_obs, geoAco),
-    itemAco('5', 'Orientación al productor sobre procesos de producción y beneficios de la producción de cacao.', aco.capacitacion_si, aco.capacitacion_no, aco.capacitacion_obs),
-    itemAco('6', 'Orientación del manejo de preparación del terreno: realización de limpias si es rastrojo de porte bajo (herbáceas), recomendando no utilización de herbicidas a base de componentes de medio a altamente tóxicos.', aco.seguimiento_si, aco.seguimiento_no, aco.seguimiento_obs),
-    itemAco('7', 'Orientación del manejo de preparación del terreno: realización de entresacado en rastrojo biche de regeneración baja (arbóreas o arbustos), recomendando entresacado', aco.entresacado_si, aco.entresacado_no, aco.entresacado_obs),
-    aco.observaciones_generales ? q('•', 'Observaciones generales', aco.observaciones_generales) : '',
-  ].join(''));
+  };
+
+  /** HTML de todas las secciones de la encuesta, en orden oficial */
+  const encuestaHtml = seccionesEncuesta.map(renderSeccion).join('');
 
   // ---- Ubicación GPS del formulario + Clima en el momento de la visita ----
   const clima = (form.clima as any)?.actual;
@@ -907,19 +795,8 @@ function construirHTMLCaracterizacion(
     <p><strong>ID:</strong> ${escapeHtml(form.id)} | <strong>Productor:</strong> ${escapeHtml(c.productor_nombre || '—')} | <strong>Fecha:</strong> ${escapeHtml(c.fecha || formatFecha(form.created_at))}</p>
   </div>
 
-  <!-- Encabezado oficial de la encuesta -->
-  <div class="section">
-    <h2>DATOS GENERALES</h2>
-    <div class="cols">${datosGenerales}</div>
-  </div>
-
-  ${componenteSocial}
-  ${caracterizacionFinca}
-  ${componenteProductivo}
-  ${seccionSuelo}
-  ${componenteAgro}
-  ${recomendacionesHtml}
-  ${acompanamientoHtml}
+  <!-- Encuesta completa (52 preguntas) desde el esquema canónico -->
+  ${encuestaHtml}
 
   <!-- SOCIODEMOGRÁFICO (si existe) -->
   ${form.sociodemografico ? `

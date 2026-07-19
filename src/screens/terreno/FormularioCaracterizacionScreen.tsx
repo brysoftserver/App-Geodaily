@@ -25,6 +25,7 @@ import { es } from 'date-fns/locale/es';
 import { COLORS, FONTS, SPACING, BORDER_RADIUS, SHADOWS } from '../../theme';
 import { useAuth } from '../../store/AuthContext';
 import { useForm } from '../../store/FormContext';
+import { useSync } from '../../store/SyncContext';
 import { useLocation } from '../../hooks/useLocation';
 import { useClimate } from '../../hooks/useClimate';
 import {
@@ -67,7 +68,14 @@ import { guardarBorrador, getBorrador, FormDraft } from '../../store/FormDraftSt
 import { subirFirma } from '../../services/firmas.service';
 import { uploadPhoto } from '../../services/photos.service';
 import { uploadVideo } from '../../services/videos.service';
-import { saveFormularioLocal, getDb, saveFotoLocal, saveVideoLocal } from '../../services/database';
+import {
+  saveFormularioLocal,
+  getDb,
+  saveFotoLocal,
+  saveVideoLocal,
+  getDocumentosDeBeneficiario,
+  vincularDocumentosHuerfanos,
+} from '../../services/database';
 import {
   EncuestaSocialAgroAmbiental,
   ComponenteSocialEncuesta,
@@ -249,6 +257,7 @@ const EncuestaSocialAgroambientalScreen: React.FC<Props> = ({ navigation, route 
     finalizarFormulario,
     formularioActual,
   } = useForm();
+  const { syncNow } = useSync();
   const { getCurrentPosition, coordenadas } = useLocation();
   const { fetchClimate, climaActual } = useClimate();
   const insets = useSafeAreaInsets();
@@ -271,6 +280,9 @@ const EncuestaSocialAgroambientalScreen: React.FC<Props> = ({ navigation, route 
   const formIdRef = useRef<string>('');
   const formularioRef = useRef(formularioActual);
   useEffect(() => { formularioRef.current = formularioActual; }, [formularioActual]);
+  /** Cédula del productor — leída en callbacks que no dependen de `data` */
+  const documentoRef = useRef('');
+  useEffect(() => { documentoRef.current = data.documento?.trim() || ''; }, [data.documento]);
 
   // ─── Inicializar ──────────────────────────────────────────
   useEffect(() => {
@@ -365,20 +377,15 @@ const EncuestaSocialAgroambientalScreen: React.FC<Props> = ({ navigation, route 
       }
       const cargarDocs = async () => {
         const formId = formularioActual?.id || formIdRef.current;
-        if (formId) {
-          try {
-            const db = getDb();
-            if (db) {
-              const rows = await db.getAllAsync<any>(
-                'SELECT COUNT(*) as cnt FROM documentos_finca WHERE formulario_id = ?',
-                [formId]
-              );
-              if (rows && rows.length > 0) {
-                setDocumentosCount(rows[0].cnt || 0);
-              }
-            }
-          } catch (e) { /* Ignorar */ }
-        }
+        try {
+          // Cuenta los documentos de la finca (por beneficiario), no solo
+          // los de esta visita — así se ven los ya recolectados antes.
+          const docs = await getDocumentosDeBeneficiario(
+            documentoRef.current || undefined,
+            formId || undefined
+          );
+          setDocumentosCount(docs.length);
+        } catch (e) { /* Ignorar */ }
       };
       cargarDocs();
     }, [formularioActual])
@@ -530,10 +537,10 @@ const EncuestaSocialAgroambientalScreen: React.FC<Props> = ({ navigation, route 
           // Videos → videos_locales + /api/videos (carpeta videos/, .mp4)
           if (foto.tipo === 'video') {
             saveVideoLocal(foto.id, draftIdActual, foto.uri, foto.coordenadas).catch(() => {});
-            uploadVideo(foto.uri, foto.coordenadas?.latitud, foto.coordenadas?.longitud, `Encuesta ${draftIdActual}`, data.documento || undefined, data.productor_nombre || undefined, 'caracterizacion').catch(() => {});
+            uploadVideo(foto.uri, foto.coordenadas?.latitud, foto.coordenadas?.longitud, `Encuesta ${draftIdActual}`, data.documento || undefined, data.productor_nombre || undefined, 'caracterizacion', draftIdActual).catch(() => {});
           } else {
             saveFotoLocal(foto.id, draftIdActual, foto.uri, foto.coordenadas).catch(() => {});
-            uploadPhoto(foto.uri, foto.coordenadas?.latitud, foto.coordenadas?.longitud, foto.coordenadas?.altitud, `Encuesta ${draftIdActual}`, undefined, data.documento || undefined, data.productor_nombre || undefined, foto.timestamp, 'caracterizacion').catch(() => {});
+            uploadPhoto(foto.uri, foto.coordenadas?.latitud, foto.coordenadas?.longitud, foto.coordenadas?.altitud, `Encuesta ${draftIdActual}`, undefined, data.documento || undefined, data.productor_nombre || undefined, foto.timestamp, 'caracterizacion', draftIdActual).catch(() => {});
           }
         }
       } catch { /* ignorar */ }
@@ -588,10 +595,10 @@ const EncuestaSocialAgroambientalScreen: React.FC<Props> = ({ navigation, route 
         for (const foto of fotosParaUpload) {
           if (foto.tipo === 'video') {
             saveVideoLocal(foto.id, formId, foto.uri, foto.coordenadas).catch(() => {});
-            uploadVideo(foto.uri, foto.coordenadas?.latitud, foto.coordenadas?.longitud, `Encuesta ${formId}`, data.documento || undefined, data.productor_nombre || undefined, 'caracterizacion').catch(() => {});
+            uploadVideo(foto.uri, foto.coordenadas?.latitud, foto.coordenadas?.longitud, `Encuesta ${formId}`, data.documento || undefined, data.productor_nombre || undefined, 'caracterizacion', formId).catch(() => {});
           } else {
             saveFotoLocal(foto.id, formId, foto.uri, foto.coordenadas).catch(() => {});
-            uploadPhoto(foto.uri, foto.coordenadas?.latitud, foto.coordenadas?.longitud, foto.coordenadas?.altitud, `Encuesta ${formId}`, undefined, data.documento || undefined, data.productor_nombre || undefined, foto.timestamp, 'caracterizacion').catch(() => {});
+            uploadPhoto(foto.uri, foto.coordenadas?.latitud, foto.coordenadas?.longitud, foto.coordenadas?.altitud, `Encuesta ${formId}`, undefined, data.documento || undefined, data.productor_nombre || undefined, foto.timestamp, 'caracterizacion', formId).catch(() => {});
           }
         }
       } catch { /* ignorar */ }
@@ -709,26 +716,28 @@ const EncuestaSocialAgroambientalScreen: React.FC<Props> = ({ navigation, route 
 
       try { await saveFormularioLocal(form); } catch { /* ignorar */ }
 
-      // 5. Actualizar documentos vinculados: si se guardaron con 'sin-formulario',
-      //    reasignarlos al ID real del formulario completado
+      // 5. Vincular documentos capturados con ID temporal al formulario real
+      //    y, sobre todo, a la cédula del beneficiario para que queden como
+      //    documentos permanentes de la finca.
       try {
+        const cedula = data.documento?.trim() || undefined;
+        const formRealId = form.id;
         const db = getDb();
         if (db) {
-          const formRealId = form.id;
-          // Actualizar docs guardados con ID temporal
-          await db.runAsync(
-            "UPDATE documentos_finca SET formulario_id = ? WHERE formulario_id = ?",
-            [formRealId, formularioActual?.id || 'sin-formulario']
-          );
-          // También los que tengan el formIdRef anterior si es distinto
-          const refId = formIdRef.current;
-          if (refId && refId !== formRealId && refId !== 'sin-formulario') {
+          // Reasignar los IDs temporales conocidos de ESTA sesión
+          const idsTemporales = [
+            formularioActual?.id || 'sin-formulario',
+            formIdRef.current,
+          ].filter((id): id is string => !!id && id !== formRealId);
+
+          for (const idTemp of idsTemporales) {
             await db.runAsync(
-              "UPDATE documentos_finca SET formulario_id = ? WHERE formulario_id = ?",
-              [formRealId, refId]
+              'UPDATE documentos_finca SET formulario_id = ?, beneficiario_cedula = COALESCE(NULLIF(beneficiario_cedula, \'\'), ?) WHERE formulario_id = ?',
+              [formRealId, cedula || null, idTemp]
             );
           }
         }
+        await vincularDocumentosHuerfanos(formRealId, cedula);
       } catch (e) {
         console.warn('[Carac] No se pudieron actualizar documentos:', e);
       }
@@ -742,6 +751,10 @@ const EncuestaSocialAgroambientalScreen: React.FC<Props> = ({ navigation, route 
           // Ignorar error al eliminar borrador
         }
       }
+
+      // 7. Sincronizar con el servidor (best-effort). Si no hay conexión el
+      //    formulario queda en la cola y sube solo al recuperarla.
+      syncNow().catch(() => { /* la cola reintenta */ });
 
       setIsSubmitting(false);
 
@@ -767,6 +780,7 @@ const EncuestaSocialAgroambientalScreen: React.FC<Props> = ({ navigation, route 
     setCaracterizacionNueva,
     setCoordenadas,
     finalizarFormulario,
+    syncNow,
   ]);
 
   // ─── Render ──────────────────────────────────────────────
@@ -1659,7 +1673,12 @@ const EncuestaSocialAgroambientalScreen: React.FC<Props> = ({ navigation, route 
 
               <TouchableOpacity
                 style={[styles.evidenciaCard, documentosCount > 0 && styles.evidenciaCardOk]}
-                onPress={() => goToEvidencia('Documentos')}
+                onPress={() =>
+                  goToEvidencia('Documentos', {
+                    beneficiarioCedula: data.documento,
+                    beneficiarioNombre: data.productor_nombre,
+                  })
+                }
                 activeOpacity={0.7}
               >
                 <View style={styles.evidenciaIcon}>

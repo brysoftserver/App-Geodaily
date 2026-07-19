@@ -298,6 +298,21 @@ async function getSignedUrl(filePath, expirySeconds = 86400) {
 }
 
 /**
+ * Obtener un stream de lectura de un archivo.
+ * Se usa para transmitir evidencias a la app: MinIO está en la red
+ * interna, así que el binario pasa por la API en vez de exponer una
+ * URL prefirmada que el celular no podría alcanzar.
+ */
+async function getFileStream(filePath) {
+  try {
+    return await minioClient.getObject(CONFIG.bucket, filePath);
+  } catch (err) {
+    console.error('[Storage] Error al abrir archivo:', filePath, err.message);
+    return null;
+  }
+}
+
+/**
  * Eliminar un archivo
  */
 async function deleteFile(filePath) {
@@ -363,6 +378,7 @@ module.exports = {
   uploadFile,
   uploadFromFile,
   getSignedUrl,
+  getFileStream,
   deleteFile,
   listFiles,
   getSubfoldersForRole,
