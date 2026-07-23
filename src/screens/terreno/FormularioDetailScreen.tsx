@@ -19,6 +19,7 @@ import {
   Modal,
   Pressable,
   TextInput,
+  ActivityIndicator,
 } from 'react-native';
 import * as FileSystem from 'expo-file-system/legacy';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
@@ -30,14 +31,17 @@ import VideoPlayerModal from '../../components/VideoPlayerModal';
 import {
   resolverEvidenciasRemotas,
   cabecerasDeArchivo,
+  resolverFirmasRemotas,
+  FirmaResuelta,
 } from '../../services/archivos.service';
+import { fetchDocumentosDeFormulario, DocumentoDeFormulario } from '../../services/documentos.service';
 import { formatFecha } from '../../utils/formatters';
 import { construirSeccionesEncuesta, esEncuestaSocial } from '../../utils/encuestaSchema';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Print from 'expo-print';
 import * as Sharing from 'expo-sharing';
 import * as IntentLauncher from 'expo-intent-launcher';
-import { convertirFotosAHTML, generarSelloBiometrico } from '../../services/pdfLocal.service';
+import { convertirFotosAHTML, generarSelloBiometrico, generarPDFRevisionChecklist, DatosRevisionChecklist, ItemChecklistRevision } from '../../services/pdfLocal.service';
 import { useAuth } from '../../store/AuthContext';
 import { fetchRevisiones, registrarRevision, Revision } from '../../services/revisiones.service';
 
@@ -58,9 +62,26 @@ const ROL_LABEL: Record<string, string> = {
   admin: 'Administrador',
 };
 
-const CONCEPTOS = ['Cumple', 'Cumple parcialmente', 'No cumple'];
+const ITEMS_FORMULARIO_LINEA = [
+  'Que la información esté completamente diligenciada.',
+  'La calidad y pertinencia de las fotografías.',
+  'La ubicación geográfica mediante coordenadas GPS.',
+  'La fecha y hora de la visita.',
+  'Las actividades reportadas.',
+  'La coherencia de la información con el cronograma del proyecto.',
+];
 
-const SeccionRevision: React.FC<{ formularioId: string }> = ({ formularioId }) => {
+const ITEMS_FORMULARIO_CAMPO = [
+  'La ejecución de las actividades reportadas.',
+  'El estado del cultivo.',
+  'La calidad de las labores ejecutadas.',
+  'Las evidencias fotográficas.',
+  'Las coordenadas GPS.',
+  'La información suministrada por el beneficiario.',
+];
+
+const SeccionRevision: React.FC<{ formulario: Formulario }> = ({ formulario }) => {
+  const formularioId = formulario.id;
   const { user } = useAuth();
   const rol = user?.rol || 'tecnico';
   const esRevisor = ['supervisor', 'interventor', 'gerente', 'admin'].includes(rol);
@@ -68,12 +89,16 @@ const SeccionRevision: React.FC<{ formularioId: string }> = ({ formularioId }) =
 
   const [revisiones, setRevisiones] = useState<Revision[]>([]);
   const [enviando, setEnviando] = useState(false);
+  const [generandoPdf, setGenerandoPdf] = useState<'linea' | 'campo' | null>(null);
   const [modalNovedad, setModalNovedad] = useState(false);
-  const [modalRolForm, setModalRolForm] = useState(false);
   const [novedadTexto, setNovedadTexto] = useState('');
-  const [concepto, setConcepto] = useState(CONCEPTOS[0]);
-  const [observaciones, setObservaciones] = useState('');
-  const [recomendaciones, setRecomendaciones] = useState('');
+  const [modalLinea, setModalLinea] = useState(false);
+  const [modalCampo, setModalCampo] = useState(false);
+  // Respuestas para formulario en línea y en campo
+  const [respuestasLinea, setRespuestasLinea] = useState<string[]>(ITEMS_FORMULARIO_LINEA.map(() => ''));
+  const [respuestasCampo, setRespuestasCampo] = useState<string[]>(ITEMS_FORMULARIO_CAMPO.map(() => ''));
+  const [yaGuardeLinea, setYaGuardeLinea] = useState(false);
+  const [yaGuardeCampo, setYaGuardeCampo] = useState(false);
 
   const cargar = useCallback(async () => {
     setRevisiones(await fetchRevisiones(formularioId));
@@ -83,13 +108,35 @@ const SeccionRevision: React.FC<{ formularioId: string }> = ({ formularioId }) =
     cargar();
   }, [cargar]);
 
+  // Precargar respuestas si ya se guardaron antes
+  useEffect(() => {
+    const propiosLinea = revisiones
+      .filter((r) => r.revisor_rol === rol && r.tipo === 'formulario_en_linea')
+      .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+    const ultimoLinea = propiosLinea[0];
+    if (ultimoLinea?.datos_formulario_json?.items) {
+      const items = ultimoLinea.datos_formulario_json.items as Array<{ texto: string; respuesta: string }>;
+      setRespuestasLinea(items.map((i) => i.respuesta || ''));
+      setYaGuardeLinea(true);
+    }
+
+    const propiosCampo = revisiones
+      .filter((r) => r.revisor_rol === rol && r.tipo === 'formulario_en_campo')
+      .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+    const ultimoCampo = propiosCampo[0];
+    if (ultimoCampo?.datos_formulario_json?.items) {
+      const items = ultimoCampo.datos_formulario_json.items as Array<{ texto: string; respuesta: string }>;
+      setRespuestasCampo(items.map((i) => i.respuesta || ''));
+      setYaGuardeCampo(true);
+    }
+  }, [revisiones, rol]);
+
   const estadoDe = (r: string): 'ok' | 'novedades' | null => {
     if (revisiones.some((x) => x.revisor_rol === r && x.tipo === 'visto_bueno')) return 'ok';
     if (revisiones.some((x) => x.revisor_rol === r && x.tipo === 'novedad')) return 'novedades';
     return null;
   };
   const yaAprobePorMiRol = estadoDe(rol) === 'ok';
-  const yaLleneFormularioRol = revisiones.some((r) => r.revisor_rol === rol && r.tipo === 'formulario_rol');
   const novedades = revisiones.filter((r) => r.tipo === 'novedad');
 
   const enviarNovedad = async () => {
@@ -124,19 +171,31 @@ const SeccionRevision: React.FC<{ formularioId: string }> = ({ formularioId }) =
     }
   };
 
-  // Guardar el formulario pequeño del rol — independiente del Todo OK
-  const enviarFormularioRol = async () => {
+  const handleTodoOK = () => {
+    Alert.alert('Dar visto bueno', '¿Confirmas que este formulario está correcto (Todo OK)?', [
+      { text: 'Cancelar', style: 'cancel' },
+      { text: 'Todo OK', onPress: () => enviarVistoBueno() },
+    ]);
+  };
+
+  const guardarFormulario = async (tipo: 'linea' | 'campo') => {
+    const items = tipo === 'linea' ? ITEMS_FORMULARIO_LINEA : ITEMS_FORMULARIO_CAMPO;
+    const respuestas = tipo === 'linea' ? respuestasLinea : respuestasCampo;
+    const tipoEndpoint = tipo === 'linea' ? 'formulario_en_linea' : 'formulario_en_campo';
+
+    const datosItems: ItemChecklistRevision[] = items.map((texto, idx) => ({
+      texto,
+      respuesta: respuestas[idx]?.trim() || '',
+    }));
+
     setEnviando(true);
     try {
-      await registrarRevision(formularioId, 'formulario_rol', undefined, {
-        concepto,
-        observaciones,
-        recomendaciones,
-        rol,
-      });
-      setModalRolForm(false);
+      await registrarRevision(formularioId, tipoEndpoint, undefined, { items: datosItems });
+      if (tipo === 'linea') setYaGuardeLinea(true);
+      else setYaGuardeCampo(true);
       await cargar();
-      Alert.alert('📋 Guardado', `Formulario de ${ROL_LABEL[rol]} registrado correctamente.`);
+      const label = tipo === 'linea' ? 'en línea' : 'en campo';
+      Alert.alert('📋 Guardado', `Formulario ${label} registrado correctamente.`);
     } catch (error) {
       Alert.alert('No se pudo guardar', error instanceof Error ? error.message : String(error));
     } finally {
@@ -144,11 +203,36 @@ const SeccionRevision: React.FC<{ formularioId: string }> = ({ formularioId }) =
     }
   };
 
-  const handleTodoOK = () => {
-    Alert.alert('Dar visto bueno', '¿Confirmas que este formulario está correcto (Todo OK)?', [
-      { text: 'Cancelar', style: 'cancel' },
-      { text: 'Todo OK', onPress: () => enviarVistoBueno() },
-    ]);
+  const descargarPdfChecklist = async (tipo: 'linea' | 'campo') => {
+    const items = tipo === 'linea' ? ITEMS_FORMULARIO_LINEA : ITEMS_FORMULARIO_CAMPO;
+    const respuestas = tipo === 'linea' ? respuestasLinea : respuestasCampo;
+
+    const datosItems: ItemChecklistRevision[] = items.map((texto, idx) => ({
+      texto,
+      respuesta: respuestas[idx]?.trim() || '',
+    }));
+
+    const datos: DatosRevisionChecklist = {
+      rol: rol as 'supervisor' | 'interventor',
+      revisorNombre: user?.nombre || ROL_LABEL[rol],
+      tipoChecklist: tipo,
+      items: datosItems,
+    };
+
+    setGenerandoPdf(tipo);
+    try {
+      const uri = await generarPDFRevisionChecklist(formulario, datos);
+      if (!uri) throw new Error('sin uri');
+      if (await Sharing.isAvailableAsync()) {
+        await Sharing.shareAsync(uri, { mimeType: 'application/pdf', UTI: 'com.adobe.pdf' });
+      } else {
+        Alert.alert('PDF generado', `PDF disponible en: ${uri}`);
+      }
+    } catch (e) {
+      Alert.alert('Error', 'No se pudo generar el PDF del formulario');
+    } finally {
+      setGenerandoPdf(null);
+    }
   };
 
   const Chip = ({ rolChip }: { rolChip: 'supervisor' | 'interventor' }) => {
@@ -161,6 +245,33 @@ const SeccionRevision: React.FC<{ formularioId: string }> = ({ formularioId }) =
       </View>
     );
   };
+
+  /** Renderizar los items de un checklist con sus campos de texto */
+  const renderItemsChecklist = (
+    items: string[],
+    respuestas: string[],
+    setRespuestas: React.Dispatch<React.SetStateAction<string[]>>,
+  ) =>
+    items.map((texto, idx) => (
+      <View key={idx} style={rev.checklistItem}>
+        <Text style={rev.checklistItemTexto}>{idx + 1}. {texto}</Text>
+        <TextInput
+          style={rev.inputItem}
+          multiline
+          numberOfLines={2}
+          value={respuestas[idx] || ''}
+          onChangeText={(t) =>
+            setRespuestas((prev) => {
+              const copy = [...prev];
+              copy[idx] = t;
+              return copy;
+            })
+          }
+          placeholder="Escribe aquí tu observación..."
+          placeholderTextColor={COLORS.textLight}
+        />
+      </View>
+    ));
 
   return (
     <View style={rev.section}>
@@ -207,18 +318,31 @@ const SeccionRevision: React.FC<{ formularioId: string }> = ({ formularioId }) =
               </Text>
             </TouchableOpacity>
           </View>
+
+          {/* Dos botones de formulario: en línea y en campo */}
           {tieneFormularioDeRol && (
-            <View style={rev.botonesRow}>
-              <TouchableOpacity
-                style={[rev.boton, rev.botonFormRol]}
-                onPress={() => setModalRolForm(true)}
-                disabled={enviando}
-              >
-                <Text style={rev.botonTexto}>
-                  {yaLleneFormularioRol ? `📋 Formulario de ${ROL_LABEL[rol]} ✓ (editar)` : `📋 Formulario de ${ROL_LABEL[rol]}`}
-                </Text>
-              </TouchableOpacity>
-            </View>
+            <>
+              <View style={rev.botonesRow}>
+                <TouchableOpacity
+                  style={[rev.boton, rev.botonFormLinea]}
+                  onPress={() => setModalLinea(true)}
+                  disabled={enviando}
+                >
+                  <Text style={rev.botonTexto}>
+                    {yaGuardeLinea ? '📋 Formulario en línea ✓ (editar)' : '📋 Formulario en línea'}
+                  </Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[rev.boton, rev.botonFormCampo]}
+                  onPress={() => setModalCampo(true)}
+                  disabled={enviando}
+                >
+                  <Text style={rev.botonTexto}>
+                    {yaGuardeCampo ? '🌿 Formulario en campo ✓ (editar)' : '🌿 Formulario en campo'}
+                  </Text>
+                </TouchableOpacity>
+              </View>
+            </>
           )}
         </>
       )}
@@ -250,58 +374,73 @@ const SeccionRevision: React.FC<{ formularioId: string }> = ({ formularioId }) =
         </View>
       </Modal>
 
-      {/* Modal: formulario pequeño del rol + visto bueno */}
-      <Modal visible={modalRolForm} transparent animationType="fade" onRequestClose={() => setModalRolForm(false)}>
+      {/* Modal: Formulario en Línea */}
+      <Modal visible={modalLinea} transparent animationType="fade" onRequestClose={() => setModalLinea(false)}>
         <View style={rev.modalFondo}>
           <ScrollView contentContainerStyle={rev.modalScroll}>
             <View style={rev.modalCard}>
-              <Text style={rev.modalTitulo}>📋 Formulario de {ROL_LABEL[rol]}</Text>
-
-              <Text style={rev.campoLabel}>Concepto</Text>
-              <View style={rev.conceptosRow}>
-                {CONCEPTOS.map((c) => (
-                  <TouchableOpacity
-                    key={c}
-                    style={[rev.conceptoChip, concepto === c && rev.conceptoChipActivo]}
-                    onPress={() => setConcepto(c)}
-                  >
-                    <Text style={[rev.conceptoChipTexto, concepto === c && rev.conceptoChipTextoActivo]}>{c}</Text>
-                  </TouchableOpacity>
-                ))}
-              </View>
-
-              <Text style={rev.campoLabel}>Observaciones</Text>
-              <TextInput
-                style={rev.inputMultiline}
-                multiline
-                numberOfLines={3}
-                value={observaciones}
-                onChangeText={setObservaciones}
-                placeholder="Observaciones de la revisión…"
-                placeholderTextColor={COLORS.textLight}
-              />
-
-              <Text style={rev.campoLabel}>Recomendaciones</Text>
-              <TextInput
-                style={rev.inputMultiline}
-                multiline
-                numberOfLines={3}
-                value={recomendaciones}
-                onChangeText={setRecomendaciones}
-                placeholder="Recomendaciones para el técnico o el proyecto…"
-                placeholderTextColor={COLORS.textLight}
-              />
+              <Text style={rev.modalTitulo}>📋 Formulario en Línea</Text>
+              <Text style={rev.modalSub}>
+                Durante esta revisión se verificará:
+              </Text>
+              {renderItemsChecklist(ITEMS_FORMULARIO_LINEA, respuestasLinea, setRespuestasLinea)}
 
               <View style={rev.modalBotones}>
-                <TouchableOpacity style={[rev.boton, rev.botonCancelar]} onPress={() => setModalRolForm(false)}>
-                  <Text style={rev.botonTextoOscuro}>Cancelar</Text>
+                <TouchableOpacity style={[rev.boton, rev.botonCancelar]} onPress={() => setModalLinea(false)}>
+                  <Text style={rev.botonTextoOscuro}>Cerrar</Text>
                 </TouchableOpacity>
                 <TouchableOpacity
-                  style={[rev.boton, rev.botonFormRol]}
-                  onPress={enviarFormularioRol}
+                  style={[rev.boton, rev.botonFormLinea]}
+                  onPress={() => guardarFormulario('linea')}
                   disabled={enviando}
                 >
-                  <Text style={rev.botonTexto}>{enviando ? 'Enviando…' : 'Guardar formulario'}</Text>
+                  <Text style={rev.botonTexto}>{enviando ? 'Guardando…' : '💾 Guardar'}</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[rev.boton, rev.botonDescargaRevision]}
+                  onPress={() => descargarPdfChecklist('linea')}
+                  disabled={generandoPdf === 'linea'}
+                >
+                  <Text style={rev.botonTexto}>
+                    {generandoPdf === 'linea' ? 'Generando…' : '⬇ PDF'}
+                  </Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          </ScrollView>
+        </View>
+      </Modal>
+
+      {/* Modal: Formulario en Campo */}
+      <Modal visible={modalCampo} transparent animationType="fade" onRequestClose={() => setModalCampo(false)}>
+        <View style={rev.modalFondo}>
+          <ScrollView contentContainerStyle={rev.modalScroll}>
+            <View style={rev.modalCard}>
+              <Text style={rev.modalTitulo}>🌿 Formulario en Campo</Text>
+              <Text style={rev.modalSub}>
+                En esta etapa se verificará:
+              </Text>
+              {renderItemsChecklist(ITEMS_FORMULARIO_CAMPO, respuestasCampo, setRespuestasCampo)}
+
+              <View style={rev.modalBotones}>
+                <TouchableOpacity style={[rev.boton, rev.botonCancelar]} onPress={() => setModalCampo(false)}>
+                  <Text style={rev.botonTextoOscuro}>Cerrar</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[rev.boton, rev.botonFormCampo]}
+                  onPress={() => guardarFormulario('campo')}
+                  disabled={enviando}
+                >
+                  <Text style={rev.botonTexto}>{enviando ? 'Guardando…' : '💾 Guardar'}</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[rev.boton, rev.botonDescargaRevision]}
+                  onPress={() => descargarPdfChecklist('campo')}
+                  disabled={generandoPdf === 'campo'}
+                >
+                  <Text style={rev.botonTexto}>
+                    {generandoPdf === 'campo' ? 'Generando…' : '⬇ PDF'}
+                  </Text>
                 </TouchableOpacity>
               </View>
             </View>
@@ -339,7 +478,9 @@ const rev = StyleSheet.create({
   boton: { flex: 1, paddingVertical: SPACING.sm, borderRadius: BORDER_RADIUS.md, alignItems: 'center', paddingHorizontal: SPACING.sm },
   botonNovedad: { backgroundColor: COLORS.info },
   botonOk: { backgroundColor: COLORS.success },
-  botonFormRol: { backgroundColor: COLORS.roleSupervisor || '#6A1B9A' },
+  botonFormLinea: { backgroundColor: COLORS.primary },
+  botonFormCampo: { backgroundColor: COLORS.roleInterventor || '#00695C' },
+  botonDescargaRevision: { backgroundColor: COLORS.secondary || '#F9A825' },
   botonCancelar: { backgroundColor: COLORS.divider },
   botonDeshabilitado: { backgroundColor: COLORS.textLight },
   botonTexto: { color: '#fff', fontWeight: FONTS.weights.semibold, fontSize: FONTS.sizes.sm, textAlign: 'center' },
@@ -355,15 +496,29 @@ const rev = StyleSheet.create({
     fontSize: FONTS.sizes.md, color: COLORS.textPrimary, marginBottom: SPACING.sm,
   },
   modalBotones: { flexDirection: 'row', gap: SPACING.sm, marginTop: SPACING.xs },
-  campoLabel: { fontSize: FONTS.sizes.sm, fontWeight: FONTS.weights.semibold, color: COLORS.textSecondary, marginBottom: 4 },
-  conceptosRow: { flexDirection: 'row', gap: SPACING.xs, flexWrap: 'wrap', marginBottom: SPACING.sm },
-  conceptoChip: {
-    paddingHorizontal: SPACING.sm, paddingVertical: 6,
-    borderRadius: BORDER_RADIUS.full, borderWidth: 1, borderColor: COLORS.border,
+  checklistItem: {
+    marginBottom: SPACING.sm,
+    borderLeftWidth: 3,
+    borderLeftColor: COLORS.primary + '55',
+    paddingLeft: SPACING.sm,
   },
-  conceptoChipActivo: { backgroundColor: COLORS.success, borderColor: COLORS.success },
-  conceptoChipTexto: { fontSize: FONTS.sizes.sm, color: COLORS.textPrimary },
-  conceptoChipTextoActivo: { color: '#fff', fontWeight: FONTS.weights.semibold },
+  checklistItemTexto: {
+    fontSize: FONTS.sizes.sm,
+    fontWeight: FONTS.weights.medium,
+    color: COLORS.textPrimary,
+    marginBottom: 4,
+  },
+  inputItem: {
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    borderRadius: BORDER_RADIUS.sm,
+    padding: SPACING.sm,
+    minHeight: 50,
+    textAlignVertical: 'top',
+    fontSize: FONTS.sizes.sm,
+    color: COLORS.textPrimary,
+    backgroundColor: COLORS.background,
+  },
 });
 
 const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, navigation: _navigation }) => {
@@ -375,6 +530,8 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
   /** Evidencia abierta en visor ampliado (null = cerrado) */
   const [fotoPreview, setFotoPreview] = useState<FotoGeotag | null>(null);
   const [videoPreview, setVideoPreview] = useState<FotoGeotag | null>(null);
+  /** Firma abierta en visor ampliado (null = cerrado) */
+  const [firmaPreview, setFirmaPreview] = useState<{ uri: string; headers: Record<string, string>; titulo: string } | null>(null);
   /**
    * Evidencias recuperadas del servidor cuando los archivos locales no
    * existen (formulario abierto desde otro teléfono). null = usar las
@@ -383,6 +540,17 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
   const [evidenciasRemotas, setEvidenciasRemotas] = useState<FotoGeotag[] | null>(null);
   /** Cabeceras de autenticación para descargar evidencias de la API */
   const [authHeaders, setAuthHeaders] = useState<Record<string, string>>({});
+  /** Documentos de finca vinculados a este formulario — visibles para todos los roles */
+  const [documentos, setDocumentos] = useState<DocumentoDeFormulario[]>([]);
+  const [abriendoDocumentoId, setAbriendoDocumentoId] = useState<string | null>(null);
+  /**
+   * Firmas listas para <Image>: URI + cabeceras si hace falta autenticación.
+   * null = no registrada; undefined (estado inicial) = aún resolviendo.
+   */
+  const [firmasResueltas, setFirmasResueltas] = useState<{
+    beneficiario: FirmaResuelta | null;
+    tecnico: FirmaResuelta | null;
+  } | null>(null);
 
   // Las evidencias mostradas: locales si están, remotas si no
   const evidencias = evidenciasRemotas ?? formulario.fotos ?? [];
@@ -397,13 +565,17 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
     let cancelado = false;
     (async () => {
       try {
-        const [headers, remotas] = await Promise.all([
+        const [headers, remotas, docs, firmas] = await Promise.all([
           cabecerasDeArchivo(),
           resolverEvidenciasRemotas(formulario.id, formulario.fotos),
+          fetchDocumentosDeFormulario(formulario.id),
+          resolverFirmasRemotas(formulario.id, formulario.firma_beneficiario, formulario.firma_tecnico),
         ]);
         if (cancelado) return;
         setAuthHeaders(headers);
         if (remotas) setEvidenciasRemotas(remotas);
+        setDocumentos(docs);
+        setFirmasResueltas(firmas);
       } catch (e) {
         console.warn('[Detalle] No se pudieron resolver las evidencias:', e);
       }
@@ -412,6 +584,34 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
       cancelado = true;
     };
   }, [formulario.id, formulario.fotos]);
+
+  /**
+   * Abrir un documento de finca: se descarga (con autenticación) a un
+   * archivo temporal y se ofrece con el selector nativo "Abrir con…", ya
+   * que un documento puede ser PDF, imagen, Word, Excel, etc. — no tiene
+   * sentido construir un visor propio por cada formato posible.
+   */
+  const abrirDocumento = async (doc: DocumentoDeFormulario) => {
+    setAbriendoDocumentoId(doc.id);
+    try {
+      const headers = await cabecerasDeArchivo();
+      const url = doc.url.startsWith('http') ? doc.url : `${API_CONFIG.BASE_URL}${doc.url}`;
+      const extension = doc.nombre.includes('.') ? doc.nombre.split('.').pop() : 'dat';
+      const destino = `${FileSystem.cacheDirectory}doc_${doc.id}.${extension}`;
+      const { uri } = await FileSystem.downloadAsync(url, destino, { headers });
+
+      if (await Sharing.isAvailableAsync()) {
+        await Sharing.shareAsync(uri, { mimeType: doc.mimetype });
+      } else {
+        Alert.alert('Documento descargado', `Guardado en: ${uri}`);
+      }
+    } catch (e) {
+      console.warn('[Detalle] No se pudo abrir el documento:', doc.id, e);
+      Alert.alert('Error', 'No se pudo abrir el documento. Verifica tu conexión.');
+    } finally {
+      setAbriendoDocumentoId(null);
+    }
+  };
   const { height: SCREEN_HEIGHT } = Dimensions.get('window');
   const PDF_HEIGHT = SCREEN_HEIGHT * 0.55;
 
@@ -646,17 +846,29 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
     return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#039;');
   }
 
-  // Generar el PDF local: para la Encuesta Social AgroAmbiental se usa el
-  // generador canónico del servicio (52 preguntas oficiales, 2 columnas,
-  // clima, GPS, anexo de videos) — así "Ver PDF" desde cualquier rol
-  // produce el mismo documento que genera el técnico al completar.
+  // Generar el PDF local SIEMPRE con el generador canónico del servicio,
+  // sea cual sea el tipo de formulario. Es el único que aplica el membrete
+  // oficial de ACPR (encabezado y pie repetidos en todas las páginas,
+  // tamaño Carta) además de las 52 preguntas, clima, GPS y anexo de videos.
+  //
+  // Antes solo la Encuesta Social AgroAmbiental pasaba por él: las visitas
+  // técnicas caían al generador de esta pantalla, que no lleva membrete —
+  // por eso el formato institucional no salía en el PDF generado.
   const generarPdfUri = async (): Promise<string | null> => {
-    if (formulario.tipo === 'caracterizacion' || (formulario as any).caracterizacion_nueva) {
+    try {
       const { generarPDFLocal } = await import('../../services/pdfLocal.service');
-      const uri = await generarPDFLocal(formulario);
+      // 'evidencias' ya está resuelto (local si existe en este dispositivo,
+      // o URL del servidor si no) — antes se pasaba 'formulario' a secas y
+      // el generador leía formulario.fotos directo, con rutas file:// que
+      // solo existen en el teléfono que capturó la visita. Generar el PDF
+      // desde cualquier otro rol/dispositivo daba un documento sin fotos.
+      const uri = await generarPDFLocal(formulario, undefined, evidencias);
       if (uri) return uri;
-      // Si el servicio falla, caer al generador local de esta pantalla
+      console.warn('[PDF] El generador canónico falló, usando el de respaldo');
+    } catch (e) {
+      console.warn('[PDF] Error en el generador canónico, usando el de respaldo:', e);
     }
+    // Respaldo: generador propio de la pantalla (sin membrete)
     const html = await generarHtml();
     const { uri } = await Print.printToFileAsync({ html });
     return uri;
@@ -710,20 +922,29 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
   const handleViewPDF = async () => {
     setGeneratingPdf(true);
     try {
-      // 1. Si el PDF ya está en este dispositivo, abrirlo directamente.
-      //    Al completar un formulario se guarda la ruta LOCAL (file://) en
-      //    pdf_url; tratarla como URL de servidor obligaba a regenerar el
-      //    PDF entero cada vez — lento y sin sentido estando offline.
+      // 1. Regenerar el PDF a partir de los datos del formulario.
+      //    Es una operación local (funciona sin conexión) y garantiza que
+      //    el documento salga siempre con el membrete vigente: los PDF
+      //    guardados en pdf_url antes de implementarlo conservan el
+      //    formato antiguo, y reutilizarlos hacía que "Ver PDF" mostrara
+      //    un documento sin encabezado ni pie institucional.
+      const generado = await generarPdfUri();
+      if (generado) {
+        await mostrarPdf(generado);
+        return;
+      }
+
+      // 2. Si no se pudo generar y hay una copia en este dispositivo, usarla
       if (formulario.pdf_url?.startsWith('file://')) {
         const info = await FileSystem.getInfoAsync(formulario.pdf_url);
         if (info.exists) {
           await mostrarPdf(formulario.pdf_url);
           return;
         }
-        console.warn('[PDF] El PDF local ya no existe, regenerando');
+        console.warn('[PDF] El PDF local ya no existe');
       }
 
-      // 2. Si hay PDF en el servidor, descargarlo a disco
+      // 3. Último recurso: descargar el PDF del servidor
       if (formulario.pdf_url && !formulario.pdf_url.startsWith('file://')) {
         const url = formulario.pdf_url.startsWith('http')
           ? formulario.pdf_url
@@ -739,15 +960,11 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
           await mostrarPdf(localUri);
           return;
         } catch {
-          // Sin conexión o descarga fallida: se regenera localmente abajo
-          console.warn('[PDF] No se pudo descargar el remoto, generando local');
+          console.warn('[PDF] No se pudo descargar el remoto');
         }
       }
 
-      // 3. Generar el PDF localmente (mismo documento que "Descargar PDF")
-      const uri = await generarPdfUri();
-      if (!uri) throw new Error('sin uri');
-      await mostrarPdf(uri);
+      throw new Error('sin uri');
     } catch (e) {
       Alert.alert('Error', 'No se pudo generar el PDF');
     } finally {
@@ -829,7 +1046,7 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
         </View>
 
         {/* Revisión jerárquica: novedades y vistos buenos */}
-        <SeccionRevision formularioId={formulario.id} />
+        <SeccionRevision formulario={formulario} />
 
         {/* Encuesta Social AgroAmbiental — resumen COMPLETO (52 preguntas).
             Las secciones vienen del esquema canónico compartido con el
@@ -922,6 +1139,120 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
           </View>
         )}
 
+        {/* Firmas recolectadas — antes solo se contaban (✓/✗) en el resumen
+            de arriba, pero no había forma de VERLAS en la pantalla; solo
+            aparecían dentro del PDF. Los roles de supervisión necesitan
+            poder revisarlas aquí mismo, sin generar el documento completo. */}
+        {(formulario.firma_beneficiario || formulario.firma_tecnico) && (
+          <View style={styles.fotosSection}>
+            <Text style={styles.sectionTitle}>✍️ Firmas</Text>
+            <View style={styles.firmasRow}>
+              <View style={styles.firmaCard}>
+                <Text style={styles.firmaCardLabel}>
+                  Beneficiario{formulario.beneficiario?.nombre ? ` — ${formulario.beneficiario.nombre}` : ''}
+                </Text>
+                {!formulario.firma_beneficiario ? (
+                  <View style={[styles.firmaImg, styles.firmaImgVacia]}>
+                    <Text style={styles.firmaVaciaTexto}>No registrada</Text>
+                  </View>
+                ) : !firmasResueltas ? (
+                  <View style={[styles.firmaImg, styles.firmaImgVacia]}>
+                    <ActivityIndicator size="small" color={COLORS.textSecondary} />
+                  </View>
+                ) : firmasResueltas.beneficiario ? (
+                  <TouchableOpacity
+                    onPress={() =>
+                      setFirmaPreview({
+                        uri: firmasResueltas.beneficiario!.uri,
+                        headers: firmasResueltas.beneficiario!.headers,
+                        titulo: `✍️ Firma del Beneficiario — ${formulario.beneficiario?.nombre || '—'}`,
+                      })
+                    }
+                    activeOpacity={0.8}
+                  >
+                    <Image
+                      source={{ uri: firmasResueltas.beneficiario.uri, headers: firmasResueltas.beneficiario.headers }}
+                      style={styles.firmaImg}
+                      resizeMode="contain"
+                    />
+                  </TouchableOpacity>
+                ) : (
+                  <View style={[styles.firmaImg, styles.firmaImgVacia]}>
+                    <Text style={styles.firmaVaciaTexto}>No se pudo cargar</Text>
+                  </View>
+                )}
+              </View>
+              <View style={styles.firmaCard}>
+                <Text style={styles.firmaCardLabel}>
+                  Técnico{formulario.tecnico?.nombre ? ` — ${formulario.tecnico.nombre}` : ''}
+                </Text>
+                {!formulario.firma_tecnico ? (
+                  <View style={[styles.firmaImg, styles.firmaImgVacia]}>
+                    <Text style={styles.firmaVaciaTexto}>No registrada</Text>
+                  </View>
+                ) : !firmasResueltas ? (
+                  <View style={[styles.firmaImg, styles.firmaImgVacia]}>
+                    <ActivityIndicator size="small" color={COLORS.textSecondary} />
+                  </View>
+                ) : firmasResueltas.tecnico ? (
+                  <TouchableOpacity
+                    onPress={() =>
+                      setFirmaPreview({
+                        uri: firmasResueltas.tecnico!.uri,
+                        headers: firmasResueltas.tecnico!.headers,
+                        titulo: `🖊️ Firma del Técnico — ${formulario.tecnico?.nombre || '—'}`,
+                      })
+                    }
+                    activeOpacity={0.8}
+                  >
+                    <Image
+                      source={{ uri: firmasResueltas.tecnico.uri, headers: firmasResueltas.tecnico.headers }}
+                      style={styles.firmaImg}
+                      resizeMode="contain"
+                    />
+                  </TouchableOpacity>
+                ) : (
+                  <View style={[styles.firmaImg, styles.firmaImgVacia]}>
+                    <Text style={styles.firmaVaciaTexto}>No se pudo cargar</Text>
+                  </View>
+                )}
+              </View>
+            </View>
+          </View>
+        )}
+
+        {/* Documentos de la finca — visible para todos los roles, no solo
+            el técnico que los subió. Antes no existía ninguna forma de que
+            supervisión revisara los documentos de una visita. */}
+        {documentos.length > 0 && (
+          <View style={styles.fotosSection}>
+            <Text style={styles.sectionTitle}>📎 Documentos de la finca ({documentos.length})</Text>
+            {documentos.map((doc) => (
+              <TouchableOpacity
+                key={doc.id}
+                style={styles.documentoItem}
+                onPress={() => abrirDocumento(doc)}
+                disabled={abriendoDocumentoId === doc.id}
+                activeOpacity={0.7}
+              >
+                <Text style={styles.documentoIcon}>
+                  {doc.mimetype?.includes('pdf') ? '📕' : doc.mimetype?.includes('image') ? '🖼️' : '📄'}
+                </Text>
+                <View style={styles.documentoInfo}>
+                  <Text style={styles.documentoNombre} numberOfLines={1}>{doc.nombre}</Text>
+                  <Text style={styles.documentoMeta}>
+                    {formatFecha(doc.created_at)}
+                    {doc.descripcion ? ` · ${doc.descripcion}` : ''}
+                  </Text>
+                </View>
+                <Text style={styles.documentoAccion}>
+                  {abriendoDocumentoId === doc.id ? '…' : '⬇️'}
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+        )}
+
         {/* Datos del Técnico */}
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>👤 Datos del Técnico</Text>
@@ -957,6 +1288,14 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
         {formulario.coordenadas && (
           <View style={styles.section}>
             <Text style={styles.sectionTitle}>📍 Ubicación</Text>
+            {(formulario.coordenadas.lugar || formulario.clima?.actual?.ubicacion?.nombre) && (
+              <View style={styles.row}>
+                <Text style={styles.label}>Lugar:</Text>
+                <Text style={styles.value}>
+                  {formulario.coordenadas.lugar || formulario.clima?.actual?.ubicacion?.nombre}
+                </Text>
+              </View>
+            )}
             <View style={styles.row}><Text style={styles.label}>Latitud:</Text><Text style={styles.value}>{formulario.coordenadas?.latitud?.toFixed(6) ?? '—'}</Text></View>
             <View style={styles.row}><Text style={styles.label}>Longitud:</Text><Text style={styles.value}>{formulario.coordenadas?.longitud?.toFixed(6) ?? '—'}</Text></View>
             {formulario.coordenadas.altitud && (
@@ -1010,6 +1349,10 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
                 videoPreview.coordenadas
                   ? `  ·  📍 ${videoPreview.coordenadas.latitud?.toFixed(6)}, ${videoPreview.coordenadas.longitud?.toFixed(6)}`
                   : ''
+              }${
+                formulario.coordenadas?.lugar || formulario.clima?.actual?.ubicacion?.nombre
+                  ? `  ·  🏙️ ${formulario.coordenadas?.lugar || formulario.clima?.actual?.ubicacion?.nombre}`
+                  : ''
               }`
             : undefined
         }
@@ -1035,7 +1378,34 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
                 {fotoPreview.coordenadas
                   ? `  ·  📍 ${fotoPreview.coordenadas.latitud?.toFixed(6)}, ${fotoPreview.coordenadas.longitud?.toFixed(6)}`
                   : ''}
+                {/* Municipio de la visita — todas las evidencias de una
+                    misma visita están a metros de distancia, comparten lugar */}
+                {(formulario.coordenadas?.lugar || formulario.clima?.actual?.ubicacion?.nombre)
+                  ? `  ·  🏙️ ${formulario.coordenadas?.lugar || formulario.clima?.actual?.ubicacion?.nombre}`
+                  : ''}
               </Text>
+              <Text style={styles.fotoModalHint}>Toca para cerrar</Text>
+            </>
+          )}
+        </Pressable>
+      </Modal>
+
+      {/* ✍️ Visor de firma ampliada */}
+      <Modal
+        visible={!!firmaPreview}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setFirmaPreview(null)}
+      >
+        <Pressable style={styles.fotoModalOverlay} onPress={() => setFirmaPreview(null)}>
+          {firmaPreview && (
+            <>
+              <Image
+                source={{ uri: firmaPreview.uri, headers: firmaPreview.headers }}
+                style={[styles.fotoModalImage, { backgroundColor: '#fff' }]}
+                resizeMode="contain"
+              />
+              <Text style={styles.fotoModalInfo}>{firmaPreview.titulo}</Text>
               <Text style={styles.fotoModalHint}>Toca para cerrar</Text>
             </>
           )}
@@ -1202,6 +1572,66 @@ const styles = StyleSheet.create({
     bottom: 2,
     right: 2,
     fontSize: 16,
+  },
+  documentoItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: COLORS.background,
+    borderRadius: BORDER_RADIUS.md,
+    padding: SPACING.sm,
+    marginTop: SPACING.xs,
+  },
+  documentoIcon: {
+    fontSize: 24,
+    marginRight: SPACING.sm,
+  },
+  documentoInfo: {
+    flex: 1,
+  },
+  documentoNombre: {
+    fontSize: FONTS.sizes.md,
+    fontWeight: FONTS.weights.medium,
+    color: COLORS.textPrimary,
+  },
+  documentoMeta: {
+    fontSize: FONTS.sizes.xs,
+    color: COLORS.textSecondary,
+    marginTop: 2,
+  },
+  documentoAccion: {
+    fontSize: 18,
+    marginLeft: SPACING.sm,
+  },
+  firmasRow: {
+    flexDirection: 'row',
+    gap: SPACING.sm,
+  },
+  firmaCard: {
+    flex: 1,
+  },
+  firmaCardLabel: {
+    fontSize: FONTS.sizes.xs,
+    fontWeight: FONTS.weights.semibold,
+    color: COLORS.textSecondary,
+    marginBottom: SPACING.xs,
+  },
+  firmaImg: {
+    width: '100%',
+    height: 90,
+    backgroundColor: '#fff',
+    borderRadius: BORDER_RADIUS.md,
+    borderWidth: 1,
+    borderColor: COLORS.divider,
+  },
+  firmaImgVacia: {
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderStyle: 'dashed',
+  },
+  firmaVaciaTexto: {
+    fontSize: FONTS.sizes.xs,
+    color: COLORS.textLight,
+    fontStyle: 'italic',
   },
   section: {
     backgroundColor: COLORS.surface,

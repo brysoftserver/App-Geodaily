@@ -90,16 +90,21 @@ router.post('/:formularioId', authenticateToken, async (req, res) => {
     }
 
     const { tipo, comentario, datos_formulario } = req.body;
-    // 'formulario_rol' = el formulario pequeño del rol (supervisor/interventor),
-    // independiente del visto bueno — no afecta el estado de aprobación.
-    if (!['novedad', 'visto_bueno', 'formulario_rol'].includes(tipo)) {
-      return res.status(400).json({ estado: 'error', mensaje: "tipo debe ser 'novedad', 'visto_bueno' o 'formulario_rol'" });
+    // 'formulario_en_linea' / 'formulario_en_campo' = las dos listas de
+    // verificación del rol (supervisor/interventor), independientes del
+    // visto bueno — no afectan el estado de aprobación. Reemplazan al
+    // antiguo 'formulario_rol' (concepto/observaciones/recomendaciones
+    // libres), que se deja de aceptar en formularios nuevos pero cuyo
+    // histórico ya guardado sigue siendo legible.
+    const TIPOS_VALIDOS = ['novedad', 'visto_bueno', 'formulario_en_linea', 'formulario_en_campo'];
+    if (!TIPOS_VALIDOS.includes(tipo)) {
+      return res.status(400).json({ estado: 'error', mensaje: `tipo debe ser uno de: ${TIPOS_VALIDOS.join(', ')}` });
     }
     if (tipo === 'novedad' && !comentario?.trim()) {
       return res.status(400).json({ estado: 'error', mensaje: 'La novedad requiere un comentario' });
     }
-    if (tipo === 'formulario_rol' && !datos_formulario) {
-      return res.status(400).json({ estado: 'error', mensaje: 'El formulario de rol requiere datos_formulario' });
+    if ((tipo === 'formulario_en_linea' || tipo === 'formulario_en_campo') && !datos_formulario) {
+      return res.status(400).json({ estado: 'error', mensaje: 'Este formulario requiere datos_formulario' });
     }
 
     const formularioId = req.params.formularioId;
@@ -139,7 +144,8 @@ router.post('/:formularioId', authenticateToken, async (req, res) => {
     const mensajes = {
       visto_bueno: 'Visto bueno registrado',
       novedad: 'Novedad registrada',
-      formulario_rol: 'Formulario de revisión guardado',
+      formulario_en_linea: 'Formulario en línea guardado',
+      formulario_en_campo: 'Formulario en campo guardado',
     };
     res.status(201).json({ estado: 'ok', mensaje: mensajes[tipo], id: fila.id });
   } catch (error) {

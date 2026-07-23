@@ -313,6 +313,34 @@ async function getFileStream(filePath) {
 }
 
 /**
+ * Metadatos de un objeto (tamaño, mimetype, etag).
+ * Necesario para responder peticiones Range: sin Content-Length el
+ * reproductor de video no sabe cuánto pedir.
+ */
+async function statFile(filePath) {
+  try {
+    return await minioClient.statObject(CONFIG.bucket, filePath);
+  } catch (err) {
+    console.error('[Storage] Error al consultar archivo:', filePath, err.message);
+    return null;
+  }
+}
+
+/**
+ * Stream de un rango de bytes de un archivo.
+ * ExoPlayer (Android) y AVPlayer (iOS) piden el fichero por trozos: sin
+ * esto los videos de evidencia no se podían reproducir desde la app.
+ */
+async function getFileRangeStream(filePath, offset, length) {
+  try {
+    return await minioClient.getPartialObject(CONFIG.bucket, filePath, offset, length);
+  } catch (err) {
+    console.error('[Storage] Error al abrir rango de archivo:', filePath, err.message);
+    return null;
+  }
+}
+
+/**
  * Eliminar un archivo
  */
 async function deleteFile(filePath) {
@@ -379,6 +407,8 @@ module.exports = {
   uploadFromFile,
   getSignedUrl,
   getFileStream,
+  statFile,
+  getFileRangeStream,
   deleteFile,
   listFiles,
   getSubfoldersForRole,

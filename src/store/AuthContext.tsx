@@ -12,7 +12,7 @@ import {
   guardarCredencialOffline,
   intentarLoginOffline,
   existeCredencialOffline,
-  limpiarCredencialOffline,
+  changePassword as changePasswordService,
 } from '../services/auth';
 import { setApiAuthToken, setUnauthorizedHandler } from '../services/api';
 import { STORAGE_KEYS } from '../utils/constants';
@@ -79,6 +79,7 @@ function authReducer(state: AuthState, action: AuthAction): AuthState {
 interface AuthContextType extends AuthState {
   login: (usuario: string, contrasena: string) => Promise<void>;
   logout: () => Promise<void>;
+  changePassword: (currentPassword: string, newPassword: string) => Promise<{ success: boolean; mensaje?: string; error?: string }>;
   getRole: () => UserRole | null;
   isTecnico: boolean;
   isSupervisor: boolean;
@@ -241,10 +242,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       await logoutUser();
       await SecureStore.deleteItemAsync(STORAGE_KEYS.AUTH_TOKEN);
       await SecureStore.deleteItemAsync(STORAGE_KEYS.USER_DATA);
-      // Logout EXPLÍCITO del usuario → sí borramos la credencial offline.
-      // (Un 401 de red NO llega aquí: solo dispara dispatch LOGOUT vía
-      // setUnauthorizedHandler, dejando la credencial intacta para reingresar.)
-      await limpiarCredencialOffline();
+      // La credencial offline de esta cuenta NO se borra al cerrar sesión:
+      // cerrar sesión es algo que ocurre en campo todo el tiempo (cambiar
+      // de rol para probar, pasar el teléfono a otro técnico) y debe seguir
+      // siendo posible volver a entrar con esa misma cuenta sin señal
+      // después. Solo se borra con una acción explícita de "olvidar cuenta"
+      // (limpiarCredencialOffline), que hoy no tiene UI.
     } finally {
       setApiAuthToken(null);
       dispatch({ type: 'LOGOUT' });
@@ -255,17 +258,25 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     return state.user?.rol || null;
   }, [state.user]);
 
+  const changePassword = useCallback(async (
+    currentPassword: string,
+    newPassword: string,
+  ): Promise<{ success: boolean; mensaje?: string; error?: string }> => {
+    return changePasswordService(currentPassword, newPassword);
+  }, []);
+
   const value = useMemo<AuthContextType>(() => ({
     ...state,
     login,
     logout,
+    changePassword,
     getRole,
     isTecnico: state.user?.rol === 'tecnico',
     isSupervisor: state.user?.rol === 'supervisor',
     isInterventor: state.user?.rol === 'interventor',
     isGerente: state.user?.rol === 'gerente',
     isAdmin: state.user?.rol === 'admin',
-  }), [state, login, logout, getRole]);
+  }), [state, login, logout, changePassword, getRole]);
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 };

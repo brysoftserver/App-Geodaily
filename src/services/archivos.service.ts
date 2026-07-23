@@ -24,6 +24,14 @@ export interface ArchivoRemoto {
   created_at: string;
   /** Ruta relativa en la API, p.ej. /api/archivos/<id>/contenido */
   url: string;
+  /** Solo presente en tipo 'firma': distingue beneficiario/técnico. */
+  tipo_firma?: 'beneficiario' | 'tecnico' | null;
+}
+
+/** Firma lista para usar en <Image>: URI + cabeceras de autenticación si aplica */
+export interface FirmaResuelta {
+  uri: string;
+  headers: Record<string, string>;
 }
 
 /** URL absoluta para descargar una evidencia */
@@ -77,11 +85,28 @@ const existeLocalmente = async (uri?: string): Promise<boolean> => {
 };
 
 /**
+ * 'tipo' no siempre viene informado — formularios sincronizados antes de
+ * este fix quedaron con ese campo ausente en el servidor (ver nota en
+ * SyncContext.tsx). La extensión del archivo es una señal de respaldo
+ * fiable: nunca cambia aunque falte el campo.
+ */
+const inferirTipo = (uri: string, tipoOriginal?: string): 'foto' | 'video' => {
+  if (tipoOriginal === 'video' || tipoOriginal === 'foto') return tipoOriginal;
+  const limpia = uri.toLowerCase().split('?')[0];
+  const esVideo = ['.mp4', '.mov', '.avi', '.mkv', '.3gp'].some((ext) => limpia.endsWith(ext));
+  return esVideo ? 'video' : 'foto';
+};
+
+/**
  * Devuelve las evidencias de un formulario listas para mostrar.
  *
- * Si los archivos locales existen (el mismo teléfono que capturó la
- * visita) se usan tal cual — funciona sin conexión. Si no existen, se
- * reconstruyen desde el servidor.
+ * Si TODOS los archivos locales existen (el mismo teléfono que capturó la
+ * visita) se usan tal cual — funciona sin conexión. Si falta AUNQUE SEA
+ * UNO, se reconstruye la lista completa desde el servidor: antes bastaba
+ * con que UNA sola evidencia existiera localmente para usar las demás tal
+ * cual, aunque no existieran en este dispositivo — eso hacía que, desde un
+ * teléfono distinto al que capturó la visita, se intentaran cargar rutas
+ * file:// que nunca existieron ahí (miniaturas en blanco).
  *
  * @returns `null` si no hizo falta sustituir nada (usar `form.fotos`)
  */
@@ -91,10 +116,13 @@ export const resolverEvidenciasRemotas = async (
 ): Promise<FotoGeotag[] | null> => {
   const lista = fotos || [];
 
-  // Si al menos una evidencia sigue en disco, este es el teléfono original
   if (lista.length > 0) {
     const disponibles = await Promise.all(lista.map((f) => existeLocalmente(f.uri)));
-    if (disponibles.some(Boolean)) return null;
+    if (disponibles.every(Boolean)) {
+      // Todo existe en este dispositivo — es el teléfono original. Se
+      // normaliza 'tipo' por si el formulario se sincronizó antes del fix.
+      return lista.map((f) => ({ ...f, tipo: inferirTipo(f.uri, f.tipo) }));
+    }
   }
 
   const remotos = await fetchArchivosDeFormulario(formularioId);
@@ -116,4 +144,56 @@ export const resolverEvidenciasRemotas = async (
       longitud: a.longitud ?? 0,
     },
   })) as FotoGeotag[];
+};
+
+/** ¿El valor ya es directamente usable como <Image source={{uri}}>? */
+const esUriDirectamenteUsable = (v?: string): boolean =>
+  !!v && (v.startsWith('data:') || v.startsWith('http://') || v.startsWith('https://'));
+
+/**
+ * Resuelve las firmas de beneficiario/técnico para mostrarlas en pantalla o
+ * en el PDF. Recién completado el formulario, `firma_beneficiario`/
+ * `firma_tecnico` son base64 (data URI) y se usan tal cual. Tras sincronizar,
+ * el backend las reemplaza por la ruta INTERNA de MinIO (no es data: ni
+ * http) — en ese caso hay que buscarlas en `archivos` (donde quedan
+ * registradas desde el fix de firmas) y servirlas con el token de auth,
+ * igual que fotos y documentos.
+ */
+export const resolverFirmasRemotas = async (
+  formularioId: string,
+  firmaBeneficiario?: string,
+  firmaTecnico?: string
+): Promise<{ beneficiario: FirmaResuelta | null; tecnico: FirmaResuelta | null }> => {
+  const directoBenef = esUriDirectamenteUsable(firmaBeneficiario);
+  const directoTec = esUriDirectamenteUsable(firmaTecnico);
+
+  const resultado: { beneficiario: FirmaResuelta | null; tecnico: FirmaResuelta | null } = {
+    beneficiario: directoBenef ? { uri: firmaBeneficiario!, headers: {} } : null,
+    tecnico: directoTec ? { uri: firmaTecnico!, headers: {} } : null,
+  };
+
+  const faltaBenef = firmaBeneficiario && !directoBenef;
+  const faltaTec = firmaTecnico && !directoTec;
+  if (!faltaBenef && !faltaTec) return resultado;
+
+  const remotos = await fetchArchivosDeFormulario(formularioId);
+  const firmas = remotos.filter((a) => a.tipo === 'firma');
+  if (firmas.length === 0) return resultado;
+
+  const headers = await cabecerasDeArchivo();
+  const masReciente = (tipoFirma: 'beneficiario' | 'tecnico'): ArchivoRemoto | undefined =>
+    firmas
+      .filter((f) => f.tipo_firma === tipoFirma)
+      .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())[0];
+
+  if (faltaBenef) {
+    const encontrada = masReciente('beneficiario');
+    if (encontrada) resultado.beneficiario = { uri: urlDeArchivo(encontrada), headers };
+  }
+  if (faltaTec) {
+    const encontrada = masReciente('tecnico');
+    if (encontrada) resultado.tecnico = { uri: urlDeArchivo(encontrada), headers };
+  }
+
+  return resultado;
 };

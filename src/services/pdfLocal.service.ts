@@ -14,30 +14,81 @@ import {
   construirSeccionesEncuesta,
   SeccionResuelta,
 } from '../utils/encuestaSchema';
-import { membreteAperturaHtml, membreteCierreHtml, membreteCss } from '../utils/membrete';
+import { membreteAperturaHtml, membreteCierreHtml, membreteCss, MembreteVariante } from '../utils/membrete';
+import { cabecerasDeArchivo, resolverFirmasRemotas, FirmaResuelta } from './archivos.service';
 
 /**
- * Generar PDF local con fotos, firmas y huella embebidas
+ * Descargar (si hace falta autenticación) y convertir una firma resuelta a
+ * data URI para embeberla en el HTML del PDF. expo-print no puede adjuntar
+ * cabeceras a un <img src="http://...">, así que las firmas remotas (ya
+ * sincronizadas, servidas vía /api/archivos/:id/contenido) hay que
+ * descargarlas primero — mismo patrón que las fotos remotas en
+ * `convertirFotosAHTML`.
+ */
+async function resolverFirmaComoDataUri(firma: FirmaResuelta | null): Promise<string | null> {
+  if (!firma) return null;
+  if (firma.uri.startsWith('data:')) return firma.uri;
+  try {
+    const destino = `${FileSystem.cacheDirectory}pdf_firma_${Date.now()}_${Math.round(Math.random() * 1e6)}.png`;
+    const descarga = await FileSystem.downloadAsync(firma.uri, destino, { headers: firma.headers });
+    const base64 = await FileSystem.readAsStringAsync(descarga.uri, { encoding: FileSystem.EncodingType.Base64 });
+    return `data:image/png;base64,${base64}`;
+  } catch (e) {
+    console.warn('[PDF Local] No se pudo descargar la firma remota:', e);
+    return null;
+  }
+}
+
+/**
+ * Generar PDF local con fotos, firmas y huella embebidas.
+ *
+ * @param variante  Membrete a aplicar según la entidad del usuario que
+ *                  genera el PDF: 'ejecucion' (ACPR) por defecto, o
+ *                  'interventoria' (ASEMP) cuando lo abre el rol interventor.
+ * @param fotosResueltas  Evidencias YA resueltas (ver
+ *                  `resolverEvidenciasRemotas`): locales si existen en este
+ *                  dispositivo, o URLs del servidor si no. Si se omite, se
+ *                  usa `formulario.fotos` tal cual — correcto solo en el
+ *                  dispositivo que capturó la visita. Sin este parámetro,
+ *                  generar el PDF desde OTRO rol/teléfono intentaba leer
+ *                  rutas file:// que no existen ahí y el PDF salía sin
+ *                  evidencias, aunque el resto del documento (membrete,
+ *                  datos, respuestas) sí se generaba bien.
  */
 export const generarPDFLocal = async (
-  formulario: Formulario
+  formulario: Formulario,
+  variante: MembreteVariante = 'ejecucion',
+  fotosResueltas?: FotoGeotag[]
 ): Promise<string | null> => {
   try {
-    // 1. Convertir fotos (file:// URIs) a base64 para embedir en HTML
-    const fotosHtml = await convertirFotosAHTML(formulario.fotos || []);
+    // 1. Convertir fotos a base64 para embedir en HTML — local o remota
+    const fotosHtml = await convertirFotosAHTML(fotosResueltas ?? formulario.fotos ?? []);
 
-    // 2. Preparar firmas (ya son base64 data URIs)
-    const firmaBenefHtml = formulario.firma_beneficiario
+    // 2. Resolver firmas — recién completado el formulario son base64 en
+    // memoria, pero tras sincronizar el backend las reemplaza por su ruta
+    // interna de MinIO; hay que buscarlas en /api/archivos y descargarlas
+    // con autenticación antes de poder embeberlas en el PDF.
+    const firmasResueltas = await resolverFirmasRemotas(
+      formulario.id,
+      formulario.firma_beneficiario,
+      formulario.firma_tecnico
+    );
+    const [firmaBenefDataUri, firmaTecDataUri] = await Promise.all([
+      resolverFirmaComoDataUri(firmasResueltas.beneficiario),
+      resolverFirmaComoDataUri(firmasResueltas.tecnico),
+    ]);
+
+    const firmaBenefHtml = firmaBenefDataUri
       ? `<div class="firma-item">
            <p class="evidencia-label">✍️ Firma del Beneficiario — <strong>${escapeHtml(formulario.beneficiario.nombre)}</strong> (C.C. ${escapeHtml(formulario.beneficiario.cedula || '—')})</p>
-           <img src="${formulario.firma_beneficiario}" alt="Firma del beneficiario" class="firma-img" />
+           <img src="${firmaBenefDataUri}" alt="Firma del beneficiario" class="firma-img" />
          </div>`
       : `<div class="firma-item"><p class="evidencia-label">✍️ Firma del Beneficiario</p><p class="no-data">No registrada</p></div>`;
 
-    const firmaTecHtml = formulario.firma_tecnico
+    const firmaTecHtml = firmaTecDataUri
       ? `<div class="firma-item">
            <p class="evidencia-label">🖊️ Firma del Técnico en Terreno — <strong>${escapeHtml(formulario.tecnico.nombre)}</strong> (C.C. ${escapeHtml(formulario.tecnico.cedula || '—')})</p>
-           <img src="${formulario.firma_tecnico}" alt="Firma del técnico" class="firma-img" />
+           <img src="${firmaTecDataUri}" alt="Firma del técnico" class="firma-img" />
          </div>`
       : `<div class="firma-item"><p class="evidencia-label">🖊️ Firma del Técnico</p><p class="no-data">No registrada</p></div>`;
 
@@ -49,9 +100,9 @@ export const generarPDFLocal = async (
     // 4. Construir HTML completo según el tipo de formulario
     let html: string;
     if (formulario.tipo === 'caracterizacion' && (formulario as any).caracterizacion_nueva) {
-      html = construirHTMLCaracterizacion(formulario, fotosHtml, firmaBenefHtml, firmaTecHtml, selloBiometricoHtml);
+      html = construirHTMLCaracterizacion(formulario, fotosHtml, firmaBenefHtml, firmaTecHtml, selloBiometricoHtml, variante);
     } else {
-      html = construirHTML(formulario, fotosHtml, firmaBenefHtml, firmaTecHtml, selloBiometricoHtml);
+      html = construirHTML(formulario, fotosHtml, firmaBenefHtml, firmaTecHtml, selloBiometricoHtml, variante);
     }
 
     // 5. Generar PDF con expo-print
@@ -87,6 +138,72 @@ export const generarPDFLocal = async (
   }
 };
 
+export interface ItemChecklistRevision {
+  texto: string;
+  respuesta: string;
+}
+
+export interface DatosRevisionChecklist {
+  rol: 'supervisor' | 'interventor';
+  revisorNombre: string;
+  /** 'linea' = revisión documental/remota; 'campo' = verificación en sitio */
+  tipoChecklist: 'linea' | 'campo';
+  items: ItemChecklistRevision[];
+}
+
+const TITULO_CHECKLIST: Record<'linea' | 'campo', string> = {
+  linea: 'FORMULARIO EN LÍNEA',
+  campo: 'FORMULARIO EN CAMPO',
+};
+const INTRO_CHECKLIST: Record<'linea' | 'campo', string> = {
+  linea: 'Durante esta revisión se verificará:',
+  campo: 'En esta etapa se verificará:',
+};
+
+/**
+ * Generar el PDF de una de las dos listas de verificación del revisor
+ * (supervisor o interventor): "Formulario en línea" (revisión documental
+ * de lo que el técnico registró) o "Formulario en campo" (verificación
+ * presencial). Lleva el membrete de la entidad de ESE rol — Ejecución
+ * (ACPR) para supervisor, Interventoría (ASEMP) para interventor — a
+ * diferencia del PDF del formulario del técnico, que siempre usa Ejecución
+ * sin importar quién lo descargue.
+ */
+export const generarPDFRevisionChecklist = async (
+  formulario: Formulario,
+  datos: DatosRevisionChecklist
+): Promise<string | null> => {
+  try {
+    const variante: MembreteVariante = datos.rol === 'interventor' ? 'interventoria' : 'ejecucion';
+    const html = construirHTMLRevisionChecklist(formulario, datos, variante);
+
+    const { uri } = await Print.printToFileAsync({
+      html,
+      width: 612,
+      height: 792,
+    });
+
+    const rolPrefijo = datos.rol === 'interventor' ? 'INTERVENTORIA' : 'SUPERVISION';
+    const tipoPrefijo = datos.tipoChecklist === 'linea' ? 'EN-LINEA' : 'EN-CAMPO';
+    const nombreBenef = (formulario.beneficiario?.nombre || 'beneficiario').replace(/[^a-zA-Z0-9áéíóúÁÉÍÓÚñÑ ]/g, '').trim().replace(/\s+/g, '_');
+    const fechaStr = new Date().toISOString().split('T')[0];
+    const pdfName = `${rolPrefijo}-${tipoPrefijo}-${nombreBenef}-${fechaStr}.pdf`;
+    const pdfDir = uri.substring(0, uri.lastIndexOf('/'));
+    const pdfPath = `${pdfDir}/${pdfName}`;
+
+    try {
+      await FileSystem.moveAsync({ from: uri, to: pdfPath });
+      return pdfPath;
+    } catch (moveErr) {
+      console.warn('[PDF Revisión] No se pudo renombrar, retornando original:', moveErr);
+      return uri;
+    }
+  } catch (error) {
+    console.error('[PDF Revisión] Error al generar PDF:', error);
+    return null;
+  }
+};
+
 /**
  * Convertir array de fotos a bloques HTML con imágenes embebidas en base64
  * Las fotos se redimensionan a 800px para que el PDF no se sature
@@ -111,12 +228,30 @@ export async function convertirFotosAHTML(fotos: FotoGeotag[]): Promise<string> 
       `);
       continue;
     }
+    // Si la evidencia es de OTRO dispositivo, resolverEvidenciasRemotas ya la
+    // dejó como URL del servidor (http/https) en vez de file://. Esa URL
+    // exige el token de autenticación, que expo-image-manipulator no puede
+    // adjuntar por su cuenta — hay que descargarla primero. Se hace fuera
+    // del try principal para que el fallback de abajo también pueda usar la
+    // copia ya descargada en vez de reintentar contra la URL remota.
+    let uriParaProcesar = foto.uri;
+    if (foto.uri.startsWith('http')) {
+      try {
+        const headers = await cabecerasDeArchivo();
+        const destino = `${FileSystem.cacheDirectory}pdf_evidencia_${foto.id}.jpg`;
+        const descarga = await FileSystem.downloadAsync(foto.uri, destino, { headers });
+        uriParaProcesar = descarga.uri;
+      } catch (descargaErr) {
+        console.warn('[PDF Local] No se pudo descargar evidencia remota', foto.id, descargaErr);
+      }
+    }
+
     try {
       // Leer la foto a máxima calidad — el espacio no es problema
       // Se redimensiona solo a 1200px para evitar PDFs monstruosos,
       // pero con calidad 0.9 para mantener nitidez
       const resultado = await manipulateAsync(
-        foto.uri,
+        uriParaProcesar,
         [{ resize: { width: 1200 } }],
         { compress: 0.9, format: SaveFormat.JPEG, base64: true }
       );
@@ -140,9 +275,10 @@ export async function convertirFotosAHTML(fotos: FotoGeotag[]): Promise<string> 
       `);
     } catch (e) {
       console.warn('[PDF Local] Error al procesar foto', foto.id, e);
-      // Fallback: intentar leer la foto sin redimensionar
+      // Fallback: intentar leer la foto sin redimensionar (reutiliza la
+      // copia ya descargada si la evidencia era remota)
       try {
-        const base64 = await FileSystem.readAsStringAsync(foto.uri, {
+        const base64 = await FileSystem.readAsStringAsync(uriParaProcesar, {
           encoding: FileSystem.EncodingType.Base64,
         });
         const dataUri = `data:image/jpeg;base64,${base64}`;
@@ -254,6 +390,113 @@ function grid2(izq: string, der: string): string {
 }
 
 // ============================================================
+// construirHTMLRevision — Formulario propio del revisor
+// (supervisor o interventor): concepto, observaciones y
+// recomendaciones sobre la visita del técnico.
+// ============================================================
+function construirHTMLRevisionChecklist(
+  form: Formulario,
+  datos: DatosRevisionChecklist,
+  variante: MembreteVariante
+): string {
+  const esInterventor = datos.rol === 'interventor';
+  const rolLabel = esInterventor ? 'Interventoría' : 'Supervisión';
+  const tituloDoc = TITULO_CHECKLIST[datos.tipoChecklist];
+  const intro = INTRO_CHECKLIST[datos.tipoChecklist];
+
+  const itemsHtml = datos.items.map((item, idx) => `
+    <div class="checklist-item">
+      <div class="checklist-item-texto">${idx + 1}. ${escapeHtml(item.texto)}</div>
+      ${item.respuesta?.trim()
+        ? `<div class="desc-detallada">${escapeHtml(item.respuesta).replace(/\n/g, '<br/>')}</div>`
+        : '<p class="no-data">Sin observación registrada</p>'}
+    </div>
+  `).join('');
+
+  return `<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <title>${tituloDoc} — ${escapeHtml(form.beneficiario?.nombre || '')}</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    ${membreteCss()}
+    body {
+      font-family: 'Arial Narrow', Arial, sans-serif;
+      margin: 0;
+      color: #2d3436;
+      line-height: 1.4;
+    }
+    .doc-titulo { text-align: center; border-bottom: 2px solid #1B5E20; padding-bottom: 6px; margin-bottom: 12px; }
+    .doc-titulo h1 { color: #1B5E20; font-size: 13pt; letter-spacing: 0.3px; margin-bottom: 3px; }
+    .doc-titulo p { color: #444; font-size: 8.5pt; }
+    .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 16px; }
+    .card { background: #f8f9fa; border-radius: 8px; padding: 14px 16px; border-left: 4px solid #1B5E20; break-inside: avoid; }
+    .card-title { color: #1B5E20; font-size: 13px; font-weight: bold; border-bottom: 1px solid #e0e0e0; padding-bottom: 6px; margin-bottom: 8px; }
+    .row { display: flex; font-size: 11.5px; margin: 2px 0; }
+    .label { font-weight: bold; color: #555; min-width: 110px; flex-shrink: 0; }
+    .value { flex: 1; color: #2d3436; }
+    .section { margin: 16px 0; padding: 14px 16px; background: #f8f9fa; border-radius: 8px; border-left: 4px solid #1B5E20; break-inside: avoid; }
+    .section h2 { color: #1B5E20; font-size: 14px; margin-bottom: 10px; border-bottom: 1px solid #e0e0e0; padding-bottom: 5px; }
+    .section-intro { font-size: 11.5px; color: #444; margin-bottom: 10px; font-style: italic; }
+    .desc-detallada { font-size: 12px; color: #2d3436; background: #fff; padding: 8px 10px; border-radius: 4px; border: 1px solid #e0e0e0; margin-top: 4px; line-height: 1.5; }
+    .no-data { font-size: 11px; color: #b2bec3; font-style: italic; padding: 6px 0; }
+    .footer { margin-top: 32px; padding-top: 12px; border-top: 1px solid #e0e0e0; text-align: center; font-size: 10px; color: #b2bec3; }
+    .firma-revisor { margin-top: 40px; text-align: center; break-inside: avoid; }
+    .firma-revisor .linea { border-top: 1px solid #333; width: 260px; margin: 0 auto 6px; }
+    .firma-revisor .nombre { font-size: 12px; font-weight: bold; color: #2d3436; }
+    .firma-revisor .rol { font-size: 11px; color: #636e72; }
+    .checklist-item { margin-bottom: 12px; break-inside: avoid; }
+    .checklist-item-texto { font-size: 12px; font-weight: bold; color: #2d3436; margin-bottom: 4px; }
+  </style>
+</head>
+<body>
+  ${membreteAperturaHtml(variante)}
+
+  <div class="doc-titulo">
+    <h1>${tituloDoc}</h1>
+    <p>Revisión de la visita técnica registrada en GEODAILY</p>
+  </div>
+
+  <div class="section">
+    <h2>📋 Referencia de la Visita</h2>
+    <div class="grid-2">
+      ${card('👤 Técnico', [
+        r('Nombre', form.tecnico?.nombre),
+        r('Cédula', form.tecnico?.cedula),
+      ].join(''))}
+      ${card('👥 Beneficiario', [
+        r('Nombre', form.beneficiario?.nombre),
+        r('Cédula', form.beneficiario?.cedula),
+        r('Vereda', form.beneficiario?.vereda),
+        r('Municipio', form.beneficiario?.municipio),
+      ].join(''))}
+    </div>
+    ${r('Fecha de la visita', formatFecha(form.created_at))}
+  </div>
+
+  <div class="section">
+    <h2>✅ ${tituloDoc}</h2>
+    <p class="section-intro">${escapeHtml(intro)}</p>
+    ${itemsHtml}
+  </div>
+
+  <div class="firma-revisor">
+    <div class="linea"></div>
+    <div class="nombre">${escapeHtml(datos.revisorNombre || '—')}</div>
+    <div class="rol">${rolLabel}</div>
+  </div>
+
+  <div class="footer">
+    <p>Documento generado por GEODAILY — ${new Date().toISOString()}</p>
+    <p>Este es un documento digital de revisión, complementario al formulario original del técnico.</p>
+  </div>
+  ${membreteCierreHtml()}
+</body>
+</html>`;
+}
+
+// ============================================================
 // construirHTML — Formulario de Visita Técnica (2 columnas)
 // ============================================================
 function construirHTML(
@@ -261,10 +504,20 @@ function construirHTML(
   fotosHtml: string,
   firmaBenefHtml: string,
   firmaTecHtml: string,
-  huellaHtml: string
+  huellaHtml: string,
+  variante: MembreteVariante = 'ejecucion'
 ): string {
   const sd = form.sociodemografico;
-  const gr = form.georeferencia;
+  // El backend guarda georeferencia_json como '{}' (no NULL) cuando el
+  // formulario no trae esos datos — que es siempre, hoy: nada en la app
+  // llena 'georeferencia' todavía. En memoria, recién completado, el campo
+  // es 'undefined' (falsy, sección se omite bien); tras sincronizar y
+  // volver a cargar desde el servidor, se convierte en '{}' — un objeto
+  // VERDADERO en JS — así que la sección se intentaba renderizar sin tener
+  // 'coordenadas' adentro, y `gr.coordenadas.latitud` reventaba el PDF
+  // entero, cayendo al generador de respaldo sin membrete. Se exige que
+  // 'coordenadas' exista de verdad, no solo que el objeto no sea null.
+  const gr = form.georeferencia?.coordenadas ? form.georeferencia : undefined;
   const clima = form.clima?.actual;
 
   // --- Sociodemográfico (si existe) ---
@@ -534,7 +787,7 @@ function construirHTML(
   </style>
 </head>
 <body>
-  ${membreteAperturaHtml()}
+  ${membreteAperturaHtml(variante)}
 
   <div class="doc-titulo">
     <h1>FORMULARIO DE VISITA TÉCNICA</h1>
@@ -569,6 +822,7 @@ function construirHTML(
       r('Tipo', form.actividad.descripcion),
     ].join('')),
     card('📍 Ubicación', [
+      r('Lugar', form.coordenadas?.lugar || form.clima?.actual?.ubicacion?.nombre),
       r('Latitud', form.coordenadas?.latitud?.toFixed(6)),
       r('Longitud', form.coordenadas?.longitud?.toFixed(6)),
       form.coordenadas?.altitud ? r('Altitud', `${form.coordenadas.altitud.toFixed(1)} m`) : '',
@@ -635,7 +889,8 @@ function construirHTMLCaracterizacion(
   fotosHtml: string,
   firmaBenefHtml: string,
   firmaTecHtml: string,
-  huellaHtml: string
+  huellaHtml: string,
+  variante: MembreteVariante = 'ejecucion'
 ): string {
   const c = (form as any).caracterizacion_nueva || {};
 
@@ -687,11 +942,11 @@ function construirHTMLCaracterizacion(
     <div class="section">
       <h2>📍 UBICACIÓN Y CONDICIONES AMBIENTALES DE LA VISITA</h2>
       <div class="cols">
+        ${q('•', 'Lugar', form.coordenadas?.lugar || clima?.ubicacion?.nombre)}
         ${q('•', 'Latitud', form.coordenadas?.latitud ? form.coordenadas.latitud.toFixed(6) : '')}
         ${q('•', 'Longitud', form.coordenadas?.longitud ? form.coordenadas.longitud.toFixed(6) : '')}
         ${q('•', 'Altitud', form.coordenadas?.altitud ? `${form.coordenadas.altitud.toFixed(1)} m` : '')}
         ${q('•', 'Precisión GPS', form.coordenadas?.precision_gps ? `±${form.coordenadas.precision_gps} m` : '')}
-        ${clima ? q('•', 'Lugar', clima.ubicacion?.nombre) : ''}
         ${clima ? q('•', 'Temperatura', clima.temperatura?.actual != null ? `${clima.temperatura.actual}°C (sensación ${clima.temperatura.sensacion_termica ?? '—'}°C)` : '') : ''}
         ${clima ? q('•', 'Humedad', clima.humedad != null ? `${clima.humedad}%` : '') : ''}
         ${clima ? q('•', 'Presión', clima.presion != null ? `${clima.presion} hPa` : '') : ''}
@@ -824,7 +1079,7 @@ function construirHTMLCaracterizacion(
   </style>
 </head>
 <body>
-  ${membreteAperturaHtml()}
+  ${membreteAperturaHtml(variante)}
 
   <div class="doc-titulo">
     <h1>ENCUESTA SOCIAL AGROAMBIENTAL</h1>
@@ -854,8 +1109,11 @@ function construirHTMLCaracterizacion(
     </div>
   </div>` : ''}
 
-  <!-- GEOREFERENCIA (si existe) -->
-  ${form.georeferencia ? `
+  <!-- GEOREFERENCIA (si existe). El servidor guarda '{}' en vez de NULL
+       cuando no hay datos — hace falta exigir 'coordenadas' de verdad, no
+       solo que el objeto exista, o esto revienta el PDF entero al leer
+       formulario.georeferencia.coordenadas.latitud sobre un objeto vacío. -->
+  ${form.georeferencia?.coordenadas ? `
   <div class="section" style="border-left-color:#6c5ce7;">
     <h2>🌐 GEOREFERENCIA DEL TERRENO</h2>
     <div class="cols">

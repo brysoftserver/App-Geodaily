@@ -2,7 +2,7 @@
 // GEODAILY — Menú Principal Técnico de Campo
 // ============================================================
 
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import {
   View,
   Text,
@@ -11,14 +11,14 @@ import {
   ScrollView,
   Image,
   ImageBackground,
-  Alert,
   ActivityIndicator,
 } from 'react-native';
-import * as ImagePicker from 'expo-image-picker';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAuth } from '../../store/AuthContext';
 import { useOfflineSync } from '../../hooks/useOfflineSync';
+import { useAvatar } from '../../hooks/useAvatar';
+import CambiarContrasenaModal from '../../components/CambiarContrasenaModal';
 import { COLORS, FONTS, SPACING, BORDER_RADIUS, SHADOWS } from '../../theme';
 
 type TerrenoMenuProps = {
@@ -72,55 +72,8 @@ const MENU_ITEMS = [
 const TerrenoMenuScreen: React.FC<TerrenoMenuProps> = ({ navigation }) => {
   const { user, logout } = useAuth();
   const insets = useSafeAreaInsets();
-  const [avatarUri, setAvatarUri] = useState<string | null>(null);
-
-  // Cargar avatar guardado
-  useEffect(() => {
-    const loadAvatar = async () => {
-      try {
-        const AsyncStorage = (await import('@react-native-async-storage/async-storage')).default;
-        const savedAvatar = await AsyncStorage.getItem('@geodaily/avatar_uri');
-        if (savedAvatar) setAvatarUri(savedAvatar);
-      } catch {
-        // Ignorar error al cargar avatar
-      }
-    };
-    loadAvatar();
-  }, []);
-
-  const handleAvatarPress = async () => {
-    try {
-      const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
-      if (status !== 'granted') {
-        Alert.alert(
-          'Permiso requerido',
-          'Necesitamos acceso a tu galería para cambiar la foto de perfil.'
-        );
-        return;
-      }
-
-      const result = await ImagePicker.launchImageLibraryAsync({
-        mediaTypes: ['images'],
-        allowsEditing: true,
-        aspect: [1, 1],
-        quality: 0.7,
-      });
-
-      if (!result.canceled && result.assets[0]) {
-        const uri = result.assets[0].uri;
-        setAvatarUri(uri);
-        // Persistir la URI
-        try {
-          const AsyncStorage = (await import('@react-native-async-storage/async-storage')).default;
-          await AsyncStorage.setItem('@geodaily/avatar_uri', uri);
-        } catch {
-          // Ignorar error al guardar avatar
-        }
-      }
-    } catch (error) {
-      console.warn('Error al seleccionar imagen:', error);
-    }
-  };
+  const { avatarUri, cambiarAvatar, cambiando } = useAvatar(user?.id);
+  const [showPasswordModal, setShowPasswordModal] = useState(false);
 
   const handlePress = (item: (typeof MENU_ITEMS)[0]) => {
     navigation.navigate(item.screen as string);
@@ -133,118 +86,156 @@ const TerrenoMenuScreen: React.FC<TerrenoMenuProps> = ({ navigation }) => {
   const isSyncing = status === 'syncing';
 
   return (
-    <ScrollView
+    // El fondo cubre TODA la pantalla (encabezado + submódulos), no solo el
+    // encabezado como antes. Al ir en el contenedor exterior (no dentro del
+    // ScrollView) queda fijo mientras el contenido se desplaza encima.
+    <ImageBackground
+      source={require('../../../Logos_imagenes/fondo_login_geo_daily.png')}
       style={styles.container}
-      contentContainerStyle={[styles.scrollContent, { paddingBottom: insets.bottom + SPACING.xl }]}
-      showsVerticalScrollIndicator={false}
+      resizeMode="cover"
     >
-      {/* Encabezado */}
-      <ImageBackground source={require('../../../Logos_imagenes/fondo_login_geo_daily.png')} style={[styles.header, { paddingTop: Math.max(insets.top, SPACING.xxl) }]}>
-        <TouchableOpacity onPress={handleAvatarPress} activeOpacity={0.7}>
-          <View style={styles.avatar}>
-            {avatarUri ? (
-              <Image source={{ uri: avatarUri }} style={styles.avatarImage} />
-            ) : (
-              <Text style={styles.avatarText}>
-                {user?.nombre?.charAt(0)?.toUpperCase() || 'U'}
-              </Text>
-            )}
-            <View style={styles.cameraIcon}>
-              <Text style={styles.cameraIconText}>📷</Text>
+      <View style={styles.overlayOscuro} pointerEvents="none" />
+      <ScrollView
+        style={styles.scroll}
+        contentContainerStyle={[styles.scrollContent, { paddingBottom: insets.bottom + SPACING.xl }]}
+        showsVerticalScrollIndicator={false}
+      >
+        {/* Encabezado — ya no lleva su propio fondo, ahora se ve el de toda la pantalla */}
+        <View style={[styles.header, { paddingTop: Math.max(insets.top, SPACING.xxl) }]}>
+          <TouchableOpacity onPress={cambiarAvatar} activeOpacity={0.7} disabled={cambiando}>
+            <View style={styles.avatar}>
+              {avatarUri ? (
+                <Image source={{ uri: avatarUri }} style={styles.avatarImage} />
+              ) : (
+                <Text style={styles.avatarText}>
+                  {user?.nombre?.charAt(0)?.toUpperCase() || 'U'}
+                </Text>
+              )}
+              <View style={styles.cameraIcon}>
+                {cambiando ? (
+                  <ActivityIndicator size="small" color={COLORS.primary} />
+                ) : (
+                  <Text style={styles.cameraIconText}>📷</Text>
+                )}
+              </View>
             </View>
-          </View>
-        </TouchableOpacity>
-        <Text style={styles.welcomeText}>Bienvenido,</Text>
-        <Text style={styles.userName}>{user?.nombre || 'Usuario'}</Text>
-        {cedula ? (
-          <Text style={styles.userCedula}>C.C. {cedula}</Text>
-        ) : null}
-        <View style={styles.roleBadge}>
-          <Text style={styles.roleText}>Técnico de Campo</Text>
-        </View>
-      </ImageBackground>
-
-      {/* Menú */}
-      <View style={styles.menuContainer}>
-        {MENU_ITEMS.map((item) => (
-          <TouchableOpacity
-            key={item.id}
-            style={[styles.menuItem, { borderLeftColor: item.color }]}
-            onPress={() => handlePress(item)}
-            activeOpacity={0.7}
-          >
-            <Text style={styles.menuIcon}>{item.icon}</Text>
-            <View style={styles.menuContent}>
-              <Text style={styles.menuTitle}>{item.title}</Text>
-              <Text style={styles.menuSubtitle}>{item.subtitle}</Text>
-            </View>
-            <Text style={styles.menuArrow}>›</Text>
           </TouchableOpacity>
-        ))}
-      </View>
-
-      {/* Estado de sincronización */}
-      <View style={styles.syncCard}>
-        <View style={styles.syncHeader}>
-          <Text style={styles.syncTitle}>
-            {isSyncing ? '🔄 Sincronizando...' : '📤 Sincronización'}
-          </Text>
-          {pendingCount > 0 && (
-            <View style={styles.pendingSyncBadge}>
-              <Text style={styles.pendingSyncText}>{pendingCount}</Text>
-            </View>
-          )}
+          <Text style={styles.welcomeText}>Bienvenido,</Text>
+          <Text style={styles.userName}>{user?.nombre || 'Usuario'}</Text>
+          {cedula ? (
+            <Text style={styles.userCedula}>C.C. {cedula}</Text>
+          ) : null}
+          <View style={styles.roleBadge}>
+            <Text style={styles.roleText}>Técnico de Campo</Text>
+          </View>
         </View>
-        <Text style={styles.syncSubtitle}>
-          {pendingCount === 0
-            ? '✅ Todo sincronizado'
-            : `⏳ ${pendingCount} registro(s) pendiente(s)`}
-        </Text>
-        {lastSync && (
-          <Text style={styles.syncLast}>
-            Última sincronización: {new Date(lastSync).toLocaleString('es-CO')}
+
+        {/* Menú — tarjetas blancas para contraste sobre el fondo */}
+        <View style={styles.menuContainer}>
+          {MENU_ITEMS.map((item) => (
+            <TouchableOpacity
+              key={item.id}
+              style={[styles.menuItem, { borderLeftColor: item.color }]}
+              onPress={() => handlePress(item)}
+              activeOpacity={0.7}
+            >
+              <Text style={styles.menuIcon}>{item.icon}</Text>
+              <View style={styles.menuContent}>
+                <Text style={styles.menuTitle}>{item.title}</Text>
+                <Text style={styles.menuSubtitle}>{item.subtitle}</Text>
+              </View>
+              <Text style={styles.menuArrow}>›</Text>
+            </TouchableOpacity>
+          ))}
+        </View>
+
+        {/* Estado de sincronización */}
+        <View style={styles.syncCard}>
+          <View style={styles.syncHeader}>
+            <Text style={styles.syncTitle}>
+              {isSyncing ? '🔄 Sincronizando...' : '📤 Sincronización'}
+            </Text>
+            {pendingCount > 0 && (
+              <View style={styles.pendingSyncBadge}>
+                <Text style={styles.pendingSyncText}>{pendingCount}</Text>
+              </View>
+            )}
+          </View>
+          <Text style={styles.syncSubtitle}>
+            {pendingCount === 0
+              ? '✅ Todo sincronizado'
+              : `⏳ ${pendingCount} registro(s) pendiente(s)`}
           </Text>
-        )}
-        {status === 'error' && (
-          <Text style={styles.syncError}>Error al sincronizar. Reintentando...</Text>
-        )}
-        <TouchableOpacity
-          style={[styles.syncButton, isSyncing && styles.syncButtonDisabled]}
-          onPress={syncNow}
-          disabled={isSyncing}
-          activeOpacity={0.7}
-        >
-          {isSyncing ? (
-            <ActivityIndicator color={COLORS.textOnPrimary} size="small" />
-          ) : (
-            <Text style={styles.syncButtonText}>
-              {pendingCount > 0 ? 'Sincronizar ahora' : 'Verificar'}
+          {lastSync && (
+            <Text style={styles.syncLast}>
+              Última sincronización: {new Date(lastSync).toLocaleString('es-CO')}
             </Text>
           )}
-        </TouchableOpacity>
-      </View>
-
-      {/* Cerrar Sesión */}
-      <TouchableOpacity
-        style={[styles.menuItem, styles.logoutItem]}
-        onPress={logout}
-        activeOpacity={0.7}
-      >
-        <Text style={styles.menuIcon}>🚪</Text>
-        <View style={styles.menuContent}>
-          <Text style={styles.menuTitle}>Cerrar Sesión</Text>
-          <Text style={styles.menuSubtitle}>Salir de la aplicación</Text>
+          {status === 'error' && (
+            <Text style={styles.syncError}>Error al sincronizar. Reintentando...</Text>
+          )}
+          <TouchableOpacity
+            style={[styles.syncButton, isSyncing && styles.syncButtonDisabled]}
+            onPress={syncNow}
+            disabled={isSyncing}
+            activeOpacity={0.7}
+          >
+            {isSyncing ? (
+              <ActivityIndicator color={COLORS.textOnPrimary} size="small" />
+            ) : (
+              <Text style={styles.syncButtonText}>
+                {pendingCount > 0 ? 'Sincronizar ahora' : 'Verificar'}
+              </Text>
+            )}
+          </TouchableOpacity>
         </View>
-        <Text style={styles.menuArrow}>›</Text>
-      </TouchableOpacity>
-    </ScrollView>
+
+        {/* Cambiar Contraseña */}
+        <TouchableOpacity
+          style={styles.menuItem}
+          onPress={() => setShowPasswordModal(true)}
+          activeOpacity={0.7}
+        >
+          <Text style={styles.menuIcon}>🔑</Text>
+          <View style={styles.menuContent}>
+            <Text style={styles.menuTitle}>Cambiar Contraseña</Text>
+            <Text style={styles.menuSubtitle}>Actualizar tu contraseña de acceso</Text>
+          </View>
+          <Text style={styles.menuArrow}>›</Text>
+        </TouchableOpacity>
+
+        {/* Cerrar Sesión */}
+        <TouchableOpacity
+          style={[styles.menuItem, styles.logoutItem]}
+          onPress={logout}
+          activeOpacity={0.7}
+        >
+          <Text style={styles.menuIcon}>🚪</Text>
+          <View style={styles.menuContent}>
+            <Text style={styles.menuTitle}>Cerrar Sesión</Text>
+            <Text style={styles.menuSubtitle}>Salir de la aplicación</Text>
+          </View>
+          <Text style={styles.menuArrow}>›</Text>
+        </TouchableOpacity>
+      </ScrollView>
+      <CambiarContrasenaModal visible={showPasswordModal} onClose={() => setShowPasswordModal(false)} />
+    </ImageBackground>
   );
 };
 
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: COLORS.surface,
+  },
+  // Vela suave sobre el fondo para que el texto blanco del encabezado siga
+  // siendo legible ahora que la imagen se ve detrás de toda la pantalla,
+  // no solo detrás de una franja superior más controlada.
+  overlayOscuro: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(0,0,0,0.18)',
+  },
+  scroll: {
+    flex: 1,
   },
   scrollContent: {
     paddingBottom: SPACING.xl,

@@ -12,7 +12,8 @@ export interface Revision {
   revisor_id: string;
   revisor_nombre: string | null;
   revisor_rol: 'supervisor' | 'interventor' | 'gerente' | 'admin';
-  tipo: 'novedad' | 'visto_bueno' | 'formulario_rol';
+  /** 'formulario_rol' es el tipo histórico (antes de dividirse en línea/campo) — se conserva solo para leer datos viejos */
+  tipo: 'novedad' | 'visto_bueno' | 'formulario_rol' | 'formulario_en_linea' | 'formulario_en_campo';
   comentario: string | null;
   datos_formulario_json: Record<string, unknown> | null;
   created_at: string;
@@ -58,7 +59,7 @@ export const fetchResumenRevisiones = async (): Promise<Record<string, EstadoRev
  */
 export const registrarRevision = async (
   formularioId: string,
-  tipo: 'novedad' | 'visto_bueno' | 'formulario_rol',
+  tipo: 'novedad' | 'visto_bueno' | 'formulario_en_linea' | 'formulario_en_campo',
   comentario?: string,
   datosFormulario?: Record<string, unknown>
 ): Promise<void> => {

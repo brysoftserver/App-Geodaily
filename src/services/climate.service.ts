@@ -3,8 +3,15 @@
 // ============================================================
 
 import apiClient, { isOfflineError } from './api';
-import { ClimaActual, ResumenClimatico } from '../types';
+import { ClimaActual, ResumenClimatico, ClimaEnMomento } from '../types';
 import { API_CONFIG } from '../theme';
+
+export interface ResultadoClimaUbicacion {
+  /** Nombre de lugar (municipio/departamento), o null si no se pudo resolver nada en absoluto */
+  lugar: string | null;
+  /** Clima listo para guardar en el formulario, o null si no se pudo obtener */
+  resumen: ResumenClimatico | null;
+}
 
 /**
  * Obtener clima actual desde el backend Express (no desde QGIS)
@@ -69,6 +76,85 @@ export const getResumenClimatico = async (
     }
     return null;
   }
+};
+
+/**
+ * Nombre de lugar + clima para un instante específico. Se usa tanto en
+ * captura en línea (sin `fecha`, equivale a "ahora") como para resolver
+ * después, durante el sync, el clima de una visita capturada sin señal —
+ * pasando la fecha/hora REAL de la captura, no la del momento de sync.
+ *
+ * A diferencia de `getClimaActual`, si el clima no se pudo obtener pero sí
+ * se resolvió el nombre del lugar, esta función devuelve igual esa parte
+ * en vez de perder todo el resultado.
+ */
+export const resolverClimaEnMomento = async (
+  lat: number,
+  lon: number,
+  fechaISO?: string
+): Promise<ClimaEnMomento | null> => {
+  try {
+    const response = await apiClient.get(API_CONFIG.ENDPOINTS.CLIMATE + '/en-momento', {
+      params: { lat, lon, fecha: fechaISO },
+      timeout: 15000,
+    });
+    return response.data as ClimaEnMomento;
+  } catch (error) {
+    if (isOfflineError(error)) {
+      console.warn('[Clima] Offline — no se puede resolver ubicación/clima en este momento');
+      return null;
+    }
+    console.warn(
+      '[Clima] Error en resolverClimaEnMomento:',
+      error instanceof Error ? error.message : error
+    );
+    return null;
+  }
+};
+
+/**
+ * Envuelve `resolverClimaEnMomento` y arma directamente un `ResumenClimatico`
+ * listo para `setClima(...)`, más el nombre de lugar por separado — así las
+ * pantallas de captura no repiten el mismo mapeo cada una.
+ */
+export const resolverClimaYUbicacion = async (
+  lat: number,
+  lon: number,
+  fechaISO?: string
+): Promise<ResultadoClimaUbicacion> => {
+  const resultado = await resolverClimaEnMomento(lat, lon, fechaISO);
+  if (!resultado) return { lugar: null, resumen: null };
+
+  const lugar = resultado.ubicacion?.nombre || null;
+  if (!resultado.clima) return { lugar, resumen: null };
+
+  const c = resultado.clima;
+  const resumen: ResumenClimatico = {
+    ubicacion: { latitud: resultado.ubicacion.latitud, longitud: resultado.ubicacion.longitud },
+    actual: {
+      fuente: resultado.fuente,
+      timestamp: c.timestamp,
+      ubicacion: resultado.ubicacion,
+      temperatura: {
+        actual: c.temperatura.actual,
+        sensacion_termica: c.temperatura.sensacion_termica,
+        // La API horaria no trae mínima/máxima del día — se usa la
+        // temperatura del momento como mejor aproximación disponible.
+        minima: c.temperatura.minima ?? c.temperatura.actual,
+        maxima: c.temperatura.maxima ?? c.temperatura.actual,
+      },
+      humedad: c.humedad,
+      presion: c.presion,
+      viento: c.viento,
+      nubosidad: c.nubosidad,
+      visibilidad: c.visibilidad,
+      clima: c.clima,
+      icono: c.icono,
+      pais: resultado.pais,
+    },
+    historico: null,
+  };
+  return { lugar, resumen };
 };
 
 /**

@@ -146,7 +146,7 @@ export function construirSeccionesEncuesta(
       p('9', '¿Cuál es el rol en la organización que está afiliado(a)?', cs.rol_asociacion),
       p('10', 'En donde está ubicada la vivienda principal de su núcleo familiar', conOtro(cs.vivienda_ubicacion, cs.vivienda_ubicacion_otra)),
       p('11', '¿Su vivienda cuenta con energía?', cs.energia_electrica),
-      p('12', '¿Qué tipo de energía utiliza?', conOtro(cs.tipo_energia, cs.tipo_energia_otro)),
+      p('12', '¿Cuál es el tipo de energía con el que cuenta?', conOtro(cs.tipo_energia, cs.tipo_energia_otro)),
       p('13', '¿De dónde obtiene principalmente el agua para el consumo humano?', conOtro(cs.agua_consumo, cs.agua_consumo_otro)),
       p('14', '¿Cuenta con algunos de estos elementos? (respuesta multiple)', cs.elementos_tecnologicos),
       p('15', '¿Cuenta con señal de celular en su vivienda?', cs.senal_celular),

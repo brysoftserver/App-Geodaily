@@ -131,7 +131,7 @@ const DocumentosScreen: React.FC<DocumentosScreenProps> = ({ navigation, route }
     let subido = false;
     if (bufferParaSubida) {
       setSubiendoDocAMinIO(true);
-      subido = await subirDocAMinIO(bufferParaSubida, nuevoDoc.descripcion);
+      subido = await subirDocAMinIO(bufferParaSubida, nuevoDoc.descripcion, nuevoDoc.formulario_id);
       if (subido) {
         await marcarDocumentoSincronizado(nuevoDoc.id);
       }
@@ -153,7 +153,8 @@ const DocumentosScreen: React.FC<DocumentosScreenProps> = ({ navigation, route }
   //    Esto asegura que TODO (fotos y PDFs) vaya a MinIO en .../documentos/
   const subirDocAMinIO = async (
     archivo: { uri: string; nombre: string; mimeType: string },
-    descripcion?: string
+    descripcion?: string,
+    formularioId?: string
   ): Promise<boolean> => {
     try {
       const formData = new FormData();
@@ -172,6 +173,16 @@ const DocumentosScreen: React.FC<DocumentosScreenProps> = ({ navigation, route }
       if (benefCedula) formData.append('beneficiario_cedula', benefCedula);
       if (benefNombre) formData.append('beneficiario_nombre', benefNombre);
       if (tipoFormulario) formData.append('tipo_formulario', tipoFormulario);
+      // Esta pantalla sube el documento de inmediato con su propia llamada
+      // (no pasa por documentos.service.ts), y nunca mandaba formulario_id:
+      // el documento quedaba en el servidor sin vínculo con la visita, así
+      // que ningún rol de supervisión podía verlo desde "Documentos de la
+      // finca" en el detalle del formulario. 'sin-formulario' (el marcador
+      // de un documento capturado sin visita activa) no se envía: no sirve
+      // para la reconciliación posterior en el backend.
+      if (formularioId && formularioId !== 'sin-formulario') {
+        formData.append('formulario_id', formularioId);
+      }
 
       const response = await apiClient.post(
         API_CONFIG.ENDPOINTS.DOCUMENTOS + '/subir',

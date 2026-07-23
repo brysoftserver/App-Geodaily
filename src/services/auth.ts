@@ -123,6 +123,36 @@ interface CredencialOffline {
 }
 
 /**
+ * Bajo STORAGE_KEYS.OFFLINE_CRED se guarda un DICCIONARIO de credenciales,
+ * una por cada cuenta que alguna vez inició sesión online en este
+ * dispositivo — no una sola. Antes se guardaba un único objeto y cada login
+ * online lo sobrescribía, así que solo la última cuenta usada quedaba
+ * disponible offline; si en campo se necesitaba entrar con un rol distinto
+ * al último, la app lo rechazaba aunque ya hubiera entrado antes con esa
+ * cuenta en ese mismo teléfono.
+ */
+type AlmacenCredencialesOffline = Record<string, CredencialOffline>;
+
+const leerAlmacenOffline = async (): Promise<AlmacenCredencialesOffline> => {
+  try {
+    const raw = await SecureStore.getItemAsync(STORAGE_KEYS.OFFLINE_CRED);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    // Migración desde el formato anterior (un solo objeto, no diccionario).
+    if (parsed && typeof parsed === 'object' && 'usuario' in parsed && 'hash' in parsed) {
+      return { [parsed.usuario]: parsed as CredencialOffline };
+    }
+    return parsed as AlmacenCredencialesOffline;
+  } catch {
+    return {};
+  }
+};
+
+const guardarAlmacenOffline = async (almacen: AlmacenCredencialesOffline): Promise<void> => {
+  await SecureStore.setItemAsync(STORAGE_KEYS.OFFLINE_CRED, JSON.stringify(almacen));
+};
+
+/**
  * Nº de iteraciones de hashing — endurece frente a fuerza bruta local.
  * Cada iteración es una llamada al bridge nativo, así que se mantiene moderado
  * para que el login (y el login offline en campo) siga siendo ágil en tablets.
@@ -159,14 +189,16 @@ export const guardarCredencialOffline = async (
       .map((b) => b.toString(16).padStart(2, '0'))
       .join('');
     const hash = await hashContrasena(contrasena, salt);
-    const cred: CredencialOffline = {
-      usuario: usuario.trim().toLowerCase(),
+    const key = usuario.trim().toLowerCase();
+    const almacen = await leerAlmacenOffline();
+    almacen[key] = {
+      usuario: key,
       salt,
       hash,
       user,
       savedAt: new Date().toISOString(),
     };
-    await SecureStore.setItemAsync(STORAGE_KEYS.OFFLINE_CRED, JSON.stringify(cred));
+    await guardarAlmacenOffline(almacen);
   } catch (err) {
     console.warn('[Auth] No se pudo guardar credencial offline:', err);
   }
@@ -182,10 +214,9 @@ export const intentarLoginOffline = async (
   contrasena: string,
 ): Promise<Usuario | null> => {
   try {
-    const raw = await SecureStore.getItemAsync(STORAGE_KEYS.OFFLINE_CRED);
-    if (!raw) return null;
-    const cred = JSON.parse(raw) as CredencialOffline;
-    if (cred.usuario !== usuario.trim().toLowerCase()) return null;
+    const almacen = await leerAlmacenOffline();
+    const cred = almacen[usuario.trim().toLowerCase()];
+    if (!cred) return null;
     const hash = await hashContrasena(contrasena, cred.salt);
     if (hash !== cred.hash) return null;
     return cred.user;
@@ -195,27 +226,41 @@ export const intentarLoginOffline = async (
   }
 };
 
-/** ¿Existe una credencial offline guardada para este usuario? */
+/**
+ * ¿Existe una credencial offline guardada?
+ * Sin `usuario`: ¿hay alguna cuenta cacheada en este dispositivo?
+ * Con `usuario`: ¿esa cuenta específica tiene credencial cacheada?
+ */
 export const existeCredencialOffline = async (usuario?: string): Promise<boolean> => {
   try {
-    const raw = await SecureStore.getItemAsync(STORAGE_KEYS.OFFLINE_CRED);
-    if (!raw) return false;
-    if (!usuario) return true;
-    const cred = JSON.parse(raw) as CredencialOffline;
-    return cred.usuario === usuario.trim().toLowerCase();
+    const almacen = await leerAlmacenOffline();
+    if (!usuario) return Object.keys(almacen).length > 0;
+    return usuario.trim().toLowerCase() in almacen;
   } catch {
     return false;
   }
 };
 
 /**
- * Borrar la credencial offline — solo en logout explícito del usuario.
- * NO se debe llamar ante un 401 de red para no dejar al técnico sin poder
- * reingresar en campo.
+ * Borrar credencial(es) offline.
+ *
+ * Sin `usuario`: borra TODAS las cuentas cacheadas en este dispositivo —
+ * pensado para una futura opción explícita tipo "olvidar este dispositivo",
+ * NO para el logout normal. Con `usuario`: borra solo esa cuenta.
+ *
+ * AuthContext.logout() YA NO llama a esta función: cerrar sesión de una
+ * cuenta no debe impedir volver a entrar con ella offline más tarde —
+ * exactamente el escenario de campo que este caché existe para resolver.
  */
-export const limpiarCredencialOffline = async (): Promise<void> => {
+export const limpiarCredencialOffline = async (usuario?: string): Promise<void> => {
   try {
-    await SecureStore.deleteItemAsync(STORAGE_KEYS.OFFLINE_CRED);
+    if (!usuario) {
+      await SecureStore.deleteItemAsync(STORAGE_KEYS.OFFLINE_CRED);
+      return;
+    }
+    const almacen = await leerAlmacenOffline();
+    delete almacen[usuario.trim().toLowerCase()];
+    await guardarAlmacenOffline(almacen);
   } catch {
     // Ignorar
   }
@@ -247,5 +292,25 @@ export const verifyToken = async (token: string): Promise<TokenVerification> => 
     // explícito del token, tratar como "no se pudo verificar" para no
     // desloguear a un técnico por un problema transitorio de red/servidor.
     return 'offline';
+  }
+};
+
+/**
+ * Cambiar la contraseña del usuario autenticado.
+ * Requiere la contraseña actual y la nueva.
+ */
+export const changePassword = async (
+  currentPassword: string,
+  newPassword: string,
+): Promise<{ success: boolean; mensaje?: string; error?: string }> => {
+  try {
+    const response = await apiClient.put(
+      API_CONFIG.ENDPOINTS.AUTH + '/mi-contrasena',
+      { currentPassword, newPassword },
+    );
+    return response.data;
+  } catch (error: any) {
+    const mensaje = error?.response?.data?.error || 'Error al cambiar la contraseña';
+    return { success: false, error: mensaje };
   }
 };

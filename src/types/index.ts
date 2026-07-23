@@ -31,6 +31,14 @@ export interface Coordenadas {
   precision_gps?: number;
   heading?: number;
   timestamp?: string;
+  /**
+   * Nombre de lugar (municipio/departamento) resuelto por geocodificación
+   * inversa — independiente de si el clima se pudo obtener. Antes el
+   * nombre solo viajaba dentro de `clima.ubicacion.nombre`: si no había
+   * señal para el clima, tampoco quedaba ningún nombre de lugar en ningún
+   * lado del formulario.
+   */
+  lugar?: string;
 }
 
 // --- Información de georreferenciación ---
@@ -85,6 +93,31 @@ export interface ResumenClimatico {
   historico: ClimaHistorico[] | null;
 }
 
+/**
+ * Respuesta de GET /api/climate/en-momento. A diferencia de `ClimaActual`,
+ * `ubicacion` (con el nombre de lugar ya resuelto) viaja SIEMPRE que
+ * Nominatim responda, incluso si `clima` sale null porque Open-Meteo falló
+ * — antes ambos viajaban unidos y un fallo del clima borraba también el
+ * nombre del lugar.
+ */
+export interface ClimaEnMomento {
+  estado: string;
+  fuente: string;
+  ubicacion: { latitud: number; longitud: number; nombre: string };
+  pais: string;
+  clima: {
+    timestamp: string;
+    temperatura: { actual: number; sensacion_termica: number; minima: number | null; maxima: number | null };
+    humedad: number;
+    presion: number;
+    viento: { velocidad: number; direccion_grados: number };
+    nubosidad: number;
+    visibilidad: number;
+    clima: string;
+    icono: string;
+  } | null;
+}
+
 // --- Información de foto/video geotaggeado ---
 export interface FotoGeotag {
   id: string;
@@ -112,6 +145,12 @@ export interface DatosBeneficiario {
   municipio: string;
   vereda: string;
   finca: string;
+  /** Edad del beneficiario */
+  edad?: string;
+  /** Sexo del beneficiario */
+  sexo?: string;
+  /** Nombre del corregimiento (reemplaza ubicación del predio) */
+  corregimiento?: string;
 }
 
 export interface ActividadRealizada {

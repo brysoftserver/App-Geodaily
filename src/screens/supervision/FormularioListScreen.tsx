@@ -8,7 +8,6 @@ import {
   Text,
   FlatList,
   StyleSheet,
-  Alert,
   RefreshControl,
   ImageBackground,
 } from 'react-native';
@@ -108,29 +107,17 @@ const FormularioListScreen: React.FC<FormularioListScreenProps> = ({ navigation 
     );
   }, [formularios, filters]);
 
-  const handleFormPress = (form: Formulario) => {
-    Alert.alert(
-      form.beneficiario?.nombre || 'Sin beneficiario',
-      `Tipo: ${form.tipo === 'visita_tecnica' ? 'Visita Técnica' : form.tipo === 'caracterizacion' ? 'Caracterización' : 'Plantación'}\n` +
-        `Técnico: ${form.tecnico?.nombre || '—'}\n` +
-        `Municipio: ${form.beneficiario?.municipio || '—'}\n` +
-        `Actividad: ${form.actividad?.descripcion || '—'}\n` +
-        `Fecha: ${form.created_at}\n` +
-        `Estado: ${form.sincronizado ? '✓ Sincronizado' : '⏳ Pendiente'}` +
-        (form.pdf_url ? '\n\nPDF disponible' : ''),
-      [
-        { text: 'Cerrar', style: 'cancel' },
-        ...(form.pdf_url
-          ? [{ text: 'Ver PDF', onPress: () => handleViewPDF(form) }]
-          : []),
-      ]
-    );
+  // Igual que en el módulo de terreno: tocar la tarjeta o el botón de PDF
+  // abre el detalle del formulario, que es donde viven "Ver PDF" y
+  // "Descargar PDF" con el generador del membrete oficial. Antes esta
+  // pantalla mostraba un resumen en un Alert y el botón de PDF solo
+  // imprimía la ruta del archivo, así que desde admin nunca se abría nada.
+  const handleFormPress = (formulario: Formulario) => {
+    navigation.navigate('SupervisionFormularioDetail', { formulario });
   };
 
-  const handleViewPDF = (form: Formulario) => {
-    if (form.pdf_url) {
-      Alert.alert('PDF', `Abrir PDF: ${form.pdf_url}`);
-    }
+  const handleViewPDF = (formulario: Formulario) => {
+    navigation.navigate('SupervisionFormularioDetail', { formulario });
   };
 
   if (isLoading) {

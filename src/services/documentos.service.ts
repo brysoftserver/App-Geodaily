@@ -20,7 +20,12 @@ export const subirDocumento = async (
   beneficiarioNombre?: string,
   tipoFormulario?: string,
   /** MIME real del archivo; sin esto todo viajaba como octet-stream */
-  mimeType?: string
+  mimeType?: string,
+  /** Vincula el documento al formulario para poder recuperarlo desde otro
+   *  dispositivo. Antes se omitía y el servidor no tenía forma de saber a
+   *  qué visita pertenecía cada documento — un supervisor jamás podía
+   *  verlos, aunque estuvieran correctamente subidos a MinIO. */
+  formularioId?: string
 ): Promise<{ id: string; ruta: string; estado: string } | null> => {
   try {
     const formData = new FormData();
@@ -37,6 +42,7 @@ export const subirDocumento = async (
     if (beneficiarioCedula) formData.append('beneficiario_cedula', beneficiarioCedula);
     if (beneficiarioNombre) formData.append('beneficiario_nombre', beneficiarioNombre);
     if (tipoFormulario) formData.append('tipo_formulario', tipoFormulario);
+    if (formularioId) formData.append('formulario_id', formularioId);
 
     const response = await apiClient.post(
       API_CONFIG.ENDPOINTS.DOCUMENTOS + '/subir',
@@ -113,6 +119,46 @@ export const listarDocumentos = async (): Promise<Record<string, any>[]> => {
   } catch (error) {
     if (isOfflineError(error)) return [];
     console.error('[Documentos] Error al listar:', error);
+    return [];
+  }
+};
+
+export interface DocumentoDeFormulario {
+  id: string;
+  nombre: string;
+  mimetype: string;
+  size_bytes: number;
+  created_at: string;
+  descripcion: string | null;
+  categoria: string | null;
+  /** Ruta relativa en la API, p.ej. /api/archivos/<id>/contenido */
+  url: string;
+}
+
+/**
+ * Documentos de finca vinculados a un formulario — para mostrarlos en el
+ * resumen del formulario a cualquier rol de supervisión, no solo al
+ * técnico que los subió.
+ */
+export const fetchDocumentosDeFormulario = async (
+  formularioId: string
+): Promise<DocumentoDeFormulario[]> => {
+  try {
+    const response = await apiClient.get(
+      `${API_CONFIG.ENDPOINTS.DOCUMENTOS}/formulario/${encodeURIComponent(formularioId)}`,
+      { timeout: 15000 }
+    );
+    if (response.data?.estado === 'ok' && Array.isArray(response.data?.documentos)) {
+      return response.data.documentos as DocumentoDeFormulario[];
+    }
+    return [];
+  } catch (error) {
+    const err = error as any;
+    if (isOfflineError(err)) {
+      console.warn('[Documentos] Sin conexión — no se pueden traer documentos del formulario');
+    } else {
+      console.warn('[Documentos] Error obteniendo documentos del formulario:', err?.message || error);
+    }
     return [];
   }
 };

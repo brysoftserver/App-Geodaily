@@ -16,13 +16,23 @@ function esBase64DataURI(val) {
 }
 
 /**
- * Subir una firma/foto base64 a MinIO y devolver la ruta
+ * Subir una firma/foto base64 a MinIO y devolver la ruta.
+ *
+ * Además registra un archivo en la tabla `archivos` (igual que fotos y
+ * videos) para que `/api/archivos/formulario/:id` pueda encontrarla y
+ * servirla de forma autenticada. Antes solo se subía a MinIO y la ruta
+ * INTERNA quedaba guardada en formularios.firma_* — esa ruta no es ni
+ * base64 ni una URL, así que <Image> no podía cargarla: la firma se veía
+ * bien justo al terminar el formulario (todavía en base64 en memoria) y
+ * se ponía en blanco en cuanto sincronizaba, en cualquier dispositivo,
+ * incluido el mismo que la capturó.
  */
-async function subirBase64AMinIO(req, data, tipo, prefijo, tipoFormulario, benefItem, benefNombre) {
+async function subirBase64AMinIO(req, data, tipo, prefijo, tipoFormulario, benefItem, benefNombre, formularioId) {
   if (!esBase64DataURI(data)) return data; // ya es ruta o null
 
   const matches = data.match(/^data:([A-Za-z-+/]+);base64,(.+)$/);
   const buffer = Buffer.from(matches[2], 'base64');
+  const mimetype = matches[1];
   const timestamp = Date.now();
   const filename = `${prefijo}_${timestamp}.png`;
   const basePath = storage.getUserBasePath(req.user.rol, req.user.usuario);
@@ -31,18 +41,55 @@ async function subirBase64AMinIO(req, data, tipo, prefijo, tipoFormulario, benef
   await storage.uploadFile(
     req.user.rol, req.user.usuario, 'firmas', filename, buffer,
     {
-      contentType: matches[1],
+      contentType: mimetype,
       tipoFormulario,
       beneficiarioItem: benefItem,
       beneficiarioNombre: benefNombre,
     }
   );
 
+  // La rama "sin beneficiario" debe calcar exactamente storage.js#getFilePath
+  // (sin formFolder) — antes incluía formFolder aquí y la ruta guardada en
+  // BD no coincidía con la ruta real donde uploadFile() la dejó en MinIO,
+  // dando 404 al intentar servirla. Solo se nota cuando la cédula del
+  // beneficiario no matchea ningún registro (benefItem/benefNombre quedan
+  // null) — poco común pero posible, y sin este ajuste la firma tampoco se
+  // podría recuperar en ese caso.
+  let minioPath;
   if (benefItem && benefNombre) {
     const subpath = storage.getBeneficiarySubpath(benefItem, benefNombre);
-    return formFolder ? `${basePath}/${subpath}/${formFolder}/firmas/${filename}` : `${basePath}/${subpath}/firmas/${filename}`;
+    minioPath = formFolder ? `${basePath}/${subpath}/${formFolder}/firmas/${filename}` : `${basePath}/${subpath}/firmas/${filename}`;
+  } else {
+    minioPath = `${basePath}/firmas/${filename}`;
   }
-  return formFolder ? `${basePath}/${formFolder}/firmas/${filename}` : `${basePath}/firmas/${filename}`;
+
+  // Igual que en photos.js: el SELECT evita violar la FK si la firma llega
+  // en el mismo request que crea el formulario por primera vez (formulario_id
+  // aún no existe) — queda NULL y metadata_json.formulario_id permite
+  // vincularla más abajo, en el bloque que ya reconcilia fotos/videos.
+  try {
+    const bucket = process.env.MINIO_BUCKET || 'geodaily-archivos';
+    await db.query(
+      `INSERT INTO archivos (usuario_id, formulario_id, tipo, filename, originalname, mimetype, size_bytes, minio_path, minio_bucket, metadata_json)
+       VALUES ($1, (SELECT id FROM formularios WHERE id = $2), $3, $4, $5, $6, $7, $8, $9, $10)`,
+      [
+        req.user.id,
+        formularioId,
+        'firma',
+        filename,
+        `firma_${tipo}.png`,
+        mimetype,
+        buffer.length,
+        minioPath,
+        bucket,
+        JSON.stringify({ tipo_firma: tipo, formulario_id: formularioId }),
+      ]
+    );
+  } catch (archivoErr) {
+    console.warn('[Forms] No se pudo registrar la firma en archivos:', archivoErr.message);
+  }
+
+  return minioPath;
 }
 
 // POST /api/formularios/guardar
@@ -61,12 +108,23 @@ router.post('/guardar', authenticateToken, async (req, res) => {
     const tecnico = formulario.tecnico || {};
     const beneficiario = formulario.beneficiario || {};
     const actividad = formulario.actividad || {};
-    const sociodemografico = formulario.sociodemografico || {};
-    const caracterizacion = formulario.caracterizacion_nueva || {};
     const coordenadas = formulario.coordenadas || {};
-    const georeferencia = formulario.georeferencia || {};
-    const clima = formulario.clima || {};
     const fotos = formulario.fotos || [];
+
+    // sociodemografico/caracterizacion_nueva/georeferencia/clima son
+    // OPCIONALES de verdad: si el cliente no los manda, se guarda NULL, no
+    // '{}'. Antes se guardaba '{}' y cualquier consumidor que hiciera
+    // `if (formulario.georeferencia)` para decidir si mostrar esa sección
+    // veía un objeto "verdadero" sin datos adentro — el PDF, por ejemplo,
+    // intentaba leer `georeferencia.coordenadas.latitud` sobre un objeto
+    // vacío y reventaba. En memoria, recién completado, el campo SÍ era
+    // undefined (correcto); solo se corrompía a '{}' después de pasar por
+    // aquí y volver — de ahí que el bug solo apareciera tras sincronizar.
+    const sociodemografico = formulario.sociodemografico || null;
+    const caracterizacion = formulario.caracterizacion_nueva || null;
+    const georeferencia = formulario.georeferencia || null;
+    const clima = formulario.clima || null;
+    const jsonOrNull = (v) => (v ? JSON.stringify(v) : null);
 
     // El tipo debe respetar el CHECK del esquema. Antes se usaba
     // `|| 'desconocido'`, que lo viola y provoca un 500 genérico: el técnico
@@ -108,8 +166,8 @@ router.post('/guardar', authenticateToken, async (req, res) => {
       }
     }
 
-    const firmaBeneficiario = await subirBase64AMinIO(req, formulario.firma_beneficiario, 'beneficiario', `firma_beneficiario_${formulario.id}`, tipoFormulario, benefItem, benefNombre);
-    const firmaTecnico = await subirBase64AMinIO(req, formulario.firma_tecnico, 'tecnico', `firma_tecnico_${formulario.id}`, tipoFormulario, benefItem, benefNombre);
+    const firmaBeneficiario = await subirBase64AMinIO(req, formulario.firma_beneficiario, 'beneficiario', `firma_beneficiario_${formulario.id}`, tipoFormulario, benefItem, benefNombre, formulario.id);
+    const firmaTecnico = await subirBase64AMinIO(req, formulario.firma_tecnico, 'tecnico', `firma_tecnico_${formulario.id}`, tipoFormulario, benefItem, benefNombre, formulario.id);
 
     if (existente) {
       await db.query(
@@ -124,24 +182,33 @@ router.post('/guardar', authenticateToken, async (req, res) => {
           huella_beneficiario = $14,
           pdf_url = COALESCE($15, pdf_url),
           sincronizado = TRUE,
-          updated_at = NOW()
-         WHERE id = $16`,
+          -- Usar la hora REAL en que el técnico completó el formulario, no
+          -- la de llegada al servidor. Con NOW() el servidor SIEMPRE quedaba
+          -- "más nuevo" que la copia local (por la latencia de red, aunque
+          -- fuera de segundos) — la próxima vez que el dispositivo fusionaba
+          -- datos del servidor, esa comparación de fechas hacía que la copia
+          -- local completa (fotos con ruta válida en ese teléfono, etc.) se
+          -- sobrescribiera con la versión "adelgazada" que viaja por la red.
+          -- Esto pasaba SIEMPRE, en cada formulario, tras el primer sync.
+          updated_at = COALESCE($16::timestamp, NOW())
+         WHERE id = $17`,
         [
           formulario.tipo,
           req.user.id,
           JSON.stringify(tecnico),
           JSON.stringify(beneficiario),
           JSON.stringify(actividad),
-          JSON.stringify(sociodemografico),
-          JSON.stringify(caracterizacion),
+          jsonOrNull(sociodemografico),
+          jsonOrNull(caracterizacion),
           JSON.stringify(coordenadas),
-          JSON.stringify(georeferencia),
-          JSON.stringify(clima),
+          jsonOrNull(georeferencia),
+          jsonOrNull(clima),
           JSON.stringify(fotos),
           firmaBeneficiario,
           firmaTecnico,
           formulario.huella_beneficiario || false,
           pdfUrlRemoto,
+          formulario.updated_at ? new Date(formulario.updated_at) : null,
           formulario.id,
         ]
       );
@@ -163,11 +230,11 @@ router.post('/guardar', authenticateToken, async (req, res) => {
           JSON.stringify(tecnico),
           JSON.stringify(beneficiario),
           JSON.stringify(actividad),
-          JSON.stringify(sociodemografico),
-          JSON.stringify(caracterizacion),
+          jsonOrNull(sociodemografico),
+          jsonOrNull(caracterizacion),
           JSON.stringify(coordenadas),
-          JSON.stringify(georeferencia),
-          JSON.stringify(clima),
+          jsonOrNull(georeferencia),
+          jsonOrNull(clima),
           JSON.stringify(fotos),
           firmaBeneficiario,
           firmaTecnico,
@@ -224,7 +291,12 @@ router.post('/guardar', authenticateToken, async (req, res) => {
 // GET /api/formularios — listar todos (con filtros opcionales)
 router.get('/', authenticateToken, async (req, res) => {
   try {
-    const { tipo, usuario_id, desde, hasta, limit, offset } = req.query;
+    const { tipo, usuario_id, desde, hasta, limit, offset, vista } = req.query;
+    // El calendario es universal: técnico, supervisor, interventor, gerente
+    // y admin deben ver EXACTAMENTE las mismas visitas realizadas, sin el
+    // filtro de "solo mis formularios" ni la jerarquía de aprobación (que
+    // gobierna el flujo de revisión, no la visibilidad en el calendario).
+    const esVistaCalendario = vista === 'calendario';
     let sql = `
       SELECT id, tipo, usuario_id,
         tecnico_json,
@@ -241,20 +313,22 @@ router.get('/', authenticateToken, async (req, res) => {
     if (desde) { sql += ` AND created_at >= $${paramIdx++}`; params.push(desde); }
     if (hasta) { sql += ` AND created_at <= $${paramIdx++}`; params.push(hasta); }
 
-    // Filtro por rol: si es técnico, solo ve sus formularios
-    if (req.user.rol === 'tecnico') {
-      sql += ` AND usuario_id = $${paramIdx++}`;
-      params.push(req.user.id);
-    }
+    if (!esVistaCalendario) {
+      // Filtro por rol: si es técnico, solo ve sus formularios
+      if (req.user.rol === 'tecnico') {
+        sql += ` AND usuario_id = $${paramIdx++}`;
+        params.push(req.user.id);
+      }
 
-    // Jerarquía de control: el INTERVENTOR solo ve formularios que ya
-    // tienen el visto bueno del SUPERVISOR (orden: técnico → supervisor
-    // → interventor). Supervisor, gerente y admin ven todo.
-    if (req.user.rol === 'interventor') {
-      sql += ` AND id IN (
-        SELECT formulario_id FROM revisiones_formulario
-        WHERE revisor_rol = 'supervisor' AND tipo = 'visto_bueno'
-      )`;
+      // Jerarquía de control: el INTERVENTOR solo ve formularios que ya
+      // tienen el visto bueno del SUPERVISOR (orden: técnico → supervisor
+      // → interventor). Supervisor, gerente y admin ven todo.
+      if (req.user.rol === 'interventor') {
+        sql += ` AND id IN (
+          SELECT formulario_id FROM revisiones_formulario
+          WHERE revisor_rol = 'supervisor' AND tipo = 'visto_bueno'
+        )`;
+      }
     }
 
     sql += ' ORDER BY created_at DESC';

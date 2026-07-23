@@ -13,6 +13,7 @@ import {
   DatosCaracterizacionNueva,
   Coordenadas,
   FotoGeotag,
+  ResumenClimatico,
 } from '../types';
 import { generarId } from '../utils/formatters';
 
@@ -32,6 +33,7 @@ type FormAction =
   | { type: 'SET_SOCIODEMOGRAFICO'; data: DatosSociodemograficos }
   | { type: 'SET_CARACTERIZACION_NUEVA'; data: DatosCaracterizacionNueva }
   | { type: 'SET_COORDENADAS'; data: Coordenadas }
+  | { type: 'SET_CLIMA'; data: ResumenClimatico }
   | { type: 'ADD_FOTO'; foto: FotoGeotag }
   | { type: 'REMOVE_FOTO'; fotoId: string }
   | { type: 'SET_FIRMA_BENEFICIARIO'; firma: string }
@@ -106,6 +108,16 @@ function formReducer(state: FormState, action: FormAction): FormState {
       return {
         ...state,
         formularioActual: { ...state.formularioActual, coordenadas: action.data },
+      };
+
+    // Antes NO existía: 'clima' se calculaba con useClimate() pero nunca se
+    // guardaba en el formulario — sobre todo en Visita Técnica, donde
+    // quedaba sin usar por completo. El PDF y el detalle mostraban la
+    // sección de clima vacía siempre, con o sin señal.
+    case 'SET_CLIMA':
+      return {
+        ...state,
+        formularioActual: { ...state.formularioActual, clima: action.data },
       };
 
     case 'ADD_FOTO':
@@ -188,6 +200,7 @@ interface FormContextType extends FormState {
   setSociodemografico: (data: DatosSociodemograficos) => void;
   setCaracterizacionNueva: (data: DatosCaracterizacionNueva) => void;
   setCoordenadas: (data: Coordenadas) => void;
+  setClima: (data: ResumenClimatico) => void;
   addFoto: (foto: FotoGeotag) => void;
   removeFotoDelFormulario: (fotoId: string) => void;
   setFirmaBeneficiario: (firma: string) => void;
@@ -230,6 +243,10 @@ export const FormProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const setCoordenadas = useCallback((data: Coordenadas) => {
     dispatch({ type: 'SET_COORDENADAS', data });
+  }, []);
+
+  const setClima = useCallback((data: ResumenClimatico) => {
+    dispatch({ type: 'SET_CLIMA', data });
   }, []);
 
   const addFoto = useCallback((foto: FotoGeotag) => {
@@ -309,6 +326,7 @@ export const FormProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setSociodemografico,
     setCaracterizacionNueva,
     setCoordenadas,
+    setClima,
     addFoto,
     removeFotoDelFormulario,
     setFirmaBeneficiario,
@@ -320,7 +338,7 @@ export const FormProvider: React.FC<{ children: React.ReactNode }> = ({ children
   }), [
     state,
     iniciarFormulario, setTecnico, setBeneficiario, setActividad,
-    setSociodemografico, setCaracterizacionNueva, setCoordenadas,
+    setSociodemografico, setCaracterizacionNueva, setCoordenadas, setClima,
     addFoto, removeFotoDelFormulario, setFirmaBeneficiario, setFirmaTecnico, setHuella,
     finalizarFormulario, cancelarFormulario, cargarFormularios,
   ]);

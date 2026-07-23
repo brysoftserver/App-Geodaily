@@ -21,7 +21,6 @@ import { useFocusEffect } from '@react-navigation/native';
 import { Calendar, DateData, LocaleConfig } from 'react-native-calendars';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { COLORS, FONTS, SPACING, BORDER_RADIUS, SHADOWS } from '../theme';
-import { useForm } from '../store/FormContext';
 import { useAuth } from '../store/AuthContext';
 import { useSync } from '../store/SyncContext';
 import {
@@ -31,7 +30,7 @@ import {
 } from '../services/formularios.service';
 import { getFormulariosLocales, getVisitasProgramadas, saveVisitaProgramada, deleteVisitaProgramadaLocal } from '../services/database';
 import { formatFecha, getLocalDateString, generarId } from '../utils/formatters';
-import { VisitaProgramada } from '../types';
+import { VisitaProgramada, Formulario } from '../types';
 
 // Español
 LocaleConfig.locales['es'] = {
@@ -54,12 +53,20 @@ type CalendarioGlobalScreenProps = {
 };
 
 const CalendarioGlobalScreen: React.FC<CalendarioGlobalScreenProps> = ({ navigation }) => {
-  const { formularios, cargarFormularios } = useForm();
   const { user } = useAuth();
   const { syncNow } = useSync();
   const insets = useSafeAreaInsets();
 
   const [selectedDate, setSelectedDate] = useState<string>(getLocalDateString());
+  /**
+   * Estado LOCAL de esta pantalla — a propósito NO vive en el FormContext
+   * compartido. El calendario pide la vista universal (todas las visitas de
+   * todos los técnicos, pidiendo `vista=calendario` al backend); publicar
+   * eso en el contexto global contaminaría pantallas como "Historial de
+   * Formularios" del técnico, que deben seguir mostrando solo sus propios
+   * formularios.
+   */
+  const [todasLasVisitas, setTodasLasVisitas] = useState<Formulario[]>([]);
   const [visitasProgramadas, setVisitasProgramadas] = useState<VisitaProgramada[]>([]);
   const [loadingCal, setLoadingCal] = useState(true);
 
@@ -79,20 +86,22 @@ const CalendarioGlobalScreen: React.FC<CalendarioGlobalScreenProps> = ({ navigat
   const loadCalendarData = useCallback(async () => {
     lastLoadRef.current = Date.now();
     try {
+      // vista=calendario: el backend ignora "solo mis formularios" (técnico)
+      // y la jerarquía de aprobación (interventor) — todos ven lo mismo.
       const [locales, servidor] = await Promise.all([
         getFormulariosLocales(),
-        fetchFormulariosDelServidor(),
+        fetchFormulariosDelServidor({ vista: 'calendario' }),
       ]);
 
       const mapa = new Map<string, any>();
       for (const f of locales) mapa.set(f.id, f);
       for (const f of servidor) mapa.set(f.id, { ...f, sincronizado: true });
 
-      cargarFormularios(Array.from(mapa.values()));
+      setTodasLasVisitas(Array.from(mapa.values()));
     } catch (e) {
       console.warn('[Calendario] Error cargando formularios:', e);
     }
-  }, [cargarFormularios]);
+  }, []);
 
   const loadVisitas = useCallback(async () => {
     try {
@@ -127,9 +136,9 @@ const CalendarioGlobalScreen: React.FC<CalendarioGlobalScreenProps> = ({ navigat
   // ================================================================
   // MARCAS DEL CALENDARIO
   // ================================================================
-  const formulariosLength = formularios.length;
-  const formulariosRef = useRef(formularios);
-  formulariosRef.current = formularios;
+  const formulariosLength = todasLasVisitas.length;
+  const formulariosRef = useRef(todasLasVisitas);
+  formulariosRef.current = todasLasVisitas;
 
   const markedDates = useMemo(() => {
     const marks: Record<string, any> = {};
@@ -183,7 +192,7 @@ const CalendarioGlobalScreen: React.FC<CalendarioGlobalScreenProps> = ({ navigat
   // AGRUPACIÓN POR TÉCNICO (para roles superiores)
   // ================================================================
   const formsByTecnico = useMemo(() => {
-    const map: Record<string, typeof formularios> = {};
+    const map: Record<string, Formulario[]> = {};
     for (const f of formulariosRef.current) {
       const key = f.tecnico?.nombre || 'Desconocido';
       if (!map[key]) map[key] = [];
@@ -515,8 +524,12 @@ const CalendarioGlobalScreen: React.FC<CalendarioGlobalScreenProps> = ({ navigat
             )}
           </View>
 
-          {/* Resumen por técnico (solo roles superiores) */}
-          {!esTecnico && Object.keys(formsByTecnico).length > 0 && (
+          {/* Resumen por técnico — visible para todos los roles: el
+              calendario es universal, así que esta sección ya no se oculta
+              para el técnico (antes solo veía sus propios formularios y el
+              resumen habría mostrado un único técnico; ahora ve los de
+              todo el equipo, igual que el resto de roles). */}
+          {Object.keys(formsByTecnico).length > 0 && (
             <View style={styles.daySection}>
               <Text style={styles.sectionTitle}>Resumen por Técnico</Text>
               {Object.entries(formsByTecnico).map(([nombre, forms]) => (

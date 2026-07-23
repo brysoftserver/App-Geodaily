@@ -53,26 +53,20 @@ router.post('/sync', authenticateToken, async (req, res) => {
   }
 });
 
-// GET /api/visitas-programadas — Listar (técnico ve solo las suyas, roles superiores ven todas)
+// GET /api/visitas-programadas — Listar. El calendario es universal: todos
+// los roles, incluido técnico, ven TODAS las visitas planificadas por
+// cualquier técnico — no solo las propias.
 router.get('/', authenticateToken, async (req, res) => {
   try {
-    const { rol, id: usuario_id } = req.user;
-    let sql = `
+    const sql = `
       SELECT vp.id, vp.usuario_id, vp.titulo, vp.ubicacion, vp.fecha, vp.estado, vp.created_at,
         u.nombre AS usuario_nombre
       FROM visitas_programadas vp
       JOIN usuarios u ON u.id = vp.usuario_id
+      ORDER BY vp.fecha ASC
     `;
-    const params = [];
 
-    if (rol === 'tecnico') {
-      sql += ' WHERE vp.usuario_id = $1';
-      params.push(usuario_id);
-    }
-
-    sql += ' ORDER BY vp.fecha ASC';
-
-    const lista = await db.queryAll(sql, params);
+    const lista = await db.queryAll(sql, []);
 
     res.json({
       estado: 'ok',

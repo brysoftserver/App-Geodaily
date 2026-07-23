@@ -25,6 +25,7 @@ interface UserItem {
   rol: 'tecnico' | 'supervisor' | 'interventor' | 'gerente' | 'admin';
   email: string;
   telefono: string;
+  contrasena_visible?: string;
   estado: 'Activo' | 'Inactivo';
   esNuevo?: boolean;
 }
@@ -44,6 +45,7 @@ const fromBackend = (u: UsuarioBackend): UserItem => ({
   rol: u.rol,
   email: u.email || '',
   telefono: u.telefono || '',
+  contrasena_visible: u.contrasena_visible || '',
   estado: u.activo ? 'Activo' : 'Inactivo',
 });
 
@@ -126,12 +128,16 @@ const UserManagementScreen: React.FC = () => {
           telefono: editingUser.telefono,
         });
       } else if (editingUser.id) {
-        await actualizarUsuario(editingUser.id, {
+        const payload: Record<string, any> = {
           nombre: editingUser.nombre,
           email: editingUser.email,
           telefono: editingUser.telefono,
           rol: editingUser.rol,
-        });
+        };
+        if (editingUser.contrasena) {
+          payload.contrasena = editingUser.contrasena;
+        }
+        await actualizarUsuario(editingUser.id, payload);
       }
 
       await loadUsers();
@@ -264,6 +270,13 @@ const UserManagementScreen: React.FC = () => {
                     <Text style={styles.deleteIcon}>🗑️</Text>
                   </TouchableOpacity>
                 </View>
+                {user.contrasena_visible ? (
+                  <View style={styles.credentialRow}>
+                    <Text style={styles.credentialText}>
+                      🔑 {user.contrasena_visible}
+                    </Text>
+                  </View>
+                ) : null}
               </TouchableOpacity>
             );
           })
@@ -312,6 +325,25 @@ const UserManagementScreen: React.FC = () => {
                 />
               </>
             )}
+
+            {!editingUser?.esNuevo && editingUser?.contrasena_visible ? (
+              <>
+                <Text style={styles.fieldLabel}>Contraseña actual</Text>
+                <View style={styles.currentPasswordBox}>
+                  <Text style={styles.currentPasswordText}>{editingUser.contrasena_visible}</Text>
+                </View>
+                <Text style={styles.fieldLabel}>Nueva contraseña (opcional)</Text>
+                <TextInput
+                  style={styles.modalInput}
+                  value={editingUser?.contrasena || ''}
+                  onChangeText={(t) => setEditingUser((prev) => ({ ...prev, contrasena: t }))}
+                  placeholder="Dejar vacío para mantener la actual"
+                  placeholderTextColor={COLORS.textLight}
+                  secureTextEntry
+                  autoCapitalize="none"
+                />
+              </>
+            ) : null}
 
             <Text style={styles.fieldLabel}>Email</Text>
             <TextInput
@@ -484,6 +516,31 @@ const styles = StyleSheet.create({
   },
   roleBadgeText: { fontSize: FONTS.sizes.xs, fontWeight: FONTS.weights.semibold },
   deleteIcon: { fontSize: 16 },
+  credentialRow: {
+    marginTop: SPACING.xs,
+    paddingTop: SPACING.xs,
+    borderTopWidth: 1,
+    borderTopColor: COLORS.divider,
+  },
+  credentialText: {
+    fontSize: FONTS.sizes.xs,
+    color: COLORS.textSecondary,
+    fontFamily: 'monospace',
+  },
+  currentPasswordBox: {
+    backgroundColor: COLORS.surfaceAlt,
+    paddingHorizontal: SPACING.md,
+    paddingVertical: SPACING.sm,
+    borderRadius: BORDER_RADIUS.sm,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    marginBottom: SPACING.sm,
+  },
+  currentPasswordText: {
+    fontSize: FONTS.sizes.md,
+    color: COLORS.textPrimary,
+    fontFamily: 'monospace',
+  },
   // Modal
   modalOverlay: {
     flex: 1,

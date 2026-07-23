@@ -21,7 +21,7 @@ import { COLORS, FONTS, SPACING, BORDER_RADIUS, SHADOWS, API_CONFIG } from '../.
 import { useAuth } from '../../store/AuthContext';
 import { useForm } from '../../store/FormContext';
 import { useLocation } from '../../hooks/useLocation';
-import { useClimate } from '../../hooks/useClimate';
+import { resolverClimaYUbicacion } from '../../services/climate.service';
 import {
   getVeredasByMunicipio,
   TIPOS_ACTIVIDAD,
@@ -37,6 +37,7 @@ import {
   vincularDocumentosHuerfanos,
 } from '../../services/database';
 import { buscarBeneficiarioPorCedula } from '../../services/beneficiarios.service';
+import { PADRON_BENEFICIARIOS } from '../../data/padronBeneficiarios';
 import { useSync } from '../../store/SyncContext';
 import { subirFirma } from '../../services/firmas.service';
 import { uploadPhoto } from '../../services/photos.service';
@@ -57,6 +58,7 @@ const FormularioScreen: React.FC<FormularioScreenProps> = ({ navigation, route }
     setBeneficiario,
     setActividad,
     setCoordenadas,
+    setClima,
     setSociodemografico,
     addFoto,
     setFirmaBeneficiario,
@@ -66,7 +68,6 @@ const FormularioScreen: React.FC<FormularioScreenProps> = ({ navigation, route }
     formularioActual,
   } = useForm();
   const { getCurrentPosition, coordenadas } = useLocation();
-  const { fetchClimate } = useClimate();
   const { syncNow } = useSync();
   const insets = useSafeAreaInsets();
 
@@ -91,7 +92,11 @@ const FormularioScreen: React.FC<FormularioScreenProps> = ({ navigation, route }
     municipio: 'Puerto Rico',
     vereda: '',
     finca: '',
+    edad: '',
+    sexo: '',
+    corregimiento: '',
   });
+  const [datosBloqueados, setDatosBloqueados] = useState(false); // true cuando los datos vienen del padron/BD
   const [actividad, setActividadState] = useState<ActividadRealizada>({
     descripcion: '',
     observaciones: '',
@@ -192,7 +197,16 @@ const FormularioScreen: React.FC<FormularioScreenProps> = ({ navigation, route }
         const coords = await getCurrentPosition();
         if (coords) {
           setCoordenadas(coords);
-          fetchClimate(coords.latitud, coords.longitud);
+          // Best-effort: si no hay señal, el formulario se guarda igual con
+          // las coordenadas crudas; el nombre de lugar y el clima quedan
+          // pendientes y se resuelven solos en el próximo sync (ver
+          // SyncContext.resolverClimaPendiente).
+          resolverClimaYUbicacion(coords.latitud, coords.longitud, coords.timestamp)
+            .then(({ lugar, resumen }) => {
+              if (lugar) setCoordenadas({ ...coords, lugar });
+              if (resumen) setClima(resumen);
+            })
+            .catch((e) => console.warn('[Formulario] No se pudo resolver clima/ubicación:', e));
         } else {
           Alert.alert(
             'Ubicación no disponible',
@@ -217,17 +231,27 @@ const FormularioScreen: React.FC<FormularioScreenProps> = ({ navigation, route }
     }, [formularioActual])
   );
 
-  // Sincronizar beneficiario desde FormContext al estado local
-  // (cuando viene precargado desde SeleccionarTipoFormulario)
+  // Sincronizar beneficiario desde FormContext + padron local
   useEffect(() => {
     if (formularioActual?.beneficiario?.cedula && formularioActual?.beneficiario?.nombre) {
       setBeneficiarioState(prev => {
-        // Solo si el local está vacío, usar el del contexto
         if (!prev.cedula && !prev.nombre) {
-          return formularioActual.beneficiario as DatosBeneficiario;
+          const data = formularioActual.beneficiario as DatosBeneficiario;
+          // Buscar datos faltantes en el padron local
+          const padron = PADRON_BENEFICIARIOS[data.cedula];
+          if (padron) {
+            return {
+              ...data,
+              vereda: data.vereda || padron.vereda,
+              corregimiento: data.corregimiento || padron.corregimiento,
+            };
+          }
+          return data;
         }
         return prev;
       });
+      // Si viene con datos, bloquear campos
+      setDatosBloqueados(true);
     }
   }, [formularioActual?.beneficiario?.cedula, formularioActual?.beneficiario?.nombre]);
 
@@ -359,7 +383,7 @@ const FormularioScreen: React.FC<FormularioScreenProps> = ({ navigation, route }
       verifyOk
         ? `Evidencias guardadas en AsyncStorage:\n📸 ${fotosActuales.length} foto(s)\n✍️ ${firmaBenefActual ? 'Sí' : 'No'} firma beneficiario\n✍️ ${firmaTecActual ? 'Sí' : 'No'} firma técnico\n👆 ${huellaActual ? 'Sí' : 'No'} huella`
         : `⚠️ Guardado (verificación falló)\nSe capturaron ${fotosActuales.length} foto(s). Revisa la consola.`
-    );
+  );
   }, [formularioActual, tipo, step, tecnico, beneficiario, actividad, socioData, coordenadas, selectedDepartamento, selectedActividad, otraActividadText, descripcionDetallada, user?.id]);
 
   // Avanzar paso
@@ -472,12 +496,18 @@ const FormularioScreen: React.FC<FormularioScreenProps> = ({ navigation, route }
       // ---- PASO 2: Finalizar formulario en memoria ----
       // Pasar los datos frescos de la pantalla: los dispatch de este mismo
       // evento aún no están en el estado del contexto (render anterior).
+      //
+      // Coordenadas: se prefiere la copia del contexto (formularioActual)
+      // sobre la del hook useLocation() porque esta última nunca se
+      // actualiza con el nombre de lugar resuelto en segundo plano — si se
+      // usara tal cual, pisaría ese dato justo al completar el formulario.
+      const coordenadasFinales = formularioActual?.coordenadas || coordenadas;
       const form = finalizarFormulario({
         tecnico,
         beneficiario,
         actividad,
         sociodemografico: socioData,
-        ...(coordenadas ? { coordenadas } : {}),
+        ...(coordenadasFinales ? { coordenadas: coordenadasFinales } : {}),
       });
       if (!form) {
         const motivo = !tecnico?.nombre
@@ -665,22 +695,149 @@ const FormularioScreen: React.FC<FormularioScreenProps> = ({ navigation, route }
     </View>
   );
 
-  // Renderizar paso 2: Datos del Beneficiario
-  const renderStep2 = () => (
+  // Renderizar paso 2: DATOS GENERALES del Beneficiario
+  const renderStep2 = () => {
+    const fechaHoy = new Date().toLocaleDateString('es-CO', {
+      year: 'numeric', month: 'long', day: 'numeric',
+    });
+
+    /** Buscar en padron local (CSV) y backend */
+    const buscarBeneficiario = async () => {
+      if (!beneficiario.cedula || beneficiario.cedula.length < 5) {
+        Alert.alert('Cédula inválida', 'Ingresa un número de cédula válido para buscar.');
+        return;
+      }
+      setSearchLoading(true);
+
+      // 1. Buscar en padron local (CSV)
+      const padron = PADRON_BENEFICIARIOS[beneficiario.cedula];
+      // 2. Buscar en backend/local DB
+      const encontrado = await buscarBeneficiarioPorCedula(beneficiario.cedula);
+
+      if (padron || encontrado) {
+        setBeneficiarioState({
+          nombre: encontrado?.nombre || padron?.nombre || '',
+          cedula: encontrado?.cedula || beneficiario.cedula,
+          telefono: encontrado?.telefono || '',
+          departamento: 'Caquetá',
+          municipio: 'Puerto Rico',
+          vereda: encontrado?.vereda || padron?.vereda || '',
+          finca: encontrado?.finca || '',
+          edad: '',
+          sexo: '',
+          corregimiento: padron?.corregimiento || '',
+        });
+        if (encontrado?.sociodemografico) {
+          setSocioData(encontrado.sociodemografico);
+        }
+        setDatosBloqueados(true);
+        Alert.alert('✅ Beneficiario encontrado', `Datos cargados para ${padron?.nombre || encontrado?.nombre}`);
+      } else {
+        setDatosBloqueados(false);
+        Alert.alert('No encontrado', 'El beneficiario no existe en el padrón. Puedes continuar escribiendo los datos manualmente.');
+      }
+      setSearchLoading(false);
+      setIsStepSaved(false);
+    };
+
+    return (
     <View>
+      {/* 1. Fecha — auto-hardcodeada */}
+      <Text style={styles.fieldLabel}>Fecha</Text>
+      <View style={styles.lockedField}>
+        <Text style={styles.lockedFieldText}>📅 {fechaHoy}</Text>
+      </View>
+
+      {/* 2. Municipio — hardcodeado (Puerto Rico) */}
+      <Text style={styles.fieldLabel}>Municipio</Text>
+      <View style={styles.lockedField}>
+        <Text style={styles.lockedFieldText}>📍 Puerto Rico, Caquetá</Text>
+      </View>
+
+      {/* 3. Vereda — hardcodeada si está en padron */}
+      {datosBloqueados && beneficiario.vereda ? (
+        <>
+          <Text style={styles.fieldLabel}>Vereda</Text>
+          <View style={styles.lockedField}>
+            <Text style={styles.lockedFieldText}>📍 {beneficiario.vereda}</Text>
+          </View>
+        </>
+      ) : (
+        (() => {
+          const veredas = getVeredasByMunicipio('Caquetá', 'Puerto Rico');
+          return (
+            <>
+              <Text style={styles.fieldLabel}>Vereda *</Text>
+              <View style={styles.veredasContainer}>
+                {veredas.map((v) => (
+                  <TouchableOpacity
+                    key={v}
+                    style={[styles.veredaChip, beneficiario.vereda === v && styles.veredaChipSelected]}
+                    onPress={() => {
+                      setBeneficiarioState({ ...beneficiario, vereda: v });
+                      setIsStepSaved(false);
+                    }}
+                  >
+                    <Text style={[styles.veredaChipText, beneficiario.vereda === v && styles.veredaChipTextSelected]}>
+                      {beneficiario.vereda === v ? '✓ ' : ''}{v}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            </>
+          );
+        })()
+      )}
+
+      {/* 4. Nombre del productor — bloqueado si hay datos */}
       <FormField
-        label="Nombre del beneficiario"
+        label="Nombre del productor"
         value={beneficiario.nombre}
         onChangeText={(t) => {
           setBeneficiarioState({ ...beneficiario, nombre: t });
           setIsStepSaved(false);
         }}
-        placeholder="Nombre completo"
+        placeholder="Nombre completo del productor"
         required
         autoCapitalize="words"
+        editable={!datosBloqueados}
       />
+
+      {/* 5. Edad — nuevo campo editable */}
       <FormField
-        label="Cédula"
+        label="Edad"
+        value={beneficiario.edad || ''}
+        onChangeText={(t) => {
+          setBeneficiarioState({ ...beneficiario, edad: t });
+          setIsStepSaved(false);
+        }}
+        placeholder="Edad del productor"
+        keyboardType="numeric"
+      />
+
+      {/* 6. Sexo — nuevo campo selector */}
+      <Text style={styles.fieldLabel}>Sexo</Text>
+      <View style={styles.veredasContainer}>
+        {(['masculino', 'femenino', 'otro'] as const).map((s) => (
+          <TouchableOpacity
+            key={s}
+            style={[styles.veredaChip, beneficiario.sexo === s && styles.veredaChipSelected]}
+            onPress={() => {
+              setBeneficiarioState({ ...beneficiario, sexo: s });
+              setIsStepSaved(false);
+            }}
+          >
+            <Text style={[styles.veredaChipText, beneficiario.sexo === s && styles.veredaChipTextSelected]}>
+              {beneficiario.sexo === s ? '✓ ' : ''}
+              {s === 'masculino' ? 'Masculino' : s === 'femenino' ? 'Femenino' : 'Otro'}
+            </Text>
+          </TouchableOpacity>
+        ))}
+      </View>
+
+      {/* 7. Documento (cédula) — bloqueado si hay datos */}
+      <FormField
+        label="Documento"
         value={beneficiario.cedula}
         onChangeText={(t) => {
           setBeneficiarioState({ ...beneficiario, cedula: t });
@@ -688,45 +845,33 @@ const FormularioScreen: React.FC<FormularioScreenProps> = ({ navigation, route }
         }}
         placeholder="Número de cédula"
         keyboardType="numeric"
+        editable={!datosBloqueados}
       />
 
-      {/* Botón de búsqueda por cédula */}
-      <TouchableOpacity
-        style={styles.searchCedulaBtn}
-        onPress={async () => {
-          if (!beneficiario.cedula || beneficiario.cedula.length < 5) {
-            Alert.alert('Cédula inválida', 'Ingresa un número de cédula válido para buscar.');
-            return;
-          }
-          setSearchLoading(true);
-          const encontrado = await buscarBeneficiarioPorCedula(beneficiario.cedula);
-          if (encontrado) {
-            setBeneficiarioState({
-              nombre: encontrado.nombre,
-              cedula: encontrado.cedula,
-              telefono: encontrado.telefono,
-              departamento: encontrado.departamento || 'Caquetá',
-              municipio: encontrado.municipio || 'Puerto Rico',
-              vereda: encontrado.vereda || '',
-              finca: encontrado.finca || '',
-            });
-            if (encontrado.sociodemografico) {
-              setSocioData(encontrado.sociodemografico);
-            }
-            Alert.alert('✅ Beneficiario encontrado', `Datos cargados para ${encontrado.nombre}`);
-          } else {
-            Alert.alert('No encontrado', 'El beneficiario no existe en el padrón local. Puedes continuar con los datos manualmente.');
-          }
-          setSearchLoading(false);
-          setIsStepSaved(false);
-        }}
-        disabled={searchLoading}
-      >
-        <Text style={styles.searchCedulaText}>
-          {searchLoading ? '🔍 Buscando...' : '🔍 Buscar por cédula en padrón'}
-        </Text>
-      </TouchableOpacity>
+      {/* Botón de búsqueda por cédula — solo si no está bloqueado */}
+      {!datosBloqueados && (
+        <TouchableOpacity
+          style={styles.searchCedulaBtn}
+          onPress={buscarBeneficiario}
+          disabled={searchLoading}
+        >
+          <Text style={styles.searchCedulaText}>
+            {searchLoading ? '🔍 Buscando...' : '🔍 Buscar por cédula en padrón'}
+          </Text>
+        </TouchableOpacity>
+      )}
+      {datosBloqueados && (
+        <TouchableOpacity
+          style={[styles.searchCedulaBtn, { backgroundColor: COLORS.divider }]}
+          onPress={() => setDatosBloqueados(false)}
+        >
+          <Text style={[styles.searchCedulaText, { color: COLORS.textPrimary }]}>
+            ✏️ Editar datos manualmente
+          </Text>
+        </TouchableOpacity>
+      )}
 
+      {/* 8. Teléfono — no hardcodeado, editable */}
       <FormField
         label="Teléfono"
         value={beneficiario.telefono}
@@ -738,56 +883,35 @@ const FormularioScreen: React.FC<FormularioScreenProps> = ({ navigation, route }
         keyboardType="phone-pad"
       />
 
-      {/* Departamento (fijo: Caquetá) */}
-      <Text style={styles.fieldLabel}>Departamento *</Text>
+      {/* 9. Técnico responsable — hardcodeado del login */}
+      <Text style={styles.fieldLabel}>Técnico responsable</Text>
       <View style={styles.lockedField}>
-        <Text style={styles.lockedFieldText}>📍 Caquetá</Text>
+        <Text style={styles.lockedFieldText}>👤 {tecnico.nombre} — {tecnico.cedula}</Text>
       </View>
 
-      {/* Municipio (fijo: Puerto Rico) */}
-      <Text style={styles.fieldLabel}>Municipio *</Text>
-      <View style={styles.lockedField}>
-        <Text style={styles.lockedFieldText}>📍 Puerto Rico</Text>
-      </View>
-
-      {/* Vereda (solo las de Puerto Rico, Caquetá) */}
-      {(() => {
-        const veredas = getVeredasByMunicipio('Caquetá', 'Puerto Rico');
-        return (
-          <>
-            <Text style={styles.fieldLabel}>Zona Rural / Vereda *</Text>
-            <View style={styles.veredasContainer}>
-              {veredas.map((v) => (
-                <TouchableOpacity
-                  key={v}
-                  style={[styles.veredaChip, beneficiario.vereda === v && styles.veredaChipSelected]}
-                  onPress={() => {
-                    setBeneficiarioState({ ...beneficiario, vereda: v });
-                    setIsStepSaved(false);
-                  }}
-                >
-                  <Text style={[styles.veredaChipText, beneficiario.vereda === v && styles.veredaChipTextSelected]}>
-                    {beneficiario.vereda === v ? '✓ ' : ''}{v}
-                  </Text>
-                </TouchableOpacity>
-              ))}
-            </View>
-          </>
-        );
-      })()}
-
-      <FormField
-        label="Nombre de la finca / predio"
-        value={beneficiario.finca}
-        onChangeText={(t) => {
-          setBeneficiarioState({ ...beneficiario, finca: t });
-          setIsStepSaved(false);
-        }}
-        placeholder="Nombre de la finca"
-        autoCapitalize="words"
-      />
+      {/* 10. Nombre del Corregimiento — desde padron si existe, sino editable */}
+      {datosBloqueados && beneficiario.corregimiento ? (
+        <>
+          <Text style={styles.fieldLabel}>Nombre del Corregimiento</Text>
+          <View style={styles.lockedField}>
+            <Text style={styles.lockedFieldText}>📍 {beneficiario.corregimiento}</Text>
+          </View>
+        </>
+      ) : (
+        <FormField
+          label="Nombre del Corregimiento"
+          value={beneficiario.corregimiento || ''}
+          onChangeText={(t) => {
+            setBeneficiarioState({ ...beneficiario, corregimiento: t });
+            setIsStepSaved(false);
+          }}
+          placeholder="Ej: La Aguillila, Rio Negro, Lusitania..."
+          autoCapitalize="sentences"
+        />
+      )}
     </View>
   );
+  };
 
   // Renderizar paso 3: Actividad Realizada
   const renderStep3 = () => (

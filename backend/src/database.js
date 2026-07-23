@@ -2,11 +2,20 @@
 // GEODAILY — Conexión a PostgreSQL
 // ============================================================
 
-const { Pool } = require('pg');
+const { Pool, types } = require('pg');
 
 if (!process.env.PG_PASSWORD) {
   throw new Error('PG_PASSWORD no configurado. Define la variable de entorno PG_PASSWORD antes de iniciar el servidor.');
 }
+
+// El driver pg convierte las columnas DATE (OID 1082) a un objeto Date de
+// JS por defecto. Al serializar a JSON eso produce
+// "2026-07-31T00:00:00.000Z" en vez de "2026-07-31" — la app compara
+// fechas como texto plano (p. ej. contra el dateString del calendario), así
+// que la comparación fallaba en silencio y la visita programada nunca
+// aparecía tras recargar desde el servidor. Se deja el valor tal como lo
+// entrega Postgres (YYYY-MM-DD) sin conversión.
+types.setTypeParser(1082, (val) => val);
 
 const pool = new Pool({
   host: process.env.PG_HOST || 'localhost',
@@ -290,6 +299,19 @@ async function initSchema() {
     }
   } catch (err) {
     console.error('[DB] Error en backfill de archivos.formulario_id:', err.message);
+  }
+
+  // Migración: columna contrasena_visible en usuarios para que el admin
+  // pueda consultar la contraseña actual de cada usuario. No es un hash
+  // sino el texto plano, porque el admin necesita poder verla y comunicarla
+  // a los técnicos. Solo accesible por admin vía GET /api/auth/usuarios.
+  try {
+    await query(`ALTER TABLE usuarios ADD COLUMN contrasena_visible TEXT DEFAULT ''`);
+    console.log('[DB] ✅ Columna contrasena_visible agregada a usuarios');
+  } catch (err) {
+    if (!err.message.includes('already exists')) {
+      console.error('[DB] Error agregando contrasena_visible:', err.message);
+    }
   }
 
   await seedBeneficiarios();

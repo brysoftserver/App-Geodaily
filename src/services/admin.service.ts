@@ -14,6 +14,7 @@ export interface UsuarioBackend {
   rol: 'tecnico' | 'supervisor' | 'interventor' | 'gerente' | 'admin';
   telefono?: string;
   activo: boolean;
+  contrasena_visible?: string;
   created_at?: string;
 }
 

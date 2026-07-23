@@ -37,12 +37,15 @@ import {
   getEvidenciasPendientes,
   marcarDocumentoSincronizado,
   marcarSincronizado,
+  getFormulariosLocales,
+  saveFormularioLocal,
 } from '../services/database';
 import { uploadPhoto } from '../services/photos.service';
 import { uploadVideo } from '../services/videos.service';
 import { subirDocumento } from '../services/documentos.service';
 import { generarPDF } from '../services/pdf.service';
 import { limpiarEvidenciasAntiguas } from '../services/mediaStorage.service';
+import { resolverClimaYUbicacion } from '../services/climate.service';
 import apiClient from '../services/api';
 import { API_CONFIG } from '../theme';
 
@@ -363,7 +366,11 @@ export const SyncProvider: React.FC<{ children: React.ReactNode }> = ({
             doc.beneficiario_cedula || undefined,
             undefined,
             undefined,
-            mimeType
+            mimeType,
+            // Sin esto el servidor guardaba el documento sin saber a qué
+            // formulario pertenecía — invisible para cualquier rol de
+            // supervisión que quisiera revisarlo desde otro dispositivo.
+            doc.formulario_id || undefined
           );
 
           if (resultado) {
@@ -401,20 +408,23 @@ export const SyncProvider: React.FC<{ children: React.ReactNode }> = ({
           // multi-dispositivo mostraba solo el cascarón.
           sociodemografico: form.sociodemografico || null,
           caracterizacion_nueva: (form as any).caracterizacion_nueva || null,
-          coordenadas: form.coordenadas
-            ? {
-                latitud: form.coordenadas.latitud,
-                longitud: form.coordenadas.longitud,
-                altitud: form.coordenadas.altitud,
-                precision_gps: form.coordenadas.precision_gps,
-                timestamp: form.coordenadas.timestamp,
-              }
-            : null,
+          // Se envía completo, no recortado por campo: la versión anterior
+          // elegía los campos a mano y cada vez que se agregaba uno nuevo a
+          // Coordenadas (como 'lugar', el municipio resuelto) quedaba
+          // huérfano aquí — se perdía en cuanto el formulario pasaba por el
+          // servidor, aunque la app ya lo mostrara bien en el mismo dispositivo.
+          coordenadas: form.coordenadas || null,
           georeferencia: form.georeferencia || null,
           clima: form.clima || null,
           fotos: (form.fotos || []).map((f) => ({
             id: f.id,
             uri: f.uri,
+            // 'tipo' se omitía aquí: el servidor guardaba cada evidencia sin
+            // saber si era foto o video. Cualquier rol que revisara el
+            // formulario desde OTRO dispositivo (donde no hay copia local
+            // que sí conserva 'tipo') veía el video contado y mostrado como
+            // una foto más, sin poder reproducirlo.
+            tipo: f.tipo,
             coordenadas: f.coordenadas,
             timestamp: f.timestamp,
           })),
@@ -495,6 +505,69 @@ export const SyncProvider: React.FC<{ children: React.ReactNode }> = ({
       return { success: true, photosOk: fotosOk && videosOk };
     },
     [subirFotosPendientes, subirVideosPendientes, guardarFormularioEnServidor, generarPDFServidor],
+  );
+
+  // ------------------------------------------------------------------
+  // Resolver clima/ubicación pendiente
+  // ------------------------------------------------------------------
+  // Formularios guardados sin señal se quedan sin nombre de lugar ni
+  // clima — antes esa información se perdía para siempre (Visita Técnica
+  // ni siquiera lo intentaba en línea). Aquí se reintenta usando la fecha
+  // REAL de creación del formulario, para que el clima resuelto sea el de
+  // la visita y no el del momento del sync.
+
+  /** Formularios locales sin clima/lugar resuelto pero con coordenadas válidas */
+  const buscarFormulariosConClimaPendiente = useCallback(async (): Promise<Formulario[]> => {
+    try {
+      const locales = await getFormulariosLocales();
+      return locales.filter((f) => {
+        const tieneCoords = !!(f.coordenadas?.latitud || f.coordenadas?.longitud);
+        const tieneClima = !!f.clima?.actual;
+        const tieneLugar = !!f.coordenadas?.lugar;
+        return tieneCoords && (!tieneClima || !tieneLugar);
+      });
+    } catch (err) {
+      console.warn('[Sync] Error buscando formularios con clima pendiente:', err);
+      return [];
+    }
+  }, []);
+
+  const resolverClimaPendiente = useCallback(
+    async (pendientes: Formulario[]): Promise<void> => {
+      for (const form of pendientes) {
+        try {
+          const { lugar, resumen } = await resolverClimaYUbicacion(
+            form.coordenadas.latitud,
+            form.coordenadas.longitud,
+            form.created_at
+          );
+          // Sigue sin señal o Nominatim/Open-Meteo fallaron — se reintenta
+          // en el próximo ciclo de sync, no es un error permanente.
+          if (!lugar && !resumen) continue;
+
+          const actualizado: Formulario = {
+            ...form,
+            coordenadas: lugar ? { ...form.coordenadas, lugar } : form.coordenadas,
+            clima: resumen || form.clima,
+          };
+
+          await saveFormularioLocal(actualizado);
+
+          // Si el formulario ya estaba en el servidor, reflejar el cambio
+          // ahí también — sincronizarFormulario es seguro de repetir: las
+          // fotos/videos ya subidos se saltan (getUnsyncedPhotos/Videos
+          // solo devuelve lo pendiente).
+          if (form.sincronizado) {
+            await sincronizarFormulario(actualizado);
+          }
+
+          console.log('[Sync] Clima/ubicación resuelto para formulario:', form.id);
+        } catch (err) {
+          console.warn('[Sync] No se pudo resolver clima pendiente para', form.id, err);
+        }
+      }
+    },
+    [sincronizarFormulario]
   );
 
   // ------------------------------------------------------------------
@@ -653,13 +726,14 @@ export const SyncProvider: React.FC<{ children: React.ReactNode }> = ({
     const failedIds: string[] = [];
 
     try {
-      const [pendingForms, pendingPlantaciones, pendingMediciones, pendingTracking, pendingVisitas, pendingDocumentos] = await Promise.all([
+      const [pendingForms, pendingPlantaciones, pendingMediciones, pendingTracking, pendingVisitas, pendingDocumentos, climaPendientes] = await Promise.all([
         getPendingSyncForms(),
         getPlantacionesNoSincronizadas(),
         getMedicionesNoSincronizadas(),
         getTrackingNoSincronizado(),
         getVisitasProgramadasNoSincronizadas(),
         getDocumentosNoSincronizados(),
+        buscarFormulariosConClimaPendiente(),
       ]);
 
       if (
@@ -668,7 +742,8 @@ export const SyncProvider: React.FC<{ children: React.ReactNode }> = ({
         pendingMediciones.length === 0 &&
         pendingTracking.length === 0 &&
         pendingVisitas.length === 0 &&
-        pendingDocumentos.length === 0
+        pendingDocumentos.length === 0 &&
+        climaPendientes.length === 0
       ) {
         dispatch({
           type: 'SYNC_SUCCESS',
@@ -699,6 +774,12 @@ export const SyncProvider: React.FC<{ children: React.ReactNode }> = ({
       // 3c. Documentos de la finca (títulos de predio, cédulas escaneadas)
       const documentosFallidos = await sincronizarDocumentos();
       failedIds.push(...documentosFallidos.map(id => `doc-${id}`));
+
+      // 3d. Clima/ubicación pendiente de formularios guardados sin señal
+      if (climaPendientes.length > 0) {
+        console.log(`[Sync] Resolviendo clima/ubicación de ${climaPendientes.length} formulario(s)`);
+        await resolverClimaPendiente(climaPendientes);
+      }
 
       // 4. Sincronizar formularios (uno por uno con backoff)
       for (const form of pendingForms) {
@@ -792,7 +873,7 @@ export const SyncProvider: React.FC<{ children: React.ReactNode }> = ({
       isSyncing.current = false;
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [checkPending, sincronizarFormulario, sincronizarDocumentos, subirEvidenciasHuerfanas]);
+  }, [checkPending, sincronizarFormulario, sincronizarDocumentos, subirEvidenciasHuerfanas, buscarFormulariosConClimaPendiente, resolverClimaPendiente]);
 
   // ------------------------------------------------------------------
   // reintentarFormulario — reintento manual desde la UI

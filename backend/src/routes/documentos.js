@@ -12,6 +12,9 @@ const storage = require('../storage');
 
 const router = express.Router();
 
+/** Roles que pueden ver los documentos de finca de cualquier técnico */
+const ROLES_SUPERVISION = ['supervisor', 'interventor', 'gerente', 'admin'];
+
 // Multer en memoria para subir a MinIO (límite 50MB para documentos)
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -31,7 +34,7 @@ router.post('/subir', authenticateToken, upload.single('archivo'), async (req, r
       return res.status(400).json({ estado: 'error', mensaje: 'Archivo requerido' });
     }
 
-    const { descripcion, categoria, beneficiario_cedula, beneficiario_nombre, tipo_formulario } = req.body;
+    const { descripcion, categoria, beneficiario_cedula, beneficiario_nombre, tipo_formulario, formulario_id } = req.body;
     const ext = path.extname(req.file.originalname);
     const filename = `doc_${Date.now()}_${Math.random().toString(36).slice(2, 6)}${ext}`;
 
@@ -93,13 +96,23 @@ router.post('/subir', authenticateToken, upload.single('archivo'), async (req, r
       categoria: categoria || null,
       beneficiario_item: benefItem,
       beneficiario_cedula: beneficiario_cedula || null,
+      // Ver nota en photos.js: respaldo por si el documento llega antes de
+      // que el formulario exista en el servidor. Antes NO se guardaba el
+      // vínculo en absoluto (ni columna ni metadata), así que un supervisor
+      // nunca podía ver los documentos de finca de una visita: no había
+      // forma de saber a qué formulario pertenecía cada uno.
+      formulario_id: formulario_id || null,
     };
 
+    // El SELECT evita violar la FK cuando el documento se sube antes de que
+    // el formulario correspondiente termine de sincronizarse (caso normal
+    // sin señal): queda NULL y se resuelve por metadata_json más tarde.
     await db.query(
-      `INSERT INTO archivos (usuario_id, tipo, filename, originalname, mimetype, size_bytes, minio_path, minio_bucket, metadata_json)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+      `INSERT INTO archivos (usuario_id, formulario_id, tipo, filename, originalname, mimetype, size_bytes, minio_path, minio_bucket, metadata_json)
+       VALUES ($1, (SELECT id FROM formularios WHERE id = $2), $3, $4, $5, $6, $7, $8, $9, $10)`,
       [
         req.user.id,
+        formulario_id || null,
         'other',
         filename,
         req.file.originalname,
@@ -246,6 +259,53 @@ router.get('/', authenticateToken, async (req, res) => {
   }
 });
 
+/**
+ * GET /api/documentos/formulario/:formularioId
+ * Documentos de finca vinculados a un formulario — la app la usa para
+ * mostrarlos en el resumen del formulario a cualquier rol de supervisión,
+ * no solo al técnico que los subió. Debe ir ANTES de GET /:id: si no,
+ * Express interpretaría "formulario" como el :id de esa ruta.
+ */
+router.get('/formulario/:formularioId', authenticateToken, async (req, res) => {
+  try {
+    const esSupervision = ROLES_SUPERVISION.includes(req.user.rol);
+
+    const params = [req.params.formularioId];
+    let sql = `
+      SELECT id, tipo, filename, originalname, mimetype, size_bytes, created_at, metadata_json
+      FROM archivos
+      WHERE tipo = 'other'
+        AND (formulario_id = $1 OR metadata_json->>'formulario_id' = $1)`;
+
+    if (!esSupervision) {
+      params.push(req.user.id);
+      sql += ` AND usuario_id = $${params.length}`;
+    }
+
+    sql += ' ORDER BY created_at ASC';
+
+    const docs = await db.queryAll(sql, params);
+
+    res.json({
+      estado: 'ok',
+      total: docs.length,
+      documentos: docs.map((d) => ({
+        id: d.id,
+        nombre: d.originalname || d.filename,
+        mimetype: d.mimetype,
+        size_bytes: d.size_bytes,
+        created_at: d.created_at,
+        descripcion: d.metadata_json?.descripcion || null,
+        categoria: d.metadata_json?.categoria || null,
+        url: `/api/archivos/${d.id}/contenido`,
+      })),
+    });
+  } catch (error) {
+    console.error('[Documentos] Error listando por formulario:', error);
+    res.status(500).json({ estado: 'error', mensaje: 'Error al listar documentos del formulario' });
+  }
+});
+
 // GET /api/documentos/:id
 router.get('/:id', authenticateToken, async (req, res) => {
   try {
@@ -259,7 +319,6 @@ router.get('/:id', authenticateToken, async (req, res) => {
     // Roles de supervisión ven la evidencia de cualquier técnico. Antes solo
     // 'admin' era excepción, así que un supervisor listaba los archivos y
     // recibía 403 al abrir cualquiera de ellos.
-    const ROLES_SUPERVISION = ['supervisor', 'interventor', 'gerente', 'admin'];
     if (!ROLES_SUPERVISION.includes(req.user.rol) && doc.usuario_id !== req.user.id) {
       return res.status(403).json({ estado: 'error', mensaje: 'No autorizado' });
     }

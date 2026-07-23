@@ -2,18 +2,22 @@
 // GEODAILY — Menú Principal de Supervisión
 // ============================================================
 
-import React from 'react';
+import React, { useState } from 'react';
 import {
   View,
   Text,
   TouchableOpacity,
   StyleSheet,
   ScrollView,
+  Image,
   ImageBackground,
+  ActivityIndicator,
 } from 'react-native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { COLORS, FONTS, SPACING, BORDER_RADIUS, SHADOWS } from '../../theme';
 import { useAuth } from '../../store/AuthContext';
+import { useAvatar } from '../../hooks/useAvatar';
+import CambiarContrasenaModal from '../../components/CambiarContrasenaModal';
 
 type SupervisionMenuScreenProps = {
   navigation: NativeStackNavigationProp<Record<string, any>>;
@@ -60,10 +64,20 @@ const MENU_ITEMS = [
     color: COLORS.roleSupervisor,
     screen: 'BaseDatosBeneficiarios',
   },
+  {
+    id: 'contrasena',
+    title: 'Cambiar Contraseña',
+    subtitle: 'Actualizar tu contraseña de acceso',
+    icon: '🔑',
+    color: COLORS.roleSupervisor,
+    screen: 'ModalContrasena',
+  },
 ];
 
 const SupervisionMenuScreen: React.FC<SupervisionMenuScreenProps> = ({ navigation }) => {
   const { user, logout } = useAuth();
+  const { avatarUri, cambiarAvatar, cambiando } = useAvatar(user?.id);
+  const [showPasswordModal, setShowPasswordModal] = useState(false);
 
   const handleLogout = () => {
     logout();
@@ -73,11 +87,24 @@ const SupervisionMenuScreen: React.FC<SupervisionMenuScreenProps> = ({ navigatio
     <ScrollView style={styles.container} contentContainerStyle={styles.content}>
       {/* Header de usuario */}
       <ImageBackground source={require('../../../Logos_imagenes/fondo_login_geo_daily.png')} style={styles.userHeader}>
-        <View style={[styles.avatar, { overflow: 'hidden' }]}>
-          <Text style={styles.avatarText}>
-            {user?.nombre?.charAt(0)?.toUpperCase() || 'S'}
-          </Text>
-        </View>
+        <TouchableOpacity onPress={cambiarAvatar} activeOpacity={0.7} disabled={cambiando}>
+          <View style={styles.avatar}>
+            {avatarUri ? (
+              <Image source={{ uri: avatarUri }} style={styles.avatarImage} />
+            ) : (
+              <Text style={styles.avatarText}>
+                {user?.nombre?.charAt(0)?.toUpperCase() || 'S'}
+              </Text>
+            )}
+            <View style={styles.cameraIcon}>
+              {cambiando ? (
+                <ActivityIndicator size="small" color={COLORS.secondary} />
+              ) : (
+                <Text style={styles.cameraIconText}>📷</Text>
+              )}
+            </View>
+          </View>
+        </TouchableOpacity>
         <View style={styles.userInfo}>
           <Text style={styles.userName}>{user?.nombre || 'Supervisor'}</Text>
           <Text style={styles.userRole}>Supervisor a Terreno</Text>
@@ -93,7 +120,13 @@ const SupervisionMenuScreen: React.FC<SupervisionMenuScreenProps> = ({ navigatio
           <TouchableOpacity
             key={item.id}
             style={styles.menuCard}
-            onPress={() => navigation.navigate(item.screen)}
+            onPress={() => {
+              if (item.id === 'contrasena') {
+                setShowPasswordModal(true);
+              } else {
+                navigation.navigate(item.screen);
+              }
+            }}
           >
             <View style={[styles.menuIconContainer, { backgroundColor: item.color + '15' }]}>
               <Text style={styles.menuIcon}>{item.icon}</Text>
@@ -103,6 +136,7 @@ const SupervisionMenuScreen: React.FC<SupervisionMenuScreenProps> = ({ navigatio
           </TouchableOpacity>
         ))}
       </View>
+      <CambiarContrasenaModal visible={showPasswordModal} onClose={() => setShowPasswordModal(false)} />
     </ScrollView>
   );
 };
@@ -134,6 +168,26 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
     marginRight: SPACING.md,
+  },
+  avatarImage: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+  },
+  cameraIcon: {
+    position: 'absolute',
+    bottom: -2,
+    right: SPACING.md - 6,
+    backgroundColor: COLORS.surface,
+    borderRadius: 10,
+    width: 18,
+    height: 18,
+    justifyContent: 'center',
+    alignItems: 'center',
+    ...SHADOWS.sm,
+  },
+  cameraIconText: {
+    fontSize: 9,
   },
   avatarText: {
     fontSize: FONTS.sizes.xl,

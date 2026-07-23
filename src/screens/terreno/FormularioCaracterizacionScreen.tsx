@@ -28,7 +28,7 @@ import { useAuth } from '../../store/AuthContext';
 import { useForm } from '../../store/FormContext';
 import { useSync } from '../../store/SyncContext';
 import { useLocation } from '../../hooks/useLocation';
-import { useClimate } from '../../hooks/useClimate';
+import { resolverClimaYUbicacion } from '../../services/climate.service';
 import {
   getVeredasByMunicipio,
   SINO_OPTS,
@@ -85,6 +85,7 @@ import {
   RecomendacionesEncuesta,
   AcompaniamientoTecnico,
   Formulario,
+  ResumenClimatico,
 } from '../../types';
 import DropdownPicker from '../../components/DropdownPicker';
 
@@ -258,7 +259,13 @@ const EncuestaSocialAgroambientalScreen: React.FC<Props> = ({ navigation, route 
   } = useForm();
   const { syncNow } = useSync();
   const { getCurrentPosition, coordenadas } = useLocation();
-  const { fetchClimate, climaActual } = useClimate();
+  /**
+   * Nombre de lugar y clima resueltos por separado — antes venían unidos
+   * en `useClimate()`/`climaActual` y si no había señal para el clima,
+   * tampoco quedaba ningún nombre de lugar en el formulario.
+   */
+  const [lugarResuelto, setLugarResuelto] = useState<string | null>(null);
+  const [climaResuelto, setClimaResuelto] = useState<ResumenClimatico | null>(null);
   const insets = useSafeAreaInsets();
 
   const draftId = route.params.draftId;
@@ -346,7 +353,15 @@ const EncuestaSocialAgroambientalScreen: React.FC<Props> = ({ navigation, route 
       const coords = await getCurrentPosition();
       if (coords) {
         setCoordenadas(coords);
-        fetchClimate(coords.latitud, coords.longitud);
+        // Best-effort: sin señal, el formulario se guarda igual con las
+        // coordenadas crudas; nombre de lugar y clima quedan pendientes y
+        // se resuelven solos en el próximo sync.
+        resolverClimaYUbicacion(coords.latitud, coords.longitud, coords.timestamp)
+          .then(({ lugar, resumen }) => {
+            if (lugar) setLugarResuelto(lugar);
+            if (resumen) setClimaResuelto(resumen);
+          })
+          .catch((e) => console.warn('[Encuesta] No se pudo resolver clima/ubicación:', e));
       } else {
         Alert.alert(
           'Ubicación no disponible',
@@ -699,7 +714,10 @@ const EncuestaSocialAgroambientalScreen: React.FC<Props> = ({ navigation, route 
         finca: data.caracterizacion_finca.nombre_finca || '',
       });
       setCaracterizacionNueva(data as any);
-      setCoordenadas(coordenadas || { latitud: 0, longitud: 0 });
+      const coordenadasConLugar = coordenadas
+        ? { ...coordenadas, ...(lugarResuelto ? { lugar: lugarResuelto } : {}) }
+        : { latitud: 0, longitud: 0 };
+      setCoordenadas(coordenadasConLugar);
 
       let pdfUrl: string | undefined;
       try {
@@ -729,10 +747,8 @@ const EncuestaSocialAgroambientalScreen: React.FC<Props> = ({ navigation, route 
             recomendaciones: data.recomendaciones.recomendaciones_ambientales,
           },
           sociodemografico: undefined,
-          coordenadas: coordenadas || { latitud: 0, longitud: 0 },
-          clima: climaActual
-            ? { ubicacion: { latitud: coordenadas?.latitud || 0, longitud: coordenadas?.longitud || 0 }, actual: climaActual, historico: null }
-            : undefined,
+          coordenadas: coordenadasConLugar,
+          clima: climaResuelto || undefined,
           fotos: formularioActual?.fotos || [],
           firma_beneficiario: formularioActual?.firma_beneficiario || '',
           firma_tecnico: formularioActual?.firma_tecnico || '',
@@ -775,10 +791,8 @@ const EncuestaSocialAgroambientalScreen: React.FC<Props> = ({ navigation, route 
           observaciones: data.recomendaciones.recomendaciones_tecnicas,
           recomendaciones: data.recomendaciones.recomendaciones_ambientales,
         },
-        coordenadas: coordenadas || { latitud: 0, longitud: 0 },
-        clima: climaActual
-          ? { ubicacion: { latitud: coordenadas?.latitud || 0, longitud: coordenadas?.longitud || 0 }, actual: climaActual, historico: null }
-          : undefined,
+        coordenadas: coordenadasConLugar,
+        clima: climaResuelto || undefined,
       });
       if (!form) {
         const motivo = !data.tecnico_responsable && !user?.nombre
@@ -1211,9 +1225,9 @@ const EncuestaSocialAgroambientalScreen: React.FC<Props> = ({ navigation, route 
                 placeholder="Seleccionar..."
               />
 
-              {/* 12 — título duplicado tal cual la encuesta oficial aprobada */}
+              {/* 12 */}
               <DropdownPicker
-                label="12. ¿Su vivienda cuenta con energía?"
+                label="12. ¿Cuál es el tipo de energía con el que cuenta?"
                 value={data.componente_social.tipo_energia || null}
                 options={TIPO_ENERGIA_OPTS}
                 onSelect={(val) => updateSocial({ tipo_energia: val, tipo_energia_otro: val === 'Otro' ? data.componente_social.tipo_energia_otro : '' })}
@@ -1258,15 +1272,17 @@ const EncuestaSocialAgroambientalScreen: React.FC<Props> = ({ navigation, route 
               />
               {data.componente_social.quienes_trabajan === 'Otro' && renderField('Especifique cual otro:', data.componente_social.quienes_trabajan_otro || '', (t) => updateSocial({ quienes_trabajan_otro: t }), { placeholder: '' })}
 
-              {/* 17 */}
-              <DropdownPicker
-                label="17. ¿Qué medio de transporte utiliza?"
-                value={data.componente_social.medio_transporte || null}
-                options={MEDIO_TRANSPORTE_OPTS}
-                onSelect={(val) => updateSocial({ medio_transporte: val, medio_transporte_otro: val === 'Otro' ? data.componente_social.medio_transporte_otro : '' })}
-                placeholder="Seleccionar..."
-              />
-              {data.componente_social.medio_transporte === 'Otro' && renderField('Especifique cual otro:', data.componente_social.medio_transporte_otro, (t) => updateSocial({ medio_transporte_otro: t }), { placeholder: '' })}
+              {/* 17 — selección múltiple: pueden usar varios medios de transporte */}
+              {renderMultiCheck(
+                '17. ¿Qué medio de transporte utiliza?',
+                data.componente_social.medio_transporte,
+                MEDIO_TRANSPORTE_OPTS,
+                (nuevo) => updateSocial({
+                  medio_transporte: nuevo,
+                  medio_transporte_otro: nuevo.split(', ').includes('Otro') ? data.componente_social.medio_transporte_otro : '',
+                })
+              )}
+              {(data.componente_social.medio_transporte || '').split(', ').includes('Otro') && renderField('Especifique cual otro:', data.componente_social.medio_transporte_otro, (t) => updateSocial({ medio_transporte_otro: t }), { placeholder: '' })}
             </>
           ))}
 
@@ -1390,7 +1406,8 @@ const EncuestaSocialAgroambientalScreen: React.FC<Props> = ({ navigation, route 
                ═══════════════════════════════════════════════════ */}
           {renderSection('COMPONENTE PRODUCTIVO', '🌱', '#1565C0', (
             <>
-              {/* 27 */}
+              {/* 27 — sin campo "Cual?": ninguna opción de esta pregunta es "Otro",
+                  así que no hay nada que el técnico deba especificar aparte. */}
               <DropdownPicker
                 label="27. ¿Cual es la actividad principal productiva de la finca?"
                 value={data.componente_productivo.actividad_principal || null}
@@ -1398,9 +1415,6 @@ const EncuestaSocialAgroambientalScreen: React.FC<Props> = ({ navigation, route 
                 onSelect={(val) => updateProductivo({ actividad_principal: val })}
                 placeholder="Seleccionar..."
               />
-              {renderField('Cual?', data.componente_productivo.actividad_principal_cual || '', (t) => updateProductivo({ actividad_principal_cual: t }), {
-                placeholder: '',
-              })}
 
               {/* 28 */}
               <DropdownPicker

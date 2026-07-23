@@ -30,12 +30,21 @@ function mapearFormularioServidor(raw: Record<string, any>): Formulario {
 }
 
 /**
- * Obtener todos los formularios desde el servidor
+ * Obtener todos los formularios desde el servidor.
+ *
+ * @param opts.vista  'calendario' pide la vista universal: el backend
+ *   ignora el filtro "solo mis formularios" (técnico) y la jerarquía de
+ *   aprobación (interventor), porque el calendario debe mostrar exactamente
+ *   las mismas visitas realizadas a todos los roles. Sin este flag, el
+ *   comportamiento es el de siempre (cada rol ve lo que le corresponde).
  */
-export const fetchFormulariosDelServidor = async (): Promise<Formulario[]> => {
+export const fetchFormulariosDelServidor = async (
+  opts?: { vista?: 'calendario' }
+): Promise<Formulario[]> => {
   try {
     const response = await apiClient.get(API_CONFIG.ENDPOINTS.FORMS, {
       timeout: 15000,
+      params: opts?.vista ? { vista: opts.vista } : undefined,
     });
 
     if (response.data?.estado === 'ok' && Array.isArray(response.data?.formularios)) {

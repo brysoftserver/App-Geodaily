@@ -100,7 +100,7 @@ const TerrenoNavigator: React.FC = () => {
       <Stack.Screen
         name="FormularioCaracterizacion"
         component={FormularioCaracterizacionScreen as any}
-        options={{ title: 'Caracterización Sociodemográfica' }}
+        options={{ title: 'Encuesta Social AgroAmbiental' }}
       />
       <Stack.Screen
         name="Camara"

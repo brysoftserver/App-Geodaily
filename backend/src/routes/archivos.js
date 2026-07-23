@@ -44,15 +44,70 @@ router.get('/:id/contenido', authenticateToken, async (req, res) => {
       return res.status(403).json({ estado: 'error', mensaje: 'No autorizado' });
     }
 
-    const stream = await storage.getFileStream(archivo.minio_path);
-    if (!stream) {
+    // Los reproductores de video (ExoPlayer en Android, AVPlayer en iOS)
+    // no leen el fichero de una sola vez: piden trozos con la cabecera
+    // Range y necesitan conocer el tamaño total. Sin soporte de rangos
+    // las fotos se veían pero los videos no se reproducían.
+    const stat = await storage.statFile(archivo.minio_path);
+    if (!stat) {
       return res.status(404).json({ estado: 'error', mensaje: 'Archivo no disponible en almacenamiento' });
     }
+
+    const total = stat.size;
+    const rangeHeader = req.headers.range;
 
     res.setHeader('Content-Type', archivo.mimetype || 'application/octet-stream');
     // Las evidencias son inmutables: se pueden cachear en el dispositivo.
     res.setHeader('Cache-Control', 'private, max-age=86400');
     res.setHeader('Content-Disposition', `inline; filename="${archivo.filename}"`);
+    res.setHeader('Accept-Ranges', 'bytes');
+
+    let stream;
+    if (rangeHeader) {
+      const coincide = /^bytes=(\d*)-(\d*)$/.exec(rangeHeader.trim());
+      if (!coincide) {
+        res.setHeader('Content-Range', `bytes */${total}`);
+        return res.status(416).end();
+      }
+
+      // "bytes=-500" pide los últimos 500 bytes; "bytes=100-" desde el 100
+      const [, desdeStr, hastaStr] = coincide;
+      let desde;
+      let hasta;
+      if (desdeStr === '') {
+        const ultimos = parseInt(hastaStr, 10);
+        if (!ultimos) {
+          res.setHeader('Content-Range', `bytes */${total}`);
+          return res.status(416).end();
+        }
+        desde = Math.max(0, total - ultimos);
+        hasta = total - 1;
+      } else {
+        desde = parseInt(desdeStr, 10);
+        hasta = hastaStr === '' ? total - 1 : Math.min(parseInt(hastaStr, 10), total - 1);
+      }
+
+      if (desde > hasta || desde >= total) {
+        res.setHeader('Content-Range', `bytes */${total}`);
+        return res.status(416).end();
+      }
+
+      const longitud = hasta - desde + 1;
+      stream = await storage.getFileRangeStream(archivo.minio_path, desde, longitud);
+      if (!stream) {
+        return res.status(404).json({ estado: 'error', mensaje: 'Archivo no disponible en almacenamiento' });
+      }
+
+      res.status(206);
+      res.setHeader('Content-Range', `bytes ${desde}-${hasta}/${total}`);
+      res.setHeader('Content-Length', longitud);
+    } else {
+      stream = await storage.getFileStream(archivo.minio_path);
+      if (!stream) {
+        return res.status(404).json({ estado: 'error', mensaje: 'Archivo no disponible en almacenamiento' });
+      }
+      res.setHeader('Content-Length', total);
+    }
 
     stream.on('error', (err) => {
       console.error('[Archivos] Error transmitiendo:', err.message);
@@ -109,6 +164,8 @@ router.get('/formulario/:formularioId', authenticateToken, async (req, res) => {
         longitud: a.longitud,
         created_at: a.created_at,
         url: `/api/archivos/${a.id}/contenido`,
+        // Solo relevante para tipo 'firma': distingue beneficiario/técnico.
+        tipo_firma: a.metadata_json?.tipo_firma || null,
       })),
     });
   } catch (error) {

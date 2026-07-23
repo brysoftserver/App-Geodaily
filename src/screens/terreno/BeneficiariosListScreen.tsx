@@ -13,6 +13,7 @@ import {
   TouchableOpacity,
   StyleSheet,
   RefreshControl,
+  TextInput,
 } from 'react-native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -44,6 +45,7 @@ const BeneficiariosListScreen: React.FC<BeneficiariosListScreenProps> = ({ navig
   const [isLoading, setIsLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [busquedaCedula, setBusquedaCedula] = useState('');
 
   // --- Agrupar formularios por beneficiario y fusionar con asignados de BD ---
   const beneficiarios = useMemo(() => {
@@ -106,6 +108,15 @@ const BeneficiariosListScreen: React.FC<BeneficiariosListScreenProps> = ({ navig
 
     return Array.from(mapa.values()).sort((a, b) => (a.nombre || '').localeCompare(b.nombre || ''));
   }, [formularios, assignedDB]);
+
+  // --- Filtro por cédula: para encontrar rápido a un beneficiario cuando
+  // hay muchos asignados. Compara solo dígitos, así que funciona igual si
+  // el usuario escribe puntos ("1.122.334.455") o no.
+  const beneficiariosFiltrados = useMemo(() => {
+    const query = busquedaCedula.replace(/\D/g, '');
+    if (!query) return beneficiarios;
+    return beneficiarios.filter((b) => (b.cedula || '').replace(/\D/g, '').includes(query));
+  }, [beneficiarios, busquedaCedula]);
 
   // --- Cargar datos ---
   const loadData = useCallback(async () => {
@@ -264,8 +275,30 @@ const BeneficiariosListScreen: React.FC<BeneficiariosListScreenProps> = ({ navig
         </View>
       ) : null}
 
+      {beneficiarios.length > 0 && (
+        <View style={styles.searchContainer}>
+          <TextInput
+            style={styles.searchInput}
+            placeholder="Buscar por cédula..."
+            placeholderTextColor={COLORS.textLight}
+            value={busquedaCedula}
+            onChangeText={setBusquedaCedula}
+            keyboardType="number-pad"
+          />
+          {busquedaCedula.length > 0 && (
+            <TouchableOpacity
+              style={styles.searchClearButton}
+              onPress={() => setBusquedaCedula('')}
+              hitSlop={8}
+            >
+              <Text style={styles.searchClearText}>✕</Text>
+            </TouchableOpacity>
+          )}
+        </View>
+      )}
+
       <FlatList
-        data={beneficiarios}
+        data={beneficiariosFiltrados}
         keyExtractor={(item) => item.cedula || item.nombre}
         renderItem={renderBeneficiario}
         contentContainerStyle={styles.listContent}
@@ -274,9 +307,21 @@ const BeneficiariosListScreen: React.FC<BeneficiariosListScreenProps> = ({ navig
         }
         ListEmptyComponent={
           <View style={styles.emptyContainer}>
-            <Text style={styles.emptyIcon}>📭</Text>
-            <Text style={styles.emptyText}>No hay beneficiarios</Text>
-            <Text style={styles.emptySubtext}>Sincroniza o registra formularios para ver tus beneficiarios aquí</Text>
+            {busquedaCedula.length > 0 ? (
+              <>
+                <Text style={styles.emptyIcon}>🔍</Text>
+                <Text style={styles.emptyText}>Sin resultados</Text>
+                <Text style={styles.emptySubtext}>
+                  Ningún beneficiario asignado tiene una cédula que coincida con "{busquedaCedula}"
+                </Text>
+              </>
+            ) : (
+              <>
+                <Text style={styles.emptyIcon}>📭</Text>
+                <Text style={styles.emptyText}>No hay beneficiarios</Text>
+                <Text style={styles.emptySubtext}>Sincroniza o registra formularios para ver tus beneficiarios aquí</Text>
+              </>
+            )}
           </View>
         }
       />
@@ -302,6 +347,38 @@ const styles = StyleSheet.create({
     fontSize: FONTS.sizes.sm,
     color: COLORS.textSecondary,
     marginTop: SPACING.xs,
+  },
+  searchContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: SPACING.lg,
+    marginBottom: SPACING.xs,
+  },
+  searchInput: {
+    flex: 1,
+    height: 42,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    borderRadius: BORDER_RADIUS.sm,
+    paddingHorizontal: SPACING.md,
+    fontSize: FONTS.sizes.md,
+    color: COLORS.textPrimary,
+    backgroundColor: COLORS.surface,
+  },
+  searchClearButton: {
+    position: 'absolute',
+    right: SPACING.lg + SPACING.sm,
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    backgroundColor: COLORS.textLight + '30',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  searchClearText: {
+    fontSize: FONTS.sizes.xs,
+    color: COLORS.textSecondary,
+    fontWeight: FONTS.weights.bold,
   },
   listContent: {
     padding: SPACING.lg,

@@ -129,7 +129,7 @@ router.get('/usuarios', authenticateToken, async (req, res) => {
       return res.status(403).json({ success: false, error: 'Solo administradores' });
     }
     const usuarios = await db.queryAll(
-      'SELECT id, usuario, nombre, cedula, email, rol, telefono, activo, created_at FROM usuarios ORDER BY nombre'
+      'SELECT id, usuario, nombre, cedula, email, rol, telefono, activo, contrasena_visible, created_at FROM usuarios ORDER BY nombre'
     );
     res.json({ success: true, total: usuarios.length, usuarios });
   } catch (error) {
@@ -186,7 +186,7 @@ router.post('/usuarios', authenticateToken, async (req, res) => {
     const hash = await bcrypt.hash(contrasena, 10);
 
     const nuevoUsuario = await db.insert('usuarios', {
-      id, usuario, contrasena: hash, nombre,
+      id, usuario, contrasena: hash, contrasena_visible: contrasena, nombre,
       cedula: cedula || '', email: email || '', rol, telefono: telefono || '',
       activo: true,
     });
@@ -238,7 +238,10 @@ router.put('/usuarios/:id', authenticateToken, async (req, res) => {
     if (rol !== undefined) updates.rol = rol;
     if (telefono !== undefined) updates.telefono = telefono;
     if (activo !== undefined) updates.activo = activo;
-    if (contrasena) updates.contrasena = await bcrypt.hash(contrasena, 10);
+    if (contrasena) {
+      updates.contrasena = await bcrypt.hash(contrasena, 10);
+      updates.contrasena_visible = contrasena;
+    }
 
     if (Object.keys(updates).length === 0) {
       return res.status(400).json({ success: false, error: 'No hay campos para actualizar' });
@@ -262,6 +265,69 @@ router.put('/usuarios/:id', authenticateToken, async (req, res) => {
   } catch (error) {
     console.error('[Auth] Actualizar usuario error:', error);
     res.status(500).json({ success: false, error: 'Error al actualizar usuario' });
+  }
+});
+
+// ============================================================
+// CAMBIO DE CONTRASEÑA PROPIA (cualquier rol autenticado)
+// ============================================================
+
+// PUT /api/auth/mi-contrasena — Cambiar mi propia contraseña
+router.put('/mi-contrasena', authenticateToken, async (req, res) => {
+  try {
+    const { currentPassword, newPassword } = req.body;
+
+    if (!currentPassword || !newPassword) {
+      return res.status(400).json({
+        success: false,
+        error: 'Debes proporcionar la contraseña actual y la nueva contraseña',
+      });
+    }
+
+    if (newPassword.length < 4) {
+      return res.status(400).json({
+        success: false,
+        error: 'La nueva contraseña debe tener al menos 4 caracteres',
+      });
+    }
+
+    // Obtener usuario actual con su hash
+    const user = await db.queryOne(
+      'SELECT * FROM usuarios WHERE id = $1 AND activo = TRUE',
+      [req.user.id]
+    );
+
+    if (!user) {
+      return res.status(404).json({ success: false, error: 'Usuario no encontrado' });
+    }
+
+    // Verificar contraseña actual
+    const validPassword = await bcrypt.compare(currentPassword, user.contrasena);
+    if (!validPassword) {
+      return res.status(401).json({
+        success: false,
+        error: 'La contraseña actual no es correcta',
+      });
+    }
+
+    // Actualizar hash y texto visible
+    const hash = await bcrypt.hash(newPassword, 10);
+    await db.query(
+      'UPDATE usuarios SET contrasena = $1, contrasena_visible = $2, updated_at = NOW() WHERE id = $3',
+      [hash, newPassword, req.user.id]
+    );
+
+    await db.query(
+      'INSERT INTO actividad_log (usuario_id, accion, detalle_json) VALUES ($1, $2, $3)',
+      [req.user.id, 'cambiar_contrasena', JSON.stringify({})]
+    );
+
+    console.log(`[Auth] 🔑 Contraseña cambiada para: ${user.usuario} (${req.user.id})`);
+
+    res.json({ success: true, mensaje: 'Contraseña actualizada correctamente' });
+  } catch (error) {
+    console.error('[Auth] Cambiar contraseña error:', error);
+    res.status(500).json({ success: false, error: 'Error al cambiar la contraseña' });
   }
 });
 

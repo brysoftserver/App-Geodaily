@@ -141,6 +141,119 @@ async function obtenerClimaReal(lat, lon) {
   };
 }
 
+/**
+ * Clima para un instante específico (no necesariamente "ahora"): usa la
+ * API horaria de Open-Meteo con start_date=end_date=la fecha pedida y
+ * toma la hora más cercana. Cubre desde ~92 días atrás hasta 16 días
+ * adelante — de sobra para resolver el clima de una visita sincronizada
+ * días o semanas después de capturarla sin señal.
+ */
+async function obtenerClimaEnMomento(lat, lon, fechaISO) {
+  const latNum = parseFloat(lat);
+  const lonNum = parseFloat(lon);
+  const fecha = fechaISO ? new Date(fechaISO) : new Date();
+  const fechaValida = !isNaN(fecha.getTime()) ? fecha : new Date();
+  const fechaStr = fechaValida.toISOString().split('T')[0];
+
+  const url =
+    `https://api.open-meteo.com/v1/forecast?latitude=${latNum}&longitude=${lonNum}` +
+    `&hourly=temperature_2m,relative_humidity_2m,apparent_temperature,weather_code,cloud_cover,pressure_msl,wind_speed_10m,wind_direction_10m,visibility` +
+    `&start_date=${fechaStr}&end_date=${fechaStr}&timezone=auto`;
+
+  const response = await fetchConTimeout(url, {}, FETCH_TIMEOUT_MS);
+  if (!response.ok) {
+    throw new Error(`Open-Meteo respondió HTTP ${response.status}`);
+  }
+  const data = await response.json();
+  const horas = data.hourly?.time || [];
+  if (horas.length === 0) {
+    throw new Error('Open-Meteo no devolvió datos horarios para esa fecha');
+  }
+
+  // Hora más cercana a la de captura (el arreglo trae las 24 h del día)
+  const objetivoMs = fechaValida.getTime();
+  let mejorIdx = 0;
+  let mejorDiff = Infinity;
+  for (let i = 0; i < horas.length; i++) {
+    const diff = Math.abs(new Date(horas[i]).getTime() - objetivoMs);
+    if (diff < mejorDiff) {
+      mejorDiff = diff;
+      mejorIdx = i;
+    }
+  }
+
+  const { clima, icono } = interpretarCodigoClima(data.hourly.weather_code?.[mejorIdx]);
+  let visibilidadKm = 10;
+  if (data.hourly.visibility?.[mejorIdx] != null) {
+    visibilidadKm = Math.round((data.hourly.visibility[mejorIdx] / 1000) * 10) / 10;
+  }
+
+  return {
+    timestamp: horas[mejorIdx] ? new Date(horas[mejorIdx]).toISOString() : fechaValida.toISOString(),
+    temperatura: {
+      actual: data.hourly.temperature_2m?.[mejorIdx] ?? null,
+      sensacion_termica: data.hourly.apparent_temperature?.[mejorIdx] ?? null,
+      minima: null,
+      maxima: null,
+    },
+    humedad: data.hourly.relative_humidity_2m?.[mejorIdx] ?? null,
+    presion: data.hourly.pressure_msl?.[mejorIdx] ?? null,
+    viento: {
+      velocidad: data.hourly.wind_speed_10m?.[mejorIdx] ?? null,
+      direccion_grados: data.hourly.wind_direction_10m?.[mejorIdx] ?? null,
+    },
+    nubosidad: data.hourly.cloud_cover?.[mejorIdx] ?? null,
+    visibilidad: visibilidadKm,
+    clima,
+    icono,
+  };
+}
+
+/**
+ * GET /api/climate/en-momento?lat=&lon=&fecha=ISO
+ *
+ * Resuelve el NOMBRE DEL LUGAR y el CLIMA para un instante específico —
+ * "ahora" si se omite `fecha` (captura en línea), o una fecha pasada
+ * (resolución diferida al sincronizar, con la hora exacta de captura).
+ *
+ * A diferencia de /actual y /resumen, usa Promise.allSettled: si Open-Meteo
+ * falla pero Nominatim responde (o viceversa), se devuelve lo que sí se
+ * obtuvo en vez de fallar todo el endpoint. Antes ambos viajaban unidos en
+ * la misma promesa — si el clima fallaba, también se perdía el nombre del
+ * lugar aunque la geocodificación inversa hubiera funcionado, y la sección
+ * de ubicación del formulario quedaba completamente vacía.
+ */
+router.get('/en-momento', authenticateToken, async (req, res) => {
+  const { lat, lon, fecha } = req.query;
+
+  if (!lat || !lon) {
+    return res.status(400).json({ estado: 'error', mensaje: 'lat y lon requeridos' });
+  }
+
+  const [ubicacionResult, climaResult] = await Promise.allSettled([
+    resolverUbicacion(lat, lon),
+    obtenerClimaEnMomento(lat, lon, fecha),
+  ]);
+
+  const ubicacion =
+    ubicacionResult.status === 'fulfilled'
+      ? ubicacionResult.value
+      : { latitud: parseFloat(lat), longitud: parseFloat(lon), nombre: 'Ubicación actual' };
+
+  if (climaResult.status === 'rejected') {
+    console.warn('[Climate] No se pudo resolver el clima en el momento pedido:', climaResult.reason?.message);
+  }
+
+  res.json({
+    estado: 'ok',
+    fuente: 'Open-Meteo',
+    ubicacion,
+    pais: 'Colombia',
+    // null si Open-Meteo falló — el nombre del lugar llega de todas formas
+    clima: climaResult.status === 'fulfilled' ? climaResult.value : null,
+  });
+});
+
 // GET /api/climate/actual?lat=X&lon=Y
 router.get('/actual', authenticateToken, async (req, res) => {
   const { lat, lon } = req.query;
