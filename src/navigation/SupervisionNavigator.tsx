@@ -12,6 +12,7 @@ import CalendarioScreen from '../screens/CalendarioGlobalScreen';
 import MapaGeneralScreen from '../screens/MapaGeneralScreen';
 import FormularioDetailScreen from '../screens/terreno/FormularioDetailScreen';
 import BaseDatosBeneficiariosScreen from '../screens/supervision/BaseDatosBeneficiariosScreen';
+import PlantacionesPorTecnicoScreen from '../screens/supervision/PlantacionesPorTecnicoScreen';
 
 export type SupervisionStackParamList = {
   SupervisionMenu: undefined;
@@ -21,6 +22,7 @@ export type SupervisionStackParamList = {
   MapaGeneral: undefined;
   SupervisionFormularioDetail: { formulario: import('../types').Formulario };
   BaseDatosBeneficiarios: undefined;
+  SupervisionPlantacionesPorTecnico: undefined;
 };
 
 const Stack = createNativeStackNavigator<SupervisionStackParamList>();
@@ -76,6 +78,11 @@ const SupervisionNavigator: React.FC = () => {
         name="BaseDatosBeneficiarios"
         component={BaseDatosBeneficiariosScreen}
         options={{ title: 'Base de Datos Beneficiarios' }}
+      />
+      <Stack.Screen
+        name="SupervisionPlantacionesPorTecnico"
+        component={PlantacionesPorTecnicoScreen}
+        options={{ title: 'Áreas de Plantación' }}
       />
     </Stack.Navigator>
   );

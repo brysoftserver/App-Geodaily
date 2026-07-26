@@ -16,6 +16,25 @@ export interface OfflinePackInfo {
   metadata?: Record<string, any>;
 }
 
+/**
+ * Límites reales del municipio de Puerto Rico (Caquetá) — bounding box
+ * oficial obtenido de OpenStreetMap/Nominatim (relation osm_id 1342106),
+ * el mismo dato ya usado para georreferenciar el mapa del Dashboard.
+ * Cubre los 6 corregimientos completos (no solo un radio aproximado desde
+ * el centro, que se queda corto en la punta norte de Santana Ramos y la
+ * punta sur de Río Negro por la forma alargada del municipio).
+ */
+export const LIMITES_PUERTO_RICO_MUNICIPIO: [[number, number], [number, number]] = [
+  [-74.7826599, 2.6283823], // noreste [lng, lat]
+  [-75.3485837, 1.3875842], // suroeste [lng, lat]
+];
+
+/** Zoom máximo por preset — a mayor zoom, más nitidez de cerca pero (exponencialmente) más peso. */
+export const ZOOM_DESCARGA = {
+  radio: 16,
+  municipioCompleto: 17,
+} as const;
+
 /** ¿Está disponible el módulo nativo de mapas (requiere dev client/build)? */
 export const isOfflineMapAvailable = (): boolean => {
   return !!NativeModules.MLRNModule;
@@ -50,23 +69,20 @@ function calcularBounds(center: Coordenadas, radioKm: number): [[number, number]
   return [noreste, suroeste];
 }
 
-/**
- * Descargar un paquete de mapa offline centrado en `center`, con un radio
- * en km. Debe llamarse con conexión activa (WiFi idealmente, por el peso).
- */
-export const descargarMapaOffline = async (
-  center: Coordenadas,
-  radioKm: number,
+/** Crea (o recrea) un paquete offline con bounds ya calculados — usado tanto por el modo radio como por el modo bounds explícitos. */
+async function crearPaquete(
+  name: string,
+  bounds: [[number, number], [number, number]],
   tipo: 'relieve' | 'satelite',
+  maxZoom: number,
+  metadataExtra: Record<string, any>,
   onProgress?: (percentage: number) => void
-): Promise<{ success: boolean; error?: string }> => {
+): Promise<{ success: boolean; error?: string }> {
   if (!OfflineManager) {
     return { success: false, error: 'La descarga de mapas offline requiere la versión instalada de GEODAILY (no está disponible en Expo Go).' };
   }
 
-  const name = `geodaily-${tipo}-${Math.round(center.latitud * 1000)}-${Math.round(center.longitud * 1000)}`;
   const styleURL = `${API_CONFIG.BASE_URL}/api/maps/style/${tipo}`;
-  const bounds = calcularBounds(center, radioKm);
 
   // Si ya existe un paquete con este nombre (misma zona+tipo, ej. un reintento
   // o una descarga previa), borrarlo primero — createPack() rechaza nombres
@@ -87,8 +103,8 @@ export const descargarMapaOffline = async (
         styleURL,
         bounds,
         minZoom: 10,
-        maxZoom: 16,
-        metadata: { tipo, radioKm, creado: new Date().toISOString() },
+        maxZoom,
+        metadata: { tipo, maxZoom, creado: new Date().toISOString(), ...metadataExtra },
       },
       (_pack: any, status: any) => {
         if (onProgress && status?.percentage != null) {
@@ -110,6 +126,38 @@ export const descargarMapaOffline = async (
       resolve({ success: false, error: mensajeAmigable(error) });
     });
   });
+}
+
+/**
+ * Descargar un paquete de mapa offline centrado en `center`, con un radio
+ * en km. Debe llamarse con conexión activa (WiFi idealmente, por el peso).
+ */
+export const descargarMapaOffline = async (
+  center: Coordenadas,
+  radioKm: number,
+  tipo: 'relieve' | 'satelite',
+  onProgress?: (percentage: number) => void
+): Promise<{ success: boolean; error?: string }> => {
+  const name = `geodaily-${tipo}-${Math.round(center.latitud * 1000)}-${Math.round(center.longitud * 1000)}`;
+  const bounds = calcularBounds(center, radioKm);
+  return crearPaquete(name, bounds, tipo, ZOOM_DESCARGA.radio, { radioKm, center }, onProgress);
+};
+
+/**
+ * Descargar un paquete de mapa offline usando límites [ne, so] explícitos
+ * (en vez de un radio circular) — para zonas alargadas/irregulares como el
+ * municipio completo de Puerto Rico, donde un radio desde el centro se
+ * queda corto en los extremos norte/sur.
+ */
+export const descargarMapaOfflinePorBounds = async (
+  bounds: [[number, number], [number, number]],
+  tipo: 'relieve' | 'satelite',
+  nombreZona: string,
+  maxZoom: number = ZOOM_DESCARGA.municipioCompleto,
+  onProgress?: (percentage: number) => void
+): Promise<{ success: boolean; error?: string }> => {
+  const name = `geodaily-${tipo}-${nombreZona}`;
+  return crearPaquete(name, bounds, tipo, maxZoom, { nombreZona, bounds }, onProgress);
 };
 
 /** Listar los paquetes de mapa ya descargados en este dispositivo. */

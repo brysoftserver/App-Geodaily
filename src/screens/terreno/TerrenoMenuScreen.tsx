@@ -16,9 +16,11 @@ import {
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAuth } from '../../store/AuthContext';
-import { useOfflineSync } from '../../hooks/useOfflineSync';
 import { useAvatar } from '../../hooks/useAvatar';
 import CambiarContrasenaModal from '../../components/CambiarContrasenaModal';
+import SincronizacionModal from '../../components/SincronizacionModal';
+import AjustesMenu from '../../components/AjustesMenu';
+import NotificacionBell from '../../components/NotificacionBell';
 import { COLORS, FONTS, SPACING, BORDER_RADIUS, SHADOWS } from '../../theme';
 
 type TerrenoMenuProps = {
@@ -74,6 +76,7 @@ const TerrenoMenuScreen: React.FC<TerrenoMenuProps> = ({ navigation }) => {
   const insets = useSafeAreaInsets();
   const { avatarUri, cambiarAvatar, cambiando } = useAvatar(user?.id);
   const [showPasswordModal, setShowPasswordModal] = useState(false);
+  const [showSyncModal, setShowSyncModal] = useState(false);
 
   const handlePress = (item: (typeof MENU_ITEMS)[0]) => {
     navigation.navigate(item.screen as string);
@@ -81,9 +84,6 @@ const TerrenoMenuScreen: React.FC<TerrenoMenuProps> = ({ navigation }) => {
 
   // Obtener cédula del usuario
   const cedula = (user as any)?.cedula || '';
-
-  const { syncNow, status, pendingCount, lastSync } = useOfflineSync();
-  const isSyncing = status === 'syncing';
 
   return (
     // El fondo cubre TODA la pantalla (encabezado + submódulos), no solo el
@@ -102,6 +102,18 @@ const TerrenoMenuScreen: React.FC<TerrenoMenuProps> = ({ navigation }) => {
       >
         {/* Encabezado — ya no lleva su propio fondo, ahora se ve el de toda la pantalla */}
         <View style={[styles.header, { paddingTop: Math.max(insets.top, SPACING.xxl) }]}>
+          <View style={[styles.campanaWrapper, { top: Math.max(insets.top, SPACING.md) }]}>
+            <NotificacionBell navigation={navigation} formularioDetailScreen="FormularioDetail" />
+          </View>
+          <View style={[styles.ajustesWrapper, { top: Math.max(insets.top, SPACING.md) }]}>
+            <AjustesMenu
+              opciones={[
+                { id: 'sync', label: 'Sincronización', icon: '📤', onPress: () => setShowSyncModal(true) },
+                { id: 'contrasena', label: 'Cambiar Contraseña', icon: '🔑', onPress: () => setShowPasswordModal(true) },
+                { id: 'cerrar', label: 'Cerrar Sesión', icon: '🚪', onPress: logout, destructivo: true },
+              ]}
+            />
+          </View>
           <TouchableOpacity onPress={cambiarAvatar} activeOpacity={0.7} disabled={cambiando}>
             <View style={styles.avatar}>
               {avatarUri ? (
@@ -149,76 +161,9 @@ const TerrenoMenuScreen: React.FC<TerrenoMenuProps> = ({ navigation }) => {
           ))}
         </View>
 
-        {/* Estado de sincronización */}
-        <View style={styles.syncCard}>
-          <View style={styles.syncHeader}>
-            <Text style={styles.syncTitle}>
-              {isSyncing ? '🔄 Sincronizando...' : '📤 Sincronización'}
-            </Text>
-            {pendingCount > 0 && (
-              <View style={styles.pendingSyncBadge}>
-                <Text style={styles.pendingSyncText}>{pendingCount}</Text>
-              </View>
-            )}
-          </View>
-          <Text style={styles.syncSubtitle}>
-            {pendingCount === 0
-              ? '✅ Todo sincronizado'
-              : `⏳ ${pendingCount} registro(s) pendiente(s)`}
-          </Text>
-          {lastSync && (
-            <Text style={styles.syncLast}>
-              Última sincronización: {new Date(lastSync).toLocaleString('es-CO')}
-            </Text>
-          )}
-          {status === 'error' && (
-            <Text style={styles.syncError}>Error al sincronizar. Reintentando...</Text>
-          )}
-          <TouchableOpacity
-            style={[styles.syncButton, isSyncing && styles.syncButtonDisabled]}
-            onPress={syncNow}
-            disabled={isSyncing}
-            activeOpacity={0.7}
-          >
-            {isSyncing ? (
-              <ActivityIndicator color={COLORS.textOnPrimary} size="small" />
-            ) : (
-              <Text style={styles.syncButtonText}>
-                {pendingCount > 0 ? 'Sincronizar ahora' : 'Verificar'}
-              </Text>
-            )}
-          </TouchableOpacity>
-        </View>
-
-        {/* Cambiar Contraseña */}
-        <TouchableOpacity
-          style={styles.menuItem}
-          onPress={() => setShowPasswordModal(true)}
-          activeOpacity={0.7}
-        >
-          <Text style={styles.menuIcon}>🔑</Text>
-          <View style={styles.menuContent}>
-            <Text style={styles.menuTitle}>Cambiar Contraseña</Text>
-            <Text style={styles.menuSubtitle}>Actualizar tu contraseña de acceso</Text>
-          </View>
-          <Text style={styles.menuArrow}>›</Text>
-        </TouchableOpacity>
-
-        {/* Cerrar Sesión */}
-        <TouchableOpacity
-          style={[styles.menuItem, styles.logoutItem]}
-          onPress={logout}
-          activeOpacity={0.7}
-        >
-          <Text style={styles.menuIcon}>🚪</Text>
-          <View style={styles.menuContent}>
-            <Text style={styles.menuTitle}>Cerrar Sesión</Text>
-            <Text style={styles.menuSubtitle}>Salir de la aplicación</Text>
-          </View>
-          <Text style={styles.menuArrow}>›</Text>
-        </TouchableOpacity>
       </ScrollView>
       <CambiarContrasenaModal visible={showPasswordModal} onClose={() => setShowPasswordModal(false)} />
+      <SincronizacionModal visible={showSyncModal} onClose={() => setShowSyncModal(false)} />
     </ImageBackground>
   );
 };
@@ -244,6 +189,16 @@ const styles = StyleSheet.create({
     padding: SPACING.lg,
     paddingTop: SPACING.xxl,
     alignItems: 'center',
+  },
+  ajustesWrapper: {
+    position: 'absolute',
+    right: SPACING.md,
+    zIndex: 1,
+  },
+  campanaWrapper: {
+    position: 'absolute',
+    left: SPACING.md,
+    zIndex: 1,
   },
   avatar: {
     width: 64,
@@ -341,76 +296,6 @@ const styles = StyleSheet.create({
     fontSize: 24,
     color: COLORS.textLight,
     marginLeft: SPACING.sm,
-  },
-  logoutItem: {
-    borderLeftColor: COLORS.error,
-    marginHorizontal: SPACING.md,
-    marginTop: SPACING.sm,
-  },
-
-  // --- Sincronización ---
-  syncCard: {
-    backgroundColor: COLORS.surface,
-    marginHorizontal: SPACING.md,
-    marginTop: SPACING.md,
-    borderRadius: BORDER_RADIUS.lg,
-    padding: SPACING.md,
-    borderLeftWidth: 4,
-    borderLeftColor: COLORS.info,
-    ...SHADOWS.sm,
-  },
-  syncHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-  },
-  syncTitle: {
-    fontSize: FONTS.sizes.lg,
-    fontWeight: FONTS.weights.semibold,
-    color: COLORS.textPrimary,
-  },
-  pendingSyncBadge: {
-    backgroundColor: COLORS.warning,
-    borderRadius: BORDER_RADIUS.full,
-    width: 26,
-    height: 26,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  pendingSyncText: {
-    color: COLORS.textOnPrimary,
-    fontSize: FONTS.sizes.sm,
-    fontWeight: FONTS.weights.bold,
-  },
-  syncSubtitle: {
-    fontSize: FONTS.sizes.sm,
-    color: COLORS.textSecondary,
-    marginTop: 4,
-  },
-  syncLast: {
-    fontSize: FONTS.sizes.xs,
-    color: COLORS.textLight,
-    marginTop: 4,
-  },
-  syncError: {
-    fontSize: FONTS.sizes.xs,
-    color: COLORS.error,
-    marginTop: 4,
-  },
-  syncButton: {
-    backgroundColor: COLORS.info,
-    borderRadius: BORDER_RADIUS.md,
-    paddingVertical: SPACING.sm,
-    alignItems: 'center',
-    marginTop: SPACING.sm,
-  },
-  syncButtonDisabled: {
-    opacity: 0.6,
-  },
-  syncButtonText: {
-    color: COLORS.textOnPrimary,
-    fontSize: FONTS.sizes.md,
-    fontWeight: FONTS.weights.semibold,
   },
 });
 

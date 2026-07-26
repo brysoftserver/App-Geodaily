@@ -5,6 +5,12 @@
 // en lugar de llamar getCurrentPositionAsync cada 15s.
 // Vive al nivel del provider — NO se detiene al cambiar de screen.
 // Solo se detiene explícitamente con detenerTracking().
+//
+// Cada ruta (desde iniciarTracking hasta detenerTracking) tiene un
+// `sesion_id` propio, guardado junto con cada posición en SQLite — así el
+// historial de rutas puede agrupar y volver a dibujar una ruta completa
+// después, en vez de tener todas las posiciones de todos los días mezcladas
+// en una sola lista plana.
 // ============================================================
 
 import React, { createContext, useContext, useState, useRef, useCallback, useEffect, useMemo } from 'react';
@@ -15,11 +21,14 @@ import { useGPS } from './GPSContext';
 import { PosicionTracking, Coordenadas } from '../types';
 import { getDbSafe } from '../services/database';
 
-const STORAGE_KEY = '@geodaily/tracking_active';
+const STORAGE_KEY_ACTIVO = '@geodaily/tracking_active';
+const STORAGE_KEY_PAUSADO = '@geodaily/tracking_pausado';
+const STORAGE_KEY_SESION = '@geodaily/tracking_sesion_id';
 const TRACKING_INTERVAL_MS = 15000; // 15 segundos
 
 interface TrackingState {
   activo: boolean;
+  pausado: boolean;
   posiciones: PosicionTracking[];
   inicio?: string;
   distanceKm: number;
@@ -27,6 +36,8 @@ interface TrackingState {
 
 interface TrackingContextType extends TrackingState {
   iniciarTracking: () => Promise<void>;
+  pausarTracking: () => Promise<void>;
+  reanudarTracking: () => Promise<void>;
   detenerTracking: () => Promise<PosicionTracking[]>;
 }
 
@@ -40,6 +51,8 @@ const initDb = async () => {
   return database;
 };
 
+const generarSesionId = () => `sesion_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+
 export const TrackingProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const { user } = useAuth();
   const usuarioId = user?.id;
@@ -47,6 +60,7 @@ export const TrackingProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
   const [state, setState] = useState<TrackingState>({
     activo: false,
+    pausado: false,
     posiciones: [],
     distanceKm: 0,
   });
@@ -55,6 +69,7 @@ export const TrackingProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   const lastPosRef = useRef<{ lat: number; lon: number } | null>(null);
   const usuarioIdRef = useRef(usuarioId);
   const gpsPositionRef = useRef<Coordenadas | undefined>(undefined);
+  const sesionIdRef = useRef<string | null>(null);
 
   // Sincronizar GPSContext → ref para usar en el intervalo sin llamar GPS cada vez
   useEffect(() => {
@@ -66,47 +81,87 @@ export const TrackingProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     usuarioIdRef.current = usuarioId;
   }, [usuarioId]);
 
-  // Restaurar tracking activo al arrancar la app
-  useEffect(() => {
-    const checkSavedState = async () => {
-      try {
-        const saved = await AsyncStorage.getItem(STORAGE_KEY);
-        if (saved === 'true' && usuarioIdRef.current) {
-          console.log('[TrackingContext] Restaurando tracking persistido...');
-          await iniciarTrackingInterno();
-        }
-      } catch {
-          // Ignorar errores al restaurar estado persistido
-        }
-    };
-    checkSavedState();
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []); // Solo al montar
-
-  // Limpiar al desmontar el provider (cierre de app)
-  useEffect(() => {
-    return () => {
-      if (intervalRef.current) {
-        clearInterval(intervalRef.current);
-        intervalRef.current = null;
-      }
-    };
+  /** Inserta una posición en SQLite, siempre con el sesion_id de la ruta activa. */
+  const persistirPosicion = useCallback(async (pos: PosicionTracking, reemplazar: boolean) => {
+    try {
+      const database = await initDb();
+      await database.runAsync(
+        `INSERT ${reemplazar ? 'OR REPLACE' : ''} INTO tracking_posiciones (
+          id, usuario_id, latitud, longitud, altitud, precision_gps,
+          velocidad, heading, timestamp, sincronizado, sesion_id
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          pos.id, pos.usuario_id, pos.latitud, pos.longitud, pos.altitud ?? null,
+          pos.precision_gps ?? null, pos.velocidad ?? null, pos.heading ?? null,
+          pos.timestamp, pos.sincronizado ? 1 : 0, sesionIdRef.current,
+        ]
+      );
+    } catch (e) {
+      console.warn('[TrackingContext] Error al persistir:', e);
+    }
   }, []);
 
-  const iniciarTrackingInterno = useCallback(async () => {
+  /** Arranca (o reanuda) el intervalo de 15s que va agregando posiciones a la ruta activa. */
+  const iniciarIntervalo = useCallback(() => {
+    if (intervalRef.current) clearInterval(intervalRef.current);
+    intervalRef.current = setInterval(async () => {
+      if (!usuarioIdRef.current) return;
+      const currentGps = gpsPositionRef.current;
+      if (!currentGps) return; // Sin GPS aún, esperar próxima iteración
+
+      const posicion: PosicionTracking = {
+        id: `track_${Date.now()}`,
+        usuario_id: usuarioIdRef.current,
+        latitud: currentGps.latitud,
+        longitud: currentGps.longitud,
+        altitud: currentGps.altitud,
+        precision_gps: currentGps.precision_gps,
+        heading: currentGps.heading,
+        velocidad: undefined,
+        timestamp: new Date().toISOString(),
+        sincronizado: false,
+      };
+
+      if (lastPosRef.current) {
+        const dlat = ((posicion.latitud - lastPosRef.current.lat) * Math.PI) / 180;
+        const dlon = ((posicion.longitud - lastPosRef.current.lon) * Math.PI) / 180;
+        const a =
+          Math.sin(dlat / 2) ** 2 +
+          Math.cos((lastPosRef.current.lat * Math.PI) / 180) *
+            Math.cos((posicion.latitud * Math.PI) / 180) *
+            Math.sin(dlon / 2) ** 2;
+        const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+        const dist = 6371 * c;
+
+        posicionesRef.current = [...posicionesRef.current, posicion];
+        lastPosRef.current = { lat: posicion.latitud, lon: posicion.longitud };
+
+        setState(prev => ({
+          ...prev,
+          posiciones: posicionesRef.current,
+          distanceKm: prev.distanceKm + dist,
+        }));
+
+        await persistirPosicion(posicion, false);
+      }
+    }, TRACKING_INTERVAL_MS);
+  }, [persistirPosicion]);
+
+  const iniciarTrackingInterno = useCallback(async (sesionIdExistente?: string) => {
     if (!usuarioIdRef.current) {
       console.warn('[TrackingContext] Sin usuario — no se inicia tracking');
       return;
     }
 
-    // Solicitar permisos (necesario aunque GPSContext ya lo tenga)
     const { status } = await Location.requestForegroundPermissionsAsync();
     if (status !== 'granted') {
       console.warn('[TrackingContext] Permiso denegado');
       return;
     }
 
-    // Primera posición: usar GPSContext (watch continuo) o fallback a getCurrentPositionAsync
+    sesionIdRef.current = sesionIdExistente || generarSesionId();
+    await AsyncStorage.setItem(STORAGE_KEY_SESION, sesionIdRef.current);
+
     let latitud: number, longitud: number, altitud: number | undefined, precision: number | undefined, heading: number | undefined;
     if (gpsPositionRef.current) {
       latitud = gpsPositionRef.current.latitud;
@@ -144,101 +199,77 @@ export const TrackingProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     posicionesRef.current = [primeraPos];
     lastPosRef.current = { lat: primeraPos.latitud, lon: primeraPos.longitud };
 
-    // Persistir en SQLite
-    try {
-      const database = await initDb();
-      await database.runAsync(
-        `INSERT OR REPLACE INTO tracking_posiciones (
-          id, usuario_id, latitud, longitud, altitud, precision_gps,
-          velocidad, heading, timestamp, sincronizado
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [
-          primeraPos.id, primeraPos.usuario_id, primeraPos.latitud,
-          primeraPos.longitud, primeraPos.altitud ?? null,
-          primeraPos.precision_gps ?? null, primeraPos.velocidad ?? null,
-          primeraPos.heading ?? null, primeraPos.timestamp,
-          primeraPos.sincronizado ? 1 : 0,
-        ]
-      );
-    } catch (e) {
-      console.warn('[TrackingContext] Error al persistir:', e);
-    }
+    await persistirPosicion(primeraPos, true);
 
     setState(prev => ({
       ...prev,
       activo: true,
+      pausado: false,
       posiciones: [primeraPos],
       inicio: new Date().toISOString(),
     }));
 
-    // Intervalo periódico: leer de GPSContext en vez de llamar getCurrentPositionAsync
-    intervalRef.current = setInterval(async () => {
-      if (!usuarioIdRef.current) return;
-      const currentGps = gpsPositionRef.current;
-      if (!currentGps) return; // Sin GPS aún, esperar próxima iteración
+    iniciarIntervalo();
 
-      const posicion: PosicionTracking = {
-        id: `track_${Date.now()}`,
-        usuario_id: usuarioIdRef.current,
-        latitud: currentGps.latitud,
-        longitud: currentGps.longitud,
-        altitud: currentGps.altitud,
-        precision_gps: currentGps.precision_gps,
-        heading: currentGps.heading,
-        velocidad: undefined,
-        timestamp: new Date().toISOString(),
-        sincronizado: false,
-      };
+    await AsyncStorage.setItem(STORAGE_KEY_ACTIVO, 'true');
+    await AsyncStorage.setItem(STORAGE_KEY_PAUSADO, 'false');
+  }, [persistirPosicion, iniciarIntervalo]);
 
-      // Calcular distancia incremental (Haversine)
-      if (lastPosRef.current) {
-        const dlat = ((posicion.latitud - lastPosRef.current.lat) * Math.PI) / 180;
-        const dlon = ((posicion.longitud - lastPosRef.current.lon) * Math.PI) / 180;
-        const a =
-          Math.sin(dlat / 2) ** 2 +
-          Math.cos((lastPosRef.current.lat * Math.PI) / 180) *
-            Math.cos((posicion.latitud * Math.PI) / 180) *
-            Math.sin(dlon / 2) ** 2;
-        const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-        const dist = 6371 * c;
-
-        posicionesRef.current = [...posicionesRef.current, posicion];
-        lastPosRef.current = { lat: posicion.latitud, lon: posicion.longitud };
-
-        setState(prev => ({
-          ...prev,
-          posiciones: posicionesRef.current,
-          distanceKm: prev.distanceKm + dist,
-        }));
-
-        // Persistir en SQLite
-        try {
-          const database = await initDb();
-          await database.runAsync(
-            `INSERT INTO tracking_posiciones (
-              id, usuario_id, latitud, longitud, altitud, precision_gps,
-              velocidad, heading, timestamp, sincronizado
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-            [
-              posicion.id, posicion.usuario_id, posicion.latitud,
-              posicion.longitud, posicion.altitud ?? null,
-              posicion.precision_gps ?? null, posicion.velocidad ?? null,
-              posicion.heading ?? null, posicion.timestamp,
-              posicion.sincronizado ? 1 : 0,
-            ]
-          );
-        } catch (e) {
-          console.warn('[TrackingContext] Error al persistir:', e);
+  // Restaurar tracking activo al arrancar la app
+  useEffect(() => {
+    const checkSavedState = async () => {
+      try {
+        const saved = await AsyncStorage.getItem(STORAGE_KEY_ACTIVO);
+        if (saved === 'true' && usuarioIdRef.current) {
+          console.log('[TrackingContext] Restaurando tracking persistido...');
+          const sesionPrevia = await AsyncStorage.getItem(STORAGE_KEY_SESION);
+          const pausadoPrevio = await AsyncStorage.getItem(STORAGE_KEY_PAUSADO);
+          await iniciarTrackingInterno(sesionPrevia || undefined);
+          if (pausadoPrevio === 'true' && intervalRef.current) {
+            clearInterval(intervalRef.current);
+            intervalRef.current = null;
+            setState(prev => ({ ...prev, pausado: true }));
+          }
         }
-      }
-    }, TRACKING_INTERVAL_MS);
+      } catch {
+          // Ignorar errores al restaurar estado persistido
+        }
+    };
+    checkSavedState();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []); // Solo al montar
 
-    await AsyncStorage.setItem(STORAGE_KEY, 'true');
+  // Limpiar al desmontar el provider (cierre de app)
+  useEffect(() => {
+    return () => {
+      if (intervalRef.current) {
+        clearInterval(intervalRef.current);
+        intervalRef.current = null;
+      }
+    };
   }, []);
 
   const iniciarTracking = useCallback(async () => {
     await iniciarTrackingInterno();
   }, [iniciarTrackingInterno]);
+
+  /** Pausa la ruta activa: deja de agregar puntos, pero conserva todo lo ya trazado (no la detiene ni la cierra). */
+  const pausarTracking = useCallback(async () => {
+    if (intervalRef.current) {
+      clearInterval(intervalRef.current);
+      intervalRef.current = null;
+    }
+    await AsyncStorage.setItem(STORAGE_KEY_PAUSADO, 'true');
+    setState(prev => ({ ...prev, pausado: true }));
+  }, []);
+
+  /** Reanuda una ruta pausada — sigue agregando puntos a la MISMA sesión (mismo sesion_id), no crea una ruta nueva. */
+  const reanudarTracking = useCallback(async () => {
+    if (!sesionIdRef.current) return; // No hay ruta activa que reanudar
+    await AsyncStorage.setItem(STORAGE_KEY_PAUSADO, 'false');
+    setState(prev => ({ ...prev, pausado: false }));
+    iniciarIntervalo();
+  }, [iniciarIntervalo]);
 
   const detenerTracking = useCallback(async (): Promise<PosicionTracking[]> => {
     if (intervalRef.current) {
@@ -246,11 +277,15 @@ export const TrackingProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       intervalRef.current = null;
     }
 
-    await AsyncStorage.setItem(STORAGE_KEY, 'false');
+    await AsyncStorage.setItem(STORAGE_KEY_ACTIVO, 'false');
+    await AsyncStorage.setItem(STORAGE_KEY_PAUSADO, 'false');
+    await AsyncStorage.removeItem(STORAGE_KEY_SESION);
+    sesionIdRef.current = null;
 
     setState(prev => ({
       ...prev,
       activo: false,
+      pausado: false,
     }));
 
     return posicionesRef.current;
@@ -258,12 +293,15 @@ export const TrackingProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
   const trackingValue = useMemo(() => ({
     activo: state.activo,
+    pausado: state.pausado,
     posiciones: state.posiciones,
     inicio: state.inicio,
     distanceKm: state.distanceKm,
     iniciarTracking,
+    pausarTracking,
+    reanudarTracking,
     detenerTracking,
-  }), [state.activo, state.posiciones, state.inicio, state.distanceKm, iniciarTracking, detenerTracking]);
+  }), [state.activo, state.pausado, state.posiciones, state.inicio, state.distanceKm, iniciarTracking, pausarTracking, reanudarTracking, detenerTracking]);
 
   return (
     <TrackingContext.Provider value={trackingValue}>

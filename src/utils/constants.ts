@@ -11,7 +11,7 @@ export interface PlantaOpcion {
 }
 
 export const PLANTAS_OPCIONES: PlantaOpcion[] = [
-  { nombre: 'Cacao', icono: '�' },
+  { nombre: 'Cacao', icono: '🍫' },
   { nombre: 'Plátano', icono: '🌴' },
   { nombre: 'Abarco / Cedro / Caucho', icono: '🌳' },
 ];
@@ -25,7 +25,7 @@ PLANTAS_OPCIONES.forEach((p) => {
   });
 });
 // Sinónimos adicionales para compatibilidad
-ICONOS_MAP['cacao'] = '�';
+ICONOS_MAP['cacao'] = '🍫';
 ICONOS_MAP['platano'] = '🌴';
 ICONOS_MAP['banano'] = '🌴';
 ICONOS_MAP['abarco'] = '🌳';
@@ -417,7 +417,8 @@ export const PROCESOS_EROSION_OPTS = ['Severa', 'Moderada', 'Leve', 'No presenta
 export const FUENTES_HIDRICAS_OPTS = ['Nacimiento', 'Quebrada', 'Río', 'Ninguna'];
 export const PRACTICAS_CONSERVACION_OPTS = ['Barreras vivas', 'Cobertura vegetal', 'Terrazas', 'Ninguna'];
 export const AREAS_CONSERVACION_OPTS = ['Bosque virgen', 'Bosque intervenido', 'Rastrojo maduro', 'Rastrojo biche', 'Regeneración natural', 'Ninguna'];
-export const MANEJO_RESIDUOS_OPTS = ['Triple lavado y disposición adecuada', 'Los almacena', 'Los quema', 'Los desecha en el campo', 'Los entierra'];
+export const MANEJO_RESIDUOS_OPTS = ['Triple lavado y disposición adecuada', 'Los almacenan', 'Los quema', 'Los desecha en el campo', 'Los entierra'];
+export const USO_TIERRA_OPTS = ['Agrícola', 'Pecuario', 'Forestal / Bosque', 'Rastrojo o barbecho', 'Conservación', 'Vivienda e infraestructura', 'Sin uso actual', 'Otro'];
 export const TEXTURA_SUELO_OPTS = ['Arenoso', 'Franco', 'Arcilloso', 'Limoso'];
 export const COLOR_SUELO_OPTS = ['Negro', 'Café oscuro', 'Café claro', 'Rojizo'];
 export const DRENAJE_OPTS = ['Bueno', 'Regular', 'Deficiente'];
@@ -435,6 +436,7 @@ export const EVIDENCIA_EROSION_OPTS = ['Severa', 'Moderada', 'Leve', 'No present
 export const RECONOCIMIENTO_OPTS = ['Campesino', 'Indígena', 'NARP (Negra, Afrocolombiana, Raizal, Palenquera)', 'Rom', 'Otro'];
 export const NIVEL_EDUCATIVO_ENV_OPTS = ['Básica Primaria', 'Básica Secundaria', 'Técnico', 'Tecnólogo', 'Título Universitario', 'Educación no formal (cursos, talleres, ECA´s, etc)', 'Ninguno'];
 export const FUENTE_INGRESOS_ENV_OPTS = ['Agricultura', 'Ganadería', 'Comercio', 'Empleo formal', 'Jornalero', 'Pescador', 'Otra actividad'];
+export const INGRESOS_SALARIOS_OPTS = ['Menos de 1 SMLV', '1 a 2 SMLV', '3 a 4 SMLV', 'Más de 4 SMLV'];
 export const OCUPACION_SECUNDARIA_OPTS = ['Estudiante', 'Agricultor (a)', 'Ganadero (a)', 'Vendedor (a)', 'Pescador (a)', 'Trabajador(a) del hogar', 'Con diversidad funcional', 'Jornalero (a)', 'Ninguna de las anteriores', 'Otro'];
 export const TIPO_ASOCIACION_OPTS = ['Junta de Acción Comunal', 'Organización de mujeres', 'Organización de productores', 'Organización de víctimas', 'Organización ambiental', 'Organización social y política', 'Otro', 'Ninguna'];
 export const ROL_ASOCIACION_OPTS = ['Presidente', 'Tesorero', 'Fiscal', 'Vocal', 'Asociado', 'No aplica']; // (ya no se usa — P9 es texto libre)
@@ -442,7 +444,7 @@ export const VIVIENDA_UBICACION_OPTS = ['En la finca', 'En otra finca', 'En el c
 export const TIPO_ENERGIA_OPTS = ['Energía solar', 'Planta de energía a gasolina', 'Red energía eléctrica', 'Energía por Pelton', 'Otro'];
 export const AGUA_CONSUMO_OPTS = ['Acueducto comunitario', 'Acueducto municipal', 'Río, quebrada o nacimiento', 'Reservorio', 'Perforado', 'Aljibe', 'Aguas lluvias', 'Agua en bolsa', 'Otro'];
 export const ELEMENTOS_TECNOLOGICOS_OPTS = ['Celular', 'Computador', 'Internet', 'WhatsApp'];
-export const QUIENES_TRABAJAN_OPTS = ['Usted y su núcleo familiar', 'Trabajadores externos', 'Trabajo mixto', 'Vecinos con el sistema de trueque o manocambiada', 'Otro'];
+export const QUIENES_TRABAJAN_OPTS = ['Usted y su núcleo familiar', 'Trabajadores externos', 'Trabajadores del núcleo familiar y trabajadores externos', 'Trabajo mixto', 'Vecinos con el sistema de trueque o manocambiada', 'Otro'];
 export const MEDIO_TRANSPORTE_OPTS = ['A pie', 'Canoa', 'Cabalgar', 'Bicicleta', 'Motocicleta', 'Automóvil', 'Transporte público', 'Otro'];
 export const MEDIO_SALIDA_OPTS = [
   'Fluvial',

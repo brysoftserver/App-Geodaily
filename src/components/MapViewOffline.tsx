@@ -17,9 +17,26 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { View, Text, StyleSheet, ActivityIndicator, NativeModules, Platform } from 'react-native';
 import { WebView } from 'react-native-webview';
+import Svg, { Path, Circle } from 'react-native-svg';
 import NetInfo from '@react-native-community/netinfo';
 import { COLORS, FONTS, SPACING, BORDER_RADIUS } from '../theme';
 import { Coordenadas } from '../types';
+
+/** Pin de mapa clásico (gota + punto blanco), tamaño 28×36, usado por markers con tipoIcono:'pin'. */
+const PinIcon: React.FC<{ color: string }> = ({ color }) => (
+  <Svg width={28} height={36} viewBox="0 0 28 36">
+    <Path
+      d="M14 0C6.268 0 0 6.268 0 14c0 10.5 14 22 14 22s14-11.5 14-22C28 6.268 21.732 0 14 0z"
+      fill={color}
+    />
+    <Circle cx={14} cy={14} r={6} fill="#FFFFFF" />
+  </Svg>
+);
+
+// Nota: el equivalente para el fallback WebView/Leaflet vive como JS de
+// cliente embebido en `webMapHtml` (window._pinSvgHtml) — no se puede
+// reusar esta función de React Native ahí porque corre en un contexto de
+// JS completamente aislado (el WebView/iframe), sin acceso al bundle RN.
 
 // Carga condicional de MapLibre (fallback si no hay módulo nativo)
 // En Expo Go, el módulo JS se carga pero el native module no está registrado.
@@ -43,6 +60,10 @@ interface MarkerData {
   color?: string;
   /** Emoji icon para mostrar en vez de círculo (ej: 🌱) */
   icon?: string;
+  /** 'pin' dibuja un pin de mapa clásico (gota + punto blanco) en vez de emoji/círculo, coloreado con `color`. */
+  tipoIcono?: 'pin';
+  /** Si es true, el técnico puede mantener presionado el marcador y arrastrarlo a una nueva posición (ver `onMarkerDragEnd`). */
+  draggable?: boolean;
 }
 
 interface MapViewOfflineProps {
@@ -82,7 +103,18 @@ interface MapViewOfflineProps {
   }>;
   interactive?: boolean;
   onMarkerPress?: (id: string) => void;
+  /** Se dispara cuando se suelta un marcador `draggable` — trae su nueva posición. */
+  onMarkerDragEnd?: (id: string, coords: { latitud: number; longitud: number }) => void;
   onMapPress?: (latitud: number, longitud: number) => void;
+  /**
+   * Centrado puntual "de una sola vez", independiente del seguimiento
+   * continuo de `center`: cuando `nonce` cambia, la cámara se mueve a
+   * `coords` SIN tocar el zoom actual (a diferencia de `center`, que
+   * siempre reimpone `zoom`). Pensado para un botón "Centrar" manual en
+   * pantallas donde el técnico está haciendo zoom/pan de precisión (medir,
+   * contar) y no quiere que la cámara se resetee sola.
+   */
+  foco?: { coords: Coordenadas; nonce: number } | null;
 }
 
 // ============================================================
@@ -163,7 +195,9 @@ const MapViewOffline: React.FC<MapViewOfflineProps> = ({
   geojsonLayers,
   interactive = true,
   onMarkerPress,
+  onMarkerDragEnd,
   onMapPress,
+  foco,
 }) => {
   const cameraRef = useRef<Record<string, any> | null>(null);
   const [isLoaded, setIsLoaded] = useState(false);
@@ -197,6 +231,19 @@ const MapViewOffline: React.FC<MapViewOfflineProps> = ({
       });
     }
   }, [center, zoom, isLoaded]);
+
+  // Centrado puntual (botón "Centrar"): mueve la cámara SIN incluir
+  // zoomLevel, así MapLibre conserva el nivel de zoom que el técnico ya
+  // tenía — a diferencia del efecto de arriba, que siempre reimpone `zoom`.
+  useEffect(() => {
+    if (isLoaded && cameraRef.current && foco) {
+      cameraRef.current.setCamera({
+        centerCoordinate: [foco.coords.longitud, foco.coords.latitud],
+        animationDuration: 500,
+      });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [foco?.nonce, isLoaded]);
 
   // ========================================================
   // WebView + Leaflet (Fallback para Expo Go / Testing)
@@ -238,18 +285,22 @@ const MapViewOffline: React.FC<MapViewOfflineProps> = ({
           setWebIframeReady(true);
         } else if (msg.type === 'mapPress' && onMapPress) {
           onMapPress(msg.latitud, msg.longitud);
+        } else if (msg.type === 'markerPress' && onMarkerPress) {
+          onMarkerPress(msg.id);
+        } else if (msg.type === 'markerDragEnd' && onMarkerDragEnd) {
+          onMarkerDragEnd(msg.id, { latitud: msg.lat, longitud: msg.lng });
         }
       } catch { /* ignorar mensajes no JSON */ }
     };
     window.addEventListener('message', handler);
     return () => window.removeEventListener('message', handler);
-  }, [onMapPress]);
+  }, [onMapPress, onMarkerPress, onMarkerDragEnd]);
 
   // Web: sincronizar marcadores
   useEffect(() => {
     if (Platform.OS !== 'web' || !webIframeReady) return;
-    postMsg({ type: 'setMarkers', markers: markers.map(m => ({ id: m.id, lat: m.latitud, lng: m.longitud, title: m.title, color: m.color, icon: m.icon })) });
-  }, [webIframeReady, markers, postMsg]);
+    postMsg({ type: 'setMarkers', markers: markers.map(m => ({ id: m.id, lat: m.latitud, lng: m.longitud, title: m.title, color: m.color, icon: m.icon, tipoIcono: m.tipoIcono, draggable: m.draggable, onClickMsg: !!onMarkerPress })) });
+  }, [webIframeReady, markers, postMsg, onMarkerPress]);
 
   // Web: sincronizar polyline
   useEffect(() => {
@@ -274,6 +325,13 @@ const MapViewOffline: React.FC<MapViewOfflineProps> = ({
     if (Platform.OS !== 'web' || !webIframeReady || !center) return;
     postMsg({ type: 'setView', lat: center.latitud, lng: center.longitud, zoom });
   }, [webIframeReady, center, zoom, postMsg]);
+
+  // Web: centrado puntual sin zoom (botón "Centrar")
+  useEffect(() => {
+    if (Platform.OS !== 'web' || !webIframeReady || !foco) return;
+    postMsg({ type: 'centrarSinZoom', lat: foco.coords.latitud, lng: foco.coords.longitud });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [webIframeReady, foco?.nonce, postMsg]);
 
   // Web: sincronizar ubicación usuario
   useEffect(() => {
@@ -343,18 +401,49 @@ const MapViewOffline: React.FC<MapViewOfflineProps> = ({
     window._endMarkerLayer = null;
     window._userLocLayer = null;
 
+    window._pinSvgHtml = function(color) {
+      return '<svg width="28" height="36" viewBox="0 0 28 36" xmlns="http://www.w3.org/2000/svg">'
+        + '<path d="M14 0C6.268 0 0 6.268 0 14c0 10.5 14 22 14 22s14-11.5 14-22C28 6.268 21.732 0 14 0z" fill="' + color + '"/>'
+        + '<circle cx="14" cy="14" r="6" fill="#FFFFFF"/>'
+        + '</svg>';
+    };
+
     window._setMarkers = function(data) {
       Object.values(window._markers).forEach(function(l) { map.removeLayer(l); });
       window._markers = {};
       data.forEach(function(m) {
         var layer;
-        if (m.icon) {
+        if (m.tipoIcono === 'pin') {
           layer = L.marker([m.lat, m.lng], {
+            draggable: !!m.draggable,
+            icon: L.divIcon({
+              html: window._pinSvgHtml(m.color || '#1B5E20'),
+              className: '',
+              iconSize: [28, 36],
+              iconAnchor: [14, 36]
+            })
+          }).addTo(map);
+        } else if (m.icon) {
+          layer = L.marker([m.lat, m.lng], {
+            draggable: !!m.draggable,
             icon: L.divIcon({
               html: '<span style="font-size:24px;line-height:1">' + m.icon + '</span>',
               className: '',
               iconSize: [24, 24],
               iconAnchor: [12, 12]
+            })
+          }).addTo(map);
+        } else if (m.draggable) {
+          // L.circleMarker no soporta arrastre (no tiene el handler Draggable
+          // de Leaflet) — para un punto simple que se pueda mover, se usa un
+          // L.marker con un divIcon que dibuja el mismo círculo de color.
+          layer = L.marker([m.lat, m.lng], {
+            draggable: true,
+            icon: L.divIcon({
+              html: '<div style="width:16px;height:16px;border-radius:50%;background:' + (m.color || '#1B5E20') + ';border:2px solid #fff;box-shadow:0 1px 2px rgba(0,0,0,0.35);"></div>',
+              className: '',
+              iconSize: [16, 16],
+              iconAnchor: [8, 8]
             })
           }).addTo(map);
         } else {
@@ -370,6 +459,12 @@ const MapViewOffline: React.FC<MapViewOfflineProps> = ({
         if (m.onClickMsg) {
           layer.on('click', function() {
             window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'markerPress', id: m.id }));
+          });
+        }
+        if (m.draggable) {
+          layer.on('dragend', function(e) {
+            var pos = e.target.getLatLng();
+            window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'markerDragEnd', id: m.id, lat: pos.lat, lng: pos.lng }));
           });
         }
         window._markers[m.id] = layer;
@@ -459,6 +554,12 @@ const MapViewOffline: React.FC<MapViewOfflineProps> = ({
       map.setView([lat, lng], z, { animate: true });
     };
 
+    // Centrado puntual sin tocar el zoom (botón "Centrar" manual) — panTo
+    // mueve la cámara conservando el nivel de zoom actual del técnico.
+    window._centrarSinZoom = function(lat, lng) {
+      map.panTo([lat, lng], { animate: true });
+    };
+
     ${interactive ? `
     map.on('click', function(e) {
       window.ReactNativeWebView.postMessage(JSON.stringify({
@@ -487,9 +588,10 @@ const MapViewOffline: React.FC<MapViewOfflineProps> = ({
     const data = markers.map(m => ({
       id: m.id, lat: m.latitud, lng: m.longitud,
       title: m.title, color: m.color, icon: m.icon,
+      tipoIcono: m.tipoIcono, draggable: m.draggable, onClickMsg: !!onMarkerPress,
     }));
     injectJS(`window._setMarkers(${JSON.stringify(data)});true;`);
-  }, [webViewReady, markers, injectJS]);
+  }, [webViewReady, markers, injectJS, onMarkerPress]);
 
   useEffect(() => {
     if (!webViewReady) return;
@@ -536,6 +638,13 @@ const MapViewOffline: React.FC<MapViewOfflineProps> = ({
     injectJS(`window._setView(${center.latitud}, ${center.longitud}, ${zoom});true;`);
   }, [webViewReady, center, zoom, injectJS, hasNativeModule]);
 
+  // Centrado puntual sin zoom (botón "Centrar")
+  useEffect(() => {
+    if (!webViewReady || hasNativeModule || !foco) return;
+    injectJS(`window._centrarSinZoom(${foco.coords.latitud}, ${foco.coords.longitud});true;`);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [webViewReady, foco?.nonce, injectJS, hasNativeModule]);
+
   // Inyectar capas GeoJSON (veredas)
   useEffect(() => {
     if (!webViewReady || hasNativeModule) return;
@@ -577,12 +686,16 @@ const MapViewOffline: React.FC<MapViewOfflineProps> = ({
           setWebViewReady(true);
         } else if (msg.type === 'mapPress' && onMapPress) {
           onMapPress(msg.latitud, msg.longitud);
+        } else if (msg.type === 'markerPress' && onMarkerPress) {
+          onMarkerPress(msg.id);
+        } else if (msg.type === 'markerDragEnd' && onMarkerDragEnd) {
+          onMarkerDragEnd(msg.id, { latitud: msg.lat, longitud: msg.lng });
         }
       } catch (e) {
         console.warn('[MapViewOffline] Error parsing WebView message:', e);
       }
     },
-    [onMapPress]
+    [onMapPress, onMarkerPress, onMarkerDragEnd]
   );
 
   // Si no hay módulo nativo, usar WebView (nativo) o iframe (web) con Leaflet + OpenStreetMap
@@ -598,6 +711,13 @@ const MapViewOffline: React.FC<MapViewOfflineProps> = ({
       const webHtmlWithListener = webMapHtml.replace(
         '</script>',
         `
+    // Shim: en el iframe web no existe window.ReactNativeWebView (eso solo
+    // lo inyecta el WebView nativo) — sin esto, el click de un marcador
+    // (que llama a window.ReactNativeWebView.postMessage) fallaba en
+    // silencio y onMarkerPress nunca se disparaba en la vista web.
+    if (!window.ReactNativeWebView) {
+      window.ReactNativeWebView = { postMessage: function(data) { window.parent.postMessage(data, '*'); } };
+    }
     window.addEventListener('message', function(e) {
       var data = e.data;
       if (!data || !data.type) return;
@@ -608,6 +728,7 @@ const MapViewOffline: React.FC<MapViewOfflineProps> = ({
         case 'setEndMarker': window._setEndMarker(data.data); break;
         case 'setUserLocation': window._setUserLocation(data.data); break;
         case 'setView': window._setView(data.lat, data.lng, data.zoom); break;
+        case 'centrarSinZoom': window._centrarSinZoom(data.lat, data.lng); break;
         case 'setGeoJSONLayers': window._setGeoJSONLayers(data.layers); break;
         case 'fitBounds': window._fitBounds(data.points); break;
       }
@@ -789,9 +910,26 @@ const MapViewOffline: React.FC<MapViewOfflineProps> = ({
             id={m.id}
             coordinate={[m.longitud, m.latitud]}
             onSelected={() => onMarkerPress?.(m.id)}
+            anchor={m.tipoIcono === 'pin' ? { x: 0.5, y: 1 } : undefined}
+            draggable={m.draggable}
+            onDragEnd={
+              m.draggable
+                ? (e: Record<string, any>) => {
+                    const geometry = e?.geometry || e?.nativeEvent?.geometry;
+                    if (geometry?.coordinates) {
+                      onMarkerDragEnd?.(m.id, {
+                        latitud: geometry.coordinates[1],
+                        longitud: geometry.coordinates[0],
+                      });
+                    }
+                  }
+                : undefined
+            }
           >
-            <View style={styles.markerContainer}>
-              {m.icon ? (
+            <View style={m.tipoIcono === 'pin' ? styles.pinContainer : styles.markerContainer}>
+              {m.tipoIcono === 'pin' ? (
+                <PinIcon color={m.color || COLORS.primary} />
+              ) : m.icon ? (
                 <Text style={{ fontSize: 22 }}>{m.icon}</Text>
               ) : (
                 <View
@@ -900,6 +1038,10 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     width: 24,
     height: 24,
+  },
+  pinContainer: {
+    width: 28,
+    height: 36,
   },
   markerDot: {
     width: 14,

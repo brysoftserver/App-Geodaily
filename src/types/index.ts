@@ -229,6 +229,11 @@ export interface Plantacion {
   icono: string;
   /** Polígono del área de plantación (opcional — si viene, latitud/longitud son el centroide) */
   poligono?: PuntoPoligono[];
+  /** Beneficiario/vereda asociados al área (opcional — permite ubicar la plantación en Dashboard) */
+  beneficiario_cedula?: string;
+  beneficiario_nombre?: string;
+  vereda?: string;
+  corregimiento?: string;
 }
 
 export interface VisitaProgramada {
@@ -315,6 +320,8 @@ export interface PosicionTracking {
   heading?: number;
   timestamp: string;
   sincronizado: boolean;
+  /** Agrupa las posiciones de una misma ruta (Iniciar → Detener tracking). */
+  sesion_id?: string;
 }
 
 /** Documento digital de finca */
@@ -472,36 +479,38 @@ export interface ComponenteSocialEncuesta {
   // P5. Fuente ingresos
   fuente_ingresos: string;
   fuente_ingresos_otra: string;
-  // P6. Ocupación secundaria
+  // P6. ¿Cuánto son sus ingresos en salarios?
+  ingresos_salarios: string;
+  // P7. Ocupación secundaria
   ocupacion_secundaria: string;
   ocupacion_secundaria_otro: string;
-  // P7. Participa en organización
+  // P8. Participa en organización
   participa_organizacion: string; // 'Sí' | 'No'
   organizacion_cual: string;
-  // P8. Tipo de asociación
+  // P9. Tipo de asociación
   tipo_asociacion: string;
   tipo_asociacion_otro: string;
-  // P9. Rol en asociación
+  // P10. Rol en asociación
   rol_asociacion: string;
-  // P10. Vivienda ubicación
+  // P11. Vivienda ubicación
   vivienda_ubicacion: string;
   vivienda_ubicacion_otra?: string;
-  // P11. Energía eléctrica
+  // P12. Energía eléctrica
   energia_electrica: string; // 'Sí' | 'No'
-  // P12. Tipo de energía
+  // P13. Tipo de energía
   tipo_energia: string;
   tipo_energia_otro: string;
-  // P13. Agua consumo
+  // P14. Agua consumo
   agua_consumo: string;
   agua_consumo_otro: string;
-  // P14. Elementos tecnológicos (respuesta múltiple, separada por comas)
+  // P15. Elementos tecnológicos (respuesta múltiple, separada por comas)
   elementos_tecnologicos: string;
-  // P15. Señal celular
+  // P16. Señal celular
   senal_celular: string; // 'Sí' | 'No'
-  // P16. Quiénes trabajan
+  // P17. Quiénes trabajan (respuesta múltiple, separada por comas)
   quienes_trabajan: string;
   quienes_trabajan_otro?: string;
-  // P17. Medio de transporte
+  // P18. Medio de transporte
   medio_transporte: string;
   medio_transporte_otro: string;
 }
@@ -569,7 +578,8 @@ export interface AnalisisSueloEncuesta {
   textura: string;
   color: string;
   drenaje: string;
-  profundidad: string;
+  // P37. ¿Cuál ha sido el uso que se le ha dado a la Tierra?
+  uso_tierra: string;
   piedras: string;
   compactacion: string;
   cobertura: string;
@@ -611,22 +621,16 @@ export interface AcompaniamientoTecnico {
   manejo_suelo_si: boolean;
   manejo_suelo_no: boolean;
   manejo_suelo_obs: string;
-  // 4. Punto de georeferenciación del terreno (con captura GPS)
-  manejo_agua_si: boolean;
-  manejo_agua_no: boolean;
-  manejo_agua_obs: string;
-  georef_latitud?: string;
-  georef_longitud?: string;
-  georef_altitud?: string;
-  // 5. Orientación sobre procesos de producción de cacao
+  // (Punto de georeferenciación eliminado — la georeferencia ya se captura en otras secciones)
+  // 4. Orientación sobre procesos de producción de cacao
   capacitacion_si: boolean;
   capacitacion_no: boolean;
   capacitacion_obs: string;
-  // 6. Orientación manejo de preparación del terreno (limpias)
+  // 5. Orientación manejo de preparación del terreno (limpias)
   seguimiento_si: boolean;
   seguimiento_no: boolean;
   seguimiento_obs: string;
-  // 7. Orientación manejo de preparación del terreno (entresacado)
+  // 6. Orientación manejo de preparación del terreno (entresacado)
   entresacado_si?: boolean;
   entresacado_no?: boolean;
   entresacado_obs?: string;
@@ -647,7 +651,8 @@ export interface EncuestaSocialAgroAmbiental {
   telefono: string;
   tecnico_responsable: string;
   tecnico_cedula: string;
-  ubicacion_predio: string;
+  // Corregimiento del beneficiario (bloqueado al seleccionar del padrón — reemplaza "Ubicación del predio")
+  corregimiento: string;
 
   // Componentes
   componente_social: ComponenteSocialEncuesta;

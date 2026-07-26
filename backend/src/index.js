@@ -88,6 +88,7 @@ app.use('/api/documentos', require('./routes/documentos'));
 app.use('/api/beneficiarios', require('./routes/beneficiarios'));
 app.use('/api/revisiones', require('./routes/revisiones'));
 app.use('/api/archivos', require('./routes/archivos'));
+app.use('/api/notificaciones', require('./routes/notificaciones'));
 
 // --- 404 handler ---
 app.use((_req, res) => {

@@ -85,7 +85,13 @@ export const sincronizarBeneficiariosDesdeServidor = async (): Promise<boolean> 
 // SEED — 300 beneficiarios desde el CSV
 // ============================================================
 
-const SEED_DATA: Omit<BeneficiarioDB, 'tecnico_asignado_id' | 'tecnico_asignado_nombre' | 'created_at' | 'updated_at'>[] = [
+/**
+ * Exportado (no solo usado internamente) porque es la única fuente confiable
+ * en el código de la asociación vereda → corregimiento real del municipio;
+ * el Dashboard de supervisión (utils/corregimientos.ts) la reutiliza para
+ * resolver el corregimiento de un formulario cuando este no lo trae explícito.
+ */
+export const SEED_DATA: Omit<BeneficiarioDB, 'tecnico_asignado_id' | 'tecnico_asignado_nombre' | 'created_at' | 'updated_at'>[] = [
   { item: 1, corregimiento: 'LA AGUILILLA', vereda: 'Aguila 1', nombre_completo: 'Albeiro Calderon', cedula: '117783457' },
   { item: 2, corregimiento: 'LA AGUILILLA', vereda: 'Aguila 1', nombre_completo: 'Miller Arias', cedula: '96362024' },
   { item: 3, corregimiento: 'LA AGUILILLA', vereda: 'Aguila 1', nombre_completo: 'Amanda Garzon', cedula: '30521340' },

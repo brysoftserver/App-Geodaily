@@ -53,7 +53,7 @@ import {
   TEXTURA_SUELO_OPTS,
   COLOR_SUELO_OPTS,
   DRENAJE_OPTS,
-  PROFUNDIDAD_OPTS,
+  USO_TIERRA_OPTS,
   PRESENCIA_PIEDRAS_OPTS,
   COMPACTACION_OPTS,
   COBERTURA_SUELO_OPTS,
@@ -64,6 +64,7 @@ import {
   AREAS_CONSERVACION_OPTS,
   TIPO_AGROQUIMICO_OPTS,
   MANEJO_RESIDUOS_OPTS,
+  INGRESOS_SALARIOS_OPTS,
 } from '../../utils/constants';
 import { guardarBorrador, getBorrador, FormDraft } from '../../store/FormDraftStore';
 import {
@@ -103,6 +104,7 @@ const EMPTY_SOCIAL: ComponenteSocialEncuesta = {
   personas_nucleo: '',
   fuente_ingresos: '',
   fuente_ingresos_otra: '',
+  ingresos_salarios: '',
   ocupacion_secundaria: '',
   ocupacion_secundaria_otro: '',
   participa_organizacion: '',
@@ -165,7 +167,7 @@ const EMPTY_ANALISIS: AnalisisSueloEncuesta = {
   textura: '',
   color: '',
   drenaje: '',
-  profundidad: '',
+  uso_tierra: '',
   piedras: '',
   compactacion: '',
   cobertura: '',
@@ -201,9 +203,6 @@ const EMPTY_ACOMPANAMIENTO: AcompaniamientoTecnico = {
   manejo_suelo_si: false,
   manejo_suelo_no: false,
   manejo_suelo_obs: '',
-  manejo_agua_si: false,
-  manejo_agua_no: false,
-  manejo_agua_obs: '',
   capacitacion_si: false,
   capacitacion_no: false,
   capacitacion_obs: '',
@@ -213,9 +212,6 @@ const EMPTY_ACOMPANAMIENTO: AcompaniamientoTecnico = {
   entresacado_si: false,
   entresacado_no: false,
   entresacado_obs: '',
-  georef_latitud: '',
-  georef_longitud: '',
-  georef_altitud: '',
   observaciones_generales: '',
 };
 
@@ -231,7 +227,7 @@ const EMPTY_ENCUESTA: EncuestaSocialAgroAmbiental = {
   telefono: '',
   tecnico_responsable: '',
   tecnico_cedula: '',
-  ubicacion_predio: '',
+  corregimiento: '',
   componente_social: { ...EMPTY_SOCIAL },
   caracterizacion_finca: { ...EMPTY_FINCA },
   componente_productivo: { ...EMPTY_PRODUCTIVO },
@@ -273,6 +269,7 @@ const EncuestaSocialAgroambientalScreen: React.FC<Props> = ({ navigation, route 
   // ─── Estado del formulario ────────────────────────────────
   const [data, setData] = useState<EncuestaSocialAgroAmbiental>({ ...EMPTY_ENCUESTA });
   const [selectedMunicipio, setSelectedMunicipio] = useState('Puerto Rico');
+  const [datosBloqueados, setDatosBloqueados] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
 
@@ -345,7 +342,12 @@ const EncuestaSocialAgroambientalScreen: React.FC<Props> = ({ navigation, route 
             ...prev,
             productor_nombre: benefPrecargado.nombre || prev.productor_nombre,
             documento: benefPrecargado.cedula || prev.documento,
+            vereda: benefPrecargado.vereda || prev.vereda,
+            corregimiento: benefPrecargado.corregimiento || prev.corregimiento,
           }));
+          if (benefPrecargado.vereda || benefPrecargado.corregimiento) {
+            setDatosBloqueados(true);
+          }
         }
       }
 
@@ -1063,14 +1065,42 @@ const EncuestaSocialAgroambientalScreen: React.FC<Props> = ({ navigation, route 
                 required
               />
 
-              <DropdownPicker
-                label="Vereda"
-                value={data.vereda || null}
-                options={veredasDisponibles}
-                onSelect={(val) => updateData({ vereda: val })}
-                placeholder="Seleccionar vereda..."
-                required
-              />
+              {datosBloqueados && data.vereda ? (
+                <View style={styles.fieldContainer}>
+                  <Text style={styles.fieldLabel}>Vereda *</Text>
+                  <View style={styles.lockedField}>
+                    <Text style={styles.lockedFieldText}>📍 {data.vereda}</Text>
+                  </View>
+                </View>
+              ) : (
+                <DropdownPicker
+                  label="Vereda"
+                  value={data.vereda || null}
+                  options={veredasDisponibles}
+                  onSelect={(val) => updateData({ vereda: val })}
+                  placeholder="Seleccionar vereda..."
+                  required
+                />
+              )}
+
+              {datosBloqueados && data.corregimiento ? (
+                <View style={styles.fieldContainer}>
+                  <Text style={styles.fieldLabel}>Corregimiento *</Text>
+                  <View style={styles.lockedField}>
+                    <Text style={styles.lockedFieldText}>📍 {data.corregimiento}</Text>
+                  </View>
+                </View>
+              ) : (
+                renderField('Corregimiento', data.corregimiento, (t) => updateData({ corregimiento: t }), {
+                  placeholder: 'Corregimiento del beneficiario',
+                })
+              )}
+
+              {datosBloqueados && (
+                <TouchableOpacity onPress={() => setDatosBloqueados(false)} style={styles.editarManualBtn}>
+                  <Text style={styles.editarManualBtnText}>✏️ Editar vereda / corregimiento manualmente</Text>
+                </TouchableOpacity>
+              )}
 
               {renderField('Nombre del productor', data.productor_nombre, (t) => updateData({ productor_nombre: t }), {
                 placeholder: 'Nombre completo del productor',
@@ -1113,14 +1143,11 @@ const EncuestaSocialAgroambientalScreen: React.FC<Props> = ({ navigation, route 
                 </View>
               </View>
 
-              {renderField('Ubicación del predio', data.ubicacion_predio, (t) => updateData({ ubicacion_predio: t }), {
-                placeholder: '',
-              })}
             </>
           ))}
 
           {/* ═══════════════════════════════════════════════════
-               COMPONENTE SOCIAL (P1-P17)
+               COMPONENTE SOCIAL (P1-P18)
                ═══════════════════════════════════════════════════ */}
           {renderSection('COMPONENTE SOCIAL', '👥', '#2E7D32', (
             <>
@@ -1173,7 +1200,16 @@ const EncuestaSocialAgroambientalScreen: React.FC<Props> = ({ navigation, route 
 
               {/* 6 */}
               <DropdownPicker
-                label="6. ¿Cual es su ocupación secundaria?"
+                label="6. ¿Cuánto son sus ingresos en salarios?"
+                value={data.componente_social.ingresos_salarios || null}
+                options={INGRESOS_SALARIOS_OPTS}
+                onSelect={(val) => updateSocial({ ingresos_salarios: val })}
+                placeholder="Seleccionar..."
+              />
+
+              {/* 7 */}
+              <DropdownPicker
+                label="7. ¿Cual es su ocupación secundaria?"
                 value={data.componente_social.ocupacion_secundaria || null}
                 options={OCUPACION_SECUNDARIA_OPTS}
                 onSelect={(val) => updateSocial({ ocupacion_secundaria: val, ocupacion_secundaria_otro: val === 'Otro' ? data.componente_social.ocupacion_secundaria_otro : '' })}
@@ -1181,34 +1217,57 @@ const EncuestaSocialAgroambientalScreen: React.FC<Props> = ({ navigation, route 
               />
               {data.componente_social.ocupacion_secundaria === 'Otro' && renderField('Especifique cual otro:', data.componente_social.ocupacion_secundaria_otro, (t) => updateSocial({ ocupacion_secundaria_otro: t }), { placeholder: '' })}
 
-              {/* 7 */}
+              {/* 8 */}
               <DropdownPicker
-                label="7. Participa en alguna organización o asociación"
+                label="8. Participa en alguna organización o asociación"
                 value={data.componente_social.participa_organizacion || null}
                 options={SINO_OPTS}
-                onSelect={(val) => updateSocial({ participa_organizacion: val })}
+                onSelect={(val) => updateSocial({
+                  participa_organizacion: val,
+                  ...(val === 'No' ? { tipo_asociacion: 'Ninguna', tipo_asociacion_otro: '', rol_asociacion: 'Ninguna' } : {}),
+                })}
                 placeholder="Seleccionar..."
               />
               {data.componente_social.participa_organizacion === 'Sí' && renderField('Si la respuesta es “sí”, cual?:', data.componente_social.organizacion_cual, (t) => updateSocial({ organizacion_cual: t }), { placeholder: '' })}
 
-              {/* 8 */}
-              <DropdownPicker
-                label="8. ¿A qué asociaciones u organizaciones se encuentra afiliado?"
-                value={data.componente_social.tipo_asociacion || null}
-                options={TIPO_ASOCIACION_OPTS}
-                onSelect={(val) => updateSocial({ tipo_asociacion: val, tipo_asociacion_otro: val === 'Otro' ? data.componente_social.tipo_asociacion_otro : '' })}
-                placeholder="Seleccionar..."
-              />
-              {data.componente_social.tipo_asociacion === 'Otro' && renderField('Especifique cual otra:', data.componente_social.tipo_asociacion_otro, (t) => updateSocial({ tipo_asociacion_otro: t }), { placeholder: '' })}
+              {/* 9 */}
+              {data.componente_social.participa_organizacion === 'No' ? (
+                <View style={styles.fieldContainer}>
+                  <Text style={styles.fieldLabel}>9. ¿A qué asociaciones u organizaciones se encuentra afiliado?</Text>
+                  <View style={styles.lockedField}>
+                    <Text style={styles.lockedFieldText}>Ninguna</Text>
+                  </View>
+                </View>
+              ) : (
+                <>
+                  <DropdownPicker
+                    label="9. ¿A qué asociaciones u organizaciones se encuentra afiliado?"
+                    value={data.componente_social.tipo_asociacion || null}
+                    options={TIPO_ASOCIACION_OPTS}
+                    onSelect={(val) => updateSocial({ tipo_asociacion: val, tipo_asociacion_otro: val === 'Otro' ? data.componente_social.tipo_asociacion_otro : '' })}
+                    placeholder="Seleccionar..."
+                  />
+                  {data.componente_social.tipo_asociacion === 'Otro' && renderField('Especifique cual otra:', data.componente_social.tipo_asociacion_otro, (t) => updateSocial({ tipo_asociacion_otro: t }), { placeholder: '' })}
+                </>
+              )}
 
-              {/* 9 — texto libre según encuesta oficial */}
-              {renderField('9. ¿Cuál es el rol en la organización que está afiliado(a)?', data.componente_social.rol_asociacion, (t) => updateSocial({ rol_asociacion: t }), {
-                placeholder: '',
-              })}
+              {/* 10 — texto libre según encuesta oficial */}
+              {data.componente_social.participa_organizacion === 'No' ? (
+                <View style={styles.fieldContainer}>
+                  <Text style={styles.fieldLabel}>10. ¿Cuál es el rol en la organización que está afiliado(a)?</Text>
+                  <View style={styles.lockedField}>
+                    <Text style={styles.lockedFieldText}>Ninguna</Text>
+                  </View>
+                </View>
+              ) : (
+                renderField('10. ¿Cuál es el rol en la organización que está afiliado(a)?', data.componente_social.rol_asociacion, (t) => updateSocial({ rol_asociacion: t }), {
+                  placeholder: '',
+                })
+              )}
 
-              {/* 10 */}
+              {/* 11 */}
               <DropdownPicker
-                label="10. En donde está ubicada la vivienda principal de su núcleo familiar"
+                label="11. En donde está ubicada la vivienda principal de su núcleo familiar"
                 value={data.componente_social.vivienda_ubicacion || null}
                 options={VIVIENDA_UBICACION_OPTS}
                 onSelect={(val) => updateSocial({ vivienda_ubicacion: val, vivienda_ubicacion_otra: val === 'Otra' ? data.componente_social.vivienda_ubicacion_otra : '' })}
@@ -1216,18 +1275,18 @@ const EncuestaSocialAgroambientalScreen: React.FC<Props> = ({ navigation, route 
               />
               {data.componente_social.vivienda_ubicacion === 'Otra' && renderField('Especifique la otra ubicación:', data.componente_social.vivienda_ubicacion_otra || '', (t) => updateSocial({ vivienda_ubicacion_otra: t }), { placeholder: '' })}
 
-              {/* 11 */}
+              {/* 12 */}
               <DropdownPicker
-                label="11. ¿Su vivienda cuenta con energía?"
+                label="12. ¿Su vivienda cuenta con energía?"
                 value={data.componente_social.energia_electrica || null}
                 options={SINO_OPTS}
                 onSelect={(val) => updateSocial({ energia_electrica: val })}
                 placeholder="Seleccionar..."
               />
 
-              {/* 12 */}
+              {/* 13 */}
               <DropdownPicker
-                label="12. ¿Cuál es el tipo de energía con el que cuenta?"
+                label="13. ¿Cuál es el tipo de energía con el que cuenta?"
                 value={data.componente_social.tipo_energia || null}
                 options={TIPO_ENERGIA_OPTS}
                 onSelect={(val) => updateSocial({ tipo_energia: val, tipo_energia_otro: val === 'Otro' ? data.componente_social.tipo_energia_otro : '' })}
@@ -1235,9 +1294,9 @@ const EncuestaSocialAgroambientalScreen: React.FC<Props> = ({ navigation, route 
               />
               {data.componente_social.tipo_energia === 'Otro' && renderField('Especifique otro tipo de energía:', data.componente_social.tipo_energia_otro, (t) => updateSocial({ tipo_energia_otro: t }), { placeholder: '' })}
 
-              {/* 13 */}
+              {/* 14 */}
               <DropdownPicker
-                label="13. ¿De dónde obtiene principalmente el agua para el consumo humano?"
+                label="14. ¿De dónde obtiene principalmente el agua para el consumo humano?"
                 value={data.componente_social.agua_consumo || null}
                 options={AGUA_CONSUMO_OPTS}
                 onSelect={(val) => updateSocial({ agua_consumo: val, agua_consumo_otro: val === 'Otro' ? data.componente_social.agua_consumo_otro : '' })}
@@ -1245,36 +1304,38 @@ const EncuestaSocialAgroambientalScreen: React.FC<Props> = ({ navigation, route 
               />
               {data.componente_social.agua_consumo === 'Otro' && renderField('Especifique cual otro:', data.componente_social.agua_consumo_otro, (t) => updateSocial({ agua_consumo_otro: t }), { placeholder: '' })}
 
-              {/* 14 — respuesta múltiple */}
+              {/* 15 — respuesta múltiple */}
               {renderMultiCheck(
-                '14. ¿Cuenta con algunos de estos elementos? (respuesta multiple)',
+                '15. ¿Cuenta con algunos de estos elementos? (respuesta multiple)',
                 data.componente_social.elementos_tecnologicos,
                 ELEMENTOS_TECNOLOGICOS_OPTS,
                 (nuevo) => updateSocial({ elementos_tecnologicos: nuevo })
               )}
 
-              {/* 15 */}
+              {/* 16 */}
               <DropdownPicker
-                label="15. ¿Cuenta con señal de celular en su vivienda?"
+                label="16. ¿Cuenta con señal de celular en su vivienda?"
                 value={data.componente_social.senal_celular || null}
                 options={SINO_OPTS}
                 onSelect={(val) => updateSocial({ senal_celular: val })}
                 placeholder="Seleccionar..."
               />
 
-              {/* 16 */}
-              <DropdownPicker
-                label="16. ¿Quiénes trabajan en su finca?"
-                value={data.componente_social.quienes_trabajan || null}
-                options={QUIENES_TRABAJAN_OPTS}
-                onSelect={(val) => updateSocial({ quienes_trabajan: val, quienes_trabajan_otro: val === 'Otro' ? data.componente_social.quienes_trabajan_otro : '' })}
-                placeholder="Seleccionar..."
-              />
-              {data.componente_social.quienes_trabajan === 'Otro' && renderField('Especifique cual otro:', data.componente_social.quienes_trabajan_otro || '', (t) => updateSocial({ quienes_trabajan_otro: t }), { placeholder: '' })}
-
-              {/* 17 — selección múltiple: pueden usar varios medios de transporte */}
+              {/* 17 — respuesta múltiple */}
               {renderMultiCheck(
-                '17. ¿Qué medio de transporte utiliza?',
+                '17. ¿Quiénes trabajan en su finca? (respuesta multiple)',
+                data.componente_social.quienes_trabajan,
+                QUIENES_TRABAJAN_OPTS,
+                (nuevo) => updateSocial({
+                  quienes_trabajan: nuevo,
+                  quienes_trabajan_otro: nuevo.split(', ').includes('Otro') ? data.componente_social.quienes_trabajan_otro : '',
+                })
+              )}
+              {(data.componente_social.quienes_trabajan || '').split(', ').includes('Otro') && renderField('Especifique cual otro:', data.componente_social.quienes_trabajan_otro || '', (t) => updateSocial({ quienes_trabajan_otro: t }), { placeholder: '' })}
+
+              {/* 18 — selección múltiple: pueden usar varios medios de transporte */}
+              {renderMultiCheck(
+                '18. ¿Qué medio de transporte utiliza?',
                 data.componente_social.medio_transporte,
                 MEDIO_TRANSPORTE_OPTS,
                 (nuevo) => updateSocial({
@@ -1287,32 +1348,32 @@ const EncuestaSocialAgroambientalScreen: React.FC<Props> = ({ navigation, route 
           ))}
 
           {/* ═══════════════════════════════════════════════════
-               CARACTERIZACIÓN DE LA FINCA (P18-P28)
+               CARACTERIZACIÓN DE LA FINCA (P19-P27)
                ═══════════════════════════════════════════════════ */}
           {renderSection('CARACTERIZACION DE LA FINCA', '🏠', '#8D6E63', (
             <>
-              {/* 18 */}
-              {renderField('18. Nombre de la finca', data.caracterizacion_finca.nombre_finca, (t) => updateFinca({ nombre_finca: t }), {
+              {/* 19 */}
+              {renderField('19. Nombre de la finca', data.caracterizacion_finca.nombre_finca, (t) => updateFinca({ nombre_finca: t }), {
                 placeholder: '',
               })}
 
-              {/* 19 — Captura GPS con resultado debajo */}
+              {/* 20 — Captura GPS con resultado debajo */}
               {renderCapturaGPS(
-                '19. Coordenada de la finca',
+                '20. Coordenada de la finca',
                 data.caracterizacion_finca.latitud,
                 data.caracterizacion_finca.longitud,
                 data.caracterizacion_finca.altitud,
                 (lat, lon, alt) => updateFinca({ latitud: lat, longitud: lon, altitud: alt })
               )}
 
-              {/* 20 */}
-              {renderField('20. ¿Cuál es el área total de la finca en hectáreas?', data.caracterizacion_finca.area_total, (t) => updateFinca({ area_total: t }), {
+              {/* 21 */}
+              {renderField('21. ¿Cuál es el área total de la finca en hectáreas?', data.caracterizacion_finca.area_total, (t) => updateFinca({ area_total: t }), {
                 placeholder: '',
                 keyboardType: 'numeric',
               })}
 
-              {/* 21 — División en hectáreas (texto oficial) */}
-              <Text style={styles.subSectionTitle}>21. ¿Cómo está dividida en hectáreas?</Text>
+              {/* 22 — División en hectáreas (texto oficial) */}
+              <Text style={styles.subSectionTitle}>22. ¿Cómo está dividida en hectáreas?</Text>
               <View style={styles.row}>
                 <View style={styles.halfField}>
                   {renderField('Área de bosque', data.caracterizacion_finca.division_bosque, (t) => updateFinca({ division_bosque: t }), { placeholder: 'ha', keyboardType: 'numeric' })}
@@ -1330,9 +1391,9 @@ const EncuestaSocialAgroambientalScreen: React.FC<Props> = ({ navigation, route 
                 </View>
               </View>
 
-              {/* 22 */}
+              {/* 23 */}
               <DropdownPicker
-                label="22. Medio de salida de productos al centro poblado más cercano"
+                label="23. Medio de salida de productos al centro poblado más cercano"
                 value={data.caracterizacion_finca.medio_salida || null}
                 options={MEDIO_SALIDA_OPTS}
                 onSelect={(val) => updateFinca({ medio_salida: val })}
@@ -1342,22 +1403,22 @@ const EncuestaSocialAgroambientalScreen: React.FC<Props> = ({ navigation, route 
                 Nota info: Terciaria – Secundaria – Primaria: camino de herradura, trocha o destapada y carreteable principal · Secundaria – Primaria: trocha o destapada y carreteable principal · Primaria: carreteable principal
               </Text>
 
-              {/* 23 */}
-              {renderField('23. Distancia aproximada del predio al centro poblado (km)', data.caracterizacion_finca.distancia_km || '', (t) => updateFinca({ distancia_km: t }), {
+              {/* 24 */}
+              {renderField('24. Distancia aproximada del predio al centro poblado (km)', data.caracterizacion_finca.distancia_km || '', (t) => updateFinca({ distancia_km: t }), {
                 placeholder: 'km',
                 keyboardType: 'numeric',
               })}
 
-              {/* 24 */}
-              {renderField('24. Observaciones de la descripción llegada al predio (desde cabecera municipal)', data.caracterizacion_finca.distancia_observaciones, (t) => updateFinca({ distancia_observaciones: t }), {
+              {/* 25 */}
+              {renderField('25. Observaciones de la descripción llegada al predio (desde cabecera municipal)', data.caracterizacion_finca.distancia_observaciones, (t) => updateFinca({ distancia_observaciones: t }), {
                 placeholder: '',
                 multiline: true,
                 numberOfLines: 3,
               })}
 
-              {/* 25 */}
+              {/* 26 */}
               <DropdownPicker
-                label="25. ¿Realiza aprovechamiento productivo de manera directa?"
+                label="26. ¿Realiza aprovechamiento productivo de manera directa?"
                 value={data.caracterizacion_finca.aprovechamiento_directo || null}
                 options={SINO_OPTS}
                 onSelect={(val) => updateFinca({ aprovechamiento_directo: val, aprovechamiento_porque: val === 'No' ? data.caracterizacion_finca.aprovechamiento_porque : '' })}
@@ -1368,9 +1429,9 @@ const EncuestaSocialAgroambientalScreen: React.FC<Props> = ({ navigation, route 
               </Text>
               {data.caracterizacion_finca.aprovechamiento_directo === 'No' && renderField('Porque?:', data.caracterizacion_finca.aprovechamiento_porque || '', (t) => updateFinca({ aprovechamiento_porque: t }), { placeholder: '' })}
 
-              {/* 26 — respuesta múltiple con sub-listas */}
+              {/* 27 — respuesta múltiple con sub-listas */}
               {renderMultiCheck(
-                '26. ¿Cuáles son las actividades que realiza en su finca?',
+                '27. ¿Cuáles son las actividades que realiza en su finca?',
                 data.caracterizacion_finca.actividades_finca || '',
                 ACTIVIDADES_FINCA_OPTS,
                 (nuevo) => updateFinca({ actividades_finca: nuevo })
@@ -1402,41 +1463,41 @@ const EncuestaSocialAgroambientalScreen: React.FC<Props> = ({ navigation, route 
           ))}
 
           {/* ═══════════════════════════════════════════════════
-               COMPONENTE PRODUCTIVO (P29-P35)
+               COMPONENTE PRODUCTIVO (P28-P31)
                ═══════════════════════════════════════════════════ */}
           {renderSection('COMPONENTE PRODUCTIVO', '🌱', '#1565C0', (
             <>
-              {/* 27 — sin campo "Cual?": ninguna opción de esta pregunta es "Otro",
+              {/* 28 — sin campo "Cual?": ninguna opción de esta pregunta es "Otro",
                   así que no hay nada que el técnico deba especificar aparte. */}
               <DropdownPicker
-                label="27. ¿Cual es la actividad principal productiva de la finca?"
+                label="28. ¿Cual es la actividad principal productiva de la finca?"
                 value={data.componente_productivo.actividad_principal || null}
                 options={ACTIVIDAD_PRODUCTIVA_OPTS}
                 onSelect={(val) => updateProductivo({ actividad_principal: val })}
                 placeholder="Seleccionar..."
               />
 
-              {/* 28 */}
+              {/* 29 */}
               <DropdownPicker
-                label="28. ¿El predio cuenta con acceso permanente al agua?"
+                label="29. ¿El predio cuenta con acceso permanente al agua?"
                 value={data.componente_productivo.acceso_agua || null}
                 options={SINO_OPTS}
                 onSelect={(val) => updateProductivo({ acceso_agua: val })}
                 placeholder="Seleccionar..."
               />
 
-              {/* 29 */}
+              {/* 30 */}
               <DropdownPicker
-                label="29. ¿Dispone de sistemas de riego?"
+                label="30. ¿Dispone de sistemas de riego?"
                 value={data.componente_productivo.sistemas_riego || null}
                 options={SINO_OPTS}
                 onSelect={(val) => updateProductivo({ sistemas_riego: val })}
                 placeholder="Seleccionar..."
               />
 
-              {/* 30 */}
+              {/* 31 */}
               <DropdownPicker
-                label="30. ¿Ha recibido asistencia técnica en los últimos dos años?"
+                label="31. ¿Ha recibido asistencia técnica en los últimos dos años?"
                 value={data.componente_productivo.asistencia_tecnica || null}
                 options={SINO_OPTS}
                 onSelect={(val) => updateProductivo({ asistencia_tecnica: val })}
@@ -1446,101 +1507,101 @@ const EncuestaSocialAgroambientalScreen: React.FC<Props> = ({ navigation, route 
           ))}
 
           {/* ═══════════════════════════════════════════════════
-               ANÁLISIS DE SUELO (P36-P45)
+               ANÁLISIS DE SUELO (P32-P42)
                ═══════════════════════════════════════════════════ */}
           {renderSection('SECCIÓN DE SUELO', '🔬', '#6A1B9A', (
             <>
-              {/* 31 — Punto de georeferenciación */}
+              {/* 32 — Punto de georeferenciación */}
               {renderCapturaGPS(
-                '31. Ubicación del área de intervención del proyecto',
+                '32. Ubicación del área de intervención del proyecto',
                 data.analisis_suelo.intervencion_latitud,
                 data.analisis_suelo.intervencion_longitud,
                 data.analisis_suelo.intervencion_altitud,
                 (lat, lon, alt) => updateAnalisis({ intervencion_latitud: lat, intervencion_longitud: lon, intervencion_altitud: alt })
               )}
 
-              {/* 32 */}
+              {/* 33 */}
               <DropdownPicker
-                label="32. ¿Ha realizado alguna vez análisis de suelo en su predio?"
+                label="33. ¿Ha realizado alguna vez análisis de suelo en su predio?"
                 value={data.analisis_suelo.analisis_realizado || null}
                 options={ANALISIS_SUELO_REALIZADO_OPTS}
                 onSelect={(val) => updateAnalisis({ analisis_realizado: val })}
                 placeholder="Seleccionar..."
               />
 
-              {/* 33 — selección múltiple */}
+              {/* 34 — selección múltiple */}
               {renderMultiCheck(
-                '33. ¿Cuál es la textura predominante en el suelo? Selección multiple',
+                '34. ¿Cuál es la textura predominante en el suelo? Selección multiple',
                 data.analisis_suelo.textura,
                 TEXTURA_SUELO_OPTS,
                 (nuevo) => updateAnalisis({ textura: nuevo })
               )}
 
-              {/* 34 */}
+              {/* 35 */}
               <DropdownPicker
-                label="34. ¿Qué coloración predomina en el suelo?"
+                label="35. ¿Qué coloración predomina en el suelo?"
                 value={data.analisis_suelo.color || null}
                 options={COLOR_SUELO_OPTS}
                 onSelect={(val) => updateAnalisis({ color: val })}
                 placeholder="Seleccionar..."
               />
 
-              {/* 35 */}
+              {/* 36 */}
               <DropdownPicker
-                label="35. ¿Qué tipo de drenaje hay en el suelo?"
+                label="36. ¿Qué tipo de drenaje hay en el suelo?"
                 value={data.analisis_suelo.drenaje || null}
                 options={DRENAJE_OPTS}
                 onSelect={(val) => updateAnalisis({ drenaje: val })}
                 placeholder="Seleccionar..."
               />
 
-              {/* 36 */}
+              {/* 37 */}
               <DropdownPicker
-                label="36. ¿Cuál es la profundidad efectiva del suelo?"
-                value={data.analisis_suelo.profundidad || null}
-                options={PROFUNDIDAD_OPTS}
-                onSelect={(val) => updateAnalisis({ profundidad: val })}
+                label="37. ¿Cuál ha sido el uso que se le ha dado a la Tierra?"
+                value={data.analisis_suelo.uso_tierra || null}
+                options={USO_TIERRA_OPTS}
+                onSelect={(val) => updateAnalisis({ uso_tierra: val })}
                 placeholder="Seleccionar..."
               />
 
-              {/* 37 */}
+              {/* 38 */}
               <DropdownPicker
-                label="37. ¿Existe alguna presencia de piedras o fragmentos rocosos?"
+                label="38. ¿Existe alguna presencia de piedras o fragmentos rocosos?"
                 value={data.analisis_suelo.piedras || null}
                 options={PRESENCIA_PIEDRAS_OPTS}
                 onSelect={(val) => updateAnalisis({ piedras: val })}
                 placeholder="Seleccionar..."
               />
 
-              {/* 38 */}
+              {/* 39 */}
               <DropdownPicker
-                label="38. ¿Cuál es el estado de la compactación del suelo?"
+                label="39. ¿Cuál es el estado de la compactación del suelo?"
                 value={data.analisis_suelo.compactacion || null}
                 options={COMPACTACION_OPTS}
                 onSelect={(val) => updateAnalisis({ compactacion: val })}
                 placeholder="Seleccionar..."
               />
 
-              {/* 39 */}
+              {/* 40 */}
               <DropdownPicker
-                label="39. ¿Qué presencia de cobertura presenta el suelo?"
+                label="40. ¿Qué presencia de cobertura presenta el suelo?"
                 value={data.analisis_suelo.cobertura || null}
                 options={COBERTURA_SUELO_OPTS}
                 onSelect={(val) => updateAnalisis({ cobertura: val })}
                 placeholder="Seleccionar..."
               />
 
-              {/* 40 */}
+              {/* 41 */}
               <DropdownPicker
-                label="40. ¿Se evidencia algún tipo de erosión en el suelo?"
+                label="41. ¿Se evidencia algún tipo de erosión en el suelo?"
                 value={data.analisis_suelo.erosion || null}
                 options={EVIDENCIA_EROSION_OPTS}
                 onSelect={(val) => updateAnalisis({ erosion: val })}
                 placeholder="Seleccionar..."
               />
 
-              {/* 41 — grados */}
-              {renderField('41. ¿Cual es el grado de Pendiente del terreno? (°)', data.analisis_suelo.pendiente, (t) => updateAnalisis({ pendiente: t }), {
+              {/* 42 — grados */}
+              {renderField('42. ¿Cual es el grado de Pendiente del terreno? (°)', data.analisis_suelo.pendiente, (t) => updateAnalisis({ pendiente: t }), {
                 placeholder: '°',
                 keyboardType: 'numeric',
               })}
@@ -1548,58 +1609,68 @@ const EncuestaSocialAgroambientalScreen: React.FC<Props> = ({ navigation, route 
           ))}
 
           {/* ═══════════════════════════════════════════════════
-               COMPONENTE AGROAMBIENTAL (P46-P53)
+               COMPONENTE AGROAMBIENTAL (P43-P50)
                ═══════════════════════════════════════════════════ */}
           {renderSection('COMPONENTE AGROAMBIENTAL', '🌿', '#E65100', (
             <>
-              {/* 42 */}
+              {/* 43 */}
               <DropdownPicker
-                label="42. ¿El predio presenta procesos de erosión?"
+                label="43. ¿El predio presenta procesos de erosión?"
                 value={data.componente_agroambiental.procesos_erosion || null}
                 options={PROCESOS_EROSION_OPTS}
                 onSelect={(val) => updateAgroambiental({ procesos_erosion: val })}
                 placeholder="Seleccionar..."
               />
 
-              {/* 43 */}
+              {/* 44 */}
               <DropdownPicker
-                label="43. ¿Existen fuentes hídricas dentro o cerca del predio?"
+                label="44. ¿Existen fuentes hídricas dentro o cerca del predio?"
                 value={data.componente_agroambiental.fuentes_hidricas || null}
                 options={FUENTES_HIDRICAS_OPTS}
                 onSelect={(val) => updateAgroambiental({ fuentes_hidricas: val })}
                 placeholder="Seleccionar..."
               />
 
-              {/* 44 */}
-              <DropdownPicker
-                label="44. ¿El predio cuenta con áreas de conservación o protección?"
-                value={data.componente_agroambiental.areas_conservacion || null}
-                options={AREAS_CONSERVACION_OPTS}
-                onSelect={(val) => updateAgroambiental({ areas_conservacion: val })}
-                placeholder="Seleccionar..."
-              />
+              {/* 45 — respuesta múltiple */}
+              {renderMultiCheck(
+                '45. ¿El predio cuenta con áreas de conservación o protección? (respuesta multiple)',
+                data.componente_agroambiental.areas_conservacion,
+                AREAS_CONSERVACION_OPTS,
+                (nuevo) => updateAgroambiental({ areas_conservacion: nuevo })
+              )}
 
-              {/* 45 */}
+              {/* 46 */}
               <DropdownPicker
-                label="45. ¿Realiza prácticas de conservación del suelo?"
+                label="46. ¿Realiza prácticas de conservación del suelo?"
                 value={data.componente_agroambiental.practicas_conservacion || null}
                 options={PRACTICAS_CONSERVACION_OPTS}
                 onSelect={(val) => updateAgroambiental({ practicas_conservacion: val })}
                 placeholder="Seleccionar..."
               />
 
-              {/* 46 */}
+              {/* 47 — si es No, auto-hardcodea 48 y 49 con "Ninguno" */}
               <DropdownPicker
-                label="46. ¿Utiliza algún tipo agroquímico?"
+                label="47. ¿Utiliza algún tipo agroquímico?"
                 value={data.componente_agroambiental.uso_agroquimicos || null}
                 options={SINO_OPTS}
-                onSelect={(val) => updateAgroambiental({ uso_agroquimicos: val })}
+                onSelect={(val) => {
+                  if (val === 'No') {
+                    updateAgroambiental({
+                      uso_agroquimicos: val,
+                      tipo_agroquimicos: 'Ninguno',
+                      tipo_agroquimicos_otro: '',
+                      herbicidas_cuales: 'Ninguno',
+                    });
+                  } else {
+                    updateAgroambiental({ uso_agroquimicos: val, tipo_agroquimicos: '', herbicidas_cuales: '' });
+                  }
+                }}
                 placeholder="Seleccionar..."
               />
 
-              {/* 47 */}
+              {/* 48 */}
               <DropdownPicker
-                label="47. ¿Qué tipo de agroquímicos utiliza?"
+                label="48. ¿Qué tipo de agroquímicos utiliza?"
                 value={data.componente_agroambiental.tipo_agroquimicos || null}
                 options={TIPO_AGROQUIMICO_OPTS}
                 onSelect={(val) => updateAgroambiental({ tipo_agroquimicos: val, tipo_agroquimicos_otro: val === 'Otro' ? data.componente_agroambiental.tipo_agroquimicos_otro : '' })}
@@ -1607,14 +1678,14 @@ const EncuestaSocialAgroambientalScreen: React.FC<Props> = ({ navigation, route 
               />
               {data.componente_agroambiental.tipo_agroquimicos === 'Otro' && renderField('Especifique cual otro:', data.componente_agroambiental.tipo_agroquimicos_otro || '', (t) => updateAgroambiental({ tipo_agroquimicos_otro: t }), { placeholder: '' })}
 
-              {/* 48 — texto libre */}
-              {renderField('48. Mencione qué tipo de herbicidas utiliza', data.componente_agroambiental.herbicidas_cuales, (t) => updateAgroambiental({ herbicidas_cuales: t }), {
+              {/* 49 — texto libre */}
+              {renderField('49. Mencione el nombre del agroquimico', data.componente_agroambiental.herbicidas_cuales, (t) => updateAgroambiental({ herbicidas_cuales: t }), {
                 placeholder: '',
               })}
 
-              {/* 49 */}
+              {/* 50 */}
               <DropdownPicker
-                label="49. ¿Realiza manejo de residuos de agroquímicos?"
+                label="50. ¿Realiza manejo de residuos de agroquímicos?"
                 value={data.componente_agroambiental.manejo_residuos || null}
                 options={MANEJO_RESIDUOS_OPTS}
                 onSelect={(val) => updateAgroambiental({ manejo_residuos: val })}
@@ -1629,19 +1700,19 @@ const EncuestaSocialAgroambientalScreen: React.FC<Props> = ({ navigation, route 
           {renderSection('RECOMENDACIONES DEL TÉCNICO', '📝', '#F57F17', (
             <>
               {renderField(
-                '50. Recomendaciones técnicas para el sistema productivo:',
+                '51. Recomendaciones técnicas para el sistema productivo:',
                 data.recomendaciones.recomendaciones_tecnicas,
                 (t) => updateRecomendaciones({ recomendaciones_tecnicas: t }),
                 { placeholder: '', multiline: true, numberOfLines: 3 }
               )}
               {renderField(
-                '51. Compromisos adquiridos sobre el desarrollo del estado actual del terreno:',
+                '52. Compromisos adquiridos sobre el desarrollo del estado actual del terreno:',
                 data.recomendaciones.compromisos_productor,
                 (t) => updateRecomendaciones({ compromisos_productor: t }),
                 { placeholder: '', multiline: true, numberOfLines: 3 }
               )}
               {renderField(
-                '52. Recomendaciones ambientales y de conservación:',
+                '53. Recomendaciones ambientales y de conservación:',
                 data.recomendaciones.recomendaciones_ambientales,
                 (t) => updateRecomendaciones({ recomendaciones_ambientales: t }),
                 { placeholder: '', multiline: true, numberOfLines: 3 }
@@ -1658,10 +1729,9 @@ const EncuestaSocialAgroambientalScreen: React.FC<Props> = ({ navigation, route 
                 { label: '1. Socialización de actividades del proyecto al productor, mediante presentación digital.', si: 'actividades_realizadas_si', no: 'actividades_realizadas_no', obs: 'actividades_realizadas_obs' },
                 { label: '2. Realización de selección y delimitación técnica del terreno para la implementación del cultivo de cacao en arreglo agroforestal con plátano y maderable.', si: 'manejo_plagas_si', no: 'manejo_plagas_no', obs: 'manejo_plagas_obs' },
                 { label: '3. Realización de muestreo de suelo, teniendo en cuenta: criterios de homogeneidad, uso actual del terreno, topografía y condiciones agroecológicas.', si: 'manejo_suelo_si', no: 'manejo_suelo_no', obs: 'manejo_suelo_obs' },
-                { label: '4. Punto de georeferenciación del terreno donde se realizará la implementación del cultivo de cacao en arreglo agroforestal con plátano y maderable.', si: 'manejo_agua_si', no: 'manejo_agua_no', obs: 'manejo_agua_obs', geo: true },
-                { label: '5. Orientación al productor sobre procesos de producción y beneficios de la producción de cacao.', si: 'capacitacion_si', no: 'capacitacion_no', obs: 'capacitacion_obs' },
-                { label: '6. Orientación del manejo de preparación del terreno: realización de limpias si es rastrojo de porte bajo (herbáceas), recomendando no utilización de herbicidas a base de componentes de medio a altamente tóxicos.', si: 'seguimiento_si', no: 'seguimiento_no', obs: 'seguimiento_obs' },
-                { label: '7. Orientación del manejo de preparación del terreno: realización de entresacado en rastrojo biche de regeneración baja (arbóreas o arbustos), recomendando entresacado', si: 'entresacado_si', no: 'entresacado_no', obs: 'entresacado_obs' },
+                { label: '4. Orientación al productor sobre procesos de producción y beneficios de la producción de cacao.', si: 'capacitacion_si', no: 'capacitacion_no', obs: 'capacitacion_obs' },
+                { label: '5. Orientación del manejo de preparación del terreno: realización de limpias si es rastrojo de porte bajo (herbáceas), recomendando no utilización de herbicidas a base de componentes de medio a altamente tóxicos.', si: 'seguimiento_si', no: 'seguimiento_no', obs: 'seguimiento_obs' },
+                { label: '6. Orientación del manejo de preparación del terreno: realización de entresacado en rastrojo biche de regeneración baja (arbóreas o arbustos), recomendando entresacado', si: 'entresacado_si', no: 'entresacado_no', obs: 'entresacado_obs' },
               ].map((item) => (
                 <View key={item.si} style={styles.acompaniamientoItem}>
                   <Text style={styles.fieldLabel}>{item.label}</Text>
@@ -1679,13 +1749,6 @@ const EncuestaSocialAgroambientalScreen: React.FC<Props> = ({ navigation, route 
                       <Text style={[styles.siNoBtnText, data.acompaniamiento[item.no as keyof AcompaniamientoTecnico] && styles.siNoBtnTextActive]}>No</Text>
                     </TouchableOpacity>
                   </View>
-                  {item.geo && renderCapturaGPS(
-                    'Captura de ubicación (latitud, longitud y altitud)',
-                    data.acompaniamiento.georef_latitud,
-                    data.acompaniamiento.georef_longitud,
-                    data.acompaniamiento.georef_altitud,
-                    (lat, lon, alt) => updateAcompaniamiento({ georef_latitud: lat, georef_longitud: lon, georef_altitud: alt })
-                  )}
                   {renderField('Observaciones',
                     data.acompaniamiento[item.obs as keyof AcompaniamientoTecnico] as string || '',
                     (t) => updateAcompaniamiento({ [item.obs]: t } as any),
@@ -1961,6 +2024,15 @@ const styles = StyleSheet.create({
     fontSize: FONTS.sizes.md,
     fontWeight: FONTS.weights.semibold,
     color: COLORS.primary,
+  },
+  editarManualBtn: {
+    alignSelf: 'flex-start',
+    marginBottom: SPACING.sm,
+  },
+  editarManualBtnText: {
+    fontSize: FONTS.sizes.sm,
+    color: COLORS.primary,
+    fontWeight: FONTS.weights.medium,
   },
   // Selección múltiple (checkboxes)
   checkRow: {

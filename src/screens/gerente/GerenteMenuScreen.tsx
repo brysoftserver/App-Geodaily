@@ -18,6 +18,8 @@ import { COLORS, FONTS, SPACING, BORDER_RADIUS, SHADOWS } from '../../theme';
 import { useAuth } from '../../store/AuthContext';
 import { useAvatar } from '../../hooks/useAvatar';
 import CambiarContrasenaModal from '../../components/CambiarContrasenaModal';
+import AjustesMenu from '../../components/AjustesMenu';
+import NotificacionBell from '../../components/NotificacionBell';
 
 type GerenteMenuProps = {
   navigation: NativeStackNavigationProp<Record<string, any>>;
@@ -97,12 +99,12 @@ const MENU_ITEMS = [
     screen: 'BaseDatosBeneficiarios',
   },
   {
-    id: 'contrasena',
-    title: 'Cambiar Contraseña',
-    subtitle: 'Actualizar tu contraseña de acceso',
-    icon: '🔑',
-    color: COLORS.roleGerente,
-    screen: 'ModalContrasena',
+    id: 'plantaciones',
+    title: 'Áreas de Plantación',
+    subtitle: 'Áreas marcadas por técnico, vereda y beneficiario',
+    icon: '🌱',
+    color: COLORS.success,
+    screen: 'GerentePlantacionesPorTecnico',
   },
 ];
 
@@ -110,10 +112,6 @@ const GerenteMenuScreen: React.FC<GerenteMenuProps> = ({ navigation }) => {
   const { user, logout } = useAuth();
   const { avatarUri, cambiarAvatar, cambiando } = useAvatar(user?.id);
   const [showPasswordModal, setShowPasswordModal] = useState(false);
-
-  const handleLogout = () => {
-    logout();
-  };
 
   return (
     <ScrollView style={styles.container} contentContainerStyle={styles.content}>
@@ -141,9 +139,13 @@ const GerenteMenuScreen: React.FC<GerenteMenuProps> = ({ navigation }) => {
           <Text style={styles.userName}>{user?.nombre || 'Gerente'}</Text>
           <Text style={styles.userRole}>Gerente de Operaciones</Text>
         </View>
-        <TouchableOpacity onPress={handleLogout} style={styles.logoutButton}>
-          <Text style={styles.logoutText}>Salir</Text>
-        </TouchableOpacity>
+        <NotificacionBell navigation={navigation} formularioDetailScreen="SupervisionFormularioDetail" />
+        <AjustesMenu
+          opciones={[
+            { id: 'contrasena', label: 'Cambiar Contraseña', icon: '🔑', onPress: () => setShowPasswordModal(true) },
+            { id: 'cerrar', label: 'Cerrar Sesión', icon: '🚪', onPress: logout, destructivo: true },
+          ]}
+        />
       </ImageBackground>
 
       {/* Menú */}
@@ -152,13 +154,7 @@ const GerenteMenuScreen: React.FC<GerenteMenuProps> = ({ navigation }) => {
           <TouchableOpacity
             key={item.id}
             style={styles.menuCard}
-            onPress={() => {
-              if (item.id === 'contrasena') {
-                setShowPasswordModal(true);
-              } else {
-                navigation.navigate(item.screen);
-              }
-            }}
+            onPress={() => navigation.navigate(item.screen)}
             activeOpacity={0.7}
           >
             <View style={[styles.menuIconContainer, { backgroundColor: item.color + '15' }]}>
@@ -238,18 +234,6 @@ const styles = StyleSheet.create({
   userRole: {
     fontSize: FONTS.sizes.sm,
     color: COLORS.textSecondary,
-  },
-  logoutButton: {
-    paddingHorizontal: SPACING.md,
-    paddingVertical: SPACING.sm,
-    borderRadius: BORDER_RADIUS.sm,
-    borderWidth: 1,
-    borderColor: COLORS.error,
-  },
-  logoutText: {
-    color: COLORS.error,
-    fontSize: FONTS.sizes.sm,
-    fontWeight: FONTS.weights.medium,
   },
   menuGrid: {
     gap: SPACING.md,

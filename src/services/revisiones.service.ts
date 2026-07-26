@@ -14,8 +14,26 @@ export interface Revision {
   revisor_rol: 'supervisor' | 'interventor' | 'gerente' | 'admin';
   /** 'formulario_rol' es el tipo histórico (antes de dividirse en línea/campo) — se conserva solo para leer datos viejos */
   tipo: 'novedad' | 'visto_bueno' | 'formulario_rol' | 'formulario_en_linea' | 'formulario_en_campo';
+  /** Sección del formulario clonado a la que aplica (null = revisión global) */
+  seccion?: string | null;
   comentario: string | null;
   datos_formulario_json: Record<string, unknown> | null;
+  created_at: string;
+}
+
+export interface EvidenciaRevisor {
+  id: number;
+  formulario_id: string;
+  revisor_id: string;
+  revisor_nombre: string | null;
+  revisor_rol: 'supervisor' | 'interventor' | 'gerente' | 'admin';
+  fotos_json: { uri: string }[];
+  firma_beneficiario: string | null;
+  firma_revisor: string | null;
+  geo_latitud: number | null;
+  geo_longitud: number | null;
+  geo_altitud: number | null;
+  observaciones: string | null;
   created_at: string;
 }
 
@@ -61,17 +79,52 @@ export const registrarRevision = async (
   formularioId: string,
   tipo: 'novedad' | 'visto_bueno' | 'formulario_en_linea' | 'formulario_en_campo',
   comentario?: string,
-  datosFormulario?: Record<string, unknown>
+  datosFormulario?: Record<string, unknown>,
+  seccion?: string
 ): Promise<void> => {
   try {
     await apiClient.post(`/api/revisiones/${encodeURIComponent(formularioId)}`, {
       tipo,
       comentario,
       datos_formulario: datosFormulario,
+      seccion,
     });
   } catch (error: any) {
     const mensajeServidor = error?.response?.data?.mensaje;
     if (mensajeServidor) throw new Error(mensajeServidor);
     throw new Error('No se pudo registrar la revisión — verifica tu conexión a internet.');
+  }
+};
+
+/** Guardar (o actualizar) la evidencia final del revisor para este formulario. */
+export const guardarEvidenciaRevisor = async (
+  formularioId: string,
+  datos: {
+    fotos?: { uri: string }[];
+    firma_beneficiario?: string;
+    firma_revisor?: string;
+    geo_latitud?: number;
+    geo_longitud?: number;
+    geo_altitud?: number;
+    observaciones?: string;
+  }
+): Promise<void> => {
+  try {
+    await apiClient.post(`/api/revisiones/${encodeURIComponent(formularioId)}/evidencia`, datos);
+  } catch (error: any) {
+    const mensajeServidor = error?.response?.data?.mensaje;
+    if (mensajeServidor) throw new Error(mensajeServidor);
+    throw new Error('No se pudo guardar la evidencia — verifica tu conexión a internet.');
+  }
+};
+
+/** Evidencias finales ya registradas para un formulario (una por rol revisor). */
+export const fetchEvidenciasRevisor = async (formularioId: string): Promise<EvidenciaRevisor[]> => {
+  try {
+    const response = await apiClient.get(`/api/revisiones/${encodeURIComponent(formularioId)}/evidencia`);
+    return response.data?.evidencias || [];
+  } catch (error) {
+    if (!isOfflineError(error)) console.warn('[Revisiones] Error consultando evidencia:', error);
+    return [];
   }
 };

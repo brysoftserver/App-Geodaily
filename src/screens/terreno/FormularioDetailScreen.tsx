@@ -41,9 +41,20 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Print from 'expo-print';
 import * as Sharing from 'expo-sharing';
 import * as IntentLauncher from 'expo-intent-launcher';
-import { convertirFotosAHTML, generarSelloBiometrico, generarPDFRevisionChecklist, DatosRevisionChecklist, ItemChecklistRevision } from '../../services/pdfLocal.service';
+import { convertirFotosAHTML, generarSelloBiometrico } from '../../services/pdfLocal.service';
 import { useAuth } from '../../store/AuthContext';
-import { fetchRevisiones, registrarRevision, Revision } from '../../services/revisiones.service';
+import {
+  registrarRevision,
+  Revision,
+  EvidenciaRevisor,
+  guardarEvidenciaRevisor,
+  fetchEvidenciasRevisor,
+} from '../../services/revisiones.service';
+import { useRevisiones } from '../../hooks/useRevisiones';
+import { useLocation } from '../../hooks/useLocation';
+import * as ImagePicker from 'expo-image-picker';
+import SignaturePad from '../../components/SignaturePad';
+import MapViewOffline from '../../components/MapViewOffline';
 
 type FormularioDetailScreenProps = {
   navigation: NativeStackNavigationProp<Record<string, any>>;
@@ -62,74 +73,17 @@ const ROL_LABEL: Record<string, string> = {
   admin: 'Administrador',
 };
 
-const ITEMS_FORMULARIO_LINEA = [
-  'Que la información esté completamente diligenciada.',
-  'La calidad y pertinencia de las fotografías.',
-  'La ubicación geográfica mediante coordenadas GPS.',
-  'La fecha y hora de la visita.',
-  'Las actividades reportadas.',
-  'La coherencia de la información con el cronograma del proyecto.',
-];
-
-const ITEMS_FORMULARIO_CAMPO = [
-  'La ejecución de las actividades reportadas.',
-  'El estado del cultivo.',
-  'La calidad de las labores ejecutadas.',
-  'Las evidencias fotográficas.',
-  'Las coordenadas GPS.',
-  'La información suministrada por el beneficiario.',
-];
-
-const SeccionRevision: React.FC<{ formulario: Formulario }> = ({ formulario }) => {
+const SeccionRevision: React.FC<{ formulario: Formulario; revisiones: Revision[]; cargando: boolean; recargar: () => Promise<void> }> = ({ formulario, revisiones, recargar }) => {
   const formularioId = formulario.id;
   const { user } = useAuth();
   const rol = user?.rol || 'tecnico';
   const esRevisor = ['supervisor', 'interventor', 'gerente', 'admin'].includes(rol);
-  const tieneFormularioDeRol = rol === 'supervisor' || rol === 'interventor';
 
-  const [revisiones, setRevisiones] = useState<Revision[]>([]);
   const [enviando, setEnviando] = useState(false);
-  const [generandoPdf, setGenerandoPdf] = useState<'linea' | 'campo' | null>(null);
   const [modalNovedad, setModalNovedad] = useState(false);
   const [novedadTexto, setNovedadTexto] = useState('');
-  const [modalLinea, setModalLinea] = useState(false);
-  const [modalCampo, setModalCampo] = useState(false);
-  // Respuestas para formulario en línea y en campo
-  const [respuestasLinea, setRespuestasLinea] = useState<string[]>(ITEMS_FORMULARIO_LINEA.map(() => ''));
-  const [respuestasCampo, setRespuestasCampo] = useState<string[]>(ITEMS_FORMULARIO_CAMPO.map(() => ''));
-  const [yaGuardeLinea, setYaGuardeLinea] = useState(false);
-  const [yaGuardeCampo, setYaGuardeCampo] = useState(false);
 
-  const cargar = useCallback(async () => {
-    setRevisiones(await fetchRevisiones(formularioId));
-  }, [formularioId]);
-
-  useEffect(() => {
-    cargar();
-  }, [cargar]);
-
-  // Precargar respuestas si ya se guardaron antes
-  useEffect(() => {
-    const propiosLinea = revisiones
-      .filter((r) => r.revisor_rol === rol && r.tipo === 'formulario_en_linea')
-      .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
-    const ultimoLinea = propiosLinea[0];
-    if (ultimoLinea?.datos_formulario_json?.items) {
-      const items = ultimoLinea.datos_formulario_json.items as Array<{ texto: string; respuesta: string }>;
-      setRespuestasLinea(items.map((i) => i.respuesta || ''));
-      setYaGuardeLinea(true);
-    }
-
-    const propiosCampo = revisiones
-      .filter((r) => r.revisor_rol === rol && r.tipo === 'formulario_en_campo')
-      .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
-    const ultimoCampo = propiosCampo[0];
-    if (ultimoCampo?.datos_formulario_json?.items) {
-      const items = ultimoCampo.datos_formulario_json.items as Array<{ texto: string; respuesta: string }>;
-      setRespuestasCampo(items.map((i) => i.respuesta || ''));
-      setYaGuardeCampo(true);
-    }
-  }, [revisiones, rol]);
+  const cargar = recargar;
 
   const estadoDe = (r: string): 'ok' | 'novedades' | null => {
     if (revisiones.some((x) => x.revisor_rol === r && x.tipo === 'visto_bueno')) return 'ok';
@@ -178,63 +132,6 @@ const SeccionRevision: React.FC<{ formulario: Formulario }> = ({ formulario }) =
     ]);
   };
 
-  const guardarFormulario = async (tipo: 'linea' | 'campo') => {
-    const items = tipo === 'linea' ? ITEMS_FORMULARIO_LINEA : ITEMS_FORMULARIO_CAMPO;
-    const respuestas = tipo === 'linea' ? respuestasLinea : respuestasCampo;
-    const tipoEndpoint = tipo === 'linea' ? 'formulario_en_linea' : 'formulario_en_campo';
-
-    const datosItems: ItemChecklistRevision[] = items.map((texto, idx) => ({
-      texto,
-      respuesta: respuestas[idx]?.trim() || '',
-    }));
-
-    setEnviando(true);
-    try {
-      await registrarRevision(formularioId, tipoEndpoint, undefined, { items: datosItems });
-      if (tipo === 'linea') setYaGuardeLinea(true);
-      else setYaGuardeCampo(true);
-      await cargar();
-      const label = tipo === 'linea' ? 'en línea' : 'en campo';
-      Alert.alert('📋 Guardado', `Formulario ${label} registrado correctamente.`);
-    } catch (error) {
-      Alert.alert('No se pudo guardar', error instanceof Error ? error.message : String(error));
-    } finally {
-      setEnviando(false);
-    }
-  };
-
-  const descargarPdfChecklist = async (tipo: 'linea' | 'campo') => {
-    const items = tipo === 'linea' ? ITEMS_FORMULARIO_LINEA : ITEMS_FORMULARIO_CAMPO;
-    const respuestas = tipo === 'linea' ? respuestasLinea : respuestasCampo;
-
-    const datosItems: ItemChecklistRevision[] = items.map((texto, idx) => ({
-      texto,
-      respuesta: respuestas[idx]?.trim() || '',
-    }));
-
-    const datos: DatosRevisionChecklist = {
-      rol: rol as 'supervisor' | 'interventor',
-      revisorNombre: user?.nombre || ROL_LABEL[rol],
-      tipoChecklist: tipo,
-      items: datosItems,
-    };
-
-    setGenerandoPdf(tipo);
-    try {
-      const uri = await generarPDFRevisionChecklist(formulario, datos);
-      if (!uri) throw new Error('sin uri');
-      if (await Sharing.isAvailableAsync()) {
-        await Sharing.shareAsync(uri, { mimeType: 'application/pdf', UTI: 'com.adobe.pdf' });
-      } else {
-        Alert.alert('PDF generado', `PDF disponible en: ${uri}`);
-      }
-    } catch (e) {
-      Alert.alert('Error', 'No se pudo generar el PDF del formulario');
-    } finally {
-      setGenerandoPdf(null);
-    }
-  };
-
   const Chip = ({ rolChip }: { rolChip: 'supervisor' | 'interventor' }) => {
     const est = estadoDe(rolChip);
     return (
@@ -245,33 +142,6 @@ const SeccionRevision: React.FC<{ formulario: Formulario }> = ({ formulario }) =
       </View>
     );
   };
-
-  /** Renderizar los items de un checklist con sus campos de texto */
-  const renderItemsChecklist = (
-    items: string[],
-    respuestas: string[],
-    setRespuestas: React.Dispatch<React.SetStateAction<string[]>>,
-  ) =>
-    items.map((texto, idx) => (
-      <View key={idx} style={rev.checklistItem}>
-        <Text style={rev.checklistItemTexto}>{idx + 1}. {texto}</Text>
-        <TextInput
-          style={rev.inputItem}
-          multiline
-          numberOfLines={2}
-          value={respuestas[idx] || ''}
-          onChangeText={(t) =>
-            setRespuestas((prev) => {
-              const copy = [...prev];
-              copy[idx] = t;
-              return copy;
-            })
-          }
-          placeholder="Escribe aquí tu observación..."
-          placeholderTextColor={COLORS.textLight}
-        />
-      </View>
-    ));
 
   return (
     <View style={rev.section}>
@@ -301,50 +171,27 @@ const SeccionRevision: React.FC<{ formulario: Formulario }> = ({ formulario }) =
         <Text style={rev.sinRevisiones}>Aún no hay revisiones para este formulario.</Text>
       )}
 
-      {/* Acciones (solo roles superiores) — botones independientes */}
+      {/* Acciones (solo roles superiores) — botones independientes.
+          El detalle por sección de la encuesta trae su propio control de
+          Novedad/Aprobado (ver SeccionMiniRevision); estos dos botones
+          quedan como aprobación/novedad GLOBAL del formulario, útiles
+          también para formularios que no tienen secciones clonadas
+          (ej. visita técnica). */}
       {esRevisor && (
-        <>
-          <View style={rev.botonesRow}>
-            <TouchableOpacity style={[rev.boton, rev.botonNovedad]} onPress={() => setModalNovedad(true)} disabled={enviando}>
-              <Text style={rev.botonTexto}>📝 Novedad</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={[rev.boton, yaAprobePorMiRol ? rev.botonDeshabilitado : rev.botonOk]}
-              onPress={handleTodoOK}
-              disabled={enviando || yaAprobePorMiRol}
-            >
-              <Text style={rev.botonTexto}>
-                {yaAprobePorMiRol ? '✔ Ya aprobado por ti' : '✅ Todo OK'}
-              </Text>
-            </TouchableOpacity>
-          </View>
-
-          {/* Dos botones de formulario: en línea y en campo */}
-          {tieneFormularioDeRol && (
-            <>
-              <View style={rev.botonesRow}>
-                <TouchableOpacity
-                  style={[rev.boton, rev.botonFormLinea]}
-                  onPress={() => setModalLinea(true)}
-                  disabled={enviando}
-                >
-                  <Text style={rev.botonTexto}>
-                    {yaGuardeLinea ? '📋 Formulario en línea ✓ (editar)' : '📋 Formulario en línea'}
-                  </Text>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  style={[rev.boton, rev.botonFormCampo]}
-                  onPress={() => setModalCampo(true)}
-                  disabled={enviando}
-                >
-                  <Text style={rev.botonTexto}>
-                    {yaGuardeCampo ? '🌿 Formulario en campo ✓ (editar)' : '🌿 Formulario en campo'}
-                  </Text>
-                </TouchableOpacity>
-              </View>
-            </>
-          )}
-        </>
+        <View style={rev.botonesRow}>
+          <TouchableOpacity style={[rev.boton, rev.botonNovedad]} onPress={() => setModalNovedad(true)} disabled={enviando}>
+            <Text style={rev.botonTexto}>📝 Novedad general</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[rev.boton, yaAprobePorMiRol ? rev.botonDeshabilitado : rev.botonOk]}
+            onPress={handleTodoOK}
+            disabled={enviando || yaAprobePorMiRol}
+          >
+            <Text style={rev.botonTexto}>
+              {yaAprobePorMiRol ? '✔ Ya aprobado por ti' : '✅ Todo OK'}
+            </Text>
+          </TouchableOpacity>
+        </View>
       )}
 
       {/* Modal: registrar novedad */}
@@ -373,83 +220,385 @@ const SeccionRevision: React.FC<{ formulario: Formulario }> = ({ formulario }) =
           </View>
         </View>
       </Modal>
-
-      {/* Modal: Formulario en Línea */}
-      <Modal visible={modalLinea} transparent animationType="fade" onRequestClose={() => setModalLinea(false)}>
-        <View style={rev.modalFondo}>
-          <ScrollView contentContainerStyle={rev.modalScroll}>
-            <View style={rev.modalCard}>
-              <Text style={rev.modalTitulo}>📋 Formulario en Línea</Text>
-              <Text style={rev.modalSub}>
-                Durante esta revisión se verificará:
-              </Text>
-              {renderItemsChecklist(ITEMS_FORMULARIO_LINEA, respuestasLinea, setRespuestasLinea)}
-
-              <View style={rev.modalBotones}>
-                <TouchableOpacity style={[rev.boton, rev.botonCancelar]} onPress={() => setModalLinea(false)}>
-                  <Text style={rev.botonTextoOscuro}>Cerrar</Text>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  style={[rev.boton, rev.botonFormLinea]}
-                  onPress={() => guardarFormulario('linea')}
-                  disabled={enviando}
-                >
-                  <Text style={rev.botonTexto}>{enviando ? 'Guardando…' : '💾 Guardar'}</Text>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  style={[rev.boton, rev.botonDescargaRevision]}
-                  onPress={() => descargarPdfChecklist('linea')}
-                  disabled={generandoPdf === 'linea'}
-                >
-                  <Text style={rev.botonTexto}>
-                    {generandoPdf === 'linea' ? 'Generando…' : '⬇ PDF'}
-                  </Text>
-                </TouchableOpacity>
-              </View>
-            </View>
-          </ScrollView>
-        </View>
-      </Modal>
-
-      {/* Modal: Formulario en Campo */}
-      <Modal visible={modalCampo} transparent animationType="fade" onRequestClose={() => setModalCampo(false)}>
-        <View style={rev.modalFondo}>
-          <ScrollView contentContainerStyle={rev.modalScroll}>
-            <View style={rev.modalCard}>
-              <Text style={rev.modalTitulo}>🌿 Formulario en Campo</Text>
-              <Text style={rev.modalSub}>
-                En esta etapa se verificará:
-              </Text>
-              {renderItemsChecklist(ITEMS_FORMULARIO_CAMPO, respuestasCampo, setRespuestasCampo)}
-
-              <View style={rev.modalBotones}>
-                <TouchableOpacity style={[rev.boton, rev.botonCancelar]} onPress={() => setModalCampo(false)}>
-                  <Text style={rev.botonTextoOscuro}>Cerrar</Text>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  style={[rev.boton, rev.botonFormCampo]}
-                  onPress={() => guardarFormulario('campo')}
-                  disabled={enviando}
-                >
-                  <Text style={rev.botonTexto}>{enviando ? 'Guardando…' : '💾 Guardar'}</Text>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  style={[rev.boton, rev.botonDescargaRevision]}
-                  onPress={() => descargarPdfChecklist('campo')}
-                  disabled={generandoPdf === 'campo'}
-                >
-                  <Text style={rev.botonTexto}>
-                    {generandoPdf === 'campo' ? 'Generando…' : '⬇ PDF'}
-                  </Text>
-                </TouchableOpacity>
-              </View>
-            </View>
-          </ScrollView>
-        </View>
-      </Modal>
     </View>
   );
 };
+
+// ============================================================
+// Control de Novedad/Aprobado POR SECCIÓN — reemplaza los antiguos
+// checklists genéricos "Formulario en línea"/"Formulario en campo".
+// Se renderiza debajo de cada sección de la encuesta clonada.
+// ============================================================
+
+const SeccionMiniRevision: React.FC<{
+  formularioId: string;
+  seccionTitulo: string;
+  revisiones: Revision[];
+  rol: string;
+  esRevisor: boolean;
+  recargar: () => Promise<void>;
+}> = ({ formularioId, seccionTitulo, revisiones, rol, esRevisor, recargar }) => {
+  const [enviando, setEnviando] = useState(false);
+  const [mostrarInput, setMostrarInput] = useState(false);
+  const [texto, setTexto] = useState('');
+
+  const deEstaSeccion = revisiones.filter((r) => r.seccion === seccionTitulo);
+  const estadoDeRol = (r: string): 'ok' | 'novedades' | null => {
+    const propias = deEstaSeccion
+      .filter((x) => x.revisor_rol === r)
+      .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+    if (!propias[0]) return null;
+    return propias[0].tipo === 'visto_bueno' ? 'ok' : 'novedades';
+  };
+  const miEstado = estadoDeRol(rol);
+
+  const marcarAprobado = async () => {
+    setEnviando(true);
+    try {
+      await registrarRevision(formularioId, 'visto_bueno', undefined, undefined, seccionTitulo);
+      await recargar();
+    } catch (error) {
+      Alert.alert('No se pudo aprobar', error instanceof Error ? error.message : String(error));
+    } finally {
+      setEnviando(false);
+    }
+  };
+
+  const enviarNovedadSeccion = async () => {
+    if (!texto.trim()) {
+      Alert.alert('Novedad vacía', 'Escribe la observación de esta sección.');
+      return;
+    }
+    setEnviando(true);
+    try {
+      await registrarRevision(formularioId, 'novedad', texto.trim(), undefined, seccionTitulo);
+      setTexto('');
+      setMostrarInput(false);
+      await recargar();
+    } catch (error) {
+      Alert.alert('No se pudo registrar', error instanceof Error ? error.message : String(error));
+    } finally {
+      setEnviando(false);
+    }
+  };
+
+  return (
+    <View style={mini.container}>
+      {(['supervisor', 'interventor'] as const).map((r) => {
+        const est = estadoDeRol(r);
+        if (!est) return null;
+        return (
+          <View key={r} style={[mini.chip, est === 'ok' ? mini.chipOk : mini.chipNov]}>
+            <Text style={mini.chipText}>
+              {ROL_LABEL[r]}: {est === 'ok' ? '✔ Aprobado' : '⚠ Novedad'}
+            </Text>
+          </View>
+        );
+      })}
+
+      {deEstaSeccion.filter((r) => r.tipo === 'novedad').map((n) => (
+        <Text key={n.id} style={mini.novedadTexto}>
+          ⚠ {ROL_LABEL[n.revisor_rol] || n.revisor_rol}: {n.comentario}
+        </Text>
+      ))}
+
+      {esRevisor && (
+        <View style={mini.accionesRow}>
+          <TouchableOpacity
+            style={[mini.btn, mini.btnNovedad]}
+            onPress={() => setMostrarInput((v) => !v)}
+            disabled={enviando}
+          >
+            <Text style={mini.btnText}>📝 Novedad</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[mini.btn, miEstado === 'ok' ? mini.btnDeshabilitado : mini.btnOk]}
+            onPress={marcarAprobado}
+            disabled={enviando || miEstado === 'ok'}
+          >
+            <Text style={mini.btnText}>{miEstado === 'ok' ? '✔ Aprobado' : '✅ Aprobado'}</Text>
+          </TouchableOpacity>
+        </View>
+      )}
+
+      {mostrarInput && (
+        <View style={mini.inputRow}>
+          <TextInput
+            style={mini.input}
+            multiline
+            value={texto}
+            onChangeText={setTexto}
+            placeholder="Describe la novedad de esta sección..."
+            placeholderTextColor={COLORS.textLight}
+          />
+          <TouchableOpacity style={[mini.btn, mini.btnNovedad]} onPress={enviarNovedadSeccion} disabled={enviando}>
+            <Text style={mini.btnText}>{enviando ? '...' : 'Enviar'}</Text>
+          </TouchableOpacity>
+        </View>
+      )}
+    </View>
+  );
+};
+
+const mini = StyleSheet.create({
+  container: { marginTop: SPACING.sm, paddingTop: SPACING.sm, borderTopWidth: 1, borderTopColor: COLORS.divider },
+  chip: { alignSelf: 'flex-start', paddingHorizontal: SPACING.sm, paddingVertical: 2, borderRadius: BORDER_RADIUS.full, marginBottom: 4 },
+  chipOk: { backgroundColor: COLORS.success + '22' },
+  chipNov: { backgroundColor: COLORS.warning + '22' },
+  chipText: { fontSize: FONTS.sizes.xs, color: COLORS.textPrimary },
+  novedadTexto: { fontSize: FONTS.sizes.xs, color: COLORS.error, marginBottom: 2 },
+  accionesRow: { flexDirection: 'row', gap: SPACING.xs, marginTop: 4 },
+  btn: { paddingHorizontal: SPACING.sm, paddingVertical: 6, borderRadius: BORDER_RADIUS.sm },
+  btnNovedad: { backgroundColor: COLORS.info },
+  btnOk: { backgroundColor: COLORS.success },
+  btnDeshabilitado: { backgroundColor: COLORS.textLight },
+  btnText: { color: '#fff', fontSize: FONTS.sizes.xs, fontWeight: FONTS.weights.semibold },
+  inputRow: { marginTop: SPACING.xs, gap: SPACING.xs },
+  input: {
+    borderWidth: 1, borderColor: COLORS.border, borderRadius: BORDER_RADIUS.sm,
+    padding: SPACING.sm, minHeight: 44, textAlignVertical: 'top',
+    fontSize: FONTS.sizes.sm, color: COLORS.textPrimary, backgroundColor: COLORS.background,
+  },
+});
+
+// ============================================================
+// Sección final del revisor — evidencia propia (fotos), firma dual
+// (beneficiario + revisor) y georeferencia puntual (captura única, NO
+// tracking en vivo). Guardar registra también el visto bueno GLOBAL del
+// rol sobre el formulario.
+// ============================================================
+
+const SeccionFinalRevisor: React.FC<{ formulario: Formulario; recargarRevisiones: () => Promise<void> }> = ({ formulario, recargarRevisiones }) => {
+  const { user } = useAuth();
+  const rol = user?.rol || 'tecnico';
+  const esRevisor = ['supervisor', 'interventor', 'gerente', 'admin'].includes(rol);
+
+  const [evidencias, setEvidencias] = useState<EvidenciaRevisor[]>([]);
+  const [fotos, setFotos] = useState<{ uri: string }[]>([]);
+  const [firmaBeneficiario, setFirmaBeneficiario] = useState<string | null>(null);
+  const [firmaRevisor, setFirmaRevisor] = useState<string | null>(null);
+  const [geoPoint, setGeoPoint] = useState<{ lat: number; lon: number } | null>(null);
+  const [observaciones, setObservaciones] = useState('');
+  const [padActivo, setPadActivo] = useState<'beneficiario' | 'revisor' | null>(null);
+  const [guardando, setGuardando] = useState(false);
+  const [obteniendoUbicacion, setObteniendoUbicacion] = useState(false);
+  const { getCurrentPosition } = useLocation();
+
+  const cargarEvidencias = useCallback(async () => {
+    setEvidencias(await fetchEvidenciasRevisor(formulario.id));
+  }, [formulario.id]);
+
+  useEffect(() => { cargarEvidencias(); }, [cargarEvidencias]);
+
+  const miEvidencia = evidencias.find((e) => e.revisor_rol === rol);
+  const otrasEvidencias = evidencias.filter((e) => e.revisor_rol !== rol);
+
+  const tomarFoto = async () => {
+    const permiso = await ImagePicker.requestCameraPermissionsAsync();
+    if (!permiso.granted) {
+      Alert.alert('Permiso requerido', 'Se necesita acceso a la cámara para tomar la foto.');
+      return;
+    }
+    const resultado = await ImagePicker.launchCameraAsync({ quality: 0.6 });
+    if (!resultado.canceled && resultado.assets?.[0]?.uri) {
+      setFotos((prev) => [...prev, { uri: resultado.assets[0].uri }]);
+    }
+  };
+
+  const usarUbicacionActual = async () => {
+    setObteniendoUbicacion(true);
+    try {
+      const pos = await getCurrentPosition();
+      if (pos) setGeoPoint({ lat: pos.latitud, lon: pos.longitud });
+      else Alert.alert('Sin ubicación', 'No se pudo obtener el GPS. Verifica el permiso de ubicación.');
+    } finally {
+      setObteniendoUbicacion(false);
+    }
+  };
+
+  const guardarYAprobar = async () => {
+    setGuardando(true);
+    try {
+      await guardarEvidenciaRevisor(formulario.id, {
+        fotos,
+        firma_beneficiario: firmaBeneficiario || undefined,
+        firma_revisor: firmaRevisor || undefined,
+        geo_latitud: geoPoint?.lat,
+        geo_longitud: geoPoint?.lon,
+        observaciones: observaciones.trim() || undefined,
+      });
+      if (!miEvidencia) {
+        // Solo registra el visto bueno global la primera vez — evita
+        // duplicar el error 409 si el revisor solo está actualizando su
+        // evidencia después de haber aprobado.
+        try {
+          await registrarRevision(formulario.id, 'visto_bueno');
+        } catch {
+          // Ya aprobado antes por este rol — no es un error real aquí.
+        }
+      }
+      await Promise.all([cargarEvidencias(), recargarRevisiones()]);
+      Alert.alert('✅ Guardado', 'Evidencia final registrada y formulario aprobado.');
+    } catch (error) {
+      Alert.alert('No se pudo guardar', error instanceof Error ? error.message : String(error));
+    } finally {
+      setGuardando(false);
+    }
+  };
+
+  if (!esRevisor && evidencias.length === 0) return null;
+
+  const centroMapa = geoPoint
+    ? { latitud: geoPoint.lat, longitud: geoPoint.lon }
+    : formulario.coordenadas || { latitud: 1.914, longitud: -75.145 };
+
+  return (
+    <View style={finalStyles.section}>
+      <Text style={finalStyles.title}>🖊️ Sección del Revisor — Evidencia y Cierre</Text>
+
+      {esRevisor && (
+        <>
+          <Text style={finalStyles.label}>Fotos propias de la revisión</Text>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} style={finalStyles.fotosRow}>
+            {fotos.map((f, idx) => (
+              <View key={idx} style={finalStyles.fotoThumb}>
+                <Image source={{ uri: f.uri }} style={finalStyles.fotoImg} />
+                <TouchableOpacity style={finalStyles.fotoRemove} onPress={() => setFotos((prev) => prev.filter((_, i) => i !== idx))}>
+                  <Text style={finalStyles.fotoRemoveText}>✕</Text>
+                </TouchableOpacity>
+              </View>
+            ))}
+            <TouchableOpacity style={finalStyles.fotoAdd} onPress={tomarFoto}>
+              <Text style={finalStyles.fotoAddText}>📷</Text>
+            </TouchableOpacity>
+          </ScrollView>
+
+          <Text style={finalStyles.label}>Firma del beneficiario</Text>
+          {firmaBeneficiario ? (
+            <View style={finalStyles.firmaOk}>
+              <Image source={{ uri: firmaBeneficiario }} style={finalStyles.firmaImg} />
+              <TouchableOpacity onPress={() => setPadActivo('beneficiario')}><Text style={finalStyles.link}>Rehacer</Text></TouchableOpacity>
+            </View>
+          ) : padActivo === 'beneficiario' ? (
+            <SignaturePad onOK={(sig) => { setFirmaBeneficiario(sig); setPadActivo(null); }} description="Firma del beneficiario" />
+          ) : (
+            <TouchableOpacity style={finalStyles.btnSecundario} onPress={() => setPadActivo('beneficiario')}>
+              <Text style={finalStyles.btnSecundarioText}>✍️ Capturar firma del beneficiario</Text>
+            </TouchableOpacity>
+          )}
+
+          <Text style={finalStyles.label}>Firma del {ROL_LABEL[rol] || 'revisor'}</Text>
+          {firmaRevisor ? (
+            <View style={finalStyles.firmaOk}>
+              <Image source={{ uri: firmaRevisor }} style={finalStyles.firmaImg} />
+              <TouchableOpacity onPress={() => setPadActivo('revisor')}><Text style={finalStyles.link}>Rehacer</Text></TouchableOpacity>
+            </View>
+          ) : padActivo === 'revisor' ? (
+            <SignaturePad onOK={(sig) => { setFirmaRevisor(sig); setPadActivo(null); }} description={`Firma del ${ROL_LABEL[rol] || 'revisor'}`} />
+          ) : (
+            <TouchableOpacity style={finalStyles.btnSecundario} onPress={() => setPadActivo('revisor')}>
+              <Text style={finalStyles.btnSecundarioText}>✍️ Capturar tu firma</Text>
+            </TouchableOpacity>
+          )}
+
+          <Text style={finalStyles.label}>Georeferencia puntual (captura única)</Text>
+          <Text style={finalStyles.hint}>
+            Toca el mapa para ubicar el punto o usa tu ubicación GPS actual — esto NO inicia un seguimiento en vivo.
+          </Text>
+          <MapViewOffline
+            center={centroMapa}
+            zoom={15}
+            height={200}
+            markers={geoPoint ? [{ id: 'geo-revisor', latitud: geoPoint.lat, longitud: geoPoint.lon, title: 'Punto capturado', tipoIcono: 'pin', color: COLORS.error }] : []}
+            mapStyle="relieve"
+            showUserLocation={false}
+            onMapPress={(lat, lon) => setGeoPoint({ lat, lon })}
+          />
+          <TouchableOpacity style={finalStyles.btnSecundario} onPress={usarUbicacionActual} disabled={obteniendoUbicacion}>
+            <Text style={finalStyles.btnSecundarioText}>{obteniendoUbicacion ? 'Obteniendo…' : '📍 Usar mi ubicación actual'}</Text>
+          </TouchableOpacity>
+          {geoPoint && (
+            <Text style={finalStyles.hint}>Lat: {geoPoint.lat.toFixed(6)}  Lon: {geoPoint.lon.toFixed(6)}</Text>
+          )}
+
+          <Text style={finalStyles.label}>Observaciones finales</Text>
+          <TextInput
+            style={finalStyles.input}
+            multiline
+            numberOfLines={3}
+            value={observaciones}
+            onChangeText={setObservaciones}
+            placeholder="Observaciones de cierre de la revisión..."
+            placeholderTextColor={COLORS.textLight}
+          />
+
+          <TouchableOpacity style={finalStyles.btnPrincipal} onPress={guardarYAprobar} disabled={guardando}>
+            <Text style={finalStyles.btnPrincipalText}>
+              {guardando ? 'Guardando…' : miEvidencia ? '💾 Actualizar evidencia' : '💾 Guardar y aprobar formulario'}
+            </Text>
+          </TouchableOpacity>
+        </>
+      )}
+
+      {otrasEvidencias.map((e) => (
+        <View key={e.id} style={finalStyles.otraEvidencia}>
+          <Text style={finalStyles.label}>Evidencia de {ROL_LABEL[e.revisor_rol] || e.revisor_rol} ({e.revisor_nombre})</Text>
+          {!!e.fotos_json?.length && (
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} style={finalStyles.fotosRow}>
+              {e.fotos_json.map((f, idx) => (
+                <Image key={idx} source={{ uri: f.uri }} style={finalStyles.fotoImg} />
+              ))}
+            </ScrollView>
+          )}
+          <View style={finalStyles.firmasRow}>
+            {!!e.firma_beneficiario && <Image source={{ uri: e.firma_beneficiario }} style={finalStyles.firmaImg} />}
+            {!!e.firma_revisor && <Image source={{ uri: e.firma_revisor }} style={finalStyles.firmaImg} />}
+          </View>
+          {e.geo_latitud != null && e.geo_longitud != null && (
+            <Text style={finalStyles.hint}>📍 Lat: {Number(e.geo_latitud).toFixed(6)}  Lon: {Number(e.geo_longitud).toFixed(6)}</Text>
+          )}
+          {!!e.observaciones && <Text style={finalStyles.hint}>{e.observaciones}</Text>}
+        </View>
+      ))}
+    </View>
+  );
+};
+
+const finalStyles = StyleSheet.create({
+  section: {
+    backgroundColor: COLORS.surface,
+    borderRadius: BORDER_RADIUS.lg,
+    padding: SPACING.md,
+    marginBottom: SPACING.md,
+    borderLeftWidth: 4,
+    borderLeftColor: COLORS.secondary || '#F9A825',
+    ...SHADOWS.sm,
+  },
+  title: { fontSize: FONTS.sizes.lg, fontWeight: FONTS.weights.semibold, color: COLORS.textPrimary, marginBottom: SPACING.sm },
+  label: { fontSize: FONTS.sizes.sm, fontWeight: FONTS.weights.semibold, color: COLORS.textPrimary, marginTop: SPACING.sm, marginBottom: 4 },
+  hint: { fontSize: FONTS.sizes.xs, color: COLORS.textSecondary, marginBottom: 4 },
+  fotosRow: { flexDirection: 'row' },
+  fotoThumb: { marginRight: SPACING.sm, position: 'relative' },
+  fotoImg: { width: 70, height: 70, borderRadius: BORDER_RADIUS.sm, marginRight: SPACING.sm },
+  fotoAdd: { width: 70, height: 70, borderRadius: BORDER_RADIUS.sm, backgroundColor: COLORS.background, justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderColor: COLORS.border, borderStyle: 'dashed' },
+  fotoAddText: { fontSize: 24 },
+  fotoRemove: { position: 'absolute', top: -6, right: 2, backgroundColor: COLORS.error, borderRadius: 10, width: 20, height: 20, justifyContent: 'center', alignItems: 'center' },
+  fotoRemoveText: { color: '#fff', fontSize: 12, fontWeight: FONTS.weights.bold },
+  firmaOk: { flexDirection: 'row', alignItems: 'center', gap: SPACING.sm },
+  firmaImg: { width: 100, height: 60, borderRadius: BORDER_RADIUS.sm, backgroundColor: COLORS.background, marginRight: SPACING.sm },
+  link: { color: COLORS.info, fontSize: FONTS.sizes.sm, fontWeight: FONTS.weights.medium },
+  btnSecundario: { backgroundColor: COLORS.background, borderWidth: 1, borderColor: COLORS.border, borderRadius: BORDER_RADIUS.md, paddingVertical: SPACING.sm, alignItems: 'center', marginTop: 4 },
+  btnSecundarioText: { color: COLORS.textPrimary, fontWeight: FONTS.weights.medium, fontSize: FONTS.sizes.sm },
+  input: {
+    borderWidth: 1, borderColor: COLORS.border, borderRadius: BORDER_RADIUS.md,
+    padding: SPACING.sm, minHeight: 60, textAlignVertical: 'top',
+    fontSize: FONTS.sizes.sm, color: COLORS.textPrimary,
+  },
+  btnPrincipal: { backgroundColor: COLORS.success, borderRadius: BORDER_RADIUS.md, paddingVertical: SPACING.sm, alignItems: 'center', marginTop: SPACING.md },
+  btnPrincipalText: { color: '#fff', fontWeight: FONTS.weights.semibold, fontSize: FONTS.sizes.md },
+  otraEvidencia: { marginTop: SPACING.sm, paddingTop: SPACING.sm, borderTopWidth: 1, borderTopColor: COLORS.divider },
+  firmasRow: { flexDirection: 'row', gap: SPACING.sm },
+});
 
 const rev = StyleSheet.create({
   section: {
@@ -478,9 +627,6 @@ const rev = StyleSheet.create({
   boton: { flex: 1, paddingVertical: SPACING.sm, borderRadius: BORDER_RADIUS.md, alignItems: 'center', paddingHorizontal: SPACING.sm },
   botonNovedad: { backgroundColor: COLORS.info },
   botonOk: { backgroundColor: COLORS.success },
-  botonFormLinea: { backgroundColor: COLORS.primary },
-  botonFormCampo: { backgroundColor: COLORS.roleInterventor || '#00695C' },
-  botonDescargaRevision: { backgroundColor: COLORS.secondary || '#F9A825' },
   botonCancelar: { backgroundColor: COLORS.divider },
   botonDeshabilitado: { backgroundColor: COLORS.textLight },
   botonTexto: { color: '#fff', fontWeight: FONTS.weights.semibold, fontSize: FONTS.sizes.sm, textAlign: 'center' },
@@ -496,34 +642,15 @@ const rev = StyleSheet.create({
     fontSize: FONTS.sizes.md, color: COLORS.textPrimary, marginBottom: SPACING.sm,
   },
   modalBotones: { flexDirection: 'row', gap: SPACING.sm, marginTop: SPACING.xs },
-  checklistItem: {
-    marginBottom: SPACING.sm,
-    borderLeftWidth: 3,
-    borderLeftColor: COLORS.primary + '55',
-    paddingLeft: SPACING.sm,
-  },
-  checklistItemTexto: {
-    fontSize: FONTS.sizes.sm,
-    fontWeight: FONTS.weights.medium,
-    color: COLORS.textPrimary,
-    marginBottom: 4,
-  },
-  inputItem: {
-    borderWidth: 1,
-    borderColor: COLORS.border,
-    borderRadius: BORDER_RADIUS.sm,
-    padding: SPACING.sm,
-    minHeight: 50,
-    textAlignVertical: 'top',
-    fontSize: FONTS.sizes.sm,
-    color: COLORS.textPrimary,
-    backgroundColor: COLORS.background,
-  },
 });
 
 const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, navigation: _navigation }) => {
   const { formulario } = route.params;
   const insets = useSafeAreaInsets();
+  const { user: usuarioActual } = useAuth();
+  const rolActual = usuarioActual?.rol || 'tecnico';
+  const esRevisorActual = ['supervisor', 'interventor', 'gerente', 'admin'].includes(rolActual);
+  const { revisiones, cargando: cargandoRevisiones, recargar: recargarRevisiones } = useRevisiones(formulario.id);
   const [generatingPdf, setGeneratingPdf] = useState(false);
   const [pdfUri, setPdfUri] = useState<string | null>(null);
   const [showPdf, setShowPdf] = useState(false);
@@ -691,7 +818,7 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
         row2('17. Textura predominante', as?.textura),
         row2('18. Color predominante', as?.color),
         row2('19. Drenaje del suelo', as?.drenaje),
-        row2('20. Profundidad efectiva', as?.profundidad),
+        row2('20. Uso de la tierra', (as as any)?.uso_tierra),
         row2('21. Presencia de piedras', as?.piedras),
         row2('22. Compactación del suelo', as?.compactacion),
         row2('23. Cobertura del suelo', as?.cobertura),
@@ -1046,11 +1173,17 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
         </View>
 
         {/* Revisión jerárquica: novedades y vistos buenos */}
-        <SeccionRevision formulario={formulario} />
+        <SeccionRevision
+          formulario={formulario}
+          revisiones={revisiones}
+          cargando={cargandoRevisiones}
+          recargar={recargarRevisiones}
+        />
 
-        {/* Encuesta Social AgroAmbiental — resumen COMPLETO (52 preguntas).
+        {/* Encuesta Social AgroAmbiental — resumen COMPLETO (53 preguntas).
             Las secciones vienen del esquema canónico compartido con el
-            generador de PDF, así el detalle y el documento siempre coinciden. */}
+            generador de PDF, así el detalle y el documento siempre coinciden.
+            Cada sección trae su propio control de Novedad/Aprobado. */}
         {esEncuestaSocial(formulario) &&
           construirSeccionesEncuesta(
             (formulario as any).caracterizacion_nueva,
@@ -1077,8 +1210,20 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
                   )}
                 </View>
               ))}
+              <SeccionMiniRevision
+                formularioId={formulario.id}
+                seccionTitulo={seccion.titulo}
+                revisiones={revisiones}
+                rol={rolActual}
+                esRevisor={esRevisorActual}
+                recargar={recargarRevisiones}
+              />
             </View>
           ))}
+
+        {/* Sección final del revisor: evidencia propia, firma dual y
+            georeferencia puntual — cierra la revisión con visto bueno global. */}
+        <SeccionFinalRevisor formulario={formulario} recargarRevisiones={recargarRevisiones} />
 
         {/* Resumen de evidencias */}
         <View style={styles.evidenciasSummary}>

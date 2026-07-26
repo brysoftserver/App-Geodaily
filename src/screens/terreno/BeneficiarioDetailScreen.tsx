@@ -64,6 +64,7 @@ const BeneficiarioDetailScreen: React.FC<BeneficiarioDetailScreenProps> = ({ nav
             departamento: beneficiario.departamento || '',
             municipio: beneficiario.municipio || '',
             vereda: beneficiario.vereda || '',
+            corregimiento: beneficiario.corregimiento || '',
             finca: beneficiario.finca || '',
           },
         });

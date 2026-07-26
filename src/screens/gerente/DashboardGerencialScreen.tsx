@@ -17,10 +17,12 @@ import { useFocusEffect } from '@react-navigation/native';
 import { LineChart } from 'react-native-chart-kit';
 import { COLORS, FONTS, SPACING, BORDER_RADIUS, SHADOWS, API_CONFIG } from '../../theme';
 import { useForm } from '../../store/FormContext';
+import { useAuth } from '../../store/AuthContext';
 import { getFormulariosLocales } from '../../services/database';
 import { fetchFormulariosDelServidor } from '../../services/formularios.service';
 import MetricCard from '../../components/MetricCard';
 import LoadingSpinner from '../../components/LoadingSpinner';
+import BotonPdfDashboard from '../../components/dashboard/BotonPdfDashboard';
 import { getLocalDateString } from '../../utils/formatters';
 
 type DashboardGerencialProps = {
@@ -31,6 +33,7 @@ const screenWidth = Dimensions.get('window').width;
 
 const DashboardGerencialScreen: React.FC<DashboardGerencialProps> = ({ navigation }) => {
   const { formularios, cargarFormularios } = useForm();
+  const { user } = useAuth();
   const [loadingGerencial, setLoadingGerencial] = useState(true);
   const [refreshingGerencial, setRefreshingGerencial] = useState(false);
   const [gerencialError, setGerencialError] = useState<string | null>(null);
@@ -120,8 +123,15 @@ const DashboardGerencialScreen: React.FC<DashboardGerencialProps> = ({ navigatio
         />
       }
     >
-      <Text style={styles.title}>Dashboard Gerencial</Text>
-      <Text style={styles.subtitle}>Resumen ejecutivo de operaciones</Text>
+      <View style={styles.headerRow}>
+        <View style={styles.headerTextos}>
+          <Text style={styles.title}>Dashboard Gerencial</Text>
+          <Text style={styles.subtitle}>Resumen ejecutivo de operaciones</Text>
+        </View>
+        <BotonPdfDashboard
+          datos={{ formularios, rolUsuario: user?.rol || 'gerente', nombreUsuario: user?.nombre || 'Usuario' }}
+        />
+      </View>
 
       {/* Métricas principales */}
       <View style={styles.metricsGrid}>
@@ -213,6 +223,8 @@ const DashboardGerencialScreen: React.FC<DashboardGerencialProps> = ({ navigatio
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: COLORS.background },
   content: { padding: SPACING.lg, paddingBottom: SPACING.xl },
+  headerRow: { flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between' },
+  headerTextos: { flex: 1, marginRight: SPACING.sm },
   title: { fontSize: FONTS.sizes.xxl, fontWeight: FONTS.weights.bold, color: COLORS.textPrimary },
   subtitle: { fontSize: FONTS.sizes.sm, color: COLORS.textSecondary, marginBottom: SPACING.md },
   metricsGrid: {

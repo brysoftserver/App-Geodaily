@@ -59,9 +59,16 @@ const FormCard: React.FC<FormCardProps> = ({ formulario, onPress, onViewPDF, fai
         </Text>
 
         <View style={styles.footer}>
-          <Text style={styles.fecha}>
-            {formatFecha(formulario.created_at)}
-          </Text>
+          <View style={styles.footerLeft}>
+            <Text style={styles.fecha}>
+              {formatFecha(formulario.created_at)}
+            </Text>
+            <Text
+              style={[styles.huellaIcon, !formulario.huella_beneficiario && styles.huellaIconAusente]}
+            >
+              {formulario.huella_beneficiario ? '🖐️' : '🖐️🚫'}
+            </Text>
+          </View>
           <Text style={styles.coordenadas}>
             {formatCoordenadas(
               formulario.coordenadas.latitud,
@@ -167,10 +174,22 @@ const styles = StyleSheet.create({
   footer: {
     flexDirection: 'row',
     justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  footerLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
   },
   fecha: {
     fontSize: FONTS.sizes.xs,
     color: COLORS.textLight,
+  },
+  huellaIcon: {
+    fontSize: FONTS.sizes.xs,
+  },
+  huellaIconAusente: {
+    opacity: 0.4,
   },
   coordenadas: {
     fontSize: FONTS.sizes.xs,

@@ -66,6 +66,7 @@ const BeneficiariosListScreen: React.FC<BeneficiariosListScreenProps> = ({ navig
             departamento: benef.departamento || '',
             municipio: benef.municipio || '',
             vereda: benef.vereda || '',
+            corregimiento: benef.corregimiento || '',
             finca: benef.finca || '',
             visitas: [],
           });
@@ -91,8 +92,9 @@ const BeneficiariosListScreen: React.FC<BeneficiariosListScreenProps> = ({ navig
           cedula: b.cedula,
           telefono: '',
           departamento: '',
-          municipio: b.corregimiento || '',
+          municipio: 'Puerto Rico',
           vereda: b.vereda || '',
+          corregimiento: b.corregimiento || '',
           finca: '',
           visitas: [],
         });
@@ -203,6 +205,7 @@ const BeneficiariosListScreen: React.FC<BeneficiariosListScreenProps> = ({ navig
         departamento: benef.departamento,
         municipio: benef.municipio,
         vereda: benef.vereda,
+        corregimiento: benef.corregimiento,
         finca: benef.finca,
       },
       visitas: benef.visitas,

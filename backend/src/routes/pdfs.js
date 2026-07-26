@@ -278,7 +278,7 @@ function htmlCaracterizacion(form) {
       row('Textura', asuelo.textura || asuelo.textura_suelo),
       row('Color', asuelo.color || asuelo.color_suelo),
       row('Drenaje', asuelo.drenaje),
-      row('Profundidad efectiva', asuelo.profundidad),
+      row('Uso de la tierra', asuelo.uso_tierra || asuelo.profundidad),
       row('Presencia de piedras', asuelo.piedras || asuelo.presencia_piedras),
       row('Compactación', asuelo.compactacion),
       row('Cobertura del suelo', asuelo.cobertura || asuelo.cobertura_suelo),

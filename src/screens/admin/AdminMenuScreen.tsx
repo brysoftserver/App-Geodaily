@@ -14,10 +14,13 @@ import {
   ActivityIndicator,
 } from 'react-native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAuth } from '../../store/AuthContext';
 import { useAvatar } from '../../hooks/useAvatar';
 import { COLORS, FONTS, SPACING, BORDER_RADIUS, SHADOWS } from '../../theme';
 import CambiarContrasenaModal from '../../components/CambiarContrasenaModal';
+import AjustesMenu from '../../components/AjustesMenu';
+import NotificacionBell from '../../components/NotificacionBell';
 
 type AdminMenuProps = {
   navigation: NativeStackNavigationProp<Record<string, any>>;
@@ -88,42 +91,17 @@ const MENU_ITEMS = [
     color: COLORS.roleAdmin,
     screen: 'BaseDatosBeneficiarios',
   },
-  {
-    id: 'contrasena',
-    title: 'Cambiar Contraseña',
-    subtitle: 'Actualizar tu contraseña de acceso',
-    icon: '🔑',
-    color: COLORS.roleAdmin,
-    screen: null,
-  },
-  {
-    id: 'cerrar',
-    title: 'Cerrar Sesión',
-    subtitle: 'Salir de la aplicación',
-    icon: '🚪',
-    color: COLORS.error,
-    screen: null,
-  },
 ];
 
 const AdminMenuScreen: React.FC<AdminMenuProps> = ({ navigation }) => {
   const { user, logout } = useAuth();
+  const insets = useSafeAreaInsets();
   const { avatarUri, cambiarAvatar, cambiando } = useAvatar(user?.id);
   const [showPasswordModal, setShowPasswordModal] = useState(false);
 
   const handlePress = (item: (typeof MENU_ITEMS)[0]) => {
-    switch (item.id) {
-      case 'contrasena':
-        setShowPasswordModal(true);
-        break;
-      case 'cerrar':
-        logout();
-        break;
-      default:
-        if (item.screen) {
-          navigation.navigate(item.screen);
-        }
-        break;
+    if (item.screen) {
+      navigation.navigate(item.screen);
     }
   };
 
@@ -131,6 +109,17 @@ const AdminMenuScreen: React.FC<AdminMenuProps> = ({ navigation }) => {
     <ScrollView style={styles.container} contentContainerStyle={styles.scrollContent}>
       {/* Encabezado */}
       <ImageBackground source={require('../../../Logos_imagenes/fondo_login_geo_daily.png')} style={styles.header}>
+        <View style={[styles.campanaWrapper, { top: Math.max(insets.top, SPACING.md) }]}>
+          <NotificacionBell navigation={navigation} formularioDetailScreen="SupervisionFormularioDetail" />
+        </View>
+        <View style={[styles.ajustesWrapper, { top: Math.max(insets.top, SPACING.md) }]}>
+          <AjustesMenu
+            opciones={[
+              { id: 'contrasena', label: 'Cambiar Contraseña', icon: '🔑', onPress: () => setShowPasswordModal(true) },
+              { id: 'cerrar', label: 'Cerrar Sesión', icon: '🚪', onPress: logout, destructivo: true },
+            ]}
+          />
+        </View>
         <TouchableOpacity onPress={cambiarAvatar} activeOpacity={0.7} disabled={cambiando}>
           <View style={styles.avatar}>
             {avatarUri ? (
@@ -213,6 +202,16 @@ const styles = StyleSheet.create({
     borderBottomRightRadius: BORDER_RADIUS.xl,
     overflow: 'hidden',
     ...SHADOWS.md,
+  },
+  ajustesWrapper: {
+    position: 'absolute',
+    right: SPACING.md,
+    zIndex: 1,
+  },
+  campanaWrapper: {
+    position: 'absolute',
+    left: SPACING.md,
+    zIndex: 1,
   },
   avatar: {
     width: 72,

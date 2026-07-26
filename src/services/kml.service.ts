@@ -67,6 +67,72 @@ export const exportarKML = async (
 };
 
 /**
+ * Generar archivo KML de una RUTA (LineString) a partir de las posiciones
+ * grabadas por el tracking — a diferencia de `generarKML`, que cierra un
+ * polígono, esto traza una línea abierta con el trayecto completo.
+ */
+export const generarKMLRuta = (
+  nombre: string,
+  puntos: { latitud: number; longitud: number; altitud?: number }[]
+): string => {
+  const coords = puntos
+    .map((p) => `${p.longitud},${p.latitud},${p.altitud ?? 0}`)
+    .join(' ');
+
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<kml xmlns="http://www.opengis.net/kml/2.2">
+  <Document>
+    <name>${nombre}</name>
+    <Placemark>
+      <name>${nombre}</name>
+      <Style>
+        <LineStyle>
+          <color>ff0000ff</color>
+          <width>4</width>
+        </LineStyle>
+      </Style>
+      <LineString>
+        <tessellate>1</tessellate>
+        <coordinates>${coords}</coordinates>
+      </LineString>
+    </Placemark>
+  </Document>
+</kml>`;
+};
+
+/**
+ * Exportar una ruta (trayecto de tracking) a KML y compartir — mismo
+ * patrón que `exportarKML`, pero con LineString en vez de Polygon.
+ */
+export const exportarKMLRuta = async (
+  nombre: string,
+  puntos: { latitud: number; longitud: number; altitud?: number }[]
+): Promise<string | null> => {
+  try {
+    const kmlContent = generarKMLRuta(nombre, puntos);
+    const filename = `${nombre.replace(/[^a-zA-Z0-9]/g, '_')}.kml`;
+    const fileUri = `${FileSystem.documentDirectory}${filename}`;
+
+    await FileSystem.writeAsStringAsync(fileUri, kmlContent, {
+      encoding: FileSystem.EncodingType.UTF8,
+    });
+
+    if (await Sharing.isAvailableAsync()) {
+      await Sharing.shareAsync(fileUri, {
+        mimeType: 'application/vnd.google-earth.kml+xml',
+        dialogTitle: 'Exportar ruta a KML',
+      });
+    }
+
+    console.log('[KML] Ruta exportada:', fileUri);
+    return fileUri;
+  } catch (error) {
+    console.error('[KML] Error al exportar ruta:', error);
+    return null;
+  }
+};
+
+/**
  * Importar archivo KML y extraer puntos
  */
 export const importarKML = async (

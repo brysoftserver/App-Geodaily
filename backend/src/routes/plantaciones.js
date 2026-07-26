@@ -25,6 +25,10 @@ router.post('/sync', authenticateToken, async (req, res) => {
         ...metadataBase,
         icono: p.icono || null,
         poligono: p.poligono || null,
+        beneficiario_cedula: p.beneficiario_cedula || metadataBase.beneficiario_cedula || null,
+        beneficiario_nombre: p.beneficiario_nombre || metadataBase.beneficiario_nombre || null,
+        vereda: p.vereda || metadataBase.vereda || null,
+        corregimiento: p.corregimiento || metadataBase.corregimiento || null,
       };
       await db.query(
         `INSERT INTO plantaciones (id, usuario_id, formulario_id, especie, cantidad, latitud, longitud, altitud, metadata_json, timestamp)
@@ -83,10 +87,25 @@ router.get('/', authenticateToken, async (req, res) => {
 
     const lista = await db.queryAll(sql, params);
 
+    // Aplanar los campos guardados en metadata_json (poligono, vereda,
+    // beneficiario, icono) para que el frontend no tenga que parsearlos.
+    const plantaciones = lista.map((p) => {
+      const meta = p.metadata_json || {};
+      return {
+        ...p,
+        icono: meta.icono || null,
+        poligono: meta.poligono || null,
+        beneficiario_cedula: meta.beneficiario_cedula || null,
+        beneficiario_nombre: meta.beneficiario_nombre || null,
+        vereda: meta.vereda || null,
+        corregimiento: meta.corregimiento || null,
+      };
+    });
+
     res.json({
       estado: 'ok',
-      total: lista.length,
-      plantaciones: lista,
+      total: plantaciones.length,
+      plantaciones,
     });
   } catch (error) {
     console.error('[Plantaciones] Error al listar:', error);

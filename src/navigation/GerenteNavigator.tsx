@@ -16,6 +16,7 @@ import MapaTecnicosScreen from '../screens/gerente/MapaTecnicosScreen';
 import MapaGeneralScreen from '../screens/MapaGeneralScreen';
 import BaseDatosBeneficiariosScreen from '../screens/supervision/BaseDatosBeneficiariosScreen';
 import FormularioDetailScreen from '../screens/terreno/FormularioDetailScreen';
+import PlantacionesPorTecnicoScreen from '../screens/supervision/PlantacionesPorTecnicoScreen';
 
 export type GerenteStackParamList = {
   GerenteMenu: undefined;
@@ -29,6 +30,7 @@ export type GerenteStackParamList = {
   MapaGeneral: undefined;
   BaseDatosBeneficiarios: undefined;
   SupervisionFormularioDetail: { formulario: import('../types').Formulario };
+  GerentePlantacionesPorTecnico: undefined;
 };
 
 const Stack = createNativeStackNavigator<GerenteStackParamList>();
@@ -104,6 +106,11 @@ const GerenteNavigator: React.FC = () => {
         name="SupervisionFormularioDetail"
         component={FormularioDetailScreen as any}
         options={{ title: 'Detalle del Formulario' }}
+      />
+      <Stack.Screen
+        name="GerentePlantacionesPorTecnico"
+        component={PlantacionesPorTecnicoScreen}
+        options={{ title: 'Áreas de Plantación' }}
       />
     </Stack.Navigator>
   );

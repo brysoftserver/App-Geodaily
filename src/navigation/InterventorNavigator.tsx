@@ -12,6 +12,7 @@ import CalendarioScreen from '../screens/CalendarioGlobalScreen';
 import MapaGeneralScreen from '../screens/MapaGeneralScreen';
 import FormularioDetailScreen from '../screens/terreno/FormularioDetailScreen';
 import BaseDatosBeneficiariosScreen from '../screens/supervision/BaseDatosBeneficiariosScreen';
+import PlantacionesPorTecnicoScreen from '../screens/supervision/PlantacionesPorTecnicoScreen';
 
 export type InterventorStackParamList = {
   InterventorMenu: undefined;
@@ -21,6 +22,7 @@ export type InterventorStackParamList = {
   InterventorMapaGeneral: undefined;
   InterventorFormularioDetail: { formulario: import('../types').Formulario };
   BaseDatosBeneficiarios: undefined;
+  InterventorPlantacionesPorTecnico: undefined;
 };
 
 const Stack = createNativeStackNavigator<InterventorStackParamList>();
@@ -76,6 +78,11 @@ const InterventorNavigator: React.FC = () => {
         name="BaseDatosBeneficiarios"
         component={BaseDatosBeneficiariosScreen}
         options={{ title: 'Base de Datos Beneficiarios' }}
+      />
+      <Stack.Screen
+        name="InterventorPlantacionesPorTecnico"
+        component={PlantacionesPorTecnicoScreen}
+        options={{ title: 'Áreas de Plantación' }}
       />
     </Stack.Navigator>
   );

@@ -3,7 +3,7 @@
 // ============================================================
 
 import * as SQLite from 'expo-sqlite';
-import { Formulario, Coordenadas, DocumentoFinca } from '../types';
+import { Formulario, Coordenadas, DocumentoFinca, PosicionTracking } from '../types';
 
 let db: SQLite.SQLiteDatabase | null = null;
 let dbFailedOnce = false; // evita reintentar si ya falló (web)
@@ -997,7 +997,8 @@ export const runMigrations = async (): Promise<void> => {
         velocidad REAL,
         heading REAL,
         timestamp TEXT NOT NULL,
-        sincronizado INTEGER DEFAULT 0
+        sincronizado INTEGER DEFAULT 0,
+        sesion_id TEXT
       );
 
       -- Capacitaciones a beneficiarios
@@ -1054,7 +1055,11 @@ export const runMigrations = async (): Promise<void> => {
         timestamp TEXT NOT NULL,
         sincronizado INTEGER DEFAULT 0,
         icono TEXT DEFAULT '🌱',
-        poligono_json TEXT DEFAULT NULL
+        poligono_json TEXT DEFAULT NULL,
+        beneficiario_cedula TEXT DEFAULT NULL,
+        beneficiario_nombre TEXT DEFAULT NULL,
+        vereda TEXT DEFAULT NULL,
+        corregimiento TEXT DEFAULT NULL
       );
 
       -- Visitas programadas (compartidas entre el equipo vía servidor)
@@ -1181,10 +1186,32 @@ export const runMigrations = async (): Promise<void> => {
       // Ya existe, ignorar
     }
 
+    // Migración: agregar columnas de beneficiario/vereda a plantaciones (BDs antiguas)
+    for (const col of ['beneficiario_cedula', 'beneficiario_nombre', 'vereda', 'corregimiento']) {
+      try {
+        await db.runAsync(`ALTER TABLE plantaciones ADD COLUMN ${col} TEXT DEFAULT NULL`);
+        console.log(`[DB] Columna ${col} agregada a plantaciones`);
+      } catch {
+        // Ya existe, ignorar
+      }
+    }
+
     // Migración: agregar columna sincronizado a tracking_posiciones si no existe
     try {
       await db.runAsync('ALTER TABLE tracking_posiciones ADD COLUMN sincronizado INTEGER DEFAULT 0');
       console.log('[DB] Columna sincronizado agregada a tracking_posiciones');
+    } catch {
+      // Ya existe, ignorar
+    }
+
+    // Migración: agregar sesion_id a tracking_posiciones — agrupa las
+    // posiciones de una misma ruta (Iniciar → Detener) para poder listarlas
+    // y volver a dibujarlas después en el historial de rutas. Las posiciones
+    // ya guardadas ANTES de esta migración quedan con sesion_id NULL (no se
+    // pueden agrupar retroactivamente, pero tampoco rompen nada).
+    try {
+      await db.runAsync('ALTER TABLE tracking_posiciones ADD COLUMN sesion_id TEXT DEFAULT NULL');
+      console.log('[DB] Columna sesion_id agregada a tracking_posiciones');
     } catch {
       // Ya existe, ignorar
     }
@@ -1264,6 +1291,99 @@ export const getPosicionesTecnico = async (
   }
 };
 
+// === Historial de rutas (sesiones de tracking) ===
+
+export interface SesionRutaResumen {
+  sesionId: string;
+  inicio: string;
+  fin: string;
+  totalPuntos: number;
+  distanciaKm: number;
+}
+
+const haversineKm = (
+  a: { latitud: number; longitud: number },
+  b: { latitud: number; longitud: number }
+): number => {
+  const R = 6371;
+  const toRad = (d: number) => (d * Math.PI) / 180;
+  const dLat = toRad(b.latitud - a.latitud);
+  const dLon = toRad(b.longitud - a.longitud);
+  const s =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(toRad(a.latitud)) * Math.cos(toRad(b.latitud)) * Math.sin(dLon / 2) ** 2;
+  return R * 2 * Math.atan2(Math.sqrt(s), Math.sqrt(1 - s));
+};
+
+/**
+ * Lista las rutas (sesiones de tracking) guardadas de un técnico, más
+ * recientes primero — cada una es un trayecto completo entre "Iniciar Ruta"
+ * y "Detener". Las posiciones grabadas antes de que existiera sesion_id
+ * quedan fuera (no se pueden agrupar retroactivamente).
+ */
+export const getSesionesRuta = async (usuarioId: string): Promise<SesionRutaResumen[]> => {
+  const database = await ensureDb();
+  if (!database) return [];
+  try {
+    const rows = await database.getAllAsync<Record<string, any>>(
+      `SELECT * FROM tracking_posiciones WHERE usuario_id = ? AND sesion_id IS NOT NULL ORDER BY sesion_id, timestamp ASC`,
+      [usuarioId]
+    );
+    const porSesion = new Map<string, Record<string, any>[]>();
+    for (const r of rows) {
+      const arr = porSesion.get(r.sesion_id) || [];
+      arr.push(r);
+      porSesion.set(r.sesion_id, arr);
+    }
+    const resumenes: SesionRutaResumen[] = [];
+    for (const [sesionId, puntos] of porSesion.entries()) {
+      let distanciaKm = 0;
+      for (let i = 1; i < puntos.length; i++) {
+        distanciaKm += haversineKm(puntos[i - 1] as any, puntos[i] as any);
+      }
+      resumenes.push({
+        sesionId,
+        inicio: puntos[0].timestamp,
+        fin: puntos[puntos.length - 1].timestamp,
+        totalPuntos: puntos.length,
+        distanciaKm,
+      });
+    }
+    return resumenes.sort((a, b) => b.inicio.localeCompare(a.inicio));
+  } catch (error) {
+    console.error('[DB] Error al obtener sesiones de ruta:', error);
+    return [];
+  }
+};
+
+/** Todas las posiciones de una ruta (sesión de tracking) puntual, en orden — para previsualizar/exportar. */
+export const getPosicionesPorSesion = async (sesionId: string): Promise<PosicionTracking[]> => {
+  const database = await ensureDb();
+  if (!database) return [];
+  try {
+    const rows = await database.getAllAsync<Record<string, any>>(
+      'SELECT * FROM tracking_posiciones WHERE sesion_id = ? ORDER BY timestamp ASC',
+      [sesionId]
+    );
+    return rows.map((r) => ({
+      id: r.id,
+      usuario_id: r.usuario_id,
+      latitud: r.latitud,
+      longitud: r.longitud,
+      altitud: r.altitud ?? undefined,
+      precision_gps: r.precision_gps ?? undefined,
+      velocidad: r.velocidad ?? undefined,
+      heading: r.heading ?? undefined,
+      timestamp: r.timestamp,
+      sincronizado: !!r.sincronizado,
+      sesion_id: r.sesion_id,
+    }));
+  } catch (error) {
+    console.error('[DB] Error al obtener posiciones de la sesión:', error);
+    return [];
+  }
+};
+
 // === Funciones para Plantaciones (Fase B) ===
 
 /**
@@ -1277,8 +1397,8 @@ export const savePlantacion = async (
   try {
     const poligonoJson = plantacion.poligono ? JSON.stringify(plantacion.poligono) : null;
     await database.runAsync(
-      `INSERT OR REPLACE INTO plantaciones (id, usuario_id, latitud, longitud, especie, cantidad, timestamp, sincronizado, icono, poligono_json)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT OR REPLACE INTO plantaciones (id, usuario_id, latitud, longitud, especie, cantidad, timestamp, sincronizado, icono, poligono_json, beneficiario_cedula, beneficiario_nombre, vereda, corregimiento)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         plantacion.id,
         plantacion.usuario_id,
@@ -1290,6 +1410,10 @@ export const savePlantacion = async (
         plantacion.sincronizado ? 1 : 0,
         plantacion.icono || '🌱',
         poligonoJson,
+        plantacion.beneficiario_cedula || null,
+        plantacion.beneficiario_nombre || null,
+        plantacion.vereda || null,
+        plantacion.corregimiento || null,
       ]
     );
   } catch (error) {
@@ -1325,6 +1449,10 @@ export const getPlantaciones = async (
       sincronizado: r.sincronizado === 1,
       icono: r.icono || '🌱',
       poligono: r.poligono_json ? JSON.parse(r.poligono_json) : undefined,
+      beneficiario_cedula: r.beneficiario_cedula || undefined,
+      beneficiario_nombre: r.beneficiario_nombre || undefined,
+      vereda: r.vereda || undefined,
+      corregimiento: r.corregimiento || undefined,
     }));
   } catch (error) {
     console.error('[DB] Error al obtener plantaciones:', error);

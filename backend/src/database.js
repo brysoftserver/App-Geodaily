@@ -223,6 +223,18 @@ async function initSchema() {
     )`,
     `CREATE INDEX IF NOT EXISTS idx_revisiones_formulario ON revisiones_formulario(formulario_id)`,
 
+    `CREATE TABLE IF NOT EXISTS notificaciones (
+      id SERIAL PRIMARY KEY,
+      usuario_id VARCHAR(20) NOT NULL,
+      tipo VARCHAR(50) NOT NULL,
+      titulo VARCHAR(200) NOT NULL,
+      mensaje TEXT,
+      formulario_id VARCHAR(100),
+      leida BOOLEAN DEFAULT FALSE,
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_notificaciones_usuario ON notificaciones(usuario_id, leida)`,
+
     `CREATE INDEX IF NOT EXISTS idx_formularios_usuario ON formularios(usuario_id)`,
     `CREATE INDEX IF NOT EXISTS idx_formularios_tipo ON formularios(tipo)`,
     `CREATE INDEX IF NOT EXISTS idx_formularios_created ON formularios(created_at)`,
@@ -312,6 +324,45 @@ async function initSchema() {
     if (!err.message.includes('already exists')) {
       console.error('[DB] Error agregando contrasena_visible:', err.message);
     }
+  }
+
+  // Migración: columna seccion en revisiones_formulario — permite marcar
+  // Novedad/Aprobado por cada sección del formulario clonado (en vez de
+  // solo a nivel de formulario completo). NULL = revisión de todo el
+  // formulario (compatibilidad con registros anteriores).
+  try {
+    await query(`ALTER TABLE revisiones_formulario ADD COLUMN seccion VARCHAR(100)`);
+    console.log('[DB] ✅ Columna seccion agregada a revisiones_formulario');
+  } catch (err) {
+    if (!err.message.includes('already exists')) {
+      console.error('[DB] Error agregando seccion a revisiones_formulario:', err.message);
+    }
+  }
+
+  // Tabla: evidencia final del revisor (supervisor/interventor) — una fila
+  // por formulario + rol revisor: fotos propias, firma dual (beneficiario +
+  // revisor) y una georeferencia puntual (captura única, no tracking).
+  try {
+    await query(`CREATE TABLE IF NOT EXISTS revision_evidencia_formulario (
+      id SERIAL PRIMARY KEY,
+      formulario_id VARCHAR(100) NOT NULL,
+      revisor_id VARCHAR(20) NOT NULL,
+      revisor_nombre VARCHAR(200),
+      revisor_rol VARCHAR(20) NOT NULL,
+      fotos_json JSONB DEFAULT '[]',
+      firma_beneficiario TEXT,
+      firma_revisor TEXT,
+      geo_latitud DECIMAL(10,7),
+      geo_longitud DECIMAL(10,7),
+      geo_altitud DECIMAL(10,2),
+      observaciones TEXT,
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      updated_at TIMESTAMPTZ DEFAULT NOW(),
+      UNIQUE(formulario_id, revisor_rol)
+    )`);
+    await query(`CREATE INDEX IF NOT EXISTS idx_revision_evidencia_formulario ON revision_evidencia_formulario(formulario_id)`);
+  } catch (err) {
+    console.error('[DB] Error creando revision_evidencia_formulario:', err.message);
   }
 
   await seedBeneficiarios();

@@ -17,6 +17,8 @@ import {
   Alert,
   Modal,
   AppState,
+  ActivityIndicator,
+  ScrollView,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useFocusEffect } from '@react-navigation/native';
@@ -27,12 +29,31 @@ import { useAuth } from '../../store/AuthContext';
 import { useSync } from '../../store/SyncContext';
 import { useGPS } from '../../store/GPSContext';
 import MapViewOffline from '../../components/MapViewOffline';
-import { calcularArea, exportarKML, importarKML } from '../../services/kml.service';
-import { savePlantacion, saveMedicion, getPlantaciones } from '../../services/database';
+import { calcularArea, exportarKML, importarKML, exportarKMLRuta } from '../../services/kml.service';
+import {
+  savePlantacion,
+  saveMedicion,
+  getPlantaciones,
+  getSesionesRuta,
+  getPosicionesPorSesion,
+  SesionRutaResumen,
+  getMediciones,
+  deleteMedicionLocal,
+} from '../../services/database';
 import * as DocumentPicker from 'expo-document-picker';
-import { isOfflineMapAvailable, descargarMapaOffline, listarPaquetesOffline, eliminarPaqueteOffline, OfflinePackInfo } from '../../services/offlineMap.service';
+import {
+  isOfflineMapAvailable,
+  descargarMapaOffline,
+  descargarMapaOfflinePorBounds,
+  listarPaquetesOffline,
+  eliminarPaqueteOffline,
+  LIMITES_PUERTO_RICO_MUNICIPIO,
+  OfflinePackInfo,
+} from '../../services/offlineMap.service';
 import { Plantacion, Coordenadas, PuntoPoligono } from '../../types';
-import { PLANTAS_OPCIONES, getIconoEspecie } from '../../utils/constants';
+import { PLANTAS_OPCIONES, getIconoEspecie, getVeredasByMunicipio } from '../../utils/constants';
+import { PADRON_BENEFICIARIOS } from '../../data/padronBeneficiarios';
+import DropdownPicker from '../../components/DropdownPicker';
 
 const STORAGE_KEY_MAP = '@geodaily/mapa_estado';
 
@@ -68,12 +89,22 @@ const MapaScreen: React.FC = () => {
     }
   }, [userLocation]);
 
-  // Seguir al usuario si el modo siguiendo está activo
+  // El modo inicial es 'navegar' — activar el seguimiento en tiempo real
+  // desde el primer momento, sin esperar a que el técnico toque "Mi Ubicación".
   useEffect(() => {
-    if (siguiendoGPS && userLocation && mapCenterInitialized.current) {
+    setSiguiendoGPS(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Seguir al usuario en tiempo real — SOLO en Navegar y Ruta. En Medición y
+  // Conteo el técnico necesita hacer zoom/pan libremente para ubicar cada
+  // punto con precisión; si el mapa se recentra solo cada vez que llega una
+  // posición GPS (cada ~15s), lo "pierde" en medio de marcar un punto.
+  useEffect(() => {
+    if (siguiendoGPS && userLocation && mapCenterInitialized.current && (modo === 'navegar' || modo === 'ruta')) {
       setMapCenter(userLocation);
     }
-  }, [siguiendoGPS, userLocation]);
+  }, [siguiendoGPS, userLocation, modo]);
 
   // --- Estado para Medición ---
   const [poligono, setPoligono] = useState<PuntoPoligono[]>([]);
@@ -96,12 +127,47 @@ const MapaScreen: React.FC = () => {
   const [cantidadInput, setCantidadInput] = useState<string>('');
   /** Polígono que el técnico va dibujando en modo conteo */
   const [plantacionPoligono, setPlantacionPoligono] = useState<PuntoPoligono[]>([]);
+  /** Beneficiario/vereda opcional asociado al área de plantación */
+  const [plantacionCedula, setPlantacionCedula] = useState('');
+  const [plantacionBeneficiarioNombre, setPlantacionBeneficiarioNombre] = useState('');
+  const [plantacionVereda, setPlantacionVereda] = useState('');
+  const [plantacionCorregimiento, setPlantacionCorregimiento] = useState('');
+  const veredasPlantacion = getVeredasByMunicipio('Caquetá', 'Puerto Rico');
+
+  const buscarBeneficiarioPlantacionPorCedula = useCallback(() => {
+    const cedula = plantacionCedula.trim();
+    const encontrado = PADRON_BENEFICIARIOS[cedula];
+    if (encontrado) {
+      setPlantacionBeneficiarioNombre(encontrado.nombre);
+      setPlantacionVereda(encontrado.vereda);
+      setPlantacionCorregimiento(encontrado.corregimiento);
+    } else {
+      Alert.alert('No encontrado', 'No se encontró un beneficiario con esa cédula en el padrón.');
+    }
+  }, [plantacionCedula]);
 
   // --- Estado para Plantaciones (Fase B) ---
   const [plantaciones, setPlantaciones] = useState<Plantacion[]>([]);
 
   // --- Estado para KML ---
   const [mostrarModalKML, setMostrarModalKML] = useState(false);
+
+  // --- Historial de rutas (sesiones de tracking guardadas) ---
+  const [mostrarHistorialRutas, setMostrarHistorialRutas] = useState(false);
+  const [sesionesRuta, setSesionesRuta] = useState<SesionRutaResumen[]>([]);
+  const [cargandoHistorialRutas, setCargandoHistorialRutas] = useState(false);
+  const [rutaPreview, setRutaPreview] = useState<{ sesionId: string; puntos: { latitud: number; longitud: number }[] } | null>(null);
+  const [exportandoSesionId, setExportandoSesionId] = useState<string | null>(null);
+
+  // --- Historial de mediciones (áreas/distancias guardadas) ---
+  const [mostrarHistorialMediciones, setMostrarHistorialMediciones] = useState(false);
+  const [medicionesGuardadas, setMedicionesGuardadas] = useState<Record<string, any>[]>([]);
+  const [cargandoHistorialMediciones, setCargandoHistorialMediciones] = useState(false);
+  const [medicionPreview, setMedicionPreview] = useState<{ id: string; puntos: { latitud: number; longitud: number }[] } | null>(null);
+  const [eliminandoMedicionId, setEliminandoMedicionId] = useState<string | null>(null);
+
+  // --- Historial de plantaciones (áreas de siembra guardadas) ---
+  const [mostrarHistorialPlantaciones, setMostrarHistorialPlantaciones] = useState(false);
 
   // --- Tipo de mapa: relieve (CartoDB) o satélite ---
   const [tipoMapa, setTipoMapa] = useState<'relieve' | 'satelite'>('relieve');
@@ -123,6 +189,53 @@ const MapaScreen: React.FC = () => {
     setPaquetesOffline((prev) => prev.filter((p) => p.name !== name));
   }, []);
 
+  // Vuelve a descargar un paquete existente con la misma zona/tipo — refresca
+  // los datos con la versión actual de las teselas y actualiza la fecha.
+  const handleActualizarPaquete = useCallback(async (pack: OfflinePackInfo) => {
+    const meta = pack.metadata || {};
+    setMostrarModalPaquetes(false);
+    setDescargandoMapa(true);
+    setProgresoDescarga(0);
+    let resultado: { success: boolean; error?: string };
+    if (meta.bounds) {
+      resultado = await descargarMapaOfflinePorBounds(
+        meta.bounds,
+        meta.tipo,
+        meta.nombreZona || 'zona',
+        meta.maxZoom,
+        setProgresoDescarga
+      );
+    } else if (meta.center) {
+      resultado = await descargarMapaOffline(meta.center, meta.radioKm || 20, meta.tipo, setProgresoDescarga);
+    } else {
+      resultado = { success: false, error: 'No se pudo determinar la zona original de este mapa. Descárgalo de nuevo desde "Descargar mapa offline".' };
+    }
+    setDescargandoMapa(false);
+    if (resultado.success) {
+      Alert.alert('✅ Mapa actualizado', 'Este mapa offline quedó con los datos más recientes.');
+      const paquetes = await listarPaquetesOffline();
+      setPaquetesOffline(paquetes);
+    } else {
+      Alert.alert('Error', resultado.error || 'No se pudo actualizar el mapa.');
+    }
+  }, []);
+
+  const formatearFechaPack = (iso?: string): string => {
+    if (!iso) return 'Fecha desconocida';
+    try {
+      return new Date(iso).toLocaleString('es-CO', { dateStyle: 'medium', timeStyle: 'short' });
+    } catch {
+      return 'Fecha desconocida';
+    }
+  };
+
+  const formatearZonaPack = (pack: OfflinePackInfo): string => {
+    const meta = pack.metadata || {};
+    if (meta.nombreZona === 'municipio-completo') return 'Puerto Rico completo (municipio)';
+    if (meta.radioKm) return `Radio ${meta.radioKm} km`;
+    return pack.name;
+  };
+
   const ejecutarDescarga = useCallback(async (centro: Coordenadas, radioKm: number) => {
     setDescargandoMapa(true);
     setProgresoDescarga(0);
@@ -134,6 +247,38 @@ const MapaScreen: React.FC = () => {
       Alert.alert('Error', resultado.error || 'No se pudo descargar el mapa offline.');
     }
   }, [tipoMapa]);
+
+  const ejecutarDescargaMunicipio = useCallback(async () => {
+    setDescargandoMapa(true);
+    setProgresoDescarga(0);
+    const resultado = await descargarMapaOfflinePorBounds(
+      LIMITES_PUERTO_RICO_MUNICIPIO,
+      tipoMapa,
+      'municipio-completo',
+      undefined,
+      setProgresoDescarga
+    );
+    setDescargandoMapa(false);
+    if (resultado.success) {
+      Alert.alert('✅ Municipio completo descargado', 'Ya puedes usar el mapa de todo Puerto Rico (Caquetá) sin conexión.');
+    } else {
+      Alert.alert('Error', resultado.error || 'No se pudo descargar el mapa offline.');
+    }
+  }, [tipoMapa]);
+
+  // El municipio completo (6 corregimientos) son ~2.700 km² a más detalle
+  // (zoom 17) que la descarga rápida de 20km — se avisa el peso aproximado
+  // antes de iniciar porque conviene hacerlo con WiFi.
+  const confirmarDescargaMunicipio = useCallback(() => {
+    Alert.alert(
+      '🗺️ Puerto Rico completo (municipio)',
+      'Cubre los 6 corregimientos completos, con más nivel de detalle que la descarga rápida. Pesa aproximadamente 300–900 MB según el tipo de mapa — se recomienda hacerlo con WiFi.',
+      [
+        { text: 'Cancelar', style: 'cancel' },
+        { text: 'Descargar', onPress: ejecutarDescargaMunicipio },
+      ]
+    );
+  }, [ejecutarDescargaMunicipio]);
 
   const handleDescargarMapaOffline = useCallback(async () => {
     if (!isOfflineMapAvailable()) {
@@ -150,7 +295,11 @@ const MapaScreen: React.FC = () => {
       [
         { text: 'Cancelar', style: 'cancel' },
         {
-          text: '📍 Puerto Rico, Caquetá (zona de trabajo)',
+          text: '🗺️ Puerto Rico completo (municipio, más detalle)',
+          onPress: confirmarDescargaMunicipio,
+        },
+        {
+          text: '📍 Puerto Rico, Caquetá (rápida, 20km desde el centro)',
           onPress: () => ejecutarDescarga(PUERTO_RICO_CENTRO, 20),
         },
         ...(centroActual
@@ -161,7 +310,7 @@ const MapaScreen: React.FC = () => {
           : []),
       ]
     );
-  }, [mapCenter, userLocation, ejecutarDescarga]);
+  }, [mapCenter, userLocation, ejecutarDescarga, confirmarDescargaMunicipio]);
 
   // --- Persistencia automática: guardar al salir, restaurar al entrar ---
   const guardarEstadoMapa = useCallback(async () => {
@@ -288,6 +437,29 @@ const MapaScreen: React.FC = () => {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [getCurrentPosition, userLocation]);
 
+  // Centrado manual "de una sola vez" para Medición/Conteo — a diferencia de
+  // centrarEnGPS, NO activa el seguimiento continuo (setSiguiendoGPS queda
+  // en false) ni cambia el zoom: solo mueve la cámara a la posición actual
+  // cuando el técnico lo pide, sin volver a moverse sola después.
+  const [foco, setFoco] = useState<{ coords: Coordenadas; nonce: number } | null>(null);
+  const [centrando, setCentrando] = useState(false);
+  const centrarUnaVez = useCallback(async () => {
+    setCentrando(true);
+    try {
+      const coords = userLocation ?? (await getCurrentPosition());
+      if (coords) {
+        setFoco({ coords, nonce: Date.now() });
+      } else {
+        Alert.alert(
+          '📍 Sin ubicación',
+          'No se pudo obtener la ubicación GPS. Verifica que el GPS esté activado.'
+        );
+      }
+    } finally {
+      setCentrando(false);
+    }
+  }, [userLocation, getCurrentPosition]);
+
   // --- Calcular centroide de un polígono ---
   const calcularCentroide = useCallback((puntos: PuntoPoligono[]): { lat: number; lon: number } => {
     const n = puntos.length;
@@ -318,6 +490,22 @@ const MapaScreen: React.FC = () => {
     },
     [modo]
   );
+
+  // Mover un punto ya puesto (arrastrar para corregir un error sin borrar
+  // todo el polígono) — el resultado calculado queda desactualizado hasta
+  // volver a presionar "Calcular".
+  const moverPuntoPoligono = useCallback((id: string, coords: { latitud: number; longitud: number }) => {
+    if (id.startsWith('pp_')) {
+      const orden = parseInt(id.slice(3), 10);
+      setPlantacionPoligono((prev) => prev.map((p) => (p.orden === orden ? { ...p, ...coords } : p)));
+    } else if (id.startsWith('p_')) {
+      const orden = parseInt(id.slice(2), 10);
+      setPoligono((prev) => prev.map((p) => (p.orden === orden ? { ...p, ...coords } : p)));
+      setResultadoArea(null);
+      setResultadoDistancia(null);
+      setMostrarResultado(false);
+    }
+  }, []);
 
   // --- Funciones de Medición ---
   const calcularDistanciaHaversine = useCallback(
@@ -437,6 +625,10 @@ const MapaScreen: React.FC = () => {
     setPlantacionPoligono([]);
     setMostrarPanelConteo(false);
     setUltimoPunto(null);
+    setPlantacionCedula('');
+    setPlantacionBeneficiarioNombre('');
+    setPlantacionVereda('');
+    setPlantacionCorregimiento('');
   }, []);
 
   const guardarConteo = useCallback(async () => {
@@ -464,6 +656,10 @@ const MapaScreen: React.FC = () => {
       sincronizado: false,
       icono,
       poligono: poligonoData,
+      beneficiario_cedula: plantacionCedula.trim() || undefined,
+      beneficiario_nombre: plantacionBeneficiarioNombre.trim() || undefined,
+      vereda: plantacionVereda || undefined,
+      corregimiento: plantacionCorregimiento || undefined,
     };
     await savePlantacion(plantacion);
     setPlantaciones((prev) => [...prev, plantacion]);
@@ -477,8 +673,12 @@ const MapaScreen: React.FC = () => {
     setMostrarPanelConteo(false);
     setPlantacionPoligono([]);
     setUltimoPunto(null);
+    setPlantacionCedula('');
+    setPlantacionBeneficiarioNombre('');
+    setPlantacionVereda('');
+    setPlantacionCorregimiento('');
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [plantaSeleccionada, cantidadInput, ultimoPunto, userLocation, user?.id, plantacionPoligono]);
+  }, [plantaSeleccionada, cantidadInput, ultimoPunto, userLocation, user?.id, plantacionPoligono, plantacionCedula, plantacionBeneficiarioNombre, plantacionVereda, plantacionCorregimiento]);
 
   // --- Funciones KML ---
   const handleExportarKML = useCallback(async () => {
@@ -530,6 +730,102 @@ const MapaScreen: React.FC = () => {
     }
   }, []);
 
+  // --- Historial de rutas ---
+  const abrirHistorialRutas = useCallback(async () => {
+    if (!user?.id) return;
+    setCargandoHistorialRutas(true);
+    setMostrarHistorialRutas(true);
+    try {
+      const sesiones = await getSesionesRuta(user.id);
+      setSesionesRuta(sesiones);
+    } finally {
+      setCargandoHistorialRutas(false);
+    }
+  }, [user?.id]);
+
+  const verRutaPreview = useCallback(async (sesionId: string) => {
+    const posiciones = await getPosicionesPorSesion(sesionId);
+    if (posiciones.length === 0) {
+      Alert.alert('Sin puntos', 'Esta ruta no tiene posiciones guardadas.');
+      return;
+    }
+    setRutaPreview({
+      sesionId,
+      puntos: posiciones.map((p) => ({ latitud: p.latitud, longitud: p.longitud })),
+    });
+    setFoco({ coords: { latitud: posiciones[0].latitud, longitud: posiciones[0].longitud }, nonce: Date.now() });
+    setMostrarHistorialRutas(false);
+  }, []);
+
+  const cerrarRutaPreview = useCallback(() => setRutaPreview(null), []);
+
+  const exportarSesionRuta = useCallback(async (sesion: SesionRutaResumen) => {
+    setExportandoSesionId(sesion.sesionId);
+    try {
+      const posiciones = await getPosicionesPorSesion(sesion.sesionId);
+      if (posiciones.length < 2) {
+        Alert.alert('Sin puntos suficientes', 'Esta ruta no tiene suficientes posiciones para exportar.');
+        return;
+      }
+      const fecha = new Date(sesion.inicio).toISOString().split('T')[0];
+      await exportarKMLRuta(`Ruta_${fecha}_${sesion.sesionId.slice(-6)}`, posiciones);
+    } finally {
+      setExportandoSesionId(null);
+    }
+  }, []);
+
+  // --- Historial de mediciones ---
+  const abrirHistorialMediciones = useCallback(async () => {
+    setCargandoHistorialMediciones(true);
+    setMostrarHistorialMediciones(true);
+    try {
+      const todas = await getMediciones();
+      setMedicionesGuardadas(todas.filter((m) => !user?.id || m.usuario_id === user.id));
+    } finally {
+      setCargandoHistorialMediciones(false);
+    }
+  }, [user?.id]);
+
+  const verMedicionPreview = useCallback((medicion: Record<string, any>) => {
+    const puntos = (medicion.puntos || []) as { latitud: number; longitud: number }[];
+    if (puntos.length === 0) return;
+    setMedicionPreview({ id: medicion.id, puntos });
+    setFoco({ coords: puntos[0], nonce: Date.now() });
+    setMostrarHistorialMediciones(false);
+  }, []);
+
+  const cerrarMedicionPreview = useCallback(() => setMedicionPreview(null), []);
+
+  const eliminarMedicionGuardada = useCallback(async (id: string) => {
+    Alert.alert('Eliminar medición', '¿Seguro que quieres eliminar esta área/distancia guardada?', [
+      { text: 'Cancelar', style: 'cancel' },
+      {
+        text: 'Eliminar',
+        style: 'destructive',
+        onPress: async () => {
+          setEliminandoMedicionId(id);
+          try {
+            await deleteMedicionLocal(id);
+            setMedicionesGuardadas((prev) => prev.filter((m) => m.id !== id));
+            if (medicionPreview?.id === id) setMedicionPreview(null);
+          } finally {
+            setEliminandoMedicionId(null);
+          }
+        },
+      },
+    ]);
+  }, [medicionPreview]);
+
+  // --- Historial de plantaciones ---
+  const abrirHistorialPlantaciones = useCallback(() => {
+    setMostrarHistorialPlantaciones(true);
+  }, []);
+
+  const verPlantacionEnMapa = useCallback((pl: Plantacion) => {
+    setFoco({ coords: { latitud: pl.latitud, longitud: pl.longitud }, nonce: Date.now() });
+    setMostrarHistorialPlantaciones(false);
+  }, []);
+
   // Cambiar modo
   const cambiarModo = useCallback(
     (nuevoModo: ModoMapa) => {
@@ -541,8 +837,12 @@ const MapaScreen: React.FC = () => {
         setMostrarPanelConteo(false);
         setPlantacionPoligono([]);
       }
+      // Navegar y Ruta siguen la ubicación en tiempo real automáticamente;
+      // Medición y Conteo la apagan (el técnico centra manualmente con el
+      // botón "Centrar" cuando lo necesite, sin que el mapa se mueva solo).
+      setSiguiendoGPS(nuevoModo === 'navegar' || nuevoModo === 'ruta');
     },
-    []
+    [setSiguiendoGPS]
   );
 
   return (
@@ -597,21 +897,24 @@ const MapaScreen: React.FC = () => {
           height={'100%'}
           mapStyle={tipoMapa}
           markers={[
-            // Puntos del polígono de medición
+            // Puntos del polígono de medición — arrastrables para corregir un
+            // punto puesto en el lugar equivocado sin tener que borrar todo.
             ...poligono.map((p) => ({
               id: `p_${p.orden}`,
               latitud: p.latitud,
               longitud: p.longitud,
-              title: `Punto ${p.orden}`,
+              title: `Punto ${p.orden} (mantén presionado para moverlo)`,
               color: modo === 'medir' ? COLORS.secondary : COLORS.primary,
+              draggable: modo === 'medir',
             })),
-            // Puntos del polígono de plantación (conteo)
+            // Puntos del polígono de plantación (conteo) — igual, arrastrables
             ...plantacionPoligono.map((p) => ({
               id: `pp_${p.orden}`,
               latitud: p.latitud,
               longitud: p.longitud,
-              title: `Área punto ${p.orden}`,
+              title: `Área punto ${p.orden} (mantén presionado para moverlo)`,
               color: '#2E7D32',
+              draggable: modo === 'contar',
             })),
             // Centroide del polígono de plantación (icono difuminado)
             ...(getPlantacionCentroide() ? [{
@@ -627,12 +930,32 @@ const MapaScreen: React.FC = () => {
               latitud: pl.latitud,
               longitud: pl.longitud,
               title: `${pl.especie}: ${pl.cantidad} plantas`,
-              icon: (pl.icono || '🌱') as '🌱' | '�' | '🌳',
+              icon: pl.icono || getIconoEspecie(pl.especie),
             })),
           ]}
-          polyline={modo === 'ruta' ? tracking.posiciones.map(p => ({ latitud: p.latitud, longitud: p.longitud })) : undefined}
-          startMarker={modo === 'ruta' && tracking.posiciones.length > 0 ? { latitud: tracking.posiciones[0].latitud, longitud: tracking.posiciones[0].longitud } : undefined}
-          endMarker={modo === 'ruta' && tracking.posiciones.length > 0 ? { latitud: tracking.posiciones[tracking.posiciones.length - 1].latitud, longitud: tracking.posiciones[tracking.posiciones.length - 1].longitud } : undefined}
+          polyline={
+            rutaPreview
+              ? rutaPreview.puntos
+              : modo === 'ruta'
+              ? tracking.posiciones.map(p => ({ latitud: p.latitud, longitud: p.longitud }))
+              : modo === 'medir' && poligono.length >= 2
+              ? poligono.map(p => ({ latitud: p.latitud, longitud: p.longitud }))
+              : undefined
+          }
+          startMarker={
+            rutaPreview
+              ? rutaPreview.puntos[0]
+              : modo === 'ruta' && tracking.posiciones.length > 0
+              ? { latitud: tracking.posiciones[0].latitud, longitud: tracking.posiciones[0].longitud }
+              : undefined
+          }
+          endMarker={
+            rutaPreview
+              ? rutaPreview.puntos[rutaPreview.puntos.length - 1]
+              : modo === 'ruta' && tracking.posiciones.length > 0
+              ? { latitud: tracking.posiciones[tracking.posiciones.length - 1].latitud, longitud: tracking.posiciones[tracking.posiciones.length - 1].longitud }
+              : undefined
+          }
           geojsonLayers={(() => {
             const layers: Array<{
               id: string;
@@ -643,6 +966,51 @@ const MapaScreen: React.FC = () => {
               strokeOpacity?: number;
               strokeWidth?: number;
             }> = [];
+
+            // Polígono de MEDICIÓN — se rellena al presionar "Calcular"
+            // (mientras se marcan los puntos solo se ve la línea/polyline
+            // de arriba, sin relleno, hasta confirmar el área).
+            if (modo === 'medir' && mostrarResultado && poligono.length >= 3) {
+              const coordsMedicion = [
+                ...poligono.map((p) => [p.longitud, p.latitud]),
+                [poligono[0].longitud, poligono[0].latitud],
+              ];
+              layers.push({
+                id: 'medicion-poligono',
+                features: [{
+                  type: 'Feature',
+                  geometry: { type: 'Polygon', coordinates: [coordsMedicion] },
+                  properties: {},
+                }],
+                fillColor: 'rgba(21, 101, 192, 0.22)',
+                strokeColor: '#1565C0',
+                strokeWidth: 2.5,
+                strokeOpacity: 0.85,
+                fillOpacity: 0.22,
+              });
+            }
+
+            // Previsualización de una medición ya guardada, elegida desde el
+            // historial — independiente del modo activo.
+            if (medicionPreview && medicionPreview.puntos.length >= 3) {
+              const coordsPreview = [
+                ...medicionPreview.puntos.map((p) => [p.longitud, p.latitud]),
+                [medicionPreview.puntos[0].longitud, medicionPreview.puntos[0].latitud],
+              ];
+              layers.push({
+                id: 'medicion-preview',
+                features: [{
+                  type: 'Feature',
+                  geometry: { type: 'Polygon', coordinates: [coordsPreview] },
+                  properties: {},
+                }],
+                fillColor: 'rgba(230, 81, 0, 0.22)',
+                strokeColor: '#E65100',
+                strokeWidth: 2.5,
+                strokeOpacity: 0.85,
+                fillOpacity: 0.22,
+              });
+            }
 
             // Polígono EN DIBUJO (mientras el técnico marca los puntos)
             if (plantacionPoligono.length >= 3) {
@@ -702,7 +1070,21 @@ const MapaScreen: React.FC = () => {
           userLocation={userLocation}
           interactive={true}
           onMapPress={handleMapPress}
+          onMarkerDragEnd={moverPuntoPoligono}
+          foco={foco}
         />
+
+        {/* Banner de previsualización de ruta o medición guardada */}
+        {(rutaPreview || medicionPreview) && (
+          <View style={styles.previewBanner}>
+            <Text style={styles.previewBannerText}>
+              👁 Viendo {rutaPreview ? 'ruta' : 'área'} guardada
+            </Text>
+            <TouchableOpacity onPress={rutaPreview ? cerrarRutaPreview : cerrarMedicionPreview}>
+              <Text style={styles.previewBannerClose}>✕ Cerrar</Text>
+            </TouchableOpacity>
+          </View>
+        )}
 
         {/* Overlay de coordenadas */}
         {ultimoPunto && (
@@ -897,6 +1279,31 @@ const MapaScreen: React.FC = () => {
               </Text>
             </View>
 
+            <Text style={styles.conteoLabel}>Beneficiario / vereda (opcional):</Text>
+            <View style={styles.conteoInputRow}>
+              <TextInput
+                style={[styles.conteoInputCant, { flex: 1 }]}
+                value={plantacionCedula}
+                onChangeText={setPlantacionCedula}
+                placeholder="Cédula del beneficiario"
+                placeholderTextColor={COLORS.textLight}
+                keyboardType="numeric"
+              />
+              <TouchableOpacity style={styles.toolBtn} onPress={buscarBeneficiarioPlantacionPorCedula}>
+                <Text style={styles.toolBtnIcon}>🔍</Text>
+              </TouchableOpacity>
+            </View>
+            {!!plantacionBeneficiarioNombre && (
+              <Text style={styles.conteoSubtitle}>👤 {plantacionBeneficiarioNombre}</Text>
+            )}
+            <DropdownPicker
+              label="Vereda"
+              value={plantacionVereda || null}
+              options={veredasPlantacion}
+              onSelect={setPlantacionVereda}
+              placeholder="Seleccionar vereda (opcional)..."
+            />
+
             <View style={styles.conteoActions}>
               <TouchableOpacity
                 style={[styles.conteoSaveBtn, (!cantidadInput || parseInt(cantidadInput) <= 0) && styles.toolBtnDisabled]}
@@ -943,6 +1350,17 @@ const MapaScreen: React.FC = () => {
                 {poligono.length} punto(s)
               </Text>
             </View>
+            <TouchableOpacity
+              style={[styles.toolBtn, centrando && styles.toolBtnDisabled]}
+              onPress={centrarUnaVez}
+              disabled={centrando}
+            >
+              <Text style={styles.toolBtnIcon}>🎯</Text>
+              <Text style={styles.toolBtnLabel}>{centrando ? 'GPS...' : 'Centrar'}</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.toolBtn} onPress={abrirHistorialMediciones}>
+              <Text style={styles.toolBtnLabel}>📋 Historial</Text>
+            </TouchableOpacity>
             {poligono.length > 0 && (
               <>
                 <TouchableOpacity style={styles.toolBtn} onPress={deshacerUltimoPunto}>
@@ -971,6 +1389,17 @@ const MapaScreen: React.FC = () => {
                   : `${plantaciones.length} registro(s) guardados`}
               </Text>
             </View>
+            <TouchableOpacity
+              style={[styles.toolBtn, centrando && styles.toolBtnDisabled]}
+              onPress={centrarUnaVez}
+              disabled={centrando}
+            >
+              <Text style={styles.toolBtnIcon}>🎯</Text>
+              <Text style={styles.toolBtnLabel}>{centrando ? 'GPS...' : 'Centrar'}</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.toolBtn} onPress={abrirHistorialPlantaciones}>
+              <Text style={styles.toolBtnLabel}>📋 Historial</Text>
+            </TouchableOpacity>
             {plantacionPoligono.length > 0 && !mostrarPanelConteo && (
               <>
                 <TouchableOpacity style={styles.toolBtn} onPress={deshacerUltimoPuntoPlantacion}>
@@ -1010,17 +1439,24 @@ const MapaScreen: React.FC = () => {
             <View style={styles.toolInfo}>
               <Text style={styles.toolInfoText}>
                 {tracking.activo
-                  ? `🟢 ${tracking.posiciones.length} pts · ${tracking.distanceKm.toFixed(2)} km`
+                  ? tracking.pausado
+                    ? `⏸ Pausada · ${tracking.posiciones.length} pts · ${tracking.distanceKm.toFixed(2)} km`
+                    : `🟢 ${tracking.posiciones.length} pts · ${tracking.distanceKm.toFixed(2)} km`
                   : '⏹ Tracking detenido'}
               </Text>
             </View>
             {!tracking.activo ? (
-              <TouchableOpacity
-                style={[styles.toolBtn, styles.toolBtnPrimary]}
-                onPress={tracking.iniciarTracking}
-              >
-                <Text style={styles.toolBtnLabelPrimary}>▶ Iniciar Ruta</Text>
-              </TouchableOpacity>
+              <>
+                <TouchableOpacity
+                  style={[styles.toolBtn, styles.toolBtnPrimary]}
+                  onPress={tracking.iniciarTracking}
+                >
+                  <Text style={styles.toolBtnLabelPrimary}>▶ Iniciar Ruta</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={styles.toolBtn} onPress={abrirHistorialRutas}>
+                  <Text style={styles.toolBtnLabel}>📋 Historial</Text>
+                </TouchableOpacity>
+              </>
             ) : (
               <>
                 {tracking.inicio && (
@@ -1032,6 +1468,18 @@ const MapaScreen: React.FC = () => {
                       min
                     </Text>
                   </View>
+                )}
+                {tracking.pausado ? (
+                  <TouchableOpacity
+                    style={[styles.toolBtn, styles.toolBtnPrimary]}
+                    onPress={tracking.reanudarTracking}
+                  >
+                    <Text style={styles.toolBtnLabelPrimary}>▶ Reanudar</Text>
+                  </TouchableOpacity>
+                ) : (
+                  <TouchableOpacity style={styles.toolBtn} onPress={tracking.pausarTracking}>
+                    <Text style={styles.toolBtnLabel}>⏸ Pausar</Text>
+                  </TouchableOpacity>
                 )}
                 <TouchableOpacity
                   style={[styles.toolBtn, { backgroundColor: COLORS.error }]}
@@ -1068,6 +1516,157 @@ const MapaScreen: React.FC = () => {
         </View>
       </Modal>
 
+      {/* Modal: Historial de Rutas */}
+      <Modal visible={mostrarHistorialRutas} transparent animationType="fade">
+        <View style={styles.modalOverlay}>
+          <View style={[styles.modalContent, styles.modalContentHistorial]}>
+            <Text style={styles.modalTitle}>📋 Historial de Rutas</Text>
+            {cargandoHistorialRutas ? (
+              <ActivityIndicator color={COLORS.primary} style={{ marginVertical: SPACING.lg }} />
+            ) : sesionesRuta.length === 0 ? (
+              <Text style={styles.emptyPacksText}>
+                Todavía no tienes rutas guardadas. Inicia una ruta y detenla para que quede aquí.
+              </Text>
+            ) : (
+              <ScrollView style={styles.historialScroll}>
+                {sesionesRuta.map((s) => (
+                  <View key={s.sesionId} style={styles.historialItem}>
+                    <View style={styles.historialItemInfo}>
+                      <Text style={styles.historialItemFecha}>
+                        {new Date(s.inicio).toLocaleDateString('es-CO')} ·{' '}
+                        {new Date(s.inicio).toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit' })}
+                      </Text>
+                      <Text style={styles.historialItemDetalle}>
+                        {s.totalPuntos} pts · {s.distanciaKm.toFixed(2)} km
+                      </Text>
+                    </View>
+                    <View style={styles.historialItemAcciones}>
+                      <TouchableOpacity onPress={() => verRutaPreview(s.sesionId)} style={styles.historialAccionBtn}>
+                        <Text style={styles.historialAccionIcono}>👁</Text>
+                      </TouchableOpacity>
+                      <TouchableOpacity
+                        onPress={() => exportarSesionRuta(s)}
+                        style={styles.historialAccionBtn}
+                        disabled={exportandoSesionId === s.sesionId}
+                      >
+                        {exportandoSesionId === s.sesionId ? (
+                          <ActivityIndicator size="small" color={COLORS.primary} />
+                        ) : (
+                          <Text style={styles.historialAccionIcono}>📤</Text>
+                        )}
+                      </TouchableOpacity>
+                    </View>
+                  </View>
+                ))}
+              </ScrollView>
+            )}
+            <TouchableOpacity
+              style={[styles.modalBtn, styles.modalBtnCancel]}
+              onPress={() => setMostrarHistorialRutas(false)}
+            >
+              <Text style={styles.modalBtnTextCancel}>Cerrar</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Modal: Historial de Mediciones */}
+      <Modal visible={mostrarHistorialMediciones} transparent animationType="fade">
+        <View style={styles.modalOverlay}>
+          <View style={[styles.modalContent, styles.modalContentHistorial]}>
+            <Text style={styles.modalTitle}>📋 Historial de Mediciones</Text>
+            {cargandoHistorialMediciones ? (
+              <ActivityIndicator color={COLORS.primary} style={{ marginVertical: SPACING.lg }} />
+            ) : medicionesGuardadas.length === 0 ? (
+              <Text style={styles.emptyPacksText}>
+                Todavía no tienes mediciones guardadas. Marca un área o distancia y presiona &quot;Calcular&quot;.
+              </Text>
+            ) : (
+              <ScrollView style={styles.historialScroll}>
+                {medicionesGuardadas.map((m) => (
+                  <View key={m.id} style={styles.historialItem}>
+                    <View style={styles.historialItemInfo}>
+                      <Text style={styles.historialItemFecha}>
+                        {m.created_at ? new Date(m.created_at).toLocaleDateString('es-CO') : '—'} ·{' '}
+                        {m.created_at ? new Date(m.created_at).toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit' }) : ''}
+                      </Text>
+                      <Text style={styles.historialItemDetalle}>
+                        {m.area_hectareas > 0
+                          ? `📐 ${m.area_hectareas} ha · ${(m.puntos || []).length} pts`
+                          : `📏 ${(m.perimetro_metros || 0).toFixed(1)} m (distancia)`}
+                      </Text>
+                    </View>
+                    <View style={styles.historialItemAcciones}>
+                      <TouchableOpacity onPress={() => verMedicionPreview(m)} style={styles.historialAccionBtn}>
+                        <Text style={styles.historialAccionIcono}>👁</Text>
+                      </TouchableOpacity>
+                      <TouchableOpacity
+                        onPress={() => eliminarMedicionGuardada(m.id)}
+                        style={styles.historialAccionBtn}
+                        disabled={eliminandoMedicionId === m.id}
+                      >
+                        {eliminandoMedicionId === m.id ? (
+                          <ActivityIndicator size="small" color={COLORS.error} />
+                        ) : (
+                          <Text style={styles.historialAccionIcono}>🗑️</Text>
+                        )}
+                      </TouchableOpacity>
+                    </View>
+                  </View>
+                ))}
+              </ScrollView>
+            )}
+            <TouchableOpacity
+              style={[styles.modalBtn, styles.modalBtnCancel]}
+              onPress={() => setMostrarHistorialMediciones(false)}
+            >
+              <Text style={styles.modalBtnTextCancel}>Cerrar</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Modal: Historial de Plantaciones */}
+      <Modal visible={mostrarHistorialPlantaciones} transparent animationType="fade">
+        <View style={styles.modalOverlay}>
+          <View style={[styles.modalContent, styles.modalContentHistorial]}>
+            <Text style={styles.modalTitle}>📋 Historial de Áreas de Plantación</Text>
+            {plantaciones.length === 0 ? (
+              <Text style={styles.emptyPacksText}>
+                Todavía no tienes áreas de plantación guardadas.
+              </Text>
+            ) : (
+              <ScrollView style={styles.historialScroll}>
+                {plantaciones.map((pl) => (
+                  <View key={pl.id} style={styles.historialItem}>
+                    <View style={styles.historialItemInfo}>
+                      <Text style={styles.historialItemFecha}>
+                        {pl.icono} {pl.especie} — {pl.cantidad} plantas
+                      </Text>
+                      <Text style={styles.historialItemDetalle}>
+                        {pl.timestamp ? new Date(pl.timestamp).toLocaleDateString('es-CO') : '—'}
+                        {pl.poligono?.length ? ` · ${pl.poligono.length} pts` : ''}
+                      </Text>
+                    </View>
+                    <View style={styles.historialItemAcciones}>
+                      <TouchableOpacity onPress={() => verPlantacionEnMapa(pl)} style={styles.historialAccionBtn}>
+                        <Text style={styles.historialAccionIcono}>👁</Text>
+                      </TouchableOpacity>
+                    </View>
+                  </View>
+                ))}
+              </ScrollView>
+            )}
+            <TouchableOpacity
+              style={[styles.modalBtn, styles.modalBtnCancel]}
+              onPress={() => setMostrarHistorialPlantaciones(false)}
+            >
+              <Text style={styles.modalBtnTextCancel}>Cerrar</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
       {/* Modal: gestión de mapas offline descargados */}
       <Modal visible={mostrarModalPaquetes} transparent animationType="fade">
         <View style={styles.modalOverlay}>
@@ -1078,8 +1677,16 @@ const MapaScreen: React.FC = () => {
             ) : (
               paquetesOffline.map((pack) => (
                 <View key={pack.name} style={styles.packRow}>
-                  <Text style={styles.packName} numberOfLines={1}>{pack.name}</Text>
-                  <TouchableOpacity onPress={() => handleEliminarPaquete(pack.name)}>
+                  <View style={styles.packInfo}>
+                    <Text style={styles.packName} numberOfLines={1}>{formatearZonaPack(pack)}</Text>
+                    <Text style={styles.packMeta} numberOfLines={1}>
+                      {pack.metadata?.tipo === 'satelite' ? '🛰️ Satélite' : '🗺️ Relieve'} · Descargado: {formatearFechaPack(pack.metadata?.creado)}
+                    </Text>
+                  </View>
+                  <TouchableOpacity onPress={() => handleActualizarPaquete(pack)} style={styles.packActionBtn}>
+                    <Text style={styles.packActionIcon}>🔄</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity onPress={() => handleEliminarPaquete(pack.name)} style={styles.packActionBtn}>
                     <Text style={styles.packDeleteIcon}>🗑️</Text>
                   </TouchableOpacity>
                 </View>
@@ -1168,6 +1775,30 @@ const styles = StyleSheet.create({
     padding: SPACING.sm,
     borderRadius: BORDER_RADIUS.md,
     ...SHADOWS.sm,
+  },
+  previewBanner: {
+    position: 'absolute',
+    top: SPACING.sm,
+    left: SPACING.sm,
+    right: SPACING.sm,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: COLORS.roleGerente,
+    paddingHorizontal: SPACING.md,
+    paddingVertical: SPACING.sm,
+    borderRadius: BORDER_RADIUS.md,
+    ...SHADOWS.sm,
+  },
+  previewBannerText: {
+    color: COLORS.textOnPrimary,
+    fontWeight: FONTS.weights.semibold,
+    fontSize: FONTS.sizes.sm,
+  },
+  previewBannerClose: {
+    color: COLORS.textOnPrimary,
+    fontWeight: FONTS.weights.bold,
+    fontSize: FONTS.sizes.sm,
   },
   coordsLabel: {
     fontSize: FONTS.sizes.xs,
@@ -1543,14 +2174,69 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: COLORS.divider,
   },
-  packName: {
+  packInfo: {
     flex: 1,
-    fontSize: FONTS.sizes.sm,
-    color: COLORS.textPrimary,
     marginRight: SPACING.sm,
+  },
+  packName: {
+    fontSize: FONTS.sizes.sm,
+    fontWeight: FONTS.weights.medium,
+    color: COLORS.textPrimary,
+  },
+  packMeta: {
+    fontSize: FONTS.sizes.xs,
+    color: COLORS.textSecondary,
+    marginTop: 2,
+  },
+  packActionBtn: {
+    paddingHorizontal: SPACING.xs,
   },
   packDeleteIcon: {
     fontSize: 18,
+  },
+  packActionIcon: {
+    fontSize: 18,
+  },
+  // --- Historial de rutas ---
+  modalContentHistorial: {
+    maxHeight: '75%',
+  },
+  historialScroll: {
+    maxHeight: 380,
+  },
+  historialItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: SPACING.sm,
+    borderBottomWidth: 1,
+    borderBottomColor: COLORS.divider,
+  },
+  historialItemInfo: {
+    flex: 1,
+    marginRight: SPACING.sm,
+  },
+  historialItemFecha: {
+    fontSize: FONTS.sizes.sm,
+    fontWeight: FONTS.weights.medium,
+    color: COLORS.textPrimary,
+  },
+  historialItemDetalle: {
+    fontSize: FONTS.sizes.xs,
+    color: COLORS.textSecondary,
+    marginTop: 2,
+  },
+  historialItemAcciones: {
+    flexDirection: 'row',
+    gap: SPACING.sm,
+  },
+  historialAccionBtn: {
+    paddingHorizontal: SPACING.xs,
+    minWidth: 28,
+    alignItems: 'center',
+  },
+  historialAccionIcono: {
+    fontSize: 20,
   },
   downloadMapButton: {
     position: 'absolute',

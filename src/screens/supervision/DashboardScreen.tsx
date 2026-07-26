@@ -1,49 +1,52 @@
 // ============================================================
-// GEODAILY — Dashboard de Supervisión
+// GEODAILY — Dashboard de Supervisión / Interventoría
 // ============================================================
 
-import React, { useMemo, useState, useEffect, useCallback } from 'react';
-import {
-  View,
-  Text,
-  StyleSheet,
-  ScrollView,
-  Dimensions,
-  RefreshControl,
-  Platform,
-} from 'react-native';
+import React, { useMemo, useState, useEffect, useCallback, useRef } from 'react';
+import { View, Text, StyleSheet, ScrollView, RefreshControl } from 'react-native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useFocusEffect } from '@react-navigation/native';
-import { LineChart, BarChart } from 'react-native-chart-kit';
 import { COLORS, FONTS, SPACING, BORDER_RADIUS, SHADOWS, API_CONFIG } from '../../theme';
 import { useForm } from '../../store/FormContext';
+import { useAuth } from '../../store/AuthContext';
 import { getFormulariosLocales } from '../../services/database';
 import { fetchFormulariosDelServidor } from '../../services/formularios.service';
+import { Formulario } from '../../types';
+import {
+  CORREGIMIENTOS,
+  COLOR_CORREGIMIENTO,
+  NOMBRE_VISIBLE_CORREGIMIENTO,
+  resolverCorregimiento,
+  normalizarVereda,
+} from '../../utils/corregimientos';
 import MetricCard from '../../components/MetricCard';
-import FilterBar from '../../components/FilterBar';
 import LoadingSpinner from '../../components/LoadingSpinner';
+import MapaVisitasPuertoRico from '../../components/dashboard/MapaVisitasPuertoRico';
+import BarChartTecnicos from '../../components/dashboard/BarChartTecnicos';
+import PieChartCorregimientos from '../../components/dashboard/PieChartCorregimientos';
+import ActividadesRecientes from '../../components/dashboard/ActividadesRecientes';
+import BotonPdfDashboard from '../../components/dashboard/BotonPdfDashboard';
 
 type DashboardScreenProps = {
   navigation: NativeStackNavigationProp<Record<string, any>>;
 };
 
-const FILTER_OPTIONS = [
-  { value: 'all', label: 'Todo' },
-  { value: 'visita_tecnica', label: 'Visitas' },
-];
+/** Intervalo de refresco silencioso mientras el dashboard está en pantalla (aprox. "tiempo real" sin infraestructura de sockets). */
+const INTERVALO_AUTOREFRESH_MS = 30000;
 
-const screenWidth = Dimensions.get('window').width;
-
-const DashboardScreen: React.FC<DashboardScreenProps> = ({ navigation: _navigation }) => {
+const DashboardScreen: React.FC<DashboardScreenProps> = ({ navigation }) => {
   const { formularios, cargarFormularios } = useForm();
-  const [filter, setFilter] = useState('all');
+  const { user, isInterventor } = useAuth();
   const [loadingDashboard, setLoadingDashboard] = useState(true);
   const [refreshingDashboard, setRefreshingDashboard] = useState(false);
   const [dashboardError, setDashboardError] = useState<string | null>(null);
+  const enFocoRef = useRef(false);
+
+  const detailScreen = isInterventor ? 'InterventorFormularioDetail' : 'SupervisionFormularioDetail';
 
   // Cargar datos del servidor + local y fusionar en FormContext
-  const loadDashboardData = useCallback(async () => {
-    setDashboardError(null);
+  const loadDashboardData = useCallback(async (silencioso = false) => {
+    if (!silencioso) setDashboardError(null);
     let servidorCount = 0;
     let localesCount = 0;
     try {
@@ -60,9 +63,8 @@ const DashboardScreen: React.FC<DashboardScreenProps> = ({ navigation: _navigati
 
       const fusionados = Array.from(mapa.values());
       cargarFormularios(fusionados);
-      console.log(`[Dashboard] ${fusionados.length} formularios (${localesCount} locales + ${servidorCount} servidor)`);
 
-      if (fusionados.length === 0) {
+      if (!silencioso && fusionados.length === 0) {
         setDashboardError(
           servidorCount === 0 && localesCount === 0
             ? 'No se encontraron formularios en el servidor. Verifica que el backend esté corriendo.'
@@ -70,10 +72,12 @@ const DashboardScreen: React.FC<DashboardScreenProps> = ({ navigation: _navigati
         );
       }
     } catch (error: any) {
-      console.warn('[Dashboard] Error cargando datos:', error?.message || error);
-      setDashboardError(
-        `Error de conexión: ${error?.message || 'No se pudo conectar con el servidor'}. Verifica que el backend esté activo en ${API_CONFIG.BASE_URL}`
-      );
+      if (!silencioso) {
+        console.warn('[Dashboard] Error cargando datos:', error?.message || error);
+        setDashboardError(
+          `Error de conexión: ${error?.message || 'No se pudo conectar con el servidor'}. Verifica que el backend esté activo en ${API_CONFIG.BASE_URL}`
+        );
+      }
     } finally {
       setLoadingDashboard(false);
       setRefreshingDashboard(false);
@@ -85,73 +89,77 @@ const DashboardScreen: React.FC<DashboardScreenProps> = ({ navigation: _navigati
     loadDashboardData();
   }, [loadDashboardData]);
 
-  // Recargar al enfocar la pantalla
+  // Recargar al enfocar la pantalla + poll silencioso mientras está enfocada
   useFocusEffect(
     useCallback(() => {
+      enFocoRef.current = true;
       loadDashboardData();
+
+      const intervalo = setInterval(() => {
+        if (enFocoRef.current) loadDashboardData(true);
+      }, INTERVALO_AUTOREFRESH_MS);
+
+      return () => {
+        enFocoRef.current = false;
+        clearInterval(intervalo);
+      };
     }, [loadDashboardData])
   );
 
-  const filteredForms = useMemo(() => {
-    if (filter === 'all') return formularios;
-    return formularios.filter((f) => f.tipo === filter);
-  }, [formularios, filter]);
+  const irADetalle = useCallback(
+    (formulario: Formulario) => {
+      navigation.navigate(detailScreen, { formulario });
+    },
+    [navigation, detailScreen]
+  );
 
+  // --- Tarjetas ---
   const metrics = useMemo(() => {
-    const total = filteredForms.length;
-    const tecnicas = filteredForms.filter((f) => f.tipo === 'visita_tecnica').length;
-    const sincronizadas = filteredForms.filter((f) => f.sincronizado).length;
-    const pendientes = total - sincronizadas;
+    const encuestaSocioambiental = formularios.filter((f) => f.tipo === 'caracterizacion').length;
+    const visitasTecnicas = formularios.filter((f) => f.tipo === 'visita_tecnica').length;
+    const veredasUnicas = new Set(
+      formularios.map((f) => normalizarVereda(f.beneficiario?.vereda)).filter((v): v is string => !!v)
+    ).size;
+    return { encuestaSocioambiental, visitasTecnicas, veredasUnicas };
+  }, [formularios]);
 
-    return { total, tecnicas, sincronizadas, pendientes };
-  }, [filteredForms]);
+  // --- Visitas por técnico ---
+  const porTecnico = useMemo(() => {
+    const conteo = new Map<string, number>();
+    formularios.forEach((f) => {
+      const nombre = f.tecnico?.nombre?.trim();
+      if (!nombre) return;
+      conteo.set(nombre, (conteo.get(nombre) || 0) + 1);
+    });
+    return Array.from(conteo.entries())
+      .map(([nombre, total]) => ({ nombre, total }))
+      .sort((a, b) => b.total - a.total);
+  }, [formularios]);
 
-  // Agrupar por fecha para el gráfico (con protección null)
-  const chartData = useMemo(() => {
-    const dateMap: Record<string, { visitas: number }> = {};
+  // --- Visitas por corregimiento ---
+  const porCorregimiento = useMemo(() => {
+    const conteo = new Map<string, number>();
+    CORREGIMIENTOS.forEach((c) => conteo.set(c, 0));
+    let sinCorregimiento = 0;
 
-    filteredForms.forEach((f) => {
-      if (!f) return;
-      const date = (f.created_at || '').split('T')[0];
-      if (!date) return;
-      if (!dateMap[date]) {
-        dateMap[date] = { visitas: 0 };
-      }
-      if (f.tipo === 'visita_tecnica') {
-        dateMap[date].visitas++;
-      }
+    formularios.forEach((f) => {
+      const c = resolverCorregimiento(f);
+      if (c) conteo.set(c, (conteo.get(c) || 0) + 1);
+      else sinCorregimiento++;
     });
 
-    const sortedDates = Object.keys(dateMap).sort().slice(-7); // últimas 7 fechas
-    return {
-      labels: sortedDates.map((d) => d.slice(5)), // MM-DD
-      visitas: sortedDates.map((d) => dateMap[d]?.visitas || 0),
-    };
-  }, [filteredForms]);
+    const datos = CORREGIMIENTOS.map((c) => ({
+      nombre: NOMBRE_VISIBLE_CORREGIMIENTO[c],
+      total: conteo.get(c) || 0,
+      color: COLOR_CORREGIMIENTO[c],
+    }));
 
-  // Distribución por municipio (con protección null)
-  const municipioData = useMemo(() => {
-    const map: Record<string, number> = {};
-    filteredForms.forEach((f) => {
-      if (!f?.beneficiario) return;
-      const m = f.beneficiario.municipio || 'Desconocido';
-      map[m] = (map[m] || 0) + 1;
-    });
-    return Object.entries(map)
-      .sort((a, b) => b[1] - a[1])
-      .slice(0, 5);
-  }, [filteredForms]);
+    if (sinCorregimiento > 0) {
+      datos.push({ nombre: 'Sin corregimiento', total: sinCorregimiento, color: COLORS.textLight });
+    }
 
-  const chartConfig = {
-    backgroundColor: COLORS.surface,
-    backgroundGradientFrom: COLORS.surface,
-    backgroundGradientTo: COLORS.surface,
-    decimalPlaces: 0,
-    color: (opacity = 1) => `rgba(27, 94, 32, ${opacity})`,
-    labelColor: () => COLORS.textSecondary,
-    style: { borderRadius: BORDER_RADIUS.md },
-    propsForDots: { r: '5', strokeWidth: '2', stroke: COLORS.primary },
-  };
+    return datos;
+  }, [formularios]);
 
   if (loadingDashboard && formularios.length === 0) {
     return <LoadingSpinner message="Cargando dashboard..." fullScreen />;
@@ -173,46 +181,20 @@ const DashboardScreen: React.FC<DashboardScreenProps> = ({ navigation: _navigati
         />
       }
     >
-      <Text style={styles.title}>Dashboard</Text>
-      <Text style={styles.subtitle}>Métricas generales de las visitas a terreno</Text>
-
-      <FilterBar options={FILTER_OPTIONS} selected={filter} onSelect={(v) => v && setFilter(v)} />
-
-      {/* Tarjetas de métricas */}
-      <View style={styles.metricsGrid}>
-        <MetricCard
-          titulo="Total Visitas"
-          valor={metrics.total}
-          color={COLORS.info}
-          icono="📊"
-        />
-        <MetricCard
-          titulo="Visitas Técnicas"
-          valor={metrics.tecnicas}
-          color={COLORS.roleTecnico}
-          icono="🔧"
-        />
-        <MetricCard
-          titulo="Sincronizadas"
-          valor={metrics.sincronizadas}
-          color={COLORS.success}
-          icono="☁️"
-        />
-        <MetricCard
-          titulo="Pendientes"
-          valor={metrics.pendientes}
-          color={COLORS.warning}
-          icono="⏳"
-        />
-        <MetricCard
-          titulo="Municipios"
-          valor={municipioData.length}
-          color={COLORS.secondary}
-          icono="📍"
+      <View style={styles.headerRow}>
+        <View style={styles.headerTextos}>
+          <Text style={styles.title}>Dashboard</Text>
+          <Text style={styles.subtitle}>Métricas generales de las visitas a terreno</Text>
+        </View>
+        <BotonPdfDashboard
+          datos={{
+            formularios,
+            rolUsuario: user?.rol || (isInterventor ? 'interventor' : 'supervisor'),
+            nombreUsuario: user?.nombre || 'Usuario',
+          }}
         />
       </View>
 
-      {/* Mensaje de error */}
       {dashboardError && (
         <View style={[styles.chartCard, { borderLeftWidth: 4, borderLeftColor: COLORS.error }]}>
           <Text style={{ fontSize: FONTS.sizes.md, fontWeight: 'bold', color: COLORS.error }}>⚠️ Error</Text>
@@ -222,78 +204,42 @@ const DashboardScreen: React.FC<DashboardScreenProps> = ({ navigation: _navigati
         </View>
       )}
 
-      {/* Mensaje si no hay datos */}
-      {metrics.total === 0 && !loadingDashboard && (
-        <View style={styles.chartCard}>
-          <Text style={styles.chartTitle}>📭 Sin datos</Text>
-          <Text style={styles.chartSubtitle}>
-            No hay formularios disponibles. Usa el menú &ldquo;Listado de técnicos y visitas&rdquo; para verificar la conexión con el servidor.
-          </Text>
-        </View>
-      )}
+      {/* 1. Mapa interactivo */}
+      <MapaVisitasPuertoRico formularios={formularios} onVerDetalle={irADetalle} />
 
-      {/* Gráfico de tendencia */}
-      {chartData.labels.length > 0 && (
-        <View style={styles.chartCard}>
-          <Text style={styles.chartTitle}>Tendencia de visitas (últimos días)</Text>
-          <LineChart
-            data={{
-              labels: chartData.labels,
-              datasets: [
-                {
-                  data: chartData.visitas.length > 0
-                    ? chartData.visitas
-                    : [0],
-                  color: (opacity) => `rgba(27, 94, 32, ${opacity})`,
-                  strokeWidth: 2,
-                },
-              ],
-              legend: ['Visitas Técnicas'],
-            }}
-            width={screenWidth - SPACING.lg * 2}
-            height={220}
-            chartConfig={chartConfig}
-            bezier
-            style={styles.chart}
-          />
-        </View>
-      )}
-
-      {/* Distribución por municipio */}
-      {municipioData.length > 0 && (
-        <View style={styles.chartCard}>
-          <Text style={styles.chartTitle}>Distribución por Municipio</Text>
-          <BarChart
-            data={{
-              labels: municipioData.map(([name]) => name.slice(0, 6)),
-              datasets: [{ data: municipioData.map(([, count]) => count) }],
-            }}
-            width={screenWidth - SPACING.lg * 2}
-            height={220}
-            chartConfig={{
-              ...chartConfig,
-              color: (opacity = 1) => `rgba(249, 168, 37, ${opacity})`,
-            }}
-            yAxisLabel=""
-            yAxisSuffix=""
-            style={styles.chart}
-          />
-        </View>
-      )}
-
-      {/* Últimas actividades */}
-      <View style={styles.recentCard}>
-        <Text style={styles.chartTitle}>Últimas actividades</Text>
-        {filteredForms.slice(0, 5).map((form) => (
-          <View key={form.id} style={styles.recentItem}>
-            <Text style={styles.recentName}>{form.beneficiario?.nombre || '—'}</Text>
-            <Text style={styles.recentMeta}>
-              {form.beneficiario?.municipio || '—'} ·{' '}
-              {form.tipo === 'visita_tecnica' ? 'Visita' : form.tipo === 'caracterizacion' ? 'Caracterización' : 'Plantación'}
-            </Text>
-          </View>
-        ))}
+      {/* 2. Tarjetas de métricas */}
+      <View style={styles.metricsGrid}>
+        <MetricCard
+          titulo="Encuesta Socioambiental"
+          valor={metrics.encuestaSocioambiental}
+          color={COLORS.secondary}
+          icono="📋"
+          subtitulo="Formulario 1"
+        />
+        <MetricCard
+          titulo="Visitas Técnicas"
+          valor={metrics.visitasTecnicas}
+          color={COLORS.roleTecnico}
+          icono="🔧"
+          subtitulo="Formulario 2"
+        />
+        <MetricCard
+          titulo="Veredas Visitadas"
+          valor={metrics.veredasUnicas}
+          color={COLORS.primary}
+          icono="🥾"
+          subtitulo="Únicas"
+        />
       </View>
+
+      {/* 3. Barras por técnico */}
+      <BarChartTecnicos datos={porTecnico} />
+
+      {/* 4. Torta por corregimiento */}
+      <PieChartCorregimientos datos={porCorregimiento} />
+
+      {/* 5. Últimas actividades (clickeable) */}
+      <ActividadesRecientes formularios={formularios} onSeleccionar={irADetalle} />
     </ScrollView>
   );
 };
@@ -307,6 +253,15 @@ const styles = StyleSheet.create({
     padding: SPACING.lg,
     paddingBottom: SPACING.xxl,
   },
+  headerRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+  },
+  headerTextos: {
+    flex: 1,
+    marginRight: SPACING.sm,
+  },
   title: {
     fontSize: FONTS.sizes.xxl,
     fontWeight: FONTS.weights.bold,
@@ -317,17 +272,11 @@ const styles = StyleSheet.create({
     color: COLORS.textSecondary,
     marginBottom: SPACING.md,
   },
-  chartSubtitle: {
-    fontSize: FONTS.sizes.sm,
-    color: COLORS.textSecondary,
-    marginTop: SPACING.sm,
-    lineHeight: 20,
-  },
   metricsGrid: {
     flexDirection: 'row',
     flexWrap: 'wrap',
     marginHorizontal: -SPACING.xs,
-    marginTop: SPACING.sm,
+    marginTop: SPACING.md,
   },
   chartCard: {
     backgroundColor: COLORS.surface,
@@ -335,36 +284,6 @@ const styles = StyleSheet.create({
     padding: SPACING.md,
     marginTop: SPACING.md,
     ...SHADOWS.sm,
-  },
-  chartTitle: {
-    fontSize: FONTS.sizes.md,
-    fontWeight: FONTS.weights.semibold,
-    color: COLORS.textPrimary,
-    marginBottom: SPACING.md,
-  },
-  chart: {
-    borderRadius: BORDER_RADIUS.md,
-  },
-  recentCard: {
-    backgroundColor: COLORS.surface,
-    borderRadius: BORDER_RADIUS.md,
-    padding: SPACING.md,
-    marginTop: SPACING.md,
-    ...SHADOWS.sm,
-  },
-  recentItem: {
-    paddingVertical: SPACING.sm,
-    borderBottomWidth: 1,
-    borderBottomColor: COLORS.divider,
-  },
-  recentName: {
-    fontSize: FONTS.sizes.md,
-    fontWeight: FONTS.weights.medium,
-    color: COLORS.textPrimary,
-  },
-  recentMeta: {
-    fontSize: FONTS.sizes.sm,
-    color: COLORS.textSecondary,
   },
 });
 
