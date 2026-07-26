@@ -53,7 +53,7 @@ import {
   TEXTURA_SUELO_OPTS,
   COLOR_SUELO_OPTS,
   DRENAJE_OPTS,
-  USO_TIERRA_OPTS,
+  USO_TIERRA_HISTORICO_OPTS,
   PRESENCIA_PIEDRAS_OPTS,
   COMPACTACION_OPTS,
   COBERTURA_SUELO_OPTS,
@@ -200,9 +200,11 @@ const EMPTY_ACOMPANAMIENTO: AcompaniamientoTecnico = {
   manejo_plagas_si: false,
   manejo_plagas_no: false,
   manejo_plagas_obs: '',
+  manejo_plagas_hectareas: '',
   manejo_suelo_si: false,
   manejo_suelo_no: false,
   manejo_suelo_obs: '',
+  manejo_suelo_cantidad: '',
   capacitacion_si: false,
   capacitacion_no: false,
   capacitacion_obs: '',
@@ -212,7 +214,6 @@ const EMPTY_ACOMPANAMIENTO: AcompaniamientoTecnico = {
   entresacado_si: false,
   entresacado_no: false,
   entresacado_obs: '',
-  observaciones_generales: '',
 };
 
 const EMPTY_ENCUESTA: EncuestaSocialAgroAmbiental = {
@@ -1555,11 +1556,11 @@ const EncuestaSocialAgroambientalScreen: React.FC<Props> = ({ navigation, route 
                 placeholder="Seleccionar..."
               />
 
-              {/* 37 */}
+              {/* 37 — uso histórico del suelo */}
               <DropdownPicker
-                label="37. ¿Cuál ha sido el uso que se le ha dado a la Tierra?"
+                label="37. ¿Cual ha sido el uso histórico de uso del suelo?"
                 value={data.analisis_suelo.uso_tierra || null}
-                options={USO_TIERRA_OPTS}
+                options={USO_TIERRA_HISTORICO_OPTS}
                 onSelect={(val) => updateAnalisis({ uso_tierra: val })}
                 placeholder="Seleccionar..."
               />
@@ -1669,19 +1670,39 @@ const EncuestaSocialAgroambientalScreen: React.FC<Props> = ({ navigation, route 
               />
 
               {/* 48 */}
-              <DropdownPicker
-                label="48. ¿Qué tipo de agroquímicos utiliza?"
-                value={data.componente_agroambiental.tipo_agroquimicos || null}
-                options={TIPO_AGROQUIMICO_OPTS}
-                onSelect={(val) => updateAgroambiental({ tipo_agroquimicos: val, tipo_agroquimicos_otro: val === 'Otro' ? data.componente_agroambiental.tipo_agroquimicos_otro : '' })}
-                placeholder="Seleccionar..."
-              />
-              {data.componente_agroambiental.tipo_agroquimicos === 'Otro' && renderField('Especifique cual otro:', data.componente_agroambiental.tipo_agroquimicos_otro || '', (t) => updateAgroambiental({ tipo_agroquimicos_otro: t }), { placeholder: '' })}
+              {data.componente_agroambiental.uso_agroquimicos === 'No' ? (
+                <View style={styles.fieldContainer}>
+                  <Text style={styles.fieldLabel}>48. ¿Cuál es el tipo de agroquímico que más utiliza?</Text>
+                  <View style={styles.lockedField}>
+                    <Text style={styles.lockedFieldText}>Ninguno</Text>
+                  </View>
+                </View>
+              ) : (
+                <>
+                  <DropdownPicker
+                    label="48. ¿Cuál es el tipo de agroquímico que más utiliza?"
+                    value={data.componente_agroambiental.tipo_agroquimicos || null}
+                    options={TIPO_AGROQUIMICO_OPTS}
+                    onSelect={(val) => updateAgroambiental({ tipo_agroquimicos: val, tipo_agroquimicos_otro: val === 'Otro' ? data.componente_agroambiental.tipo_agroquimicos_otro : '' })}
+                    placeholder="Seleccionar..."
+                  />
+                  {data.componente_agroambiental.tipo_agroquimicos === 'Otro' && renderField('Especifique cual otro:', data.componente_agroambiental.tipo_agroquimicos_otro || '', (t) => updateAgroambiental({ tipo_agroquimicos_otro: t }), { placeholder: '' })}
+                </>
+              )}
 
               {/* 49 — texto libre */}
-              {renderField('49. Mencione el nombre del agroquimico', data.componente_agroambiental.herbicidas_cuales, (t) => updateAgroambiental({ herbicidas_cuales: t }), {
-                placeholder: '',
-              })}
+              {data.componente_agroambiental.uso_agroquimicos === 'No' ? (
+                <View style={styles.fieldContainer}>
+                  <Text style={styles.fieldLabel}>49. Mencione el nombre del agroquímico</Text>
+                  <View style={styles.lockedField}>
+                    <Text style={styles.lockedFieldText}>Ninguno</Text>
+                  </View>
+                </View>
+              ) : (
+                renderField('49. Mencione el nombre del agroquímico', data.componente_agroambiental.herbicidas_cuales, (t) => updateAgroambiental({ herbicidas_cuales: t }), {
+                  placeholder: '',
+                })
+              )}
 
               {/* 50 */}
               <DropdownPicker
@@ -1725,44 +1746,132 @@ const EncuestaSocialAgroambientalScreen: React.FC<Props> = ({ navigation, route 
                ═══════════════════════════════════════════════════ */}
           {renderSection('DESARROLLO ACOMPAÑAMIENTO TECNICO', '📋', '#00897B', (
             <>
-              {[
-                { label: '1. Socialización de actividades del proyecto al productor, mediante presentación digital.', si: 'actividades_realizadas_si', no: 'actividades_realizadas_no', obs: 'actividades_realizadas_obs' },
-                { label: '2. Realización de selección y delimitación técnica del terreno para la implementación del cultivo de cacao en arreglo agroforestal con plátano y maderable.', si: 'manejo_plagas_si', no: 'manejo_plagas_no', obs: 'manejo_plagas_obs' },
-                { label: '3. Realización de muestreo de suelo, teniendo en cuenta: criterios de homogeneidad, uso actual del terreno, topografía y condiciones agroecológicas.', si: 'manejo_suelo_si', no: 'manejo_suelo_no', obs: 'manejo_suelo_obs' },
-                { label: '4. Orientación al productor sobre procesos de producción y beneficios de la producción de cacao.', si: 'capacitacion_si', no: 'capacitacion_no', obs: 'capacitacion_obs' },
-                { label: '5. Orientación del manejo de preparación del terreno: realización de limpias si es rastrojo de porte bajo (herbáceas), recomendando no utilización de herbicidas a base de componentes de medio a altamente tóxicos.', si: 'seguimiento_si', no: 'seguimiento_no', obs: 'seguimiento_obs' },
-                { label: '6. Orientación del manejo de preparación del terreno: realización de entresacado en rastrojo biche de regeneración baja (arbóreas o arbustos), recomendando entresacado', si: 'entresacado_si', no: 'entresacado_no', obs: 'entresacado_obs' },
-              ].map((item) => (
-                <View key={item.si} style={styles.acompaniamientoItem}>
-                  <Text style={styles.fieldLabel}>{item.label}</Text>
-                  <View style={styles.siNoRow}>
-                    <TouchableOpacity
-                      style={[styles.siNoBtn, data.acompaniamiento[item.si as keyof AcompaniamientoTecnico] && styles.siNoBtnActive]}
-                      onPress={() => toggleAcompaniamiento(item.si as keyof AcompaniamientoTecnico, item.no as keyof AcompaniamientoTecnico, true)}
-                    >
-                      <Text style={[styles.siNoBtnText, data.acompaniamiento[item.si as keyof AcompaniamientoTecnico] && styles.siNoBtnTextActive]}>Sí</Text>
-                    </TouchableOpacity>
-                    <TouchableOpacity
-                      style={[styles.siNoBtn, data.acompaniamiento[item.no as keyof AcompaniamientoTecnico] && styles.siNoBtnNoActive]}
-                      onPress={() => toggleAcompaniamiento(item.no as keyof AcompaniamientoTecnico, item.si as keyof AcompaniamientoTecnico, true)}
-                    >
-                      <Text style={[styles.siNoBtnText, data.acompaniamiento[item.no as keyof AcompaniamientoTecnico] && styles.siNoBtnTextActive]}>No</Text>
-                    </TouchableOpacity>
-                  </View>
-                  {renderField('Observaciones',
-                    data.acompaniamiento[item.obs as keyof AcompaniamientoTecnico] as string || '',
-                    (t) => updateAcompaniamiento({ [item.obs]: t } as any),
-                    { placeholder: 'Observaciones...', multiline: true, numberOfLines: 2 }
-                  )}
+              {/* 1 — Socialización (Sí/No) */}
+              <View style={styles.acompaniamientoItem}>
+                <Text style={styles.fieldLabel}>1. Socialización de actividades del proyecto al productor, mediante presentación digital.</Text>
+                <View style={styles.siNoRow}>
+                  <TouchableOpacity
+                    style={[styles.siNoBtn, data.acompaniamiento.actividades_realizadas_si && styles.siNoBtnActive]}
+                    onPress={() => toggleAcompaniamiento('actividades_realizadas_si', 'actividades_realizadas_no', true)}
+                  >
+                    <Text style={[styles.siNoBtnText, data.acompaniamiento.actividades_realizadas_si && styles.siNoBtnTextActive]}>Sí</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[styles.siNoBtn, data.acompaniamiento.actividades_realizadas_no && styles.siNoBtnNoActive]}
+                    onPress={() => toggleAcompaniamiento('actividades_realizadas_no', 'actividades_realizadas_si', true)}
+                  >
+                    <Text style={[styles.siNoBtnText, data.acompaniamiento.actividades_realizadas_no && styles.siNoBtnTextActive]}>No</Text>
+                  </TouchableOpacity>
                 </View>
-              ))}
+                {renderField('Observaciones',
+                  data.acompaniamiento.actividades_realizadas_obs,
+                  (t) => updateAcompaniamiento({ actividades_realizadas_obs: t }),
+                  { placeholder: 'Observaciones...', multiline: true, numberOfLines: 2 }
+                )}
+              </View>
 
-              {renderField(
-                'Observaciones generales',
-                data.acompaniamiento.observaciones_generales,
-                (t) => updateAcompaniamiento({ observaciones_generales: t }),
-                { placeholder: 'Observaciones generales del acompañamiento...', multiline: true, numberOfLines: 3 }
-              )}
+              {/* 2 — Número de hectáreas */}
+              <View style={styles.acompaniamientoItem}>
+                <Text style={styles.fieldLabel}>2. Realización de selección y delimitación técnica del terreno para la implementación del cultivo de cacao en arreglo agroforestal con plátano y maderable.</Text>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                  <Text style={styles.fieldLabel}>Número de hectáreas</Text>
+                  <View style={{ flex: 1 }}>
+                    {renderField('',
+                      data.acompaniamiento.manejo_plagas_hectareas || '',
+                      (t) => updateAcompaniamiento({ manejo_plagas_hectareas: t }),
+                      { placeholder: '', keyboardType: 'numeric' }
+                    )}
+                  </View>
+                  <Text style={styles.fieldLabel}>ha</Text>
+                </View>
+              </View>
+
+              {/* 3 — Muestreo de suelo realizado */}
+              <View style={styles.acompaniamientoItem}>
+                <Text style={styles.fieldLabel}>3. Realización de muestreo de suelo, teniendo en cuenta: criterios de homogeneidad, uso actual del terreno, topografía y condiciones agroecológicas.</Text>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                  <Text style={styles.fieldLabel}>Muestreo de suelo realizado</Text>
+                  <View style={{ flex: 1 }}>
+                    {renderField('',
+                      data.acompaniamiento.manejo_suelo_cantidad || '',
+                      (t) => updateAcompaniamiento({ manejo_suelo_cantidad: t }),
+                      { placeholder: '', keyboardType: 'numeric' }
+                    )}
+                  </View>
+                </View>
+              </View>
+
+              {/* 4 — Orientación producción (Sí/No) */}
+              <View style={styles.acompaniamientoItem}>
+                <Text style={styles.fieldLabel}>4. Orientación al productor sobre procesos de producción y beneficios de la producción de cacao.</Text>
+                <View style={styles.siNoRow}>
+                  <TouchableOpacity
+                    style={[styles.siNoBtn, data.acompaniamiento.capacitacion_si && styles.siNoBtnActive]}
+                    onPress={() => toggleAcompaniamiento('capacitacion_si', 'capacitacion_no', true)}
+                  >
+                    <Text style={[styles.siNoBtnText, data.acompaniamiento.capacitacion_si && styles.siNoBtnTextActive]}>Sí</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[styles.siNoBtn, data.acompaniamiento.capacitacion_no && styles.siNoBtnNoActive]}
+                    onPress={() => toggleAcompaniamiento('capacitacion_no', 'capacitacion_si', true)}
+                  >
+                    <Text style={[styles.siNoBtnText, data.acompaniamiento.capacitacion_no && styles.siNoBtnTextActive]}>No</Text>
+                  </TouchableOpacity>
+                </View>
+                {renderField('Observaciones',
+                  data.acompaniamiento.capacitacion_obs,
+                  (t) => updateAcompaniamiento({ capacitacion_obs: t }),
+                  { placeholder: 'Observaciones...', multiline: true, numberOfLines: 2 }
+                )}
+              </View>
+
+              {/* 5 — Limpias (Sí/No) */}
+              <View style={styles.acompaniamientoItem}>
+                <Text style={styles.fieldLabel}>5. Orientación del manejo de preparación del terreno: realización de limpias si es rastrojo de porte bajo (herbáceas), recomendando no utilización de herbicidas a base de componentes de medio a altamente tóxicos.</Text>
+                <View style={styles.siNoRow}>
+                  <TouchableOpacity
+                    style={[styles.siNoBtn, data.acompaniamiento.seguimiento_si && styles.siNoBtnActive]}
+                    onPress={() => toggleAcompaniamiento('seguimiento_si', 'seguimiento_no', true)}
+                  >
+                    <Text style={[styles.siNoBtnText, data.acompaniamiento.seguimiento_si && styles.siNoBtnTextActive]}>Sí</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[styles.siNoBtn, data.acompaniamiento.seguimiento_no && styles.siNoBtnNoActive]}
+                    onPress={() => toggleAcompaniamiento('seguimiento_no', 'seguimiento_si', true)}
+                  >
+                    <Text style={[styles.siNoBtnText, data.acompaniamiento.seguimiento_no && styles.siNoBtnTextActive]}>No</Text>
+                  </TouchableOpacity>
+                </View>
+                {renderField('Observaciones',
+                  data.acompaniamiento.seguimiento_obs,
+                  (t) => updateAcompaniamiento({ seguimiento_obs: t }),
+                  { placeholder: 'Observaciones...', multiline: true, numberOfLines: 2 }
+                )}
+              </View>
+
+              {/* 6 — Entresacado (Sí/No) */}
+              <View style={styles.acompaniamientoItem}>
+                <Text style={styles.fieldLabel}>6. Orientación del manejo de preparación del terreno: realización de entresacado en rastrojo biche de regeneración baja (arbóreas o arbustos), recomendando entresacado</Text>
+                <View style={styles.siNoRow}>
+                  <TouchableOpacity
+                    style={[styles.siNoBtn, data.acompaniamiento.entresacado_si && styles.siNoBtnActive]}
+                    onPress={() => toggleAcompaniamiento('entresacado_si', 'entresacado_no', true)}
+                  >
+                    <Text style={[styles.siNoBtnText, data.acompaniamiento.entresacado_si && styles.siNoBtnTextActive]}>Sí</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[styles.siNoBtn, data.acompaniamiento.entresacado_no && styles.siNoBtnNoActive]}
+                    onPress={() => toggleAcompaniamiento('entresacado_no', 'entresacado_si', true)}
+                  >
+                    <Text style={[styles.siNoBtnText, data.acompaniamiento.entresacado_no && styles.siNoBtnTextActive]}>No</Text>
+                  </TouchableOpacity>
+                </View>
+                {renderField('Observaciones',
+                  data.acompaniamiento.entresacado_obs || '',
+                  (t) => updateAcompaniamiento({ entresacado_obs: t }),
+                  { placeholder: 'Observaciones...', multiline: true, numberOfLines: 2 }
+                )}
+              </View>
             </>
           ))}
 

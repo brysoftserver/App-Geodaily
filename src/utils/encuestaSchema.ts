@@ -205,7 +205,7 @@ export function construirSeccionesEncuesta(
       p('34', '¿Cuál es la textura predominante en el suelo? Selección multiple', asuelo.textura),
       p('35', '¿Qué coloración predomina en el suelo?', asuelo.color),
       p('36', '¿Qué tipo de drenaje hay en el suelo?', asuelo.drenaje),
-      p('37', '¿Cuál ha sido el uso que se le ha dado a la Tierra?', asuelo.uso_tierra),
+      p('37', '¿Cual ha sido el uso histórico de uso del suelo?', asuelo.uso_tierra),
       p('38', '¿Existe alguna presencia de piedras o fragmentos rocosos?', asuelo.piedras),
       p('39', '¿Cuál es el estado de la compactación del suelo?', asuelo.compactacion),
       p('40', '¿Qué presencia de cobertura presenta el suelo?', asuelo.cobertura),
@@ -223,7 +223,7 @@ export function construirSeccionesEncuesta(
       p('45', '¿El predio cuenta con áreas de conservación o protección? (respuesta multiple)', ca.areas_conservacion),
       p('46', '¿Realiza prácticas de conservación del suelo?', ca.practicas_conservacion),
       p('47', '¿Utiliza algún tipo agroquímico?', ca.uso_agroquimicos),
-      p('48', '¿Qué tipo de agroquímicos utiliza?', conOtro(ca.tipo_agroquimicos, ca.tipo_agroquimicos_otro)),
+      p('48', '¿Cuál es el tipo de agroquímico que más utiliza?', conOtro(ca.tipo_agroquimicos, ca.tipo_agroquimicos_otro)),
       p('49', 'Mencione el nombre del agroquimico', ca.herbicidas_cuales),
       p('50', '¿Realiza manejo de residuos de agroquímicos?', ca.manejo_residuos),
     ],
@@ -245,12 +245,11 @@ export function construirSeccionesEncuesta(
     titulo: 'DESARROLLO ACOMPAÑAMIENTO TÉCNICO',
     preguntas: [
       pAco('1', 'Socialización de actividades del proyecto al productor, mediante presentación digital.', aco.actividades_realizadas_si, aco.actividades_realizadas_no, aco.actividades_realizadas_obs),
-      pAco('2', 'Realización de selección y delimitación técnica del terreno para la implementación del cultivo de cacao en arreglo agroforestal con plátano y maderable.', aco.manejo_plagas_si, aco.manejo_plagas_no, aco.manejo_plagas_obs),
-      pAco('3', 'Realización de muestreo de suelo, teniendo en cuenta: criterios de homogeneidad, uso actual del terreno, topografía y condiciones agroecológicas.', aco.manejo_suelo_si, aco.manejo_suelo_no, aco.manejo_suelo_obs),
+      p('2', 'Realización de selección y delimitación técnica del terreno para la implementación del cultivo de cacao en arreglo agroforestal con plátano y maderable.', aco.manejo_plagas_hectareas ? `Número de hectáreas: ${aco.manejo_plagas_hectareas} ha` : ''),
+      p('3', 'Realización de muestreo de suelo, teniendo en cuenta: criterios de homogeneidad, uso actual del terreno, topografía y condiciones agroecológicas.', aco.manejo_suelo_cantidad ? `Muestreo de suelo realizado: ${aco.manejo_suelo_cantidad}` : ''),
       pAco('4', 'Orientación al productor sobre procesos de producción y beneficios de la producción de cacao.', aco.capacitacion_si, aco.capacitacion_no, aco.capacitacion_obs),
       pAco('5', 'Orientación del manejo de preparación del terreno: realización de limpias si es rastrojo de porte bajo (herbáceas), recomendando no utilización de herbicidas a base de componentes de medio a altamente tóxicos.', aco.seguimiento_si, aco.seguimiento_no, aco.seguimiento_obs),
       pAco('6', 'Orientación del manejo de preparación del terreno: realización de entresacado en rastrojo biche de regeneración baja (arbóreas o arbustos), recomendando entresacado', aco.entresacado_si, aco.entresacado_no, aco.entresacado_obs),
-      p('•', 'Observaciones generales', aco.observaciones_generales),
     ],
   };
 

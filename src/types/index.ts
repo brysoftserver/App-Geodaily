@@ -617,10 +617,12 @@ export interface AcompaniamientoTecnico {
   manejo_plagas_si: boolean;
   manejo_plagas_no: boolean;
   manejo_plagas_obs: string;
+  manejo_plagas_hectareas?: string;
   // 3. Muestreo de suelo
   manejo_suelo_si: boolean;
   manejo_suelo_no: boolean;
   manejo_suelo_obs: string;
+  manejo_suelo_cantidad?: string;
   // (Punto de georeferenciación eliminado — la georeferencia ya se captura en otras secciones)
   // 4. Orientación sobre procesos de producción de cacao
   capacitacion_si: boolean;
@@ -634,7 +636,6 @@ export interface AcompaniamientoTecnico {
   entresacado_si?: boolean;
   entresacado_no?: boolean;
   entresacado_obs?: string;
-  observaciones_generales: string;
 }
 
 /** Datos completos de la Encuesta Social AgroAmbiental */

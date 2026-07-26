@@ -418,13 +418,19 @@ export const FUENTES_HIDRICAS_OPTS = ['Nacimiento', 'Quebrada', 'Río', 'Ninguna
 export const PRACTICAS_CONSERVACION_OPTS = ['Barreras vivas', 'Cobertura vegetal', 'Terrazas', 'Ninguna'];
 export const AREAS_CONSERVACION_OPTS = ['Bosque virgen', 'Bosque intervenido', 'Rastrojo maduro', 'Rastrojo biche', 'Regeneración natural', 'Ninguna'];
 export const MANEJO_RESIDUOS_OPTS = ['Triple lavado y disposición adecuada', 'Los almacenan', 'Los quema', 'Los desecha en el campo', 'Los entierra'];
-export const USO_TIERRA_OPTS = ['Agrícola', 'Pecuario', 'Forestal / Bosque', 'Rastrojo o barbecho', 'Conservación', 'Vivienda e infraestructura', 'Sin uso actual', 'Otro'];
-export const TEXTURA_SUELO_OPTS = ['Arenoso', 'Franco', 'Arcilloso', 'Limoso'];
+export const USO_TIERRA_HISTORICO_OPTS = ['Potrero', 'Cultivos ilícitos', 'Barbecho Biche', 'Bosque secundario'];
+export const TEXTURA_SUELO_OPTS = ['Arenoso', 'Arcilloso', 'Limoso'];
 export const COLOR_SUELO_OPTS = ['Negro', 'Café oscuro', 'Café claro', 'Rojizo'];
 export const DRENAJE_OPTS = ['Bueno', 'Regular', 'Deficiente'];
 export const PROFUNDIDAD_OPTS = ['Menor de 20 cm', 'Entre 20 y 50 cm', 'Entre 50 y 100 cm', 'Mayor de 100 cm'];
 export const PRESENCIA_PIEDRAS_OPTS = ['Alta', 'Media', 'Baja', 'No presenta'];
-export const COMPACTACION_OPTS = ['Alta compactación', 'Moderada compactación', 'Baja compactación', 'Sin evidencia de compactación'];
+export const COMPACTACION_OPTS = [
+  'Sq1 - Desmenuzable (buena) Los agregados se desmoronan fácilmente con los dedos',
+  'Sq2 - Intactos (buena) Los agregados se separan fácilmente',
+  'Sq3 - Fieme (moderada) La mayoría de los agregados se descomponen',
+  'Sq4 - Compacto (mala) Esfuerzo necesario para descomponer los agregados',
+  'Sq5 - Muy compactos (mala) Los agregados son compactos, difíciles de separar y laminares',
+];
 export const COBERTURA_SUELO_OPTS = ['Suelo desnudo', 'Rastrojos o residuos vegetales', 'Cobertura herbácea o pastos', 'Cobertura arbórea o arbustiva'];
 export const EVIDENCIA_EROSION_OPTS = ['Severa', 'Moderada', 'Leve', 'No presenta'];
 
