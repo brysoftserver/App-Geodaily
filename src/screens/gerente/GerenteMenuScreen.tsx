@@ -14,6 +14,7 @@ import {
   ActivityIndicator,
 } from 'react-native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { COLORS, FONTS, SPACING, BORDER_RADIUS, SHADOWS } from '../../theme';
 import { useAuth } from '../../store/AuthContext';
 import { useAvatar } from '../../hooks/useAvatar';
@@ -93,7 +94,7 @@ const MENU_ITEMS = [
   {
     id: 'beneficiarios',
     title: 'Base de Datos Beneficiarios',
-    subtitle: '300 beneficiarios, asignación a técnicos',
+    subtitle: '76 beneficiarios, asignación a técnicos',
     icon: '👤',
     color: COLORS.roleGerente,
     screen: 'BaseDatosBeneficiarios',
@@ -112,82 +113,96 @@ const GerenteMenuScreen: React.FC<GerenteMenuProps> = ({ navigation }) => {
   const { user, logout } = useAuth();
   const { avatarUri, cambiarAvatar, cambiando } = useAvatar(user?.id);
   const [showPasswordModal, setShowPasswordModal] = useState(false);
+  const insets = useSafeAreaInsets();
 
   return (
-    <ScrollView style={styles.container} contentContainerStyle={styles.content}>
-      {/* Header de usuario */}
-      <ImageBackground source={require('../../../Logos_imagenes/fondo_login_geo_daily.png')} style={styles.header}>
-        <TouchableOpacity onPress={cambiarAvatar} activeOpacity={0.7} disabled={cambiando}>
-          <View style={styles.avatar}>
-            {avatarUri ? (
-              <Image source={{ uri: avatarUri }} style={styles.avatarImage} />
-            ) : (
-              <Text style={styles.avatarText}>
-                {user?.nombre?.charAt(0)?.toUpperCase() || 'G'}
-              </Text>
-            )}
-            <View style={styles.cameraIcon}>
-              {cambiando ? (
-                <ActivityIndicator size="small" color={COLORS.roleGerente} />
+    // El fondo cubre toda la pantalla (encabezado + submódulos); las
+    // tarjetas de los submódulos quedan blancas encima, igual que en el
+    // menú del técnico.
+    <ImageBackground
+      source={require('../../../Logos_imagenes/fondo_login_geo_daily.png')}
+      style={styles.container}
+      resizeMode="cover"
+    >
+      <View style={styles.overlayOscuro} pointerEvents="none" />
+      <ScrollView style={styles.scroll} contentContainerStyle={[styles.content, { paddingTop: Math.max(insets.top, SPACING.lg) }]}>
+        {/* Header de usuario */}
+        <View style={styles.header}>
+          <TouchableOpacity onPress={cambiarAvatar} activeOpacity={0.7} disabled={cambiando}>
+            <View style={styles.avatar}>
+              {avatarUri ? (
+                <Image source={{ uri: avatarUri }} style={styles.avatarImage} />
               ) : (
-                <Text style={styles.cameraIconText}>📷</Text>
+                <Text style={styles.avatarText}>
+                  {user?.nombre?.charAt(0)?.toUpperCase() || 'G'}
+                </Text>
               )}
+              <View style={styles.cameraIcon}>
+                {cambiando ? (
+                  <ActivityIndicator size="small" color={COLORS.roleGerente} />
+                ) : (
+                  <Text style={styles.cameraIconText}>📷</Text>
+                )}
+              </View>
             </View>
-          </View>
-        </TouchableOpacity>
-        <View style={styles.userInfo}>
-          <Text style={styles.userName}>{user?.nombre || 'Gerente'}</Text>
-          <Text style={styles.userRole}>Gerente de Operaciones</Text>
-        </View>
-        <NotificacionBell navigation={navigation} formularioDetailScreen="SupervisionFormularioDetail" />
-        <AjustesMenu
-          opciones={[
-            { id: 'contrasena', label: 'Cambiar Contraseña', icon: '🔑', onPress: () => setShowPasswordModal(true) },
-            { id: 'cerrar', label: 'Cerrar Sesión', icon: '🚪', onPress: logout, destructivo: true },
-          ]}
-        />
-      </ImageBackground>
-
-      {/* Menú */}
-      <View style={styles.menuGrid}>
-        {MENU_ITEMS.map((item) => (
-          <TouchableOpacity
-            key={item.id}
-            style={styles.menuCard}
-            onPress={() => navigation.navigate(item.screen)}
-            activeOpacity={0.7}
-          >
-            <View style={[styles.menuIconContainer, { backgroundColor: item.color + '15' }]}>
-              <Text style={styles.menuIcon}>{item.icon}</Text>
-            </View>
-            <Text style={styles.menuTitle}>{item.title}</Text>
-            <Text style={styles.menuSubtitle}>{item.subtitle}</Text>
           </TouchableOpacity>
-        ))}
-      </View>
+          <View style={styles.userInfo}>
+            <Text style={styles.userName}>{user?.nombre || 'Gerente'}</Text>
+            <Text style={styles.userRole}>Gerente de Operaciones</Text>
+          </View>
+          <NotificacionBell navigation={navigation} formularioDetailScreen="SupervisionFormularioDetail" />
+          <AjustesMenu
+            opciones={[
+              { id: 'contrasena', label: 'Cambiar Contraseña', icon: '🔑', onPress: () => setShowPasswordModal(true) },
+              { id: 'cerrar', label: 'Cerrar Sesión', icon: '🚪', onPress: logout, destructivo: true },
+            ]}
+          />
+        </View>
+
+        {/* Menú */}
+        <View style={styles.menuGrid}>
+          {MENU_ITEMS.map((item) => (
+            <TouchableOpacity
+              key={item.id}
+              style={styles.menuCard}
+              onPress={() => navigation.navigate(item.screen)}
+              activeOpacity={0.7}
+            >
+              <View style={[styles.menuIconContainer, { backgroundColor: item.color + '15' }]}>
+                <Text style={styles.menuIcon}>{item.icon}</Text>
+              </View>
+              <Text style={styles.menuTitle}>{item.title}</Text>
+              <Text style={styles.menuSubtitle}>{item.subtitle}</Text>
+            </TouchableOpacity>
+          ))}
+        </View>
+      </ScrollView>
       <CambiarContrasenaModal visible={showPasswordModal} onClose={() => setShowPasswordModal(false)} />
-    </ScrollView>
+    </ImageBackground>
   );
 };
 
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: COLORS.surface,
+  },
+  overlayOscuro: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(0,0,0,0.18)',
+  },
+  scroll: {
+    flex: 1,
   },
   content: {
     flexGrow: 1,
-    padding: SPACING.lg,
+    paddingHorizontal: SPACING.lg,
     paddingBottom: SPACING.xl,
   },
   header: {
     flexDirection: 'row',
     alignItems: 'center',
     padding: SPACING.md,
-    borderRadius: BORDER_RADIUS.md,
     marginBottom: SPACING.lg,
-    overflow: 'hidden',
-    ...SHADOWS.sm,
   },
   avatar: {
     width: 48,
@@ -229,11 +244,11 @@ const styles = StyleSheet.create({
   userName: {
     fontSize: FONTS.sizes.lg,
     fontWeight: FONTS.weights.semibold,
-    color: COLORS.textPrimary,
+    color: COLORS.textOnPrimary,
   },
   userRole: {
     fontSize: FONTS.sizes.sm,
-    color: COLORS.textSecondary,
+    color: COLORS.textOnPrimary + 'CC',
   },
   menuGrid: {
     gap: SPACING.md,

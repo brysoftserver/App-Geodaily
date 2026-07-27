@@ -452,53 +452,89 @@ const SeccionFinalRevisor: React.FC<{ formulario: Formulario; recargarRevisiones
     ? { latitud: geoPoint.lat, longitud: geoPoint.lon }
     : formulario.coordenadas || { latitud: 1.914, longitud: -75.145 };
 
+  const nombreRol = ROL_LABEL[rol] || 'Revisor';
+
   return (
     <View style={finalStyles.section}>
-      <Text style={finalStyles.title}>🖊️ Sección del Revisor — Evidencia y Cierre</Text>
+      <Text style={finalStyles.title}>🖊️ Sección del {nombreRol}</Text>
 
       {esRevisor && (
         <>
-          <Text style={finalStyles.label}>Fotos propias de la revisión</Text>
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} style={finalStyles.fotosRow}>
-            {fotos.map((f, idx) => (
-              <View key={idx} style={finalStyles.fotoThumb}>
-                <Image source={{ uri: f.uri }} style={finalStyles.fotoImg} />
-                <TouchableOpacity style={finalStyles.fotoRemove} onPress={() => setFotos((prev) => prev.filter((_, i) => i !== idx))}>
-                  <Text style={finalStyles.fotoRemoveText}>✕</Text>
-                </TouchableOpacity>
-              </View>
-            ))}
-            <TouchableOpacity style={finalStyles.fotoAdd} onPress={tomarFoto}>
-              <Text style={finalStyles.fotoAddText}>📷</Text>
-            </TouchableOpacity>
-          </ScrollView>
-
-          <Text style={finalStyles.label}>Firma del beneficiario</Text>
-          {firmaBeneficiario ? (
-            <View style={finalStyles.firmaOk}>
-              <Image source={{ uri: firmaBeneficiario }} style={finalStyles.firmaImg} />
-              <TouchableOpacity onPress={() => setPadActivo('beneficiario')}><Text style={finalStyles.link}>Rehacer</Text></TouchableOpacity>
+          {/* Evidencias — mismo estilo de tarjetas que usa el técnico en
+              su propio formulario (icono, título, descripción, check verde). */}
+          <TouchableOpacity
+            style={[finalStyles.evidenciaCard, fotos.length > 0 && finalStyles.evidenciaCardOk]}
+            onPress={tomarFoto}
+            activeOpacity={0.7}
+          >
+            <View style={finalStyles.evidenciaIcon}>
+              <Text style={finalStyles.evidenciaIconText}>📷</Text>
             </View>
-          ) : padActivo === 'beneficiario' ? (
-            <SignaturePad onOK={(sig) => { setFirmaBeneficiario(sig); setPadActivo(null); }} description="Firma del beneficiario" />
-          ) : (
-            <TouchableOpacity style={finalStyles.btnSecundario} onPress={() => setPadActivo('beneficiario')}>
-              <Text style={finalStyles.btnSecundarioText}>✍️ Capturar firma del beneficiario</Text>
-            </TouchableOpacity>
+            <View style={finalStyles.evidenciaContent}>
+              <Text style={finalStyles.evidenciaCardTitle}>Fotos de la revisión</Text>
+              <Text style={finalStyles.evidenciaCardDesc}>
+                {fotos.length > 0 ? `${fotos.length} foto(s) capturada(s) — toca para agregar otra` : 'Toca para tomar una foto'}
+              </Text>
+            </View>
+            <Text style={finalStyles.evidenciaArrow}>›</Text>
+          </TouchableOpacity>
+          {fotos.length > 0 && (
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} style={finalStyles.fotosRow}>
+              {fotos.map((f, idx) => (
+                <View key={idx} style={finalStyles.fotoThumb}>
+                  <Image source={{ uri: f.uri }} style={finalStyles.fotoImg} />
+                  <TouchableOpacity style={finalStyles.fotoRemove} onPress={() => setFotos((prev) => prev.filter((_, i) => i !== idx))}>
+                    <Text style={finalStyles.fotoRemoveText}>✕</Text>
+                  </TouchableOpacity>
+                </View>
+              ))}
+            </ScrollView>
           )}
 
-          <Text style={finalStyles.label}>Firma del {ROL_LABEL[rol] || 'revisor'}</Text>
-          {firmaRevisor ? (
-            <View style={finalStyles.firmaOk}>
-              <Image source={{ uri: firmaRevisor }} style={finalStyles.firmaImg} />
-              <TouchableOpacity onPress={() => setPadActivo('revisor')}><Text style={finalStyles.link}>Rehacer</Text></TouchableOpacity>
+          <TouchableOpacity
+            style={[finalStyles.evidenciaCard, !!firmaBeneficiario && finalStyles.evidenciaCardOk]}
+            onPress={() => setPadActivo(padActivo === 'beneficiario' ? null : 'beneficiario')}
+            activeOpacity={0.7}
+          >
+            <View style={finalStyles.evidenciaIcon}>
+              <Text style={finalStyles.evidenciaIconText}>✍️</Text>
             </View>
-          ) : padActivo === 'revisor' ? (
-            <SignaturePad onOK={(sig) => { setFirmaRevisor(sig); setPadActivo(null); }} description={`Firma del ${ROL_LABEL[rol] || 'revisor'}`} />
-          ) : (
-            <TouchableOpacity style={finalStyles.btnSecundario} onPress={() => setPadActivo('revisor')}>
-              <Text style={finalStyles.btnSecundarioText}>✍️ Capturar tu firma</Text>
-            </TouchableOpacity>
+            <View style={finalStyles.evidenciaContent}>
+              <Text style={finalStyles.evidenciaCardTitle}>Firma del Beneficiario</Text>
+              <Text style={finalStyles.evidenciaCardDesc}>
+                {firmaBeneficiario ? 'Firma registrada ✓ — toca para rehacer' : 'Capturar firma del beneficiario'}
+              </Text>
+            </View>
+            <Text style={finalStyles.evidenciaArrow}>›</Text>
+          </TouchableOpacity>
+          {padActivo === 'beneficiario' && (
+            <SignaturePad onOK={(sig) => { setFirmaBeneficiario(sig); setPadActivo(null); }} description="Firma del beneficiario" />
+          )}
+          {!!firmaBeneficiario && padActivo !== 'beneficiario' && (
+            <Image source={{ uri: firmaBeneficiario }} style={finalStyles.firmaImg} />
+          )}
+
+          <TouchableOpacity
+            style={[finalStyles.evidenciaCard, !!firmaRevisor && finalStyles.evidenciaCardOk]}
+            onPress={() => setPadActivo(padActivo === 'revisor' ? null : 'revisor')}
+            activeOpacity={0.7}
+          >
+            <View style={finalStyles.evidenciaIcon}>
+              <Text style={finalStyles.evidenciaIconText}>🖊️</Text>
+            </View>
+            <View style={finalStyles.evidenciaContent}>
+              <Text style={finalStyles.evidenciaCardTitle}>Firma del {nombreRol}</Text>
+              <Text style={finalStyles.evidenciaCardDesc}>
+                {firmaRevisor ? 'Firma registrada ✓ — toca para rehacer' : 'Capturar tu firma'}
+              </Text>
+            </View>
+            <Text style={finalStyles.evidenciaArrow}>›</Text>
+          </TouchableOpacity>
+          {padActivo === 'revisor' && (
+            <SignaturePad onOK={(sig) => { setFirmaRevisor(sig); setPadActivo(null); }} description={`Firma del ${nombreRol}`} />
+          )}
+          {!!firmaRevisor && padActivo !== 'revisor' && (
+            <Image source={{ uri: firmaRevisor }} style={finalStyles.firmaImg} />
           )}
 
           <Text style={finalStyles.label}>Georeferencia puntual (captura única)</Text>
@@ -577,7 +613,38 @@ const finalStyles = StyleSheet.create({
   title: { fontSize: FONTS.sizes.lg, fontWeight: FONTS.weights.semibold, color: COLORS.textPrimary, marginBottom: SPACING.sm },
   label: { fontSize: FONTS.sizes.sm, fontWeight: FONTS.weights.semibold, color: COLORS.textPrimary, marginTop: SPACING.sm, marginBottom: 4 },
   hint: { fontSize: FONTS.sizes.xs, color: COLORS.textSecondary, marginBottom: 4 },
-  fotosRow: { flexDirection: 'row' },
+  // Tarjetas de evidencia — mismo estilo que EVIDENCIAS del técnico
+  // (FormularioCaracterizacionScreen.tsx) para mantener consistencia visual.
+  evidenciaCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: COLORS.surface,
+    padding: SPACING.md,
+    borderRadius: BORDER_RADIUS.md,
+    marginBottom: SPACING.sm,
+    borderWidth: 2,
+    borderColor: COLORS.border,
+    ...SHADOWS.sm,
+  },
+  evidenciaCardOk: {
+    borderColor: COLORS.success,
+    backgroundColor: COLORS.success + '08',
+  },
+  evidenciaIcon: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    backgroundColor: COLORS.surfaceAlt,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: SPACING.md,
+  },
+  evidenciaIconText: { fontSize: 24 },
+  evidenciaContent: { flex: 1 },
+  evidenciaCardTitle: { fontSize: FONTS.sizes.md, fontWeight: FONTS.weights.semibold, color: COLORS.textPrimary, marginBottom: 2 },
+  evidenciaCardDesc: { fontSize: FONTS.sizes.sm, color: COLORS.textSecondary },
+  evidenciaArrow: { fontSize: 28, color: '#b2bec3', fontWeight: '300', marginLeft: SPACING.sm },
+  fotosRow: { flexDirection: 'row', marginBottom: SPACING.sm },
   fotoThumb: { marginRight: SPACING.sm, position: 'relative' },
   fotoImg: { width: 70, height: 70, borderRadius: BORDER_RADIUS.sm, marginRight: SPACING.sm },
   fotoAdd: { width: 70, height: 70, borderRadius: BORDER_RADIUS.sm, backgroundColor: COLORS.background, justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderColor: COLORS.border, borderStyle: 'dashed' },
@@ -1221,10 +1288,6 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
             </View>
           ))}
 
-        {/* Sección final del revisor: evidencia propia, firma dual y
-            georeferencia puntual — cierra la revisión con visto bueno global. */}
-        <SeccionFinalRevisor formulario={formulario} recargarRevisiones={recargarRevisiones} />
-
         {/* Resumen de evidencias */}
         <View style={styles.evidenciasSummary}>
           <Text style={styles.evidenciasSummaryTitle}>📸 Evidencias ({evidenciaCount})</Text>
@@ -1455,6 +1518,11 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
           <View style={styles.row}><Text style={styles.label}>Creado:</Text><Text style={styles.value}>{formatFecha(formulario.created_at)}</Text></View>
           <View style={styles.row}><Text style={styles.label}>Actualizado:</Text><Text style={styles.value}>{formatFecha(formulario.updated_at)}</Text></View>
         </View>
+
+        {/* Sección final del revisor: evidencia propia, firma dual y
+            georeferencia puntual — cierra la revisión con visto bueno global.
+            Va al final de todo el detalle, después de Fechas. */}
+        <SeccionFinalRevisor formulario={formulario} recargarRevisiones={recargarRevisiones} />
       </ScrollView>
 
       {/* 📄 Visor PDF embebido */}

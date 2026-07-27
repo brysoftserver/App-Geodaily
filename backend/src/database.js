@@ -370,7 +370,7 @@ async function initSchema() {
   console.log('[DB] ✅ Esquema de base de datos inicializado');
 }
 
-// Siembra inicial de los 300 beneficiarios del proyecto (una sola vez,
+// Siembra inicial de los 76 beneficiarios del proyecto (una sola vez,
 // solo si la tabla está vacía). Fuente: data/beneficiarios-seed.json,
 // generado desde la base de datos oficial del proyecto.
 async function seedBeneficiarios() {

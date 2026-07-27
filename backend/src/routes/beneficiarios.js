@@ -1,6 +1,6 @@
 // ============================================================
 // Beneficiarios Routes — Base de datos compartida del proyecto
-// (300 beneficiarios + asignación a técnicos)
+// (76 beneficiarios + asignación a técnicos)
 // Persistencia: PostgreSQL — fuente de verdad compartida entre
 // todos los dispositivos; la app mantiene un espejo en SQLite
 // local para trabajo offline.

@@ -86,7 +86,7 @@ const MENU_ITEMS = [
   {
     id: 'beneficiarios',
     title: 'Base de Datos Beneficiarios',
-    subtitle: '300 beneficiarios, asignación a técnicos',
+    subtitle: '76 beneficiarios, asignación a técnicos',
     icon: '👤',
     color: COLORS.roleAdmin,
     screen: 'BaseDatosBeneficiarios',
@@ -106,89 +106,105 @@ const AdminMenuScreen: React.FC<AdminMenuProps> = ({ navigation }) => {
   };
 
   return (
-    <ScrollView style={styles.container} contentContainerStyle={styles.scrollContent}>
-      {/* Encabezado */}
-      <ImageBackground source={require('../../../Logos_imagenes/fondo_login_geo_daily.png')} style={styles.header}>
-        <View style={[styles.campanaWrapper, { top: Math.max(insets.top, SPACING.md) }]}>
-          <NotificacionBell navigation={navigation} formularioDetailScreen="SupervisionFormularioDetail" />
-        </View>
-        <View style={[styles.ajustesWrapper, { top: Math.max(insets.top, SPACING.md) }]}>
-          <AjustesMenu
-            opciones={[
-              { id: 'contrasena', label: 'Cambiar Contraseña', icon: '🔑', onPress: () => setShowPasswordModal(true) },
-              { id: 'cerrar', label: 'Cerrar Sesión', icon: '🚪', onPress: logout, destructivo: true },
-            ]}
-          />
-        </View>
-        <TouchableOpacity onPress={cambiarAvatar} activeOpacity={0.7} disabled={cambiando}>
-          <View style={styles.avatar}>
-            {avatarUri ? (
-              <Image source={{ uri: avatarUri }} style={styles.avatarImage} />
-            ) : (
-              <Text style={styles.avatarText}>
-                {user?.nombre?.charAt(0)?.toUpperCase() || 'A'}
-              </Text>
-            )}
-            <View style={styles.cameraIcon}>
-              {cambiando ? (
-                <ActivityIndicator size="small" color={COLORS.roleAdmin} />
-              ) : (
-                <Text style={styles.cameraIconText}>📷</Text>
-              )}
-            </View>
+    // El fondo cubre toda la pantalla (encabezado + submódulos); las
+    // tarjetas de los submódulos quedan blancas encima, igual que en el
+    // menú del técnico.
+    <ImageBackground
+      source={require('../../../Logos_imagenes/fondo_login_geo_daily.png')}
+      style={styles.container}
+      resizeMode="cover"
+    >
+      <View style={styles.overlayOscuro} pointerEvents="none" />
+      <ScrollView style={styles.scroll} contentContainerStyle={styles.scrollContent}>
+        {/* Encabezado */}
+        <View style={styles.header}>
+          <View style={[styles.campanaWrapper, { top: Math.max(insets.top, SPACING.md) }]}>
+            <NotificacionBell navigation={navigation} formularioDetailScreen="SupervisionFormularioDetail" />
           </View>
-        </TouchableOpacity>
-        <Text style={styles.welcomeText}>Consola de Administración</Text>
-        <Text style={styles.userName}>{user?.nombre || 'Administrador'}</Text>
-        <View style={styles.roleBadge}>
-          <Text style={styles.roleText}>Administrador</Text>
-        </View>
-      </ImageBackground>
-
-      {/* Menú */}
-      <View style={styles.menuContainer}>
-        {MENU_ITEMS.map((item) => (
-          <TouchableOpacity
-            key={item.id}
-            style={[styles.menuItem, { borderLeftColor: item.color }]}
-            onPress={() => handlePress(item)}
-            activeOpacity={0.7}
-          >
-            <Text style={styles.menuIcon}>{item.icon}</Text>
-            <View style={styles.menuContent}>
-              <Text style={styles.menuTitle}>{item.title}</Text>
-              <Text style={styles.menuSubtitle}>{item.subtitle}</Text>
+          <View style={[styles.ajustesWrapper, { top: Math.max(insets.top, SPACING.md) }]}>
+            <AjustesMenu
+              opciones={[
+                { id: 'contrasena', label: 'Cambiar Contraseña', icon: '🔑', onPress: () => setShowPasswordModal(true) },
+                { id: 'cerrar', label: 'Cerrar Sesión', icon: '🚪', onPress: logout, destructivo: true },
+              ]}
+            />
+          </View>
+          <TouchableOpacity onPress={cambiarAvatar} activeOpacity={0.7} disabled={cambiando} style={{ marginTop: Math.max(insets.top, SPACING.md) }}>
+            <View style={styles.avatar}>
+              {avatarUri ? (
+                <Image source={{ uri: avatarUri }} style={styles.avatarImage} />
+              ) : (
+                <Text style={styles.avatarText}>
+                  {user?.nombre?.charAt(0)?.toUpperCase() || 'A'}
+                </Text>
+              )}
+              <View style={styles.cameraIcon}>
+                {cambiando ? (
+                  <ActivityIndicator size="small" color={COLORS.roleAdmin} />
+                ) : (
+                  <Text style={styles.cameraIconText}>📷</Text>
+                )}
+              </View>
             </View>
-            <Text style={styles.menuArrow}>›</Text>
           </TouchableOpacity>
-        ))}
-      </View>
+          <Text style={styles.welcomeText}>Consola de Administración</Text>
+          <Text style={styles.userName}>{user?.nombre || 'Administrador'}</Text>
+          <View style={styles.roleBadge}>
+            <Text style={styles.roleText}>Administrador</Text>
+          </View>
+        </View>
 
-      {/* Información del sistema */}
-      <View style={styles.systemInfo}>
-        <Text style={styles.systemInfoTitle}>Información del Sistema</Text>
-        <View style={styles.infoRow}>
-          <Text style={styles.infoLabel}>Versión</Text>
-          <Text style={styles.infoValue}>GEODAILY v1.0.0</Text>
+        {/* Menú */}
+        <View style={styles.menuContainer}>
+          {MENU_ITEMS.map((item) => (
+            <TouchableOpacity
+              key={item.id}
+              style={[styles.menuItem, { borderLeftColor: item.color }]}
+              onPress={() => handlePress(item)}
+              activeOpacity={0.7}
+            >
+              <Text style={styles.menuIcon}>{item.icon}</Text>
+              <View style={styles.menuContent}>
+                <Text style={styles.menuTitle}>{item.title}</Text>
+                <Text style={styles.menuSubtitle}>{item.subtitle}</Text>
+              </View>
+              <Text style={styles.menuArrow}>›</Text>
+            </TouchableOpacity>
+          ))}
         </View>
-        <View style={styles.infoRow}>
-          <Text style={styles.infoLabel}>Usuario</Text>
-          <Text style={styles.infoValue}>{user?.email || user?.id || '—'}</Text>
+
+        {/* Información del sistema */}
+        <View style={styles.systemInfo}>
+          <Text style={styles.systemInfoTitle}>Información del Sistema</Text>
+          <View style={styles.infoRow}>
+            <Text style={styles.infoLabel}>Versión</Text>
+            <Text style={styles.infoValue}>GEODAILY v1.0.0</Text>
+          </View>
+          <View style={styles.infoRow}>
+            <Text style={styles.infoLabel}>Usuario</Text>
+            <Text style={styles.infoValue}>{user?.email || user?.id || '—'}</Text>
+          </View>
+          <View style={styles.infoRow}>
+            <Text style={styles.infoLabel}>Rol</Text>
+            <Text style={styles.infoValue}>Administrador</Text>
+          </View>
         </View>
-        <View style={styles.infoRow}>
-          <Text style={styles.infoLabel}>Rol</Text>
-          <Text style={styles.infoValue}>Administrador</Text>
-        </View>
-      </View>
+      </ScrollView>
       <CambiarContrasenaModal visible={showPasswordModal} onClose={() => setShowPasswordModal(false)} />
-    </ScrollView>
+    </ImageBackground>
   );
 };
 
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: COLORS.surface,
+  },
+  overlayOscuro: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(0,0,0,0.18)',
+  },
+  scroll: {
+    flex: 1,
   },
   scrollContent: {
     flexGrow: 1,
@@ -198,10 +214,6 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     paddingVertical: SPACING.xl,
     paddingHorizontal: SPACING.lg,
-    borderBottomLeftRadius: BORDER_RADIUS.xl,
-    borderBottomRightRadius: BORDER_RADIUS.xl,
-    overflow: 'hidden',
-    ...SHADOWS.md,
   },
   ajustesWrapper: {
     position: 'absolute',
@@ -249,17 +261,17 @@ const styles = StyleSheet.create({
   },
   welcomeText: {
     fontSize: FONTS.sizes.md,
-    color: COLORS.textSecondary,
+    color: COLORS.textOnPrimary + 'CC',
     marginBottom: 2,
   },
   userName: {
     fontSize: FONTS.sizes.xxl,
     fontWeight: FONTS.weights.bold,
-    color: COLORS.textPrimary,
+    color: COLORS.textOnPrimary,
     marginBottom: SPACING.xs,
   },
   roleBadge: {
-    backgroundColor: COLORS.roleAdmin + '20',
+    backgroundColor: COLORS.surface,
     paddingHorizontal: SPACING.md,
     paddingVertical: SPACING.xs,
     borderRadius: BORDER_RADIUS.full,

@@ -916,9 +916,15 @@ const MapaScreen: React.FC = () => {
               color: '#2E7D32',
               draggable: modo === 'contar',
             })),
-            // Centroide del polígono de plantación (icono difuminado)
-            ...(getPlantacionCentroide() ? [{
-              id: 'plantacion-centro',
+            // Centroide del polígono de plantación (icono difuminado) — solo
+            // aparece cuando el técnico ya eligió qué está plantando (panel
+            // de especie abierto), no automáticamente al llegar a 3 puntos.
+            ...(mostrarPanelConteo && getPlantacionCentroide() ? [{
+              // El id incluye la especie: MLAnnotation (anotación nativa)
+              // no refresca el ícono si solo cambia el contenido hijo —
+              // necesita un id distinto para remontarse y capturar el
+              // nuevo emoji al elegir otra especie.
+              id: `plantacion-centro-${plantaSeleccionada}`,
               latitud: getPlantacionCentroide()!.lat,
               longitud: getPlantacionCentroide()!.lon,
               title: 'Centro del área',
@@ -940,6 +946,8 @@ const MapaScreen: React.FC = () => {
               ? tracking.posiciones.map(p => ({ latitud: p.latitud, longitud: p.longitud }))
               : modo === 'medir' && poligono.length >= 2
               ? poligono.map(p => ({ latitud: p.latitud, longitud: p.longitud }))
+              : modo === 'contar' && !mostrarPanelConteo && plantacionPoligono.length >= 2
+              ? plantacionPoligono.map(p => ({ latitud: p.latitud, longitud: p.longitud }))
               : undefined
           }
           startMarker={
@@ -1012,8 +1020,12 @@ const MapaScreen: React.FC = () => {
               });
             }
 
-            // Polígono EN DIBUJO (mientras el técnico marca los puntos)
-            if (plantacionPoligono.length >= 3) {
+            // Polígono de plantación — el relleno solo aparece cuando el
+            // técnico ya presionó "seleccionar especie y guardar" y está en
+            // el panel eligiendo qué plantar (mostrarPanelConteo). Mientras
+            // solo va marcando puntos (así sean muchos más de 3), únicamente
+            // se ve la línea de arriba, sin sombra ni ícono forzados.
+            if (mostrarPanelConteo && plantacionPoligono.length >= 3) {
               const coords = [
                 ...plantacionPoligono.map((p) => [p.longitud, p.latitud]),
                 [plantacionPoligono[0].longitud, plantacionPoligono[0].latitud],
@@ -1236,85 +1248,92 @@ const MapaScreen: React.FC = () => {
               </TouchableOpacity>
             </View>
 
-            <Text style={styles.conteoLabel}>Selecciona el tipo de planta:</Text>
-            <View style={styles.conteoOptionsRow}>
-              {PLANTAS_OPCIONES.map((op) => (
-                <TouchableOpacity
-                  key={op.nombre}
-                  style={[
-                    styles.conteoOptionBtn,
-                    plantaSeleccionada === op.nombre && styles.conteoOptionBtnActive,
-                  ]}
-                  onPress={() => setPlantaSeleccionada(op.nombre)}
-                >
-                  <Text style={styles.conteoOptionIcon}>{op.icono}</Text>
-                  <Text
+            <ScrollView
+              style={styles.conteoScroll}
+              contentContainerStyle={styles.conteoScrollContent}
+              showsVerticalScrollIndicator={true}
+              keyboardShouldPersistTaps="handled"
+            >
+              <Text style={styles.conteoLabel}>Selecciona el tipo de planta:</Text>
+              <View style={styles.conteoOptionsRow}>
+                {PLANTAS_OPCIONES.map((op) => (
+                  <TouchableOpacity
+                    key={op.nombre}
                     style={[
-                      styles.conteoOptionLabel,
-                      plantaSeleccionada === op.nombre && styles.conteoOptionLabelActive,
+                      styles.conteoOptionBtn,
+                      plantaSeleccionada === op.nombre && styles.conteoOptionBtnActive,
                     ]}
-                    numberOfLines={1}
+                    onPress={() => setPlantaSeleccionada(op.nombre)}
                   >
-                    {op.nombre === 'Abarco / Cedro / Caucho' ? 'Abarco / Cedro' : op.nombre}
-                  </Text>
+                    <Text style={styles.conteoOptionIcon}>{op.icono}</Text>
+                    <Text
+                      style={[
+                        styles.conteoOptionLabel,
+                        plantaSeleccionada === op.nombre && styles.conteoOptionLabelActive,
+                      ]}
+                      numberOfLines={1}
+                    >
+                      {op.nombre === 'Abarco / Cedro / Caucho' ? 'Abarco / Cedro' : op.nombre}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+
+              <View style={styles.conteoInputRow}>
+                <Text style={styles.conteoLabel}>Cantidad de plantas:</Text>
+                <TextInput
+                  style={styles.conteoInputCant}
+                  value={cantidadInput}
+                  onChangeText={setCantidadInput}
+                  placeholder="Ej: 50"
+                  placeholderTextColor={COLORS.textLight}
+                  keyboardType="numeric"
+                />
+              </View>
+
+              <View style={styles.conteoPreview}>
+                <Text style={styles.conteoPreviewText}>
+                  Vista previa: {getIconoEspecie(plantaSeleccionada)} {plantaSeleccionada}
+                </Text>
+              </View>
+
+              <Text style={styles.conteoLabel}>Beneficiario / vereda (opcional):</Text>
+              <View style={styles.conteoInputRow}>
+                <TextInput
+                  style={[styles.conteoInputCant, { flex: 1 }]}
+                  value={plantacionCedula}
+                  onChangeText={setPlantacionCedula}
+                  placeholder="Cédula del beneficiario"
+                  placeholderTextColor={COLORS.textLight}
+                  keyboardType="numeric"
+                />
+                <TouchableOpacity style={styles.toolBtn} onPress={buscarBeneficiarioPlantacionPorCedula}>
+                  <Text style={styles.toolBtnIcon}>🔍</Text>
                 </TouchableOpacity>
-              ))}
-            </View>
-
-            <View style={styles.conteoInputRow}>
-              <Text style={styles.conteoLabel}>Cantidad de plantas:</Text>
-              <TextInput
-                style={styles.conteoInputCant}
-                value={cantidadInput}
-                onChangeText={setCantidadInput}
-                placeholder="Ej: 50"
-                placeholderTextColor={COLORS.textLight}
-                keyboardType="numeric"
+              </View>
+              {!!plantacionBeneficiarioNombre && (
+                <Text style={styles.conteoSubtitle}>👤 {plantacionBeneficiarioNombre}</Text>
+              )}
+              <DropdownPicker
+                label="Vereda"
+                value={plantacionVereda || null}
+                options={veredasPlantacion}
+                onSelect={setPlantacionVereda}
+                placeholder="Seleccionar vereda (opcional)..."
               />
-            </View>
 
-            <View style={styles.conteoPreview}>
-              <Text style={styles.conteoPreviewText}>
-                Vista previa: {getIconoEspecie(plantaSeleccionada)} {plantaSeleccionada}
-              </Text>
-            </View>
-
-            <Text style={styles.conteoLabel}>Beneficiario / vereda (opcional):</Text>
-            <View style={styles.conteoInputRow}>
-              <TextInput
-                style={[styles.conteoInputCant, { flex: 1 }]}
-                value={plantacionCedula}
-                onChangeText={setPlantacionCedula}
-                placeholder="Cédula del beneficiario"
-                placeholderTextColor={COLORS.textLight}
-                keyboardType="numeric"
-              />
-              <TouchableOpacity style={styles.toolBtn} onPress={buscarBeneficiarioPlantacionPorCedula}>
-                <Text style={styles.toolBtnIcon}>🔍</Text>
-              </TouchableOpacity>
-            </View>
-            {!!plantacionBeneficiarioNombre && (
-              <Text style={styles.conteoSubtitle}>👤 {plantacionBeneficiarioNombre}</Text>
-            )}
-            <DropdownPicker
-              label="Vereda"
-              value={plantacionVereda || null}
-              options={veredasPlantacion}
-              onSelect={setPlantacionVereda}
-              placeholder="Seleccionar vereda (opcional)..."
-            />
-
-            <View style={styles.conteoActions}>
-              <TouchableOpacity
-                style={[styles.conteoSaveBtn, (!cantidadInput || parseInt(cantidadInput) <= 0) && styles.toolBtnDisabled]}
-                onPress={guardarConteo}
-              >
-                <Text style={styles.conteoSaveText}>Guardar área de plantación</Text>
-              </TouchableOpacity>
-              <TouchableOpacity style={styles.conteoCancelBtn} onPress={cancelarPoligonoPlantacion}>
-                <Text style={styles.conteoCancelText}>Cancelar</Text>
-              </TouchableOpacity>
-            </View>
+              <View style={styles.conteoActions}>
+                <TouchableOpacity
+                  style={[styles.conteoSaveBtn, (!cantidadInput || parseInt(cantidadInput) <= 0) && styles.toolBtnDisabled]}
+                  onPress={guardarConteo}
+                >
+                  <Text style={styles.conteoSaveText}>Guardar área de plantación</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={styles.conteoCancelBtn} onPress={cancelarPoligonoPlantacion}>
+                  <Text style={styles.conteoCancelText}>Cancelar</Text>
+                </TouchableOpacity>
+              </View>
+            </ScrollView>
           </View>
         )}
       </View>
@@ -1322,7 +1341,7 @@ const MapaScreen: React.FC = () => {
       {/* Barra de herramientas inferior */}
       <View style={[styles.toolbar, { paddingBottom: insets.bottom + SPACING.sm }]}>
         {modo === 'navegar' && (
-          <>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.toolButtonsScroll} contentContainerStyle={styles.toolButtonsRow}>
             <TouchableOpacity
               style={[styles.toolBtn, siguiendoGPS && styles.toolBtnActive, locating && styles.toolBtnDisabled]}
               onPress={centrarEnGPS}
@@ -1340,155 +1359,161 @@ const MapaScreen: React.FC = () => {
               <Text style={styles.toolBtnIcon}>🗺️</Text>
               <Text style={styles.toolBtnLabel}>KML</Text>
             </TouchableOpacity>
-          </>
+          </ScrollView>
         )}
 
         {modo === 'medir' && (
           <>
             <View style={styles.toolInfo}>
-              <Text style={styles.toolInfoText}>
+              <Text style={styles.toolInfoText} numberOfLines={1}>
                 {poligono.length} punto(s)
               </Text>
             </View>
-            <TouchableOpacity
-              style={[styles.toolBtn, centrando && styles.toolBtnDisabled]}
-              onPress={centrarUnaVez}
-              disabled={centrando}
-            >
-              <Text style={styles.toolBtnIcon}>🎯</Text>
-              <Text style={styles.toolBtnLabel}>{centrando ? 'GPS...' : 'Centrar'}</Text>
-            </TouchableOpacity>
-            <TouchableOpacity style={styles.toolBtn} onPress={abrirHistorialMediciones}>
-              <Text style={styles.toolBtnLabel}>📋 Historial</Text>
-            </TouchableOpacity>
-            {poligono.length > 0 && (
-              <>
-                <TouchableOpacity style={styles.toolBtn} onPress={deshacerUltimoPunto}>
-                  <Text style={styles.toolBtnLabel}>↩ Deshacer</Text>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  style={[styles.toolBtn, styles.toolBtnPrimary]}
-                  onPress={calcularMedicion}
-                >
-                  <Text style={styles.toolBtnLabelPrimary}>Calcular</Text>
-                </TouchableOpacity>
-                <TouchableOpacity style={styles.toolBtn} onPress={limpiarPoligono}>
-                  <Text style={styles.toolBtnLabel}>✕ Limpiar</Text>
-                </TouchableOpacity>
-              </>
-            )}
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.toolButtonsScroll} contentContainerStyle={styles.toolButtonsRow}>
+              <TouchableOpacity
+                style={[styles.toolBtn, centrando && styles.toolBtnDisabled]}
+                onPress={centrarUnaVez}
+                disabled={centrando}
+              >
+                <Text style={styles.toolBtnIcon}>🎯</Text>
+                <Text style={styles.toolBtnLabel}>{centrando ? 'GPS...' : 'Centrar'}</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.toolBtn} onPress={abrirHistorialMediciones}>
+                <Text style={styles.toolBtnLabel}>📋 Historial</Text>
+              </TouchableOpacity>
+              {poligono.length > 0 && (
+                <>
+                  <TouchableOpacity style={styles.toolBtn} onPress={deshacerUltimoPunto}>
+                    <Text style={styles.toolBtnLabel}>↩ Deshacer</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[styles.toolBtn, styles.toolBtnPrimary]}
+                    onPress={calcularMedicion}
+                  >
+                    <Text style={styles.toolBtnLabelPrimary}>Calcular</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity style={styles.toolBtn} onPress={limpiarPoligono}>
+                    <Text style={styles.toolBtnLabel}>✕ Limpiar</Text>
+                  </TouchableOpacity>
+                </>
+              )}
+            </ScrollView>
           </>
         )}
 
         {modo === 'contar' && (
           <>
             <View style={styles.toolInfo}>
-              <Text style={styles.toolInfoText}>
+              <Text style={styles.toolInfoText} numberOfLines={1}>
                 {plantacionPoligono.length > 0
-                  ? `${plantacionPoligono.length} punto(s) · ${plantaciones.length} registro(s)`
-                  : `${plantaciones.length} registro(s) guardados`}
+                  ? `${plantacionPoligono.length} punto(s) · ${plantaciones.length} reg.`
+                  : `${plantaciones.length} registro(s)`}
               </Text>
             </View>
-            <TouchableOpacity
-              style={[styles.toolBtn, centrando && styles.toolBtnDisabled]}
-              onPress={centrarUnaVez}
-              disabled={centrando}
-            >
-              <Text style={styles.toolBtnIcon}>🎯</Text>
-              <Text style={styles.toolBtnLabel}>{centrando ? 'GPS...' : 'Centrar'}</Text>
-            </TouchableOpacity>
-            <TouchableOpacity style={styles.toolBtn} onPress={abrirHistorialPlantaciones}>
-              <Text style={styles.toolBtnLabel}>📋 Historial</Text>
-            </TouchableOpacity>
-            {plantacionPoligono.length > 0 && !mostrarPanelConteo && (
-              <>
-                <TouchableOpacity style={styles.toolBtn} onPress={deshacerUltimoPuntoPlantacion}>
-                  <Text style={styles.toolBtnLabel}>↩ Deshacer</Text>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  style={[
-                    styles.toolBtn,
-                    styles.toolBtnPrimary,
-                    plantacionPoligono.length < 3 && styles.toolBtnDisabled,
-                  ]}
-                  onPress={finalizarPoligonoPlantacion}
-                  disabled={plantacionPoligono.length < 3}
-                >
-                  <Text style={styles.toolBtnLabelPrimary}>
-                    {plantacionPoligono.length < 3 ? `Mín. 3 pts (${plantacionPoligono.length})` : '✅ Finalizar área'}
-                  </Text>
-                </TouchableOpacity>
-                <TouchableOpacity style={styles.toolBtn} onPress={cancelarPoligonoPlantacion}>
-                  <Text style={styles.toolBtnLabel}>✕ Cancelar</Text>
-                </TouchableOpacity>
-              </>
-            )}
-            {plantacionPoligono.length === 0 && !mostrarPanelConteo && (
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.toolButtonsScroll} contentContainerStyle={styles.toolButtonsRow}>
               <TouchableOpacity
-                style={[styles.toolBtn, styles.toolBtnPrimary]}
-                onPress={() => Alert.alert('🌱 Modo Conteo', 'Toca el mapa para comenzar a dibujar el área de plantación. Con 3+ puntos podrás finalizar y guardar.')}
+                style={[styles.toolBtn, centrando && styles.toolBtnDisabled]}
+                onPress={centrarUnaVez}
+                disabled={centrando}
               >
-                <Text style={styles.toolBtnLabelPrimary}>📍 Toca el mapa</Text>
+                <Text style={styles.toolBtnIcon}>🎯</Text>
+                <Text style={styles.toolBtnLabel}>{centrando ? 'GPS...' : 'Centrar'}</Text>
               </TouchableOpacity>
-            )}
+              <TouchableOpacity style={styles.toolBtn} onPress={abrirHistorialPlantaciones}>
+                <Text style={styles.toolBtnLabel}>📋 Historial</Text>
+              </TouchableOpacity>
+              {plantacionPoligono.length > 0 && !mostrarPanelConteo && (
+                <>
+                  <TouchableOpacity style={styles.toolBtn} onPress={deshacerUltimoPuntoPlantacion}>
+                    <Text style={styles.toolBtnLabel}>↩ Deshacer</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[
+                      styles.toolBtn,
+                      styles.toolBtnPrimary,
+                      plantacionPoligono.length < 3 && styles.toolBtnDisabled,
+                    ]}
+                    onPress={finalizarPoligonoPlantacion}
+                    disabled={plantacionPoligono.length < 3}
+                  >
+                    <Text style={styles.toolBtnLabelPrimary}>
+                      {plantacionPoligono.length < 3 ? `Mín. 3 (${plantacionPoligono.length})` : '✅ Finalizar área'}
+                    </Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity style={styles.toolBtn} onPress={cancelarPoligonoPlantacion}>
+                    <Text style={styles.toolBtnLabel}>✕ Cancelar</Text>
+                  </TouchableOpacity>
+                </>
+              )}
+              {plantacionPoligono.length === 0 && !mostrarPanelConteo && (
+                <TouchableOpacity
+                  style={[styles.toolBtn, styles.toolBtnPrimary]}
+                  onPress={() => Alert.alert('🌱 Modo Conteo', 'Toca el mapa para comenzar a dibujar el área de plantación. Con 3+ puntos podrás finalizar y guardar.')}
+                >
+                  <Text style={styles.toolBtnLabelPrimary}>📍 Toca el mapa</Text>
+                </TouchableOpacity>
+              )}
+            </ScrollView>
           </>
         )}
 
         {modo === 'ruta' && (
           <>
             <View style={styles.toolInfo}>
-              <Text style={styles.toolInfoText}>
+              <Text style={styles.toolInfoText} numberOfLines={1}>
                 {tracking.activo
                   ? tracking.pausado
-                    ? `⏸ Pausada · ${tracking.posiciones.length} pts · ${tracking.distanceKm.toFixed(2)} km`
+                    ? `⏸ ${tracking.posiciones.length} pts · ${tracking.distanceKm.toFixed(2)} km`
                     : `🟢 ${tracking.posiciones.length} pts · ${tracking.distanceKm.toFixed(2)} km`
-                  : '⏹ Tracking detenido'}
+                  : '⏹ Detenido'}
               </Text>
             </View>
-            {!tracking.activo ? (
-              <>
-                <TouchableOpacity
-                  style={[styles.toolBtn, styles.toolBtnPrimary]}
-                  onPress={tracking.iniciarTracking}
-                >
-                  <Text style={styles.toolBtnLabelPrimary}>▶ Iniciar Ruta</Text>
-                </TouchableOpacity>
-                <TouchableOpacity style={styles.toolBtn} onPress={abrirHistorialRutas}>
-                  <Text style={styles.toolBtnLabel}>📋 Historial</Text>
-                </TouchableOpacity>
-              </>
-            ) : (
-              <>
-                {tracking.inicio && (
-                  <View style={styles.toolInfoSmall}>
-                    <Text style={styles.toolInfoTextSmall}>
-                      {Math.floor(
-                        (Date.now() - new Date(tracking.inicio).getTime()) / 60000
-                      )}{' '}
-                      min
-                    </Text>
-                  </View>
-                )}
-                {tracking.pausado ? (
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.toolButtonsScroll} contentContainerStyle={styles.toolButtonsRow}>
+              {!tracking.activo ? (
+                <>
                   <TouchableOpacity
                     style={[styles.toolBtn, styles.toolBtnPrimary]}
-                    onPress={tracking.reanudarTracking}
+                    onPress={tracking.iniciarTracking}
                   >
-                    <Text style={styles.toolBtnLabelPrimary}>▶ Reanudar</Text>
+                    <Text style={styles.toolBtnLabelPrimary}>▶ Iniciar Ruta</Text>
                   </TouchableOpacity>
-                ) : (
-                  <TouchableOpacity style={styles.toolBtn} onPress={tracking.pausarTracking}>
-                    <Text style={styles.toolBtnLabel}>⏸ Pausar</Text>
+                  <TouchableOpacity style={styles.toolBtn} onPress={abrirHistorialRutas}>
+                    <Text style={styles.toolBtnLabel}>📋 Historial</Text>
                   </TouchableOpacity>
-                )}
-                <TouchableOpacity
-                  style={[styles.toolBtn, { backgroundColor: COLORS.error }]}
-                  onPress={tracking.detenerTracking}
-                >
-                  <Text style={styles.toolBtnLabelPrimary}>⏹ Detener</Text>
-                </TouchableOpacity>
-              </>
-            )}
+                </>
+              ) : (
+                <>
+                  {tracking.inicio && (
+                    <View style={styles.toolInfoSmall}>
+                      <Text style={styles.toolInfoTextSmall}>
+                        {Math.floor(
+                          (Date.now() - new Date(tracking.inicio).getTime()) / 60000
+                        )}{' '}
+                        min
+                      </Text>
+                    </View>
+                  )}
+                  {tracking.pausado ? (
+                    <TouchableOpacity
+                      style={[styles.toolBtn, styles.toolBtnPrimary]}
+                      onPress={tracking.reanudarTracking}
+                    >
+                      <Text style={styles.toolBtnLabelPrimary}>▶ Reanudar</Text>
+                    </TouchableOpacity>
+                  ) : (
+                    <TouchableOpacity style={styles.toolBtn} onPress={tracking.pausarTracking}>
+                      <Text style={styles.toolBtnLabel}>⏸ Pausar</Text>
+                    </TouchableOpacity>
+                  )}
+                  <TouchableOpacity
+                    style={[styles.toolBtn, { backgroundColor: COLORS.error }]}
+                    onPress={tracking.detenerTracking}
+                  >
+                    <Text style={styles.toolBtnLabelPrimary}>⏹ Detener</Text>
+                  </TouchableOpacity>
+                </>
+              )}
+            </ScrollView>
           </>
         )}
       </View>
@@ -1885,8 +1910,14 @@ const styles = StyleSheet.create({
     borderTopLeftRadius: BORDER_RADIUS.lg,
     borderTopRightRadius: BORDER_RADIUS.lg,
     padding: SPACING.md,
-    maxHeight: 300,
+    maxHeight: '75%',
     ...SHADOWS.lg,
+  },
+  conteoScroll: {
+    flexGrow: 0,
+  },
+  conteoScrollContent: {
+    paddingBottom: SPACING.md,
   },
   conteoHeader: {
     flexDirection: 'row',
@@ -2070,11 +2101,19 @@ const styles = StyleSheet.create({
     color: COLORS.textOnPrimary,
   },
   toolInfo: {
-    flex: 1,
+    flexShrink: 1,
+    marginRight: SPACING.sm,
   },
   toolInfoText: {
     fontSize: FONTS.sizes.xs,
     color: COLORS.textSecondary,
+  },
+  toolButtonsScroll: {
+    flex: 1,
+  },
+  toolButtonsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
   },
   toolInfoSmall: {
     marginRight: SPACING.sm,
