@@ -21,6 +21,7 @@ import { useAvatar } from '../../hooks/useAvatar';
 import CambiarContrasenaModal from '../../components/CambiarContrasenaModal';
 import AjustesMenu from '../../components/AjustesMenu';
 import NotificacionBell from '../../components/NotificacionBell';
+import AvatarViewerModal from '../../components/AvatarViewerModal';
 
 type SupervisionMenuScreenProps = {
   navigation: NativeStackNavigationProp<Record<string, any>>;
@@ -34,6 +35,14 @@ const MENU_ITEMS = [
     icon: '📊',
     color: COLORS.info,
     screen: 'Dashboard',
+  },
+  {
+    id: 'proyeccion',
+    title: 'Proyección',
+    subtitle: 'Estimación de producción futura',
+    icon: '📈',
+    color: COLORS.success,
+    screen: 'SupervisionProyeccion',
   },
   {
     id: 'listado',
@@ -79,8 +88,9 @@ const MENU_ITEMS = [
 
 const SupervisionMenuScreen: React.FC<SupervisionMenuScreenProps> = ({ navigation }) => {
   const { user, logout } = useAuth();
-  const { avatarUri, cambiarAvatar, cambiando } = useAvatar(user?.id);
+  const { avatarUri, cambiarAvatar, quitarAvatar, cambiando } = useAvatar();
   const [showPasswordModal, setShowPasswordModal] = useState(false);
+  const [showAvatarViewer, setShowAvatarViewer] = useState(false);
   const insets = useSafeAreaInsets();
 
   return (
@@ -96,7 +106,7 @@ const SupervisionMenuScreen: React.FC<SupervisionMenuScreenProps> = ({ navigatio
       <ScrollView style={styles.scroll} contentContainerStyle={[styles.content, { paddingTop: Math.max(insets.top, SPACING.lg) }]}>
         {/* Header de usuario */}
         <View style={styles.userHeader}>
-          <TouchableOpacity onPress={cambiarAvatar} activeOpacity={0.7} disabled={cambiando}>
+          <TouchableOpacity onPress={() => setShowAvatarViewer(true)} activeOpacity={0.7} disabled={cambiando}>
             <View style={styles.avatar}>
               {avatarUri ? (
                 <Image source={{ uri: avatarUri }} style={styles.avatarImage} />
@@ -145,6 +155,15 @@ const SupervisionMenuScreen: React.FC<SupervisionMenuScreenProps> = ({ navigatio
         </View>
       </ScrollView>
       <CambiarContrasenaModal visible={showPasswordModal} onClose={() => setShowPasswordModal(false)} />
+      <AvatarViewerModal
+        visible={showAvatarViewer}
+        avatarUri={avatarUri}
+        nombre={user?.nombre}
+        cambiando={cambiando}
+        onClose={() => setShowAvatarViewer(false)}
+        onCambiar={cambiarAvatar}
+        onQuitar={quitarAvatar}
+      />
     </ImageBackground>
   );
 };

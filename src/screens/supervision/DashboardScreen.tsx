@@ -12,18 +12,11 @@ import { useAuth } from '../../store/AuthContext';
 import { getFormulariosLocales } from '../../services/database';
 import { fetchFormulariosDelServidor } from '../../services/formularios.service';
 import { Formulario } from '../../types';
-import {
-  CORREGIMIENTOS,
-  COLOR_CORREGIMIENTO,
-  NOMBRE_VISIBLE_CORREGIMIENTO,
-  resolverCorregimiento,
-  normalizarVereda,
-} from '../../utils/corregimientos';
+import { normalizarVereda } from '../../utils/corregimientos';
 import MetricCard from '../../components/MetricCard';
 import LoadingSpinner from '../../components/LoadingSpinner';
 import MapaVisitasPuertoRico from '../../components/dashboard/MapaVisitasPuertoRico';
-import BarChartTecnicos from '../../components/dashboard/BarChartTecnicos';
-import PieChartCorregimientos from '../../components/dashboard/PieChartCorregimientos';
+import EncuestaSocialResultados from '../../components/dashboard/EncuestaSocialResultados';
 import ActividadesRecientes from '../../components/dashboard/ActividadesRecientes';
 import BotonPdfDashboard from '../../components/dashboard/BotonPdfDashboard';
 
@@ -36,7 +29,7 @@ const INTERVALO_AUTOREFRESH_MS = 30000;
 
 const DashboardScreen: React.FC<DashboardScreenProps> = ({ navigation }) => {
   const { formularios, cargarFormularios } = useForm();
-  const { user, isInterventor } = useAuth();
+  const { user, isInterventor, isAdmin } = useAuth();
   const [loadingDashboard, setLoadingDashboard] = useState(true);
   const [refreshingDashboard, setRefreshingDashboard] = useState(false);
   const [dashboardError, setDashboardError] = useState<string | null>(null);
@@ -123,44 +116,6 @@ const DashboardScreen: React.FC<DashboardScreenProps> = ({ navigation }) => {
     return { encuestaSocioambiental, visitasTecnicas, veredasUnicas };
   }, [formularios]);
 
-  // --- Visitas por técnico ---
-  const porTecnico = useMemo(() => {
-    const conteo = new Map<string, number>();
-    formularios.forEach((f) => {
-      const nombre = f.tecnico?.nombre?.trim();
-      if (!nombre) return;
-      conteo.set(nombre, (conteo.get(nombre) || 0) + 1);
-    });
-    return Array.from(conteo.entries())
-      .map(([nombre, total]) => ({ nombre, total }))
-      .sort((a, b) => b.total - a.total);
-  }, [formularios]);
-
-  // --- Visitas por corregimiento ---
-  const porCorregimiento = useMemo(() => {
-    const conteo = new Map<string, number>();
-    CORREGIMIENTOS.forEach((c) => conteo.set(c, 0));
-    let sinCorregimiento = 0;
-
-    formularios.forEach((f) => {
-      const c = resolverCorregimiento(f);
-      if (c) conteo.set(c, (conteo.get(c) || 0) + 1);
-      else sinCorregimiento++;
-    });
-
-    const datos = CORREGIMIENTOS.map((c) => ({
-      nombre: NOMBRE_VISIBLE_CORREGIMIENTO[c],
-      total: conteo.get(c) || 0,
-      color: COLOR_CORREGIMIENTO[c],
-    }));
-
-    if (sinCorregimiento > 0) {
-      datos.push({ nombre: 'Sin corregimiento', total: sinCorregimiento, color: COLORS.textLight });
-    }
-
-    return datos;
-  }, [formularios]);
-
   if (loadingDashboard && formularios.length === 0) {
     return <LoadingSpinner message="Cargando dashboard..." fullScreen />;
   }
@@ -205,12 +160,17 @@ const DashboardScreen: React.FC<DashboardScreenProps> = ({ navigation }) => {
       )}
 
       {/* 1. Mapa interactivo */}
-      <MapaVisitasPuertoRico formularios={formularios} onVerDetalle={irADetalle} />
+      <MapaVisitasPuertoRico
+        formularios={formularios}
+        onVerDetalle={irADetalle}
+        isAdmin={isAdmin}
+        onFormularioEliminado={() => loadDashboardData(true)}
+      />
 
       {/* 2. Tarjetas de métricas */}
       <View style={styles.metricsGrid}>
         <MetricCard
-          titulo="Encuesta Socioambiental"
+          titulo="Encuesta Social"
           valor={metrics.encuestaSocioambiental}
           color={COLORS.secondary}
           icono="📋"
@@ -232,13 +192,10 @@ const DashboardScreen: React.FC<DashboardScreenProps> = ({ navigation }) => {
         />
       </View>
 
-      {/* 3. Barras por técnico */}
-      <BarChartTecnicos datos={porTecnico} />
+      {/* 3. Resultados de la Encuesta Social AgroAmbiental (Formulario 1) */}
+      <EncuestaSocialResultados formularios={formularios} />
 
-      {/* 4. Torta por corregimiento */}
-      <PieChartCorregimientos datos={porCorregimiento} />
-
-      {/* 5. Últimas actividades (clickeable) */}
+      {/* 4. Últimas actividades (clickeable) */}
       <ActividadesRecientes formularios={formularios} onSeleccionar={irADetalle} />
     </ScrollView>
   );

@@ -13,7 +13,8 @@ export interface Usuario {
   email: string;
   rol: UserRole;
   telefono?: string;
-  avatar?: string;
+  /** Id en la tabla `archivos` (MinIO) de la foto de perfil, si la subió. */
+  avatar_archivo_id?: string | null;
   token: string;
 }
 
@@ -227,8 +228,10 @@ export interface Plantacion {
   timestamp: string;
   sincronizado: boolean;
   icono: string;
-  /** Polígono del área de plantación (opcional — si viene, latitud/longitud son el centroide) */
+  /** Polígono del área de plantación (opcional — si viene, latitud/longitud son el centroide). El backend solo lo envía al técnico dueño del registro; roles superiores nunca lo reciben. */
   poligono?: PuntoPoligono[];
+  /** Indicador sin coordenadas de si el área fue trazada (>=3 puntos) — lo único que reciben los roles superiores en lugar del polígono real. */
+  area_trazada?: boolean;
   /** Beneficiario/vereda asociados al área (opcional — permite ubicar la plantación en Dashboard) */
   beneficiario_cedula?: string;
   beneficiario_nombre?: string;

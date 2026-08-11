@@ -140,6 +140,18 @@ async function initSchema() {
       created_at TIMESTAMPTZ DEFAULT NOW()
     )`,
 
+    // Veredas vienen de Overpass (OpenStreetMap) o de un fallback
+    // hardcodeado en maps.js — no existen como tabla propia, así que no se
+    // pueden "eliminar" de verdad. Esto es un soft-hide: el admin oculta una
+    // vereda de la vista de la app sin tocar el dato de origen (que igual
+    // reaparecería en el próximo fetch a Overpass).
+    `CREATE TABLE IF NOT EXISTS veredas_excluidas (
+      id TEXT PRIMARY KEY,
+      nombre TEXT,
+      excluida_por VARCHAR(20),
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    )`,
+
     `CREATE TABLE IF NOT EXISTS tracking (
       id SERIAL PRIMARY KEY,
       usuario_id VARCHAR(20) REFERENCES usuarios(id),
@@ -246,6 +258,15 @@ async function initSchema() {
     `CREATE INDEX IF NOT EXISTS idx_plantaciones_usuario ON plantaciones(usuario_id)`,
     `CREATE INDEX IF NOT EXISTS idx_actividad_usuario ON actividad_log(usuario_id)`,
     `CREATE INDEX IF NOT EXISTS idx_actividad_created ON actividad_log(created_at)`,
+
+    // Configuración global clave-valor (ej. la API key de DeepSeek para el
+    // análisis con IA de las gráficas del PDF del Dashboard). Solo el admin
+    // la lee/escribe vía /api/ia/config.
+    `CREATE TABLE IF NOT EXISTS configuracion_sistema (
+      clave VARCHAR(100) PRIMARY KEY,
+      valor TEXT,
+      updated_at TIMESTAMPTZ DEFAULT NOW()
+    )`,
   ];
 
   for (const sql of tables) {
@@ -326,6 +347,33 @@ async function initSchema() {
     }
   }
 
+  // Migración: foto de perfil (avatar) por usuario. Antes solo se guardaba
+  // en el filesystem local del dispositivo (avatar.service.ts) — nunca
+  // llegaba al servidor, así que un técnico veía su propia foto pero nadie
+  // más (ej. el admin en "Gestión de Usuarios") la veía jamás. Se guarda
+  // el id del archivo (tabla `archivos`, ya usada para fotos/firmas/PDF)
+  // que contiene el binario subido a MinIO.
+  try {
+    await query(`ALTER TABLE usuarios ADD COLUMN avatar_archivo_id TEXT`);
+    console.log('[DB] ✅ Columna avatar_archivo_id agregada a usuarios');
+  } catch (err) {
+    if (!err.message.includes('already exists')) {
+      console.error('[DB] Error agregando avatar_archivo_id:', err.message);
+    }
+  }
+
+  // Migración: permitir tipo 'avatar' en archivos.tipo (antes solo
+  // foto/video/firma/pdf/capacitacion/other). Idempotente: se puede correr
+  // en cada arranque sin error.
+  try {
+    await query(`ALTER TABLE archivos DROP CONSTRAINT IF EXISTS archivos_tipo_check`);
+    await query(`ALTER TABLE archivos ADD CONSTRAINT archivos_tipo_check
+      CHECK (tipo IN ('foto','video','pdf','documento','firma','capacitacion','other','avatar'))`);
+    console.log('[DB] ✅ Constraint archivos_tipo_check actualizado (admite avatar)');
+  } catch (err) {
+    console.error('[DB] Error actualizando archivos_tipo_check:', err.message);
+  }
+
   // Migración: columna seccion en revisiones_formulario — permite marcar
   // Novedad/Aprobado por cada sección del formulario clonado (en vez de
   // solo a nivel de formulario completo). NULL = revisión de todo el
@@ -340,8 +388,10 @@ async function initSchema() {
   }
 
   // Tabla: evidencia final del revisor (supervisor/interventor) — una fila
-  // por formulario + rol revisor: fotos propias, firma dual (beneficiario +
-  // revisor) y una georeferencia puntual (captura única, no tracking).
+  // por formulario + rol revisor: fotos propias, video, firma dual
+  // (beneficiario + revisor) y una georeferencia puntual (captura única,
+  // no tracking). fotos_json/videos_json guardan [{ archivo_id }] —
+  // referencias a la tabla `archivos` (subidas a MinIO), no los binarios.
   try {
     await query(`CREATE TABLE IF NOT EXISTS revision_evidencia_formulario (
       id SERIAL PRIMARY KEY,
@@ -350,6 +400,7 @@ async function initSchema() {
       revisor_nombre VARCHAR(200),
       revisor_rol VARCHAR(20) NOT NULL,
       fotos_json JSONB DEFAULT '[]',
+      videos_json JSONB DEFAULT '[]',
       firma_beneficiario TEXT,
       firma_revisor TEXT,
       geo_latitud DECIMAL(10,7),
@@ -363,6 +414,21 @@ async function initSchema() {
     await query(`CREATE INDEX IF NOT EXISTS idx_revision_evidencia_formulario ON revision_evidencia_formulario(formulario_id)`);
   } catch (err) {
     console.error('[DB] Error creando revision_evidencia_formulario:', err.message);
+  }
+
+  // Migración: columna videos_json en revision_evidencia_formulario —
+  // la tabla ya existía sin ella en instalaciones previas a esta versión.
+  // firma_beneficiario/firma_revisor pasan de guardar base64 crudo a
+  // guardar el id del archivo subido a MinIO (más liviano y consistente
+  // con cómo el técnico guarda sus propias firmas); el renderizado en la
+  // app sigue soportando registros viejos en base64 para no romperlos.
+  try {
+    await query(`ALTER TABLE revision_evidencia_formulario ADD COLUMN videos_json JSONB DEFAULT '[]'`);
+    console.log('[DB] ✅ Columna videos_json agregada a revision_evidencia_formulario');
+  } catch (err) {
+    if (!err.message.includes('already exists')) {
+      console.error('[DB] Error agregando videos_json a revision_evidencia_formulario:', err.message);
+    }
   }
 
   await seedBeneficiarios();

@@ -76,6 +76,21 @@ const MapItemDetailCard: React.FC<MapItemDetailCardProps> = ({
               value={plantaciones.find((p: Record<string, any>) => p.id === realId)?.usuario_nombre || '—'}
             />
           )}
+          <DetailRow
+            label="Beneficiario"
+            value={plantaciones.find((p: Record<string, any>) => p.id === realId)?.beneficiario_nombre || '—'}
+          />
+          <DetailRow
+            label="Vereda"
+            value={
+              [
+                plantaciones.find((p: Record<string, any>) => p.id === realId)?.vereda,
+                plantaciones.find((p: Record<string, any>) => p.id === realId)?.corregimiento,
+              ]
+                .filter(Boolean)
+                .join(' — ') || '—'
+            }
+          />
           {isAdmin && (
             <DeleteButton label="🗑 Eliminar plantación" onPress={() => onDelete('plantación', realId)} />
           )}

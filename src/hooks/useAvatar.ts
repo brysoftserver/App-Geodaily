@@ -9,9 +9,19 @@
 import { useState, useEffect, useCallback } from 'react';
 import { Alert } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
-import { obtenerAvatarGuardado, guardarAvatar } from '../services/avatar.service';
+import { useAuth } from '../store/AuthContext';
+import {
+  obtenerAvatarGuardado,
+  guardarAvatar,
+  subirAvatarAlServidor,
+  sincronizarAvatarDesdeServidor,
+  eliminarAvatar,
+} from '../services/avatar.service';
 
-export function useAvatar(userId: string | undefined) {
+export function useAvatar() {
+  const { user, actualizarAvatarLocal } = useAuth();
+  const userId = user?.id;
+  const avatarArchivoId = user?.avatar_archivo_id;
   const [avatarUri, setAvatarUri] = useState<string | null>(null);
   const [cambiando, setCambiando] = useState(false);
 
@@ -21,13 +31,24 @@ export function useAvatar(userId: string | undefined) {
       setAvatarUri(null);
       return;
     }
-    obtenerAvatarGuardado(userId).then((uri) => {
-      if (!cancelado) setAvatarUri(uri);
-    });
+    (async () => {
+      // 1) Mostrar de inmediato lo que ya haya en este dispositivo.
+      const local = await obtenerAvatarGuardado(userId);
+      if (cancelado) return;
+      if (local) setAvatarUri(local);
+
+      // 2) En segundo plano, revisar si el servidor tiene algo distinto
+      // (foto puesta/cambiada/quitada desde OTRO dispositivo). Primera vez
+      // en un celular nuevo: no hay copia local, así que esto es lo único
+      // que trae la foto.
+      const resultado = await sincronizarAvatarDesdeServidor(userId, avatarArchivoId);
+      if (cancelado || resultado === undefined) return;
+      setAvatarUri(resultado); // string nueva foto, o null si se confirmó que no hay
+    })();
     return () => {
       cancelado = true;
     };
-  }, [userId]);
+  }, [userId, avatarArchivoId]);
 
   const cambiarAvatar = useCallback(async () => {
     if (!userId) return;
@@ -54,6 +75,11 @@ export function useAvatar(userId: string | undefined) {
       const uriPersistente = await guardarAvatar(userId, result.assets[0].uri);
       if (uriPersistente) {
         setAvatarUri(uriPersistente);
+        // Best-effort: si falla (sin conexión) la foto local sigue
+        // funcionando igual para el propio dueño; solo no la verán los
+        // demás roles hasta que haya señal y se reintente.
+        const archivoId = await subirAvatarAlServidor(userId, uriPersistente);
+        if (archivoId) await actualizarAvatarLocal(archivoId);
       } else {
         Alert.alert('Error', 'No se pudo guardar la foto de perfil.');
       }
@@ -63,7 +89,22 @@ export function useAvatar(userId: string | undefined) {
     } finally {
       setCambiando(false);
     }
-  }, [userId]);
+  }, [userId, actualizarAvatarLocal]);
 
-  return { avatarUri, cambiarAvatar, cambiando };
+  const quitarAvatar = useCallback(async () => {
+    if (!userId) return;
+    setCambiando(true);
+    try {
+      await eliminarAvatar(userId);
+      setAvatarUri(null);
+      await actualizarAvatarLocal(null);
+    } catch (error) {
+      console.warn('[Avatar] Error al quitar la foto:', error);
+      Alert.alert('Error', 'No se pudo quitar la foto de perfil.');
+    } finally {
+      setCambiando(false);
+    }
+  }, [userId, actualizarAvatarLocal]);
+
+  return { avatarUri, cambiarAvatar, quitarAvatar, cambiando };
 }

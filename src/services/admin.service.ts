@@ -15,6 +15,8 @@ export interface UsuarioBackend {
   telefono?: string;
   activo: boolean;
   contrasena_visible?: string;
+  /** Id en la tabla `archivos` (MinIO) de la foto de perfil, si el usuario tiene una. */
+  avatar_archivo_id?: string | null;
   created_at?: string;
 }
 

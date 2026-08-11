@@ -17,12 +17,16 @@
 
 import * as FileSystem from 'expo-file-system/legacy';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import apiClient, { getApiAuthToken } from './api';
+import { API_CONFIG } from '../theme';
 
 const AVATAR_DIR = FileSystem.documentDirectory
   ? `${FileSystem.documentDirectory}avatares/`
   : null;
 
 const claveAsyncStorage = (userId: string) => `@geodaily/avatar_uri_${userId}`;
+/** Recuerda qué `avatar_archivo_id` del servidor ya está reflejado en el archivo local — evita redescargar en cada apertura de pantalla. */
+const claveSincronizado = (userId: string) => `@geodaily/avatar_synced_id_${userId}`;
 
 let directorioListo = false;
 
@@ -98,5 +102,119 @@ export const guardarAvatar = async (
   } catch (e) {
     console.warn('[Avatar] No se pudo guardar la foto de perfil:', e);
     return null;
+  }
+};
+
+/**
+ * Subir la foto de perfil al servidor (best-effort) para que otros roles
+ * la vean — ej. el admin en "Gestión de Usuarios". Antes esta foto solo
+ * existía en el dispositivo del propio usuario (ver comentario de cabecera
+ * del archivo); esto la registra en MinIO + tabla `archivos` del backend.
+ * No lanza si falla (sin conexión, etc.) — la foto local sigue funcionando
+ * igual para el propio dueño aunque la subida remota no se complete.
+ *
+ * Devuelve el `avatar_archivo_id` nuevo (o null si falló) y de paso marca
+ * este dispositivo como "ya sincronizado" con ese id, para que
+ * `sincronizarAvatarDesdeServidor` no vuelva a descargar la misma foto que
+ * este mismo dispositivo acaba de subir.
+ */
+export const subirAvatarAlServidor = async (
+  userId: string,
+  uriPersistente: string
+): Promise<string | null> => {
+  try {
+    const formData = new FormData();
+    const extension = uriPersistente.split('?')[0].split('.').pop() || 'jpg';
+    // @ts-expect-error — React Native FormData
+    formData.append('archivo', {
+      uri: uriPersistente,
+      type: `image/${extension === 'jpg' ? 'jpeg' : extension}`,
+      name: `avatar.${extension}`,
+    });
+
+    const response = await apiClient.post(`${API_CONFIG.ENDPOINTS.AUTH}/mi-foto`, formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+      timeout: 30000,
+    });
+
+    const archivoId = response.data?.avatar_archivo_id;
+    if (response.data?.estado === 'ok' && archivoId) {
+      await AsyncStorage.setItem(claveSincronizado(userId), archivoId);
+      return archivoId;
+    }
+    return null;
+  } catch (e) {
+    console.warn('[Avatar] No se pudo subir la foto de perfil al servidor:', e);
+    return null;
+  }
+};
+
+/**
+ * Quitar la foto de perfil — local y en el servidor. Best-effort en el
+ * servidor: si falla la conexión, se limpia igual localmente (el usuario
+ * pidió explícitamente quitarla) pero puede reaparecer al reabrir la app
+ * si el borrado remoto no llegó a completarse; se reintentará entonces.
+ */
+export const eliminarAvatar = async (userId: string): Promise<void> => {
+  const actual = await AsyncStorage.getItem(claveAsyncStorage(userId));
+  if (actual) {
+    await FileSystem.deleteAsync(actual, { idempotent: true }).catch(() => {});
+  }
+  await AsyncStorage.multiRemove([claveAsyncStorage(userId), claveSincronizado(userId)]);
+  try {
+    await apiClient.delete(`${API_CONFIG.ENDPOINTS.AUTH}/mi-foto`);
+  } catch (e) {
+    console.warn('[Avatar] No se pudo eliminar la foto de perfil en el servidor:', e);
+  }
+};
+
+/**
+ * Sincronizar el avatar de OTRO dispositivo (o la ausencia de foto, si se
+ * quitó en otro dispositivo) hacia este. `avatarArchivoId` es el valor
+ * actual conocido del servidor (de `useAuth().user`).
+ *
+ * Devuelve:
+ * - `undefined` si no hay nada que cambiar (ya está sincronizado).
+ * - `null` si se confirmó que NO hay foto (se quitó en otro dispositivo).
+ * - la nueva URI local si se descargó una foto distinta.
+ */
+export const sincronizarAvatarDesdeServidor = async (
+  userId: string,
+  avatarArchivoId: string | null | undefined
+): Promise<string | null | undefined> => {
+  const idActual = avatarArchivoId || null;
+  const idSincronizado = await AsyncStorage.getItem(claveSincronizado(userId));
+  if (idActual === idSincronizado) return undefined;
+
+  if (!idActual) {
+    const anterior = await AsyncStorage.getItem(claveAsyncStorage(userId));
+    if (anterior) await FileSystem.deleteAsync(anterior, { idempotent: true }).catch(() => {});
+    await AsyncStorage.multiRemove([claveAsyncStorage(userId), claveSincronizado(userId)]);
+    return null;
+  }
+
+  const ok = await asegurarDirectorio();
+  if (!ok || !AVATAR_DIR) return undefined;
+
+  try {
+    const token = await getApiAuthToken();
+    const destino = `${AVATAR_DIR}${userId}_${Date.now()}.jpg`;
+    const resultado = await FileSystem.downloadAsync(
+      `${API_CONFIG.BASE_URL}${API_CONFIG.ENDPOINTS.ARCHIVOS}/${idActual}/contenido`,
+      destino,
+      { headers: token ? { Authorization: `Bearer ${token}` } : {} }
+    );
+    if (resultado.status !== 200) return undefined;
+
+    const anterior = await AsyncStorage.getItem(claveAsyncStorage(userId));
+    await AsyncStorage.setItem(claveAsyncStorage(userId), destino);
+    await AsyncStorage.setItem(claveSincronizado(userId), idActual);
+    if (anterior && anterior !== destino) {
+      FileSystem.deleteAsync(anterior, { idempotent: true }).catch(() => {});
+    }
+    return destino;
+  } catch (e) {
+    console.warn('[Avatar] No se pudo sincronizar la foto desde el servidor:', e);
+    return undefined;
   }
 };

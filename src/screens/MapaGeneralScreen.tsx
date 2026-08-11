@@ -23,6 +23,7 @@ import MapLayerToggle from '../components/mapa/MapLayerToggle';
 import MapToolbar from '../components/mapa/MapToolbar';
 import MapItemDetailCard from '../components/mapa/MapItemDetailCard';
 import MapItemList from '../components/mapa/MapItemList';
+import VeredaDetailCard from '../components/mapa/VeredaDetailCard';
 import { useAuth } from '../store/AuthContext';
 import { useGPS } from '../store/GPSContext';
 import { useSyncMapData } from '../hooks/useSyncMapData';
@@ -30,6 +31,7 @@ import { COLORS, FONTS, SPACING, BORDER_RADIUS } from '../theme';
 import apiClient from '../services/api';
 import { Coordenadas } from '../types';
 import { getIconoEspecie } from '../utils/constants';
+import { normalizarVereda } from '../utils/corregimientos';
 import {
   saveVeredasCache,
   getVeredasCache,
@@ -74,6 +76,7 @@ const MapaGeneralScreen: React.FC<{ navigation?: Record<string, any> }> = ({ nav
   const [capasActivas, setCapasActivas] = useState<Set<CapaActiva>>(new Set(['plantaciones', 'tecnicos']));
   const [veredasFeatures, setVeredasFeatures] = useState<Record<string, any>[] | null>(null);
   const [selectedItem, setSelectedItem] = useState<Record<string, any> | null>(null);
+  const [selectedVereda, setSelectedVereda] = useState<Record<string, any> | null>(null);
   const [showList, setShowList] = useState(false);
   const [mapCenter, setMapCenter] = useState<Coordenadas>(PUERTO_RICO_CENTER);
   const [mapZoom, setMapZoom] = useState(ZOOM_MUNICIPIO);
@@ -317,6 +320,46 @@ const MapaGeneralScreen: React.FC<{ navigation?: Record<string, any> }> = ({ nav
         ]
       : [];
 
+  // Capa GeoJSON del ÁREA de cada plantación — el backend ya oculta el
+  // polígono para roles superiores (solo el técnico dueño lo recibe), pero
+  // se filtra también aquí: el área trazada y sus números son privados del
+  // técnico, los roles superiores solo deben ver especie/cantidad/ícono.
+  const plantacionFeatures =
+    capasActivas.has('plantaciones') && !canViewAll
+      ? plantaciones
+          .filter((p: Record<string, any>) => (p.poligono?.length ?? 0) >= 3)
+          .map((p: Record<string, any>) => {
+            const pts = p.poligono as { latitud: number; longitud: number }[];
+            return {
+              type: 'Feature',
+              geometry: {
+                type: 'Polygon',
+                coordinates: [[
+                  ...pts.map((pt) => [pt.longitud, pt.latitud]),
+                  [pts[0].longitud, pts[0].latitud],
+                ]],
+              },
+              properties: { especie: p.especie },
+            };
+          })
+      : [];
+  const plantacionGeoLayer =
+    plantacionFeatures.length > 0
+      ? [
+          {
+            id: 'plantaciones-area',
+            nombre: 'Áreas de plantación',
+            features: plantacionFeatures,
+            fillColor: 'rgba(46, 125, 50, 0.18)',
+            strokeColor: '#2E7D32',
+            strokeWidth: 2,
+            strokeOpacity: 0.7,
+            fillOpacity: 0.18,
+          },
+        ]
+      : [];
+  const geoLayers = [...veredaGeoLayer, ...plantacionGeoLayer];
+
   // ============================================================
   // Handlers
   // ============================================================
@@ -333,6 +376,42 @@ const MapaGeneralScreen: React.FC<{ navigation?: Record<string, any> }> = ({ nav
         },
       },
     ]);
+  };
+
+  // Las veredas no son datos propios (vienen de OpenStreetMap/Overpass o de
+  // un fallback del backend) — "eliminar" en realidad es ocultarlas de la
+  // vista de la app (tabla `veredas_excluidas`), no borrar el dato de origen.
+  const handleOcultarVereda = (id: string, nombre: string) => {
+    Alert.alert(
+      'Ocultar vereda',
+      `¿Ocultar "${nombre}" del mapa para todos los usuarios? Esto no borra el dato de OpenStreetMap, solo deja de mostrarse en la app.`,
+      [
+        { text: 'Cancelar', style: 'cancel' },
+        {
+          text: 'Ocultar',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              await apiClient.delete(`/api/maps/veredas/${encodeURIComponent(id)}`, {
+                data: { nombre },
+              });
+              setVeredasFeatures((prev) => (prev ? prev.filter((v) => v.id !== id) : prev));
+              setSelectedVereda(null);
+            } catch (err: any) {
+              Alert.alert('Error', err?.response?.data?.mensaje || 'No se pudo ocultar la vereda');
+            }
+          },
+        },
+      ]
+    );
+  };
+
+  const totalPlantacionesEnVereda = (nombreVereda?: string): number => {
+    const objetivo = normalizarVereda(nombreVereda);
+    if (!objetivo) return 0;
+    return plantaciones.filter(
+      (p: Record<string, any>) => normalizarVereda(p.vereda) === objetivo
+    ).length;
   };
 
   const conteos = {
@@ -397,7 +476,14 @@ const MapaGeneralScreen: React.FC<{ navigation?: Record<string, any> }> = ({ nav
             mapStyle="relieve"
             showUserLocation={true}
             userLocation={userLocation}
-            geojsonLayers={veredaGeoLayer}
+            geojsonLayers={geoLayers}
+            onMarkerPress={(id) => {
+              const marker = allMarkers.find((m: Record<string, any>) => m.id === id);
+              if (marker) setSelectedItem(marker);
+            }}
+            onFeaturePress={(layerId, properties) => {
+              if (layerId === 'veredas') setSelectedVereda(properties);
+            }}
           />
         )}
       </View>
@@ -425,6 +511,7 @@ const MapaGeneralScreen: React.FC<{ navigation?: Record<string, any> }> = ({ nav
           items={allMarkers}
           plantaciones={plantaciones}
           mediciones={mediciones}
+          posiciones={posiciones}
           isAdmin={isAdmin}
           onSelect={setSelectedItem}
           onDelete={handleConfirmDelete}
@@ -442,6 +529,17 @@ const MapaGeneralScreen: React.FC<{ navigation?: Record<string, any> }> = ({ nav
           isAdmin={isAdmin}
           onClose={() => setSelectedItem(null)}
           onDelete={handleConfirmDelete}
+        />
+      )}
+
+      {/* Detalle de la vereda seleccionada */}
+      {selectedVereda && (
+        <VeredaDetailCard
+          properties={selectedVereda}
+          totalPlantaciones={totalPlantacionesEnVereda(selectedVereda.nombre)}
+          isAdmin={isAdmin}
+          onClose={() => setSelectedVereda(null)}
+          onDelete={handleOcultarVereda}
         />
       )}
     </View>

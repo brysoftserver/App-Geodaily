@@ -11,10 +11,11 @@
 // construcción — no depende de ninguna calibración manual.
 
 import React, { useEffect, useMemo, useState, useCallback, useRef } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, Modal, Pressable } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, Modal, Pressable, Alert } from 'react-native';
 import { COLORS, FONTS, SPACING, BORDER_RADIUS, SHADOWS } from '../../theme';
 import { Formulario } from '../../types';
 import { useSyncMapData } from '../../hooks/useSyncMapData';
+import { eliminarFormularioDelServidor } from '../../services/formularios.service';
 import { getIconoEspecie } from '../../utils/constants';
 import { resolverCorregimiento, NOMBRE_VISIBLE_CORREGIMIENTO } from '../../utils/corregimientos';
 import MapViewOffline from '../MapViewOffline';
@@ -22,6 +23,10 @@ import MapViewOffline from '../MapViewOffline';
 interface MapaVisitasPuertoRicoProps {
   formularios: Formulario[];
   onVerDetalle: (formulario: Formulario) => void;
+  /** Solo admin ve el botón de eliminar en los popups de visita/área de cultivo. */
+  isAdmin?: boolean;
+  /** Se llama tras eliminar una visita del servidor, para que el padre refresque su lista. */
+  onFormularioEliminado?: () => void;
 }
 
 interface Plantacion {
@@ -49,11 +54,63 @@ const etiquetaTipo = (tipo: Formulario['tipo']) =>
 const colorPorTipo = (tipo: Formulario['tipo']) =>
   tipo === 'visita_tecnica' ? COLORS.roleTecnico : COLORS.secondary;
 
-const MapaVisitasPuertoRico: React.FC<MapaVisitasPuertoRicoProps> = ({ formularios, onVerDetalle }) => {
-  const { plantaciones, fetchAllPlantaciones } = useSyncMapData();
+const MapaVisitasPuertoRico: React.FC<MapaVisitasPuertoRicoProps> = ({
+  formularios,
+  onVerDetalle,
+  isAdmin = false,
+  onFormularioEliminado,
+}) => {
+  const { plantaciones, fetchAllPlantaciones, eliminarPlantacion } = useSyncMapData();
   const [seleccionado, setSeleccionado] = useState<Formulario | null>(null);
   const [plantacionSeleccionada, setPlantacionSeleccionada] = useState<Plantacion | null>(null);
+  const [eliminando, setEliminando] = useState(false);
   const enFocoRef = useRef(true);
+
+  // --- Eliminar visita (admin) — borrado en cascada completo en el backend
+  // (revisiones, notificaciones, mediciones, plantaciones, archivos/MinIO).
+  const handleEliminarVisita = useCallback((form: Formulario) => {
+    Alert.alert(
+      'Eliminar visita',
+      `¿Eliminar definitivamente esta visita de "${form.beneficiario?.nombre || 'este beneficiario'}"?\n\nSe borrará también todo lo asociado: revisiones, notificaciones, mediciones, plantaciones, fotos, videos, firmas y PDF. Esta acción NO se puede deshacer.`,
+      [
+        { text: 'Cancelar', style: 'cancel' },
+        {
+          text: 'Eliminar todo',
+          style: 'destructive',
+          onPress: async () => {
+            setEliminando(true);
+            try {
+              await eliminarFormularioDelServidor(form.id);
+              setSeleccionado(null);
+              onFormularioEliminado?.();
+            } catch (error: any) {
+              Alert.alert('Error', error?.message || 'No se pudo eliminar la visita');
+            } finally {
+              setEliminando(false);
+            }
+          },
+        },
+      ]
+    );
+  }, [onFormularioEliminado]);
+
+  const handleEliminarPlantacion = useCallback((p: Plantacion) => {
+    Alert.alert(
+      'Eliminar área de cultivo',
+      `¿Eliminar "${p.especie}" del mapa? Esta acción no se puede deshacer.`,
+      [
+        { text: 'Cancelar', style: 'cancel' },
+        {
+          text: 'Eliminar',
+          style: 'destructive',
+          onPress: async () => {
+            await eliminarPlantacion(p.id);
+            setPlantacionSeleccionada(null);
+          },
+        },
+      ]
+    );
+  }, [eliminarPlantacion]);
 
   useEffect(() => {
     fetchAllPlantaciones();
@@ -236,6 +293,17 @@ const MapaVisitasPuertoRico: React.FC<MapaVisitasPuertoRicoProps> = ({ formulari
                     <Text style={styles.botonPrimarioTexto}>Ver detalle completo</Text>
                   </TouchableOpacity>
                 </View>
+                {isAdmin && (
+                  <TouchableOpacity
+                    style={styles.botonEliminar}
+                    disabled={eliminando}
+                    onPress={() => handleEliminarVisita(seleccionado)}
+                  >
+                    <Text style={styles.botonEliminarTexto}>
+                      {eliminando ? 'Eliminando…' : '🗑 Eliminar visita'}
+                    </Text>
+                  </TouchableOpacity>
+                )}
               </>
             )}
           </Pressable>
@@ -295,6 +363,14 @@ const MapaVisitasPuertoRico: React.FC<MapaVisitasPuertoRicoProps> = ({ formulari
                 <TouchableOpacity style={styles.botonPrimario} onPress={() => setPlantacionSeleccionada(null)}>
                   <Text style={styles.botonPrimarioTexto}>Cerrar</Text>
                 </TouchableOpacity>
+                {isAdmin && (
+                  <TouchableOpacity
+                    style={styles.botonEliminar}
+                    onPress={() => handleEliminarPlantacion(plantacionSeleccionada)}
+                  >
+                    <Text style={styles.botonEliminarTexto}>🗑 Eliminar área de cultivo</Text>
+                  </TouchableOpacity>
+                )}
               </>
             )}
           </Pressable>
@@ -432,6 +508,20 @@ const styles = StyleSheet.create({
   botonPrimarioTexto: {
     color: COLORS.textOnPrimary,
     fontWeight: FONTS.weights.semibold,
+  },
+  botonEliminar: {
+    marginTop: SPACING.sm,
+    paddingVertical: SPACING.sm,
+    borderRadius: BORDER_RADIUS.sm,
+    alignItems: 'center',
+    backgroundColor: COLORS.error + '15',
+    borderWidth: 1,
+    borderColor: COLORS.error + '30',
+  },
+  botonEliminarTexto: {
+    color: COLORS.error,
+    fontWeight: FONTS.weights.semibold,
+    fontSize: FONTS.sizes.sm,
   },
 });
 

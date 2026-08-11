@@ -10,10 +10,25 @@ interface MapItemListProps {
   items: Record<string, any>[];
   plantaciones: Record<string, any>[];
   mediciones: Record<string, any>[];
+  posiciones: Record<string, any>[];
   isAdmin: boolean;
   onSelect: (item: Record<string, any>) => void;
   onDelete: (tipo: 'plantación' | 'medición', id: string) => void;
 }
+
+/** Formatear timestamp ISO a "hace X tiempo" — misma lógica que MapItemDetailCard. */
+const timeAgo = (iso?: string): string => {
+  if (!iso) return '—';
+  const diff = Date.now() - new Date(iso).getTime();
+  if (diff < 0) return 'ahora';
+  const mins = Math.floor(diff / 60000);
+  if (mins < 1) return 'ahora';
+  if (mins < 60) return `hace ${mins} min`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `hace ${hours}h`;
+  const days = Math.floor(hours / 24);
+  return `hace ${days}d`;
+};
 
 const ICONOS_ESPECIE: Record<string, string> = {
   cacao: '🍫', platano: '🍌', banano: '🍌',
@@ -33,6 +48,7 @@ const MapItemList: React.FC<MapItemListProps> = ({
   items,
   plantaciones,
   mediciones,
+  posiciones,
   isAdmin,
   onSelect,
   onDelete,
@@ -42,6 +58,7 @@ const MapItemList: React.FC<MapItemListProps> = ({
       {items.map((item) => {
         const isPlantacion = item.id.startsWith('plant-');
         const isMedicion = item.id.startsWith('med-');
+        const isTecnico = item.id.startsWith('tec-');
         const realId = item.id.replace(/^(plant-|med-|tec-)/, '');
 
         if (isPlantacion) {
@@ -86,6 +103,26 @@ const MapItemList: React.FC<MapItemListProps> = ({
                   <Text style={styles.deleteIcon}>🗑</Text>
                 </TouchableOpacity>
               )}
+            </TouchableOpacity>
+          );
+        }
+
+        if (isTecnico) {
+          const pos = posiciones.find((x: Record<string, any>) => x.id === realId);
+          const enVivo = timeAgo(pos?.timestamp) === 'ahora';
+          return (
+            <TouchableOpacity
+              key={item.id}
+              style={styles.item}
+              onPress={() => onSelect(item)}
+            >
+              <Text style={styles.icon}>👤</Text>
+              <View style={styles.contentCol}>
+                <Text style={styles.title}>{pos?.usuario_nombre || `Técnico: ${realId}`}</Text>
+                <Text style={styles.subtitle}>
+                  {enVivo ? '🟢 En vivo' : `⏹ ${timeAgo(pos?.timestamp)}`}
+                </Text>
+              </View>
             </TouchableOpacity>
           );
         }

@@ -1,8 +1,8 @@
 // ============================================================
-// GEODAILY — Capacitaciones (Técnico de Campo - Vista)
+// GEODAILY — Educación y Capacitaciones (Técnico de Campo)
 // ============================================================
 
-import React, { useState, useCallback } from 'react';
+import React, { useCallback, useState } from 'react';
 import {
   View,
   Text,
@@ -11,221 +11,163 @@ import {
   TouchableOpacity,
   SafeAreaView,
   Alert,
+  Platform,
+  ActivityIndicator,
 } from 'react-native';
+import { WebView } from 'react-native-webview';
+import { Asset } from 'expo-asset';
+import * as FileSystem from 'expo-file-system/legacy';
+import * as IntentLauncher from 'expo-intent-launcher';
+import * as Sharing from 'expo-sharing';
 import { COLORS, FONTS, SPACING, BORDER_RADIUS, SHADOWS } from '../../theme';
 
-interface MaterialCapacitacion {
+interface MaterialEducativo {
   id: string;
-  nombre: string;
-  url: string;
-  tipo: 'pdf' | 'video' | 'imagen';
-}
-
-interface CapacitacionItem {
-  id: string;
-  tema: string;
+  titulo: string;
   descripcion: string;
-  fecha: string;
-  duracion_minutos: number;
-  material?: MaterialCapacitacion;
-  completada: boolean;
+  // Módulo devuelto por require(): Metro lo empaqueta como asset local.
+  archivo: number;
 }
 
-// ⚠️ CONTENIDO DE DEMOSTRACIÓN — estas capacitaciones son datos de ejemplo
-// escritos a mano, no vienen de la base de datos ni del servidor. Existe una
-// tabla `capacitaciones` en SQLite que esta pantalla todavía no consulta.
-const MOCK_CAPACITACIONES: CapacitacionItem[] = [
+// Documentos oficiales del proyecto (Base_de_datos_beneficiarios ↔
+// Logos_imagenes_pdf/Educacion_tecnicos). Se empaquetan con la app (require)
+// para que estén disponibles sin conexión, igual que el resto de GEODAILY.
+const MATERIALES: MaterialEducativo[] = [
   {
-    id: 'cap-001',
-    tema: 'Buenas Prácticas Agrícolas (BPA)',
-    descripcion:
-      'Guía completa sobre BPA en cultivos de cacao: manejo de sombra, podas, control de plagas y cosecha selectiva.',
-    fecha: '2026-06-20',
-    duracion_minutos: 45,
-    material: {
-      id: 'mat-001',
-      nombre: 'Guía BPA Cacao 2026.pdf',
-      url: 'https://geodaily.app/materiales/bpa-cacao-2026.pdf',
-      tipo: 'pdf',
-    },
-    completada: true,
+    id: 'colecta-muestras-suelo',
+    titulo: 'Colecta de Muestras de Suelo y Fertilidad',
+    descripcion: 'Guía para la toma de muestras de suelo en Puerto Rico, Caquetá.',
+    archivo: require('../../../assets/educacion_tecnicos/colecta-muestras-suelo-fertilidad.pdf'),
   },
   {
-    id: 'cap-002',
-    tema: 'Fertilización Orgánica',
-    descripcion:
-      'Métodos de fertilización orgánica para renovación de cacao: compostaje, bocashi y abonos verdes.',
-    fecha: '2026-06-25',
-    duracion_minutos: 30,
-    material: {
-      id: 'mat-002',
-      nombre: 'Manual Fertilización Orgánica.pdf',
-      url: 'https://geodaily.app/materiales/fertilizacion-organica.pdf',
-      tipo: 'pdf',
-    },
-    completada: false,
-  },
-  {
-    id: 'cap-003',
-    tema: 'Manejo Integrado de Plagas',
-    descripcion:
-      'Identificación y control de monilia, escoba de bruja y otros fitopatógenos del cacao.',
-    fecha: '2026-07-02',
-    duracion_minutos: 60,
-    completada: false,
+    id: 'presentacion-proyecto-cacao-2026',
+    titulo: 'Presentación Proyecto Cacao 2026',
+    descripcion: 'Presentación oficial del proyecto de cacao para el técnico de campo.',
+    archivo: require('../../../assets/educacion_tecnicos/presentacion-proyecto-cacao-2026.pdf'),
   },
 ];
 
-const TEMAS = ['Todos', 'BPA', 'Fertilización', 'Plagas', 'Suelos', 'Postcosecha'];
-
 const CapacitacionScreen: React.FC = () => {
-  const [filtroTema, setFiltroTema] = useState('Todos');
-  const [seleccionada, setSeleccionada] = useState<string | null>(null);
+  const [cargandoId, setCargandoId] = useState<string | null>(null);
+  const [pdfUri, setPdfUri] = useState<string | null>(null);
+  const [pdfTitulo, setPdfTitulo] = useState('');
 
-  const filtered =
-    filtroTema === 'Todos'
-      ? MOCK_CAPACITACIONES
-      : MOCK_CAPACITACIONES.filter((c) =>
-          c.tema.toLowerCase().includes(filtroTema.toLowerCase())
-        );
+  const resolverUri = useCallback(async (material: MaterialEducativo) => {
+    const asset = Asset.fromModule(material.archivo);
+    if (!asset.localUri) {
+      await asset.downloadAsync();
+    }
+    if (!asset.localUri) {
+      throw new Error('No se pudo resolver el archivo local');
+    }
+    return asset.localUri;
+  }, []);
 
-  const handleOpenMaterial = useCallback((material: MaterialCapacitacion) => {
-    // Los PDFs de capacitación aún no han sido publicados por el proyecto —
-    // ser honestos con el técnico en vez de simular una apertura.
-    Alert.alert(
-      'Material pendiente de publicación',
-      `"${material.nombre}" estará disponible para descarga cuando el proyecto publique el material oficial.`
+  /**
+   * El WebView de Android no tiene visor de PDF nativo (mismo caso que en
+   * FormularioDetailScreen: un file://…/x.pdf carga en blanco), así que ahí
+   * se abre con el visor del sistema vía content://. En iOS el WKWebView sí
+   * renderiza el PDF embebido directamente.
+   */
+  const handleAbrir = useCallback(
+    async (material: MaterialEducativo) => {
+      setCargandoId(material.id);
+      try {
+        const uri = await resolverUri(material);
+
+        if (Platform.OS !== 'android') {
+          setPdfTitulo(material.titulo);
+          setPdfUri(uri);
+          return;
+        }
+
+        try {
+          const contentUri = await FileSystem.getContentUriAsync(uri);
+          await IntentLauncher.startActivityAsync('android.intent.action.VIEW', {
+            data: contentUri,
+            flags: 1, // FLAG_GRANT_READ_URI_PERMISSION
+            type: 'application/pdf',
+          });
+        } catch (e) {
+          if (await Sharing.isAvailableAsync()) {
+            await Sharing.shareAsync(uri, {
+              mimeType: 'application/pdf',
+              UTI: 'com.adobe.pdf',
+            });
+          } else {
+            Alert.alert(
+              'No se puede abrir el PDF',
+              'No hay un lector de PDF instalado en este dispositivo.'
+            );
+          }
+        }
+      } catch (e) {
+        Alert.alert('Error', 'No se pudo abrir el documento');
+      } finally {
+        setCargandoId(null);
+      }
+    },
+    [resolverUri]
+  );
+
+  const handleCerrarPdf = useCallback(() => {
+    setPdfUri(null);
+    setPdfTitulo('');
+  }, []);
+
+  if (pdfUri) {
+    return (
+      <SafeAreaView style={styles.container}>
+        <View style={styles.pdfEmbedHeader}>
+          <Text style={styles.pdfEmbedTitle} numberOfLines={1}>
+            📄 {pdfTitulo}
+          </Text>
+          <TouchableOpacity onPress={handleCerrarPdf} style={styles.pdfEmbedCloseBtn}>
+            <Text style={styles.pdfEmbedCloseText}>✕</Text>
+          </TouchableOpacity>
+        </View>
+        <WebView
+          source={{ uri: pdfUri }}
+          style={styles.webview}
+          originWhitelist={['file://', 'http://', 'https://']}
+          allowFileAccess={true}
+          javaScriptEnabled={false}
+          scalesPageToFit={Platform.OS === 'android'}
+        />
+      </SafeAreaView>
     );
-  }, []);
-
-  const toggleDetalle = useCallback((id: string) => {
-    setSeleccionada((prev) => (prev === id ? null : id));
-  }, []);
+  }
 
   return (
     <SafeAreaView style={styles.container}>
       <ScrollView contentContainerStyle={styles.scrollContent}>
-        <Text style={styles.pageTitle}>📚 Capacitaciones</Text>
+        <Text style={styles.pageTitle}>📚 Educación y Capacitaciones</Text>
         <Text style={styles.pageSubtitle}>
-          ⚠️ Contenido de ejemplo. Las capacitaciones que ves abajo son una
-          muestra del formato, no el programa real: se cargarán cuando el
-          proyecto publique el contenido oficial.
+          Material técnico oficial del proyecto para consulta en campo.
         </Text>
 
-        {/* Filtro por tema */}
-        <ScrollView
-          horizontal
-          showsHorizontalScrollIndicator={false}
-          style={styles.filterRow}
-        >
-          {TEMAS.map((tema) => (
-            <TouchableOpacity
-              key={tema}
-              style={[styles.filterChip, filtroTema === tema && styles.filterChipActive]}
-              onPress={() => setFiltroTema(tema)}
-            >
-              <Text
-                style={[
-                  styles.filterChipText,
-                  filtroTema === tema && styles.filterChipTextActive,
-                ]}
-              >
-                {tema}
-              </Text>
-            </TouchableOpacity>
-          ))}
-        </ScrollView>
-
-        {/* Lista de capacitaciones */}
-        {filtered.length === 0 ? (
-          <View style={styles.emptyState}>
-            <Text style={styles.emptyIcon}>📭</Text>
-            <Text style={styles.emptyText}>
-              No hay capacitaciones para este filtro
-            </Text>
-          </View>
-        ) : (
-          filtered.map((cap) => (
-            <TouchableOpacity
-              key={cap.id}
-              style={styles.card}
-              onPress={() => toggleDetalle(cap.id)}
-              activeOpacity={0.7}
-            >
-              <View style={styles.cardHeader}>
-                <View style={styles.cardIcon}>
-                  <Text style={styles.cardIconText}>
-                    {cap.completada ? '✅' : '📖'}
-                  </Text>
-                </View>
-                <View style={styles.cardInfo}>
-                  <Text style={styles.cardTitle}>{cap.tema}</Text>
-                  <Text style={styles.cardMeta}>
-                    {new Date(cap.fecha).toLocaleDateString('es-CO', {
-                      day: 'numeric',
-                      month: 'long',
-                      year: 'numeric',
-                    })}{' '}
-                    · {cap.duracion_minutos} min
-                  </Text>
-                </View>
-                <Text style={styles.cardArrow}>
-                  {seleccionada === cap.id ? '▲' : '▼'}
-                </Text>
-              </View>
-
-              {seleccionada === cap.id && (
-                <View style={styles.cardDetail}>
-                  <Text style={styles.cardDesc}>{cap.descripcion}</Text>
-
-                  {cap.material && (
-                    <TouchableOpacity
-                      style={styles.materialBtn}
-                      onPress={() => cap.material && handleOpenMaterial(cap.material)}
-                    >
-                      <Text style={styles.materialIcon}>
-                        {cap.material.tipo === 'pdf'
-                          ? '📄'
-                          : cap.material.tipo === 'video'
-                          ? '🎬'
-                          : '🖼️'}
-                      </Text>
-                      <View style={styles.materialInfo}>
-                        <Text style={styles.materialName}>
-                          {cap.material.nombre}
-                        </Text>
-                        <Text style={styles.materialType}>
-                          {cap.material.tipo.toUpperCase()}
-                        </Text>
-                      </View>
-                      <Text style={styles.materialOpen}>Abrir →</Text>
-                    </TouchableOpacity>
-                  )}
-
-                  <View
-                    style={[
-                      styles.statusBadge,
-                      cap.completada
-                        ? styles.statusBadgeOk
-                        : styles.statusBadgePending,
-                    ]}
-                  >
-                    <Text
-                      style={[
-                        styles.statusBadgeText,
-                        cap.completada
-                          ? styles.statusBadgeTextOk
-                          : styles.statusBadgeTextPending,
-                      ]}
-                    >
-                      {cap.completada ? 'Completada' : 'Pendiente'}
-                    </Text>
-                  </View>
-                </View>
-              )}
-            </TouchableOpacity>
-          ))
-        )}
+        {MATERIALES.map((material) => (
+          <TouchableOpacity
+            key={material.id}
+            style={styles.card}
+            onPress={() => handleAbrir(material)}
+            activeOpacity={0.7}
+            disabled={cargandoId !== null}
+          >
+            <View style={styles.cardIcon}>
+              <Text style={styles.cardIconText}>📄</Text>
+            </View>
+            <View style={styles.cardInfo}>
+              <Text style={styles.cardTitle}>{material.titulo}</Text>
+              <Text style={styles.cardDesc}>{material.descripcion}</Text>
+            </View>
+            {cargandoId === material.id ? (
+              <ActivityIndicator color={COLORS.primary} />
+            ) : (
+              <Text style={styles.cardArrow}>Abrir →</Text>
+            )}
+          </TouchableOpacity>
+        ))}
       </ScrollView>
     </SafeAreaView>
   );
@@ -250,55 +192,15 @@ const styles = StyleSheet.create({
     color: COLORS.textSecondary,
     marginBottom: SPACING.md,
   },
-  // --- Filters ---
-  filterRow: {
-    marginBottom: SPACING.md,
-  },
-  filterChip: {
-    paddingHorizontal: SPACING.md,
-    paddingVertical: SPACING.sm,
-    borderRadius: BORDER_RADIUS.full,
-    backgroundColor: COLORS.surface,
-    borderWidth: 1,
-    borderColor: COLORS.border,
-    marginRight: SPACING.sm,
-  },
-  filterChipActive: {
-    backgroundColor: COLORS.primary,
-    borderColor: COLORS.primary,
-  },
-  filterChipText: {
-    fontSize: FONTS.sizes.sm,
-    color: COLORS.textSecondary,
-  },
-  filterChipTextActive: {
-    color: COLORS.textOnPrimary,
-    fontWeight: FONTS.weights.semibold,
-  },
-  // --- Empty ---
-  emptyState: {
-    alignItems: 'center',
-    paddingVertical: SPACING.xl,
-  },
-  emptyIcon: {
-    fontSize: 48,
-    marginBottom: SPACING.md,
-  },
-  emptyText: {
-    fontSize: FONTS.sizes.md,
-    color: COLORS.textSecondary,
-  },
   // --- Card ---
   card: {
+    flexDirection: 'row',
+    alignItems: 'center',
     backgroundColor: COLORS.surface,
     borderRadius: BORDER_RADIUS.lg,
     padding: SPACING.md,
     marginBottom: SPACING.md,
     ...SHADOWS.sm,
-  },
-  cardHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
   },
   cardIcon: {
     width: 40,
@@ -314,85 +216,56 @@ const styles = StyleSheet.create({
   },
   cardInfo: {
     flex: 1,
+    marginRight: SPACING.sm,
   },
   cardTitle: {
     fontSize: FONTS.sizes.md,
     fontWeight: FONTS.weights.semibold,
     color: COLORS.textPrimary,
   },
-  cardMeta: {
+  cardDesc: {
     fontSize: FONTS.sizes.xs,
     color: COLORS.textSecondary,
     marginTop: 2,
   },
   cardArrow: {
-    fontSize: 12,
-    color: COLORS.textLight,
-    paddingLeft: SPACING.sm,
-  },
-  // --- Detail ---
-  cardDetail: {
-    marginTop: SPACING.md,
-    paddingTop: SPACING.md,
-    borderTopWidth: 1,
-    borderTopColor: COLORS.divider,
-  },
-  cardDesc: {
-    fontSize: FONTS.sizes.sm,
-    color: COLORS.textPrimary,
-    lineHeight: 20,
-    marginBottom: SPACING.md,
-  },
-  materialBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: COLORS.background,
-    padding: SPACING.sm,
-    borderRadius: BORDER_RADIUS.md,
-    marginBottom: SPACING.md,
-  },
-  materialIcon: {
-    fontSize: 24,
-    marginRight: SPACING.md,
-  },
-  materialInfo: {
-    flex: 1,
-  },
-  materialName: {
-    fontSize: FONTS.sizes.sm,
-    fontWeight: FONTS.weights.medium,
-    color: COLORS.textPrimary,
-  },
-  materialType: {
-    fontSize: FONTS.sizes.xs,
-    color: COLORS.textSecondary,
-  },
-  materialOpen: {
     fontSize: FONTS.sizes.sm,
     color: COLORS.primary,
     fontWeight: FONTS.weights.semibold,
   },
-  statusBadge: {
-    alignSelf: 'flex-start',
+  // ---- Visor PDF embebido ----
+  pdfEmbedHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
     paddingHorizontal: SPACING.md,
-    paddingVertical: SPACING.xs,
-    borderRadius: BORDER_RADIUS.full,
+    paddingVertical: SPACING.sm,
+    borderBottomWidth: 1,
+    borderBottomColor: COLORS.divider,
   },
-  statusBadgeOk: {
-    backgroundColor: COLORS.success + '20',
+  pdfEmbedTitle: {
+    flex: 1,
+    fontSize: FONTS.sizes.sm,
+    fontWeight: FONTS.weights.bold,
+    color: COLORS.textPrimary,
+    marginRight: SPACING.sm,
   },
-  statusBadgePending: {
-    backgroundColor: COLORS.warning + '20',
+  pdfEmbedCloseBtn: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    backgroundColor: COLORS.error + '20',
+    justifyContent: 'center',
+    alignItems: 'center',
   },
-  statusBadgeText: {
-    fontSize: FONTS.sizes.xs,
-    fontWeight: FONTS.weights.semibold,
+  pdfEmbedCloseText: {
+    fontSize: 14,
+    fontWeight: FONTS.weights.bold,
+    color: COLORS.error,
   },
-  statusBadgeTextOk: {
-    color: COLORS.success,
-  },
-  statusBadgeTextPending: {
-    color: COLORS.warning,
+  webview: {
+    flex: 1,
+    backgroundColor: '#f0f0f0',
   },
 });
 

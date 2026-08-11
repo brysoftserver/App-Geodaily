@@ -7,6 +7,7 @@ import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { COLORS, FONTS } from '../theme';
 import InterventorMenuScreen from '../screens/interventor/InterventorMenuScreen';
 import DashboardScreen from '../screens/supervision/DashboardScreen';
+import ProyeccionScreen from '../screens/gerente/ProyeccionScreen';
 import VisitasJerarquicasScreen from '../screens/supervision/VisitasJerarquicasScreen';
 import CalendarioScreen from '../screens/CalendarioGlobalScreen';
 import MapaGeneralScreen from '../screens/MapaGeneralScreen';
@@ -17,10 +18,11 @@ import PlantacionesPorTecnicoScreen from '../screens/supervision/PlantacionesPor
 export type InterventorStackParamList = {
   InterventorMenu: undefined;
   InterventorDashboard: undefined;
+  InterventorProyeccion: undefined;
   InterventorVisitasJerarquicas: undefined;
   InterventorCalendario: undefined;
   InterventorMapaGeneral: undefined;
-  InterventorFormularioDetail: { formulario: import('../types').Formulario };
+  InterventorFormularioDetail: { formulario: import('../types').Formulario; modo?: 'online' | 'campo' };
   BaseDatosBeneficiarios: undefined;
   InterventorPlantacionesPorTecnico: undefined;
 };
@@ -53,6 +55,11 @@ const InterventorNavigator: React.FC = () => {
         name="InterventorDashboard"
         component={DashboardScreen}
         options={{ title: 'Dashboard' }}
+      />
+      <Stack.Screen
+        name="InterventorProyeccion"
+        component={ProyeccionScreen}
+        options={{ title: 'Proyección de Producción' }}
       />
       <Stack.Screen
         name="InterventorVisitasJerarquicas"

@@ -25,7 +25,9 @@ const MetricCard: React.FC<MetricCardProps> = ({
     <View style={[styles.card, { borderLeftColor: color }]}>
       <View style={styles.tituloRow}>
         {icono && <Text style={styles.icono}>{icono}</Text>}
-        <Text style={styles.titulo}>{titulo}</Text>
+        <Text style={styles.titulo} numberOfLines={2} ellipsizeMode="tail">
+          {titulo}
+        </Text>
       </View>
       <Text style={[styles.valor, { color }]}>{valor}</Text>
       {subtitulo && <Text style={styles.subtitulo}>{subtitulo}</Text>}
@@ -40,24 +42,31 @@ const styles = StyleSheet.create({
     borderRadius: BORDER_RADIUS.lg,
     padding: SPACING.md,
     marginHorizontal: SPACING.xs,
+    marginBottom: SPACING.sm,
     borderLeftWidth: 4,
     minWidth: 100,
     ...SHADOWS.sm,
   },
   tituloRow: {
     flexDirection: 'row',
-    alignItems: 'center',
+    alignItems: 'flex-start',
     marginBottom: SPACING.xs,
+    // Reserva siempre el alto de 2 líneas de título (haya 1 o 2), para que
+    // el valor y el subtítulo arranquen a la misma altura en toda la fila
+    // de tarjetas, sin importar cuánto texto tenga cada título.
+    minHeight: 28,
   },
   icono: {
     fontSize: FONTS.sizes.sm,
     marginRight: SPACING.xs,
   },
   titulo: {
+    flex: 1,
     fontSize: FONTS.sizes.xs,
+    lineHeight: 14,
     color: COLORS.textSecondary,
     textTransform: 'uppercase',
-    letterSpacing: 0.5,
+    letterSpacing: 0.3,
   },
   valor: {
     fontSize: FONTS.sizes.xxl,

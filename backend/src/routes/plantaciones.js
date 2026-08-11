@@ -89,12 +89,21 @@ router.get('/', authenticateToken, async (req, res) => {
 
     // Aplanar los campos guardados en metadata_json (poligono, vereda,
     // beneficiario, icono) para que el frontend no tenga que parsearlos.
+    // El polígono (área trazada por el técnico) es información sensible de
+    // campo: los roles superiores pueden ver la especie/cantidad/icono que
+    // el técnico registró, pero NUNCA el área exacta ni sus puntos — solo
+    // el propio técnico dueño del registro la recibe.
+    const esTecnico = rol === 'tecnico';
     const plantaciones = lista.map((p) => {
       const meta = p.metadata_json || {};
       return {
         ...p,
         icono: meta.icono || null,
-        poligono: meta.poligono || null,
+        poligono: esTecnico ? (meta.poligono || null) : null,
+        // Indicador sin coordenadas: permite a roles superiores saber si el
+        // técnico trazó un área (para listas tipo "X con polígono") sin
+        // exponer el polígono real ni sus números.
+        area_trazada: (meta.poligono?.length || 0) >= 3,
         beneficiario_cedula: meta.beneficiario_cedula || null,
         beneficiario_nombre: meta.beneficiario_nombre || null,
         vereda: meta.vereda || null,

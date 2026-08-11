@@ -139,5 +139,6 @@ export const API_CONFIG = {
     DOCUMENTOS: '/api/documentos',
     VIDEOS: '/api/videos',
     ARCHIVOS: '/api/archivos',
+    IA: '/api/ia',
   },
 };

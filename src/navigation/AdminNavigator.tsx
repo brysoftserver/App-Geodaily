@@ -8,10 +8,12 @@ import { COLORS, FONTS } from '../theme';
 import AdminMenuScreen from '../screens/admin/AdminMenuScreen';
 import UserManagementScreen from '../screens/admin/UserManagementScreen';
 import SystemConfigScreen from '../screens/admin/SystemConfigScreen';
+import ConfiguracionIAScreen from '../screens/admin/ConfiguracionIAScreen';
 import MapaGeneralScreen from '../screens/MapaGeneralScreen';
 import DashboardScreen from '../screens/supervision/DashboardScreen';
 import VisitasJerarquicasScreen from '../screens/supervision/VisitasJerarquicasScreen';
 import CalendarioScreen from '../screens/CalendarioGlobalScreen';
+import ProyeccionScreen from '../screens/gerente/ProyeccionScreen';
 import SupervisionFormularioListScreen from '../screens/supervision/FormularioListScreen';
 import FormularioDetailScreen from '../screens/terreno/FormularioDetailScreen';
 import BaseDatosBeneficiariosScreen from '../screens/supervision/BaseDatosBeneficiariosScreen';
@@ -20,12 +22,14 @@ export type AdminStackParamList = {
   AdminMenu: undefined;
   UserManagement: undefined;
   SystemConfig: undefined;
+  ConfiguracionIA: undefined;
   AdminDashboard: undefined;
+  AdminProyeccion: undefined;
   AdminVisitasJerarquicas: undefined;
   AdminCalendario: undefined;
   AdminFormularioList: undefined;
   MapaGeneral: undefined;
-  SupervisionFormularioDetail: { formulario: import('../types').Formulario };
+  SupervisionFormularioDetail: { formulario: import('../types').Formulario; modo?: 'online' | 'campo' };
   BaseDatosBeneficiarios: undefined;
 };
 
@@ -64,9 +68,19 @@ const AdminNavigator: React.FC = () => {
         options={{ title: 'Configuración del Sistema' }}
       />
       <Stack.Screen
+        name="ConfiguracionIA"
+        component={ConfiguracionIAScreen}
+        options={{ title: 'Configuración de IA' }}
+      />
+      <Stack.Screen
         name="AdminDashboard"
         component={DashboardScreen}
         options={{ title: 'Dashboard General' }}
+      />
+      <Stack.Screen
+        name="AdminProyeccion"
+        component={ProyeccionScreen}
+        options={{ title: 'Proyección de Producción' }}
       />
       <Stack.Screen
         name="AdminVisitasJerarquicas"

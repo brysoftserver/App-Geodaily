@@ -18,6 +18,7 @@ export interface AuthResult {
     email: string;
     rol: string;
     telefono?: string;
+    avatar_archivo_id?: string | null;
     token: string;
   };
   error?: string;
@@ -56,6 +57,7 @@ export const loginUser = async (
           email: data.usuario.email || '',
           rol: data.usuario.rol,
           telefono: data.usuario.telefono,
+          avatar_archivo_id: data.usuario.avatar_archivo_id,
           token: data.token,
         },
       };

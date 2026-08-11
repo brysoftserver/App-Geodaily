@@ -40,6 +40,7 @@ const BaseDatosBeneficiariosScreen: React.FC<Props> = ({ navigation }) => {
   const [beneficiarios, setBeneficiarios] = useState<BeneficiarioDB[]>([]);
   const [tecnicos, setTecnicos] = useState<UsuarioBackend[]>([]);
   const [loading, setLoading] = useState(true);
+  const [syncFailed, setSyncFailed] = useState(false);
 
   // Modal de asignación
   const [assignModalVisible, setAssignModalVisible] = useState(false);
@@ -61,8 +62,11 @@ const BaseDatosBeneficiariosScreen: React.FC<Props> = ({ navigation }) => {
     try {
       await BeneficiariosDB.initBeneficiariosDB();
       // Refrescar el espejo local desde el servidor (fuente de verdad
-      // compartida). Si no hay conexión, se sigue con el espejo local.
-      await BeneficiariosDB.sincronizarBeneficiariosDesdeServidor();
+      // compartida). Si no hay conexión, se sigue con el espejo local
+      // pero avisamos: si es la primera vez en este dispositivo, el
+      // espejo local aún no tiene los técnicos asignados.
+      const synced = await BeneficiariosDB.sincronizarBeneficiariosDesdeServidor();
+      setSyncFailed(!synced);
       const data = await BeneficiariosDB.getBeneficiarios();
       setBeneficiarios(data);
     } catch (error) {
@@ -273,6 +277,18 @@ const BaseDatosBeneficiariosScreen: React.FC<Props> = ({ navigation }) => {
 
   return (
     <View style={[styles.container, { paddingBottom: insets.bottom + SPACING.xs }]}>
+      {/* Aviso de sincronización fallida — el técnico asignado puede estar desactualizado */}
+      {syncFailed && (
+        <View style={styles.syncWarning}>
+          <Text style={styles.syncWarningText}>
+            ⚠️ No se pudo cargar los técnicos asignados desde el servidor. Mostrando datos locales, posiblemente sin asignaciones. Verifica tu conexión.
+          </Text>
+          <TouchableOpacity style={styles.syncRetryButton} onPress={loadData}>
+            <Text style={styles.syncRetryButtonText}>Reintentar</Text>
+          </TouchableOpacity>
+        </View>
+      )}
+
       {/* Barra de búsqueda y botón + */}
       <View style={styles.topBar}>
         <TextInput
@@ -492,6 +508,32 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: COLORS.background,
+  },
+  syncWarning: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#FFF3E0',
+    borderBottomWidth: 1,
+    borderBottomColor: '#FFB74D',
+    paddingHorizontal: SPACING.md,
+    paddingVertical: SPACING.sm,
+    gap: SPACING.sm,
+  },
+  syncWarningText: {
+    flex: 1,
+    fontSize: FONTS.sizes.xs,
+    color: '#7A4F01',
+  },
+  syncRetryButton: {
+    backgroundColor: '#E65100',
+    borderRadius: BORDER_RADIUS.sm,
+    paddingHorizontal: SPACING.sm,
+    paddingVertical: SPACING.xs,
+  },
+  syncRetryButtonText: {
+    fontSize: FONTS.sizes.xs,
+    fontWeight: FONTS.weights.semibold,
+    color: '#fff',
   },
   topBar: {
     flexDirection: 'row',

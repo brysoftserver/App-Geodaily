@@ -12,11 +12,13 @@ import {
   TextInput,
   Alert,
   Modal,
+  Image,
   ImageBackground,
   ActivityIndicator,
 } from 'react-native';
-import { COLORS, FONTS, SPACING, BORDER_RADIUS, SHADOWS } from '../../theme';
+import { COLORS, FONTS, SPACING, BORDER_RADIUS, SHADOWS, API_CONFIG } from '../../theme';
 import { getUsuarios, crearUsuario, actualizarUsuario, eliminarUsuario, UsuarioBackend } from '../../services/admin.service';
+import { cabecerasDeArchivo } from '../../services/archivos.service';
 
 interface UserItem {
   id: string;
@@ -26,6 +28,7 @@ interface UserItem {
   email: string;
   telefono: string;
   contrasena_visible?: string;
+  avatar_archivo_id?: string | null;
   estado: 'Activo' | 'Inactivo';
   esNuevo?: boolean;
 }
@@ -46,6 +49,7 @@ const fromBackend = (u: UsuarioBackend): UserItem => ({
   email: u.email || '',
   telefono: u.telefono || '',
   contrasena_visible: u.contrasena_visible || '',
+  avatar_archivo_id: u.avatar_archivo_id || null,
   estado: u.activo ? 'Activo' : 'Inactivo',
 });
 
@@ -56,6 +60,11 @@ const UserManagementScreen: React.FC = () => {
   const [filterRol, setFilterRol] = useState<string>('todos');
   const [modalVisible, setModalVisible] = useState(false);
   const [editingUser, setEditingUser] = useState<Partial<UserItem & { contrasena: string }> | null>(null);
+  const [avatarHeaders, setAvatarHeaders] = useState<Record<string, string>>({});
+
+  useEffect(() => {
+    cabecerasDeArchivo().then(setAvatarHeaders);
+  }, []);
 
   const loadUsers = useCallback(async () => {
     try {
@@ -221,7 +230,12 @@ const UserManagementScreen: React.FC = () => {
           placeholderTextColor={COLORS.textLight}
         />
       </View>
-      <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.chipRow}>
+      <ScrollView
+        horizontal
+        showsHorizontalScrollIndicator={true}
+        style={styles.chipRow}
+        contentContainerStyle={styles.chipRowContent}
+      >
         {['todos', 'tecnico', 'supervisor', 'interventor', 'gerente', 'admin'].map((r) => (
           <TouchableOpacity
             key={r}
@@ -253,9 +267,19 @@ const UserManagementScreen: React.FC = () => {
                 activeOpacity={0.7}
               >
                 <View style={styles.cardTop}>
-                  <ImageBackground source={require('../../../Logos_imagenes/fondo_login_geo_daily.png')} style={[styles.avatar, { overflow: 'hidden' }]} imageStyle={{ borderRadius: 24 }}>
-                    <Text style={styles.avatarText}>{user.nombre.charAt(0)}</Text>
-                  </ImageBackground>
+                  {user.avatar_archivo_id ? (
+                    <Image
+                      source={{
+                        uri: `${API_CONFIG.BASE_URL}${API_CONFIG.ENDPOINTS.ARCHIVOS}/${user.avatar_archivo_id}/contenido`,
+                        headers: avatarHeaders,
+                      }}
+                      style={[styles.avatar, { borderRadius: 24 }]}
+                    />
+                  ) : (
+                    <ImageBackground source={require('../../../Logos_imagenes/fondo_login_geo_daily.png')} style={[styles.avatar, { overflow: 'hidden' }]} imageStyle={{ borderRadius: 24 }}>
+                      <Text style={styles.avatarText}>{user.nombre.charAt(0)}</Text>
+                    </ImageBackground>
+                  )}
                   <View style={styles.userInfo}>
                     <Text style={styles.userName}>{user.nombre}</Text>
                     <Text style={styles.userUsername}>@{user.usuario}</Text>
@@ -457,23 +481,30 @@ const styles = StyleSheet.create({
     ...SHADOWS.sm,
   },
   chipRow: {
-    paddingHorizontal: SPACING.md,
+    height: 44,
+    flexGrow: 0,
+    flexShrink: 0,
     marginBottom: SPACING.sm,
+  },
+  chipRowContent: {
+    paddingHorizontal: SPACING.md,
+    paddingRight: SPACING.xl,
+    alignItems: 'center',
   },
   chip: {
     paddingHorizontal: SPACING.md,
     paddingVertical: SPACING.sm,
     borderRadius: BORDER_RADIUS.full,
     backgroundColor: COLORS.surface,
-    borderWidth: 1,
-    borderColor: COLORS.border,
+    borderWidth: 1.5,
+    borderColor: COLORS.textLight,
     marginRight: SPACING.sm,
   },
   chipActive: {
     backgroundColor: COLORS.primary,
     borderColor: COLORS.primary,
   },
-  chipText: { fontSize: FONTS.sizes.xs, color: COLORS.textSecondary },
+  chipText: { fontSize: FONTS.sizes.sm, color: COLORS.textPrimary, fontWeight: FONTS.weights.medium },
   chipTextActive: { color: COLORS.textOnPrimary, fontWeight: FONTS.weights.semibold },
   // List
   listContent: { flexGrow: 1, padding: SPACING.md, paddingBottom: SPACING.xxl },

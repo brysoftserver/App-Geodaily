@@ -7,11 +7,11 @@ import { API_CONFIG } from '../theme';
 
 /**
  * Subir una firma (base64) al servidor
- * @param tipo 'beneficiario' | 'tecnico'
+ * @param tipo 'beneficiario' | 'tecnico' | 'revisor' (revisor = supervisor/interventor/gerente/admin en su sección de evidencia)
  * @param dataBase64 data:image/png;base64,...
  */
 export const subirFirma = async (
-  tipo: 'beneficiario' | 'tecnico',
+  tipo: 'beneficiario' | 'tecnico' | 'revisor',
   dataBase64: string,
   beneficiarioCedula?: string,
   beneficiarioNombre?: string,

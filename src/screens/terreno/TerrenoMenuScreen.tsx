@@ -21,6 +21,7 @@ import CambiarContrasenaModal from '../../components/CambiarContrasenaModal';
 import SincronizacionModal from '../../components/SincronizacionModal';
 import AjustesMenu from '../../components/AjustesMenu';
 import NotificacionBell from '../../components/NotificacionBell';
+import AvatarViewerModal from '../../components/AvatarViewerModal';
 import { COLORS, FONTS, SPACING, BORDER_RADIUS, SHADOWS } from '../../theme';
 
 type TerrenoMenuProps = {
@@ -74,9 +75,10 @@ const MENU_ITEMS = [
 const TerrenoMenuScreen: React.FC<TerrenoMenuProps> = ({ navigation }) => {
   const { user, logout } = useAuth();
   const insets = useSafeAreaInsets();
-  const { avatarUri, cambiarAvatar, cambiando } = useAvatar(user?.id);
+  const { avatarUri, cambiarAvatar, quitarAvatar, cambiando } = useAvatar();
   const [showPasswordModal, setShowPasswordModal] = useState(false);
   const [showSyncModal, setShowSyncModal] = useState(false);
+  const [showAvatarViewer, setShowAvatarViewer] = useState(false);
 
   const handlePress = (item: (typeof MENU_ITEMS)[0]) => {
     navigation.navigate(item.screen as string);
@@ -114,7 +116,7 @@ const TerrenoMenuScreen: React.FC<TerrenoMenuProps> = ({ navigation }) => {
               ]}
             />
           </View>
-          <TouchableOpacity onPress={cambiarAvatar} activeOpacity={0.7} disabled={cambiando}>
+          <TouchableOpacity onPress={() => setShowAvatarViewer(true)} activeOpacity={0.7} disabled={cambiando}>
             <View style={styles.avatar}>
               {avatarUri ? (
                 <Image source={{ uri: avatarUri }} style={styles.avatarImage} />
@@ -164,6 +166,15 @@ const TerrenoMenuScreen: React.FC<TerrenoMenuProps> = ({ navigation }) => {
       </ScrollView>
       <CambiarContrasenaModal visible={showPasswordModal} onClose={() => setShowPasswordModal(false)} />
       <SincronizacionModal visible={showSyncModal} onClose={() => setShowSyncModal(false)} />
+      <AvatarViewerModal
+        visible={showAvatarViewer}
+        avatarUri={avatarUri}
+        nombre={user?.nombre}
+        cambiando={cambiando}
+        onClose={() => setShowAvatarViewer(false)}
+        onCambiar={cambiarAvatar}
+        onQuitar={quitarAvatar}
+      />
     </ImageBackground>
   );
 };

@@ -23,6 +23,7 @@ import { fetchFormulariosDelServidor } from '../../services/formularios.service'
 import MetricCard from '../../components/MetricCard';
 import LoadingSpinner from '../../components/LoadingSpinner';
 import BotonPdfDashboard from '../../components/dashboard/BotonPdfDashboard';
+import EncuestaSocialResultados from '../../components/dashboard/EncuestaSocialResultados';
 import { getLocalDateString } from '../../utils/formatters';
 
 type DashboardGerencialProps = {
@@ -176,6 +177,9 @@ const DashboardGerencialScreen: React.FC<DashboardGerencialProps> = ({ navigatio
           </Text>
         </View>
       )}
+
+      {/* Resultados de la Encuesta Social AgroAmbiental (Formulario 1) */}
+      <EncuestaSocialResultados formularios={formularios} />
 
       {/* Gráfico de tendencia */}
       {chartData.labels.length > 0 && (

@@ -19,6 +19,13 @@ export const PLANTAS_OPCIONES: PlantaOpcion[] = [
 /** Obtener icono desde nombre de especie (source of truth única para todos los roles) */
 const ICONOS_MAP: Record<string, string> = {};
 PLANTAS_OPCIONES.forEach((p) => {
+  // Nombre completo tal cual lo guarda `plantaSeleccionada` (ej: la opción
+  // "Abarco / Cedro / Caucho" se guarda y se busca como esa cadena entera,
+  // no palabra por palabra) — sin esta clave, buscar por el nombre completo
+  // no calzaba con ninguna de las palabras sueltas de abajo y siempre caía
+  // al 🌱 genérico de respaldo.
+  const keyCompleto = p.nombre.trim().toLowerCase();
+  if (keyCompleto) ICONOS_MAP[keyCompleto] = p.icono;
   p.nombre.split('/').forEach((part) => {
     const key = part.trim().toLowerCase();
     if (key) ICONOS_MAP[key] = p.icono;

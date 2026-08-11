@@ -14,6 +14,8 @@ interface SignaturePadProps {
   onEmpty?: () => void;
   containerStyle?: ViewStyle;
   description?: string;
+  /** Alto del lienzo de dibujo (por defecto 220) — útil en pantallas dedicadas a firmar. */
+  height?: number;
 }
 
 // Generamos el HTML inline con un canvas y JS para dibujar la firma
@@ -166,6 +168,7 @@ const SignaturePad: React.FC<SignaturePadProps> = ({
   onEmpty,
   containerStyle,
   description = 'Firma aquí',
+  height,
 }) => {
   const webviewRef = useRef<WebView>(null);
 
@@ -191,7 +194,7 @@ const SignaturePad: React.FC<SignaturePadProps> = ({
 
   return (
     <View style={[styles.container, containerStyle]}>
-      <View style={styles.webviewWrapper}>
+      <View style={[styles.webviewWrapper, height ? { height } : null]}>
         <WebView
           ref={webviewRef}
           source={{ html: generarHTML(description) }}

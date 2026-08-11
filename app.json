@@ -98,7 +98,8 @@
           }
         }
       ],
-      "expo-video"
+      "expo-video",
+      "expo-asset"
     ],
     "runtimeVersion": {
       "policy": "appVersion"

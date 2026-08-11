@@ -31,7 +31,8 @@ interface PlantacionRow {
   icono?: string;
   usuario_nombre?: string;
   created_at?: string;
-  poligono?: unknown[] | null;
+  /** El backend nunca envía el polígono en sí a roles superiores — solo este indicador. */
+  area_trazada?: boolean;
   beneficiario_nombre?: string | null;
   vereda?: string | null;
   corregimiento?: string | null;
@@ -64,7 +65,7 @@ const PlantacionesPorTecnicoScreen: React.FC<PlantacionesPorTecnicoScreenProps> 
         nombre,
         areas: areas.sort((a, b) => (b.created_at || '').localeCompare(a.created_at || '')),
         totalPlantas: areas.reduce((sum, a) => sum + (a.cantidad || 0), 0),
-        totalAreasTrazadas: areas.filter((a) => (a.poligono?.length ?? 0) >= 3).length,
+        totalAreasTrazadas: areas.filter((a) => a.area_trazada).length,
       }))
       .sort((a, b) => b.areas.length - a.areas.length);
   }, [plantaciones]);
@@ -102,7 +103,7 @@ const PlantacionesPorTecnicoScreen: React.FC<PlantacionesPorTecnicoScreenProps> 
               <View style={styles.areaInfo}>
                 <Text style={styles.areaEspecie}>{item.cantidad}x {item.especie}</Text>
                 <Text style={styles.areaMeta}>
-                  {(item.poligono?.length ?? 0) >= 3 ? '📐 Área trazada' : '📍 Punto'}
+                  {item.area_trazada ? '📐 Área trazada' : '📍 Punto'}
                   {item.created_at ? ` · ${new Date(item.created_at).toLocaleDateString('es-CO')}` : ''}
                 </Text>
                 {!!item.beneficiario_nombre && (

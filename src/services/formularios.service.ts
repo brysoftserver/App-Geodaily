@@ -5,6 +5,7 @@
 import { Formulario, VisitaProgramada } from '../types';
 import apiClient from './api';
 import { API_CONFIG } from '../theme';
+import { deleteFormularioLocal } from './database';
 
 /**
  * Mapea los nombres de columnas JSONB del backend (tecnico_json, beneficiario_json, ...)
@@ -125,4 +126,32 @@ export const fetchFormularioDelServidor = async (id: string): Promise<Formulario
     console.warn('[API Forms] Error obteniendo formulario:', id, err?.message || error);
     return null;
   }
+};
+
+/**
+ * Eliminar un formulario del servidor — SOLO admin (el backend lo valida
+ * de nuevo, esto es solo la puerta de la UI). Borra en cascada revisiones,
+ * notificaciones, mediciones, plantaciones y archivos (fotos/videos/firmas/
+ * PDFs) asociados, tanto en PostgreSQL como en MinIO.
+ * A diferencia de `eliminarVisitaProgramadaDelServidor`, aquí SÍ se
+ * propaga el error: es una acción destructiva e irreversible, la pantalla
+ * debe saber si falló para no dar una falsa confirmación de éxito.
+ *
+ * "Formulario no encontrado" no siempre es un error real: puede ser una
+ * visita capturada offline que nunca llegó a sincronizarse (solo existe en
+ * el SQLite local de ESE dispositivo — el listado la muestra igual porque
+ * se lee sin filtrar por usuario). En ese caso no hay nada que borrar en el
+ * servidor, así que se cae a borrar la copia local; solo se lanza el error
+ * si tampoco había nada local que eliminar.
+ */
+export const eliminarFormularioDelServidor = async (id: string): Promise<void> => {
+  const response = await apiClient.delete(`${API_CONFIG.ENDPOINTS.FORMS}/${id}`);
+  if (response.data?.estado === 'ok') return;
+
+  if (response.data?.mensaje === 'Formulario no encontrado') {
+    await deleteFormularioLocal(id);
+    return;
+  }
+
+  throw new Error(response.data?.mensaje || 'No se pudo eliminar el formulario');
 };

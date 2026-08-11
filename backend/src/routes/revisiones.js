@@ -216,8 +216,10 @@ router.post('/:formularioId', authenticateToken, async (req, res) => {
 });
 
 // POST /api/revisiones/:formularioId/evidencia — Evidencia final del
-// revisor: fotos propias, firma dual (beneficiario + revisor) y una
-// georeferencia puntual (captura única). Un registro por formulario+rol.
+// revisor: fotos y videos propios (ya subidos a MinIO, aquí solo se
+// referencian por archivo_id), firma dual (beneficiario + revisor,
+// también referenciada por archivo_id) y una georeferencia puntual
+// (captura única). Un registro por formulario+rol.
 router.post('/:formularioId/evidencia', authenticateToken, async (req, res) => {
   try {
     const { rol, id: revisorId, nombre: revisorNombre } = req.user;
@@ -225,14 +227,15 @@ router.post('/:formularioId/evidencia', authenticateToken, async (req, res) => {
       return res.status(403).json({ estado: 'error', mensaje: 'Solo los roles superiores pueden revisar formularios' });
     }
     const formularioId = req.params.formularioId;
-    const { fotos, firma_beneficiario, firma_revisor, geo_latitud, geo_longitud, geo_altitud, observaciones } = req.body;
+    const { fotos, videos, firma_beneficiario, firma_revisor, geo_latitud, geo_longitud, geo_altitud, observaciones } = req.body;
 
     const fila = await db.queryOne(
       `INSERT INTO revision_evidencia_formulario
-         (formulario_id, revisor_id, revisor_nombre, revisor_rol, fotos_json, firma_beneficiario, firma_revisor, geo_latitud, geo_longitud, geo_altitud, observaciones)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+         (formulario_id, revisor_id, revisor_nombre, revisor_rol, fotos_json, videos_json, firma_beneficiario, firma_revisor, geo_latitud, geo_longitud, geo_altitud, observaciones)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
        ON CONFLICT (formulario_id, revisor_rol) DO UPDATE SET
          fotos_json = EXCLUDED.fotos_json,
+         videos_json = EXCLUDED.videos_json,
          firma_beneficiario = EXCLUDED.firma_beneficiario,
          firma_revisor = EXCLUDED.firma_revisor,
          geo_latitud = EXCLUDED.geo_latitud,
@@ -247,6 +250,7 @@ router.post('/:formularioId/evidencia', authenticateToken, async (req, res) => {
         revisorNombre || req.user.usuario || revisorId,
         rol,
         JSON.stringify(fotos || []),
+        JSON.stringify(videos || []),
         firma_beneficiario || null,
         firma_revisor || null,
         geo_latitud ?? null,
@@ -268,7 +272,7 @@ router.post('/:formularioId/evidencia', authenticateToken, async (req, res) => {
 router.get('/:formularioId/evidencia', authenticateToken, async (req, res) => {
   try {
     const evidencias = await db.queryAll(
-      `SELECT id, formulario_id, revisor_id, revisor_nombre, revisor_rol, fotos_json, firma_beneficiario, firma_revisor, geo_latitud, geo_longitud, geo_altitud, observaciones, created_at
+      `SELECT id, formulario_id, revisor_id, revisor_nombre, revisor_rol, fotos_json, videos_json, firma_beneficiario, firma_revisor, geo_latitud, geo_longitud, geo_altitud, observaciones, created_at
        FROM revision_evidencia_formulario
        WHERE formulario_id = $1
        ORDER BY created_at ASC`,

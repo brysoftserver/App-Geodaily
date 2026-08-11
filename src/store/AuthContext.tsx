@@ -30,7 +30,8 @@ type AuthAction =
   | { type: 'LOGIN_START' }
   | { type: 'LOGIN_SUCCESS'; user: Usuario }
   | { type: 'LOGIN_FAILURE'; error: string }
-  | { type: 'LOGOUT' };
+  | { type: 'LOGOUT' }
+  | { type: 'UPDATE_AVATAR'; avatarArchivoId: string | null };
 
 const initialState: AuthState = {
   isLoading: true,
@@ -70,6 +71,10 @@ function authReducer(state: AuthState, action: AuthAction): AuthState {
         ...initialState,
         isLoading: false,
       };
+    case 'UPDATE_AVATAR':
+      return state.user
+        ? { ...state, user: { ...state.user, avatar_archivo_id: action.avatarArchivoId } }
+        : state;
     default:
       return state;
   }
@@ -81,6 +86,8 @@ interface AuthContextType extends AuthState {
   logout: () => Promise<void>;
   changePassword: (currentPassword: string, newPassword: string) => Promise<{ success: boolean; mensaje?: string; error?: string }>;
   getRole: () => UserRole | null;
+  /** Refleja en memoria + SecureStore un cambio de avatar (subida/quitada) sin necesitar re-login. */
+  actualizarAvatarLocal: (avatarArchivoId: string | null) => Promise<void>;
   isTecnico: boolean;
   isSupervisor: boolean;
   isInterventor: boolean;
@@ -174,6 +181,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           email: result.user.email,
           rol: result.user.rol as UserRole,
           telefono: result.user.telefono,
+          avatar_archivo_id: result.user.avatar_archivo_id,
           token: result.user.token,
         };
 
@@ -265,18 +273,31 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     return changePasswordService(currentPassword, newPassword);
   }, []);
 
+  const actualizarAvatarLocal = useCallback(async (avatarArchivoId: string | null) => {
+    dispatch({ type: 'UPDATE_AVATAR', avatarArchivoId });
+    if (state.user) {
+      const actualizado: Usuario = { ...state.user, avatar_archivo_id: avatarArchivoId };
+      try {
+        await SecureStore.setItemAsync(STORAGE_KEYS.USER_DATA, JSON.stringify(actualizado));
+      } catch {
+        // Ignorar — no debe bloquear la actualización en memoria
+      }
+    }
+  }, [state.user]);
+
   const value = useMemo<AuthContextType>(() => ({
     ...state,
     login,
     logout,
     changePassword,
     getRole,
+    actualizarAvatarLocal,
     isTecnico: state.user?.rol === 'tecnico',
     isSupervisor: state.user?.rol === 'supervisor',
     isInterventor: state.user?.rol === 'interventor',
     isGerente: state.user?.rol === 'gerente',
     isAdmin: state.user?.rol === 'admin',
-  }), [state, login, logout, changePassword, getRole]);
+  }), [state, login, logout, changePassword, getRole, actualizarAvatarLocal]);
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 };

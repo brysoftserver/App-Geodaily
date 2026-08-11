@@ -7,6 +7,7 @@ import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { COLORS, FONTS } from '../theme';
 import SupervisionMenuScreen from '../screens/supervision/SupervisionMenuScreen';
 import DashboardScreen from '../screens/supervision/DashboardScreen';
+import ProyeccionScreen from '../screens/gerente/ProyeccionScreen';
 import VisitasJerarquicasScreen from '../screens/supervision/VisitasJerarquicasScreen';
 import CalendarioScreen from '../screens/CalendarioGlobalScreen';
 import MapaGeneralScreen from '../screens/MapaGeneralScreen';
@@ -17,10 +18,11 @@ import PlantacionesPorTecnicoScreen from '../screens/supervision/PlantacionesPor
 export type SupervisionStackParamList = {
   SupervisionMenu: undefined;
   Dashboard: undefined;
+  SupervisionProyeccion: undefined;
   SupervisionVisitasJerarquicas: undefined;
   SupervisionCalendario: undefined;
   MapaGeneral: undefined;
-  SupervisionFormularioDetail: { formulario: import('../types').Formulario };
+  SupervisionFormularioDetail: { formulario: import('../types').Formulario; modo?: 'online' | 'campo' };
   BaseDatosBeneficiarios: undefined;
   SupervisionPlantacionesPorTecnico: undefined;
 };
@@ -53,6 +55,11 @@ const SupervisionNavigator: React.FC = () => {
         name="Dashboard"
         component={DashboardScreen}
         options={{ title: 'Dashboard' }}
+      />
+      <Stack.Screen
+        name="SupervisionProyeccion"
+        component={ProyeccionScreen}
+        options={{ title: 'Proyección de Producción' }}
       />
       <Stack.Screen
         name="SupervisionVisitasJerarquicas"

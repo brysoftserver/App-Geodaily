@@ -103,6 +103,8 @@ interface MapViewOfflineProps {
   }>;
   interactive?: boolean;
   onMarkerPress?: (id: string) => void;
+  /** Se dispara al tocar una feature de una capa GeoJSON (ej: un polígono de vereda). */
+  onFeaturePress?: (layerId: string, properties: Record<string, any>) => void;
   /** Se dispara cuando se suelta un marcador `draggable` — trae su nueva posición. */
   onMarkerDragEnd?: (id: string, coords: { latitud: number; longitud: number }) => void;
   onMapPress?: (latitud: number, longitud: number) => void;
@@ -195,6 +197,7 @@ const MapViewOffline: React.FC<MapViewOfflineProps> = ({
   geojsonLayers,
   interactive = true,
   onMarkerPress,
+  onFeaturePress,
   onMarkerDragEnd,
   onMapPress,
   foco,
@@ -289,12 +292,14 @@ const MapViewOffline: React.FC<MapViewOfflineProps> = ({
           onMarkerPress(msg.id);
         } else if (msg.type === 'markerDragEnd' && onMarkerDragEnd) {
           onMarkerDragEnd(msg.id, { latitud: msg.lat, longitud: msg.lng });
+        } else if (msg.type === 'featurePress' && onFeaturePress) {
+          onFeaturePress(msg.layerId, msg.properties || {});
         }
       } catch { /* ignorar mensajes no JSON */ }
     };
     window.addEventListener('message', handler);
     return () => window.removeEventListener('message', handler);
-  }, [onMapPress, onMarkerPress, onMarkerDragEnd]);
+  }, [onMapPress, onMarkerPress, onMarkerDragEnd, onFeaturePress]);
 
   // Web: sincronizar marcadores
   useEffect(() => {
@@ -535,6 +540,13 @@ const MapViewOffline: React.FC<MapViewOfflineProps> = ({
               featureLayer.on('mouseout', function() {
                 featureLayer.setStyle({ fillOpacity: layerDef.fillOpacity || 0.15 });
               });
+              featureLayer.on('click', function() {
+                window.ReactNativeWebView.postMessage(JSON.stringify({
+                  type: 'featurePress',
+                  layerId: layerDef.id,
+                  properties: feature.properties,
+                }));
+              });
             }
           }
         }).addTo(map);
@@ -690,12 +702,14 @@ const MapViewOffline: React.FC<MapViewOfflineProps> = ({
           onMarkerPress(msg.id);
         } else if (msg.type === 'markerDragEnd' && onMarkerDragEnd) {
           onMarkerDragEnd(msg.id, { latitud: msg.lat, longitud: msg.lng });
+        } else if (msg.type === 'featurePress' && onFeaturePress) {
+          onFeaturePress(msg.layerId, msg.properties || {});
         }
       } catch (e) {
         console.warn('[MapViewOffline] Error parsing WebView message:', e);
       }
     },
-    [onMapPress, onMarkerPress, onMarkerDragEnd]
+    [onMapPress, onMarkerPress, onMarkerDragEnd, onFeaturePress]
   );
 
   // Si no hay módulo nativo, usar WebView (nativo) o iframe (web) con Leaflet + OpenStreetMap
@@ -859,6 +873,14 @@ const MapViewOffline: React.FC<MapViewOfflineProps> = ({
               type: 'FeatureCollection',
               features: layer.features,
             }}
+            onPress={
+              onFeaturePress
+                ? (e: Record<string, any>) => {
+                    const feature = e?.features?.[0];
+                    if (feature) onFeaturePress(layer.id, feature.properties || {});
+                  }
+                : undefined
+            }
           >
             <MapLibreGL.FillLayer
               id={`geojson-fill-${layer.id}`}

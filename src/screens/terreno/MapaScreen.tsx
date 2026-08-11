@@ -148,6 +148,8 @@ const MapaScreen: React.FC = () => {
 
   // --- Estado para Plantaciones (Fase B) ---
   const [plantaciones, setPlantaciones] = useState<Plantacion[]>([]);
+  /** Plantación tocada en el mapa (marcador ya guardado) — abre el detalle */
+  const [plantacionSeleccionada, setPlantacionSeleccionada] = useState<Plantacion | null>(null);
 
   // --- Estado para KML ---
   const [mostrarModalKML, setMostrarModalKML] = useState(false);
@@ -506,6 +508,15 @@ const MapaScreen: React.FC = () => {
       setMostrarResultado(false);
     }
   }, []);
+
+  /** Tocar el marcador de una plantación YA guardada abre su detalle (especie, cantidad, beneficiario, vereda). */
+  const handleMarkerPress = useCallback(
+    (id: string) => {
+      const pl = plantaciones.find((p) => p.id === id);
+      if (pl) setPlantacionSeleccionada(pl);
+    },
+    [plantaciones]
+  );
 
   // --- Funciones de Medición ---
   const calcularDistanciaHaversine = useCallback(
@@ -1083,6 +1094,7 @@ const MapaScreen: React.FC = () => {
           interactive={true}
           onMapPress={handleMapPress}
           onMarkerDragEnd={moverPuntoPoligono}
+          onMarkerPress={handleMarkerPress}
           foco={foco}
         />
 
@@ -1692,6 +1704,51 @@ const MapaScreen: React.FC = () => {
         </View>
       </Modal>
 
+      {/* Modal: detalle de una plantación tocada en el mapa */}
+      <Modal visible={!!plantacionSeleccionada} transparent animationType="fade">
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <Text style={styles.modalTitle}>
+              {plantacionSeleccionada?.icono || getIconoEspecie(plantacionSeleccionada?.especie || '')} Plantación
+            </Text>
+            <View style={styles.detalleRow}>
+              <Text style={styles.detalleLabel}>Especie:</Text>
+              <Text style={styles.detalleValue}>{plantacionSeleccionada?.especie || '—'}</Text>
+            </View>
+            <View style={styles.detalleRow}>
+              <Text style={styles.detalleLabel}>Cantidad:</Text>
+              <Text style={styles.detalleValue}>{plantacionSeleccionada?.cantidad ?? '—'}</Text>
+            </View>
+            <View style={styles.detalleRow}>
+              <Text style={styles.detalleLabel}>Técnico:</Text>
+              <Text style={styles.detalleValue}>{user?.nombre || '—'}</Text>
+            </View>
+            <View style={styles.detalleRow}>
+              <Text style={styles.detalleLabel}>Beneficiario:</Text>
+              <Text style={styles.detalleValue}>{plantacionSeleccionada?.beneficiario_nombre || '—'}</Text>
+            </View>
+            <View style={styles.detalleRow}>
+              <Text style={styles.detalleLabel}>Vereda:</Text>
+              <Text style={styles.detalleValue}>
+                {[plantacionSeleccionada?.vereda, plantacionSeleccionada?.corregimiento].filter(Boolean).join(' — ') || '—'}
+              </Text>
+            </View>
+            <View style={styles.detalleRow}>
+              <Text style={styles.detalleLabel}>Fecha:</Text>
+              <Text style={styles.detalleValue}>
+                {plantacionSeleccionada?.timestamp ? new Date(plantacionSeleccionada.timestamp).toLocaleDateString('es-CO') : '—'}
+              </Text>
+            </View>
+            <TouchableOpacity
+              style={[styles.modalBtn, styles.modalBtnCancel]}
+              onPress={() => setPlantacionSeleccionada(null)}
+            >
+              <Text style={styles.modalBtnTextCancel}>Cerrar</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
       {/* Modal: gestión de mapas offline descargados */}
       <Modal visible={mostrarModalPaquetes} transparent animationType="fade">
         <View style={styles.modalOverlay}>
@@ -2144,6 +2201,13 @@ const styles = StyleSheet.create({
     marginBottom: SPACING.lg,
     textAlign: 'center',
   },
+  detalleRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    paddingVertical: 4,
+  },
+  detalleLabel: { fontSize: FONTS.sizes.sm, color: COLORS.textSecondary },
+  detalleValue: { fontSize: FONTS.sizes.sm, fontWeight: FONTS.weights.semibold, color: COLORS.textPrimary },
   modalBtn: {
     flexDirection: 'row',
     alignItems: 'center',

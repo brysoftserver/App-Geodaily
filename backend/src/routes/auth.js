@@ -7,11 +7,20 @@
 const express = require('express');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
+const multer = require('multer');
 const { authenticateToken, JWT_SECRET } = require('../middleware/auth');
 const db = require('../database');
 const storage = require('../storage');
 
 const router = express.Router();
+
+const uploadAvatar = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 5 * 1024 * 1024 }, // 5MB — es un avatar, no evidencia de campo
+  fileFilter: (_req, file, cb) => {
+    cb(null, /^image\//.test(file.mimetype));
+  },
+});
 
 // POST /api/auth/login
 router.post('/login', async (req, res) => {
@@ -81,6 +90,7 @@ router.post('/login', async (req, res) => {
         email: user.email,
         rol: user.rol,
         telefono: user.telefono,
+        avatar_archivo_id: user.avatar_archivo_id,
       },
     });
   } catch (error) {
@@ -105,7 +115,7 @@ router.get('/verify', authenticateToken, (req, res) => {
 router.get('/me', authenticateToken, async (req, res) => {
   try {
     const user = await db.queryOne(
-      'SELECT id, usuario, nombre, cedula, email, rol, telefono, created_at FROM usuarios WHERE id = $1',
+      'SELECT id, usuario, nombre, cedula, email, rol, telefono, avatar_archivo_id, created_at FROM usuarios WHERE id = $1',
       [req.user.id]
     );
     if (!user) {
@@ -115,6 +125,88 @@ router.get('/me', authenticateToken, async (req, res) => {
   } catch (error) {
     console.error('[Auth] Me error:', error);
     res.status(500).json({ success: false, error: 'Error interno del servidor' });
+  }
+});
+
+// POST /api/auth/mi-foto — Subir/reemplazar la foto de perfil propia.
+// Antes solo se guardaba local al dispositivo (nunca llegaba al servidor),
+// así que nadie más veía la foto de un técnico/usuario — ej. el admin en
+// "Gestión de Usuarios" solo veía el círculo con la inicial. Se sube a
+// MinIO y se registra en `archivos` (tipo 'avatar'), igual que fotos/firmas.
+router.post('/mi-foto', authenticateToken, uploadAvatar.single('archivo'), async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ estado: 'error', mensaje: 'Archivo requerido' });
+    }
+
+    const anterior = await db.queryOne(
+      'SELECT avatar_archivo_id FROM usuarios WHERE id = $1',
+      [req.user.id]
+    );
+
+    const ext = (req.file.originalname.split('.').pop() || 'jpg').toLowerCase();
+    const filename = `avatar_${Date.now()}.${ext}`;
+    const bucket = process.env.MINIO_BUCKET || 'geodaily-archivos';
+
+    const subida = await storage.uploadFile(
+      req.user.rol,
+      req.user.usuario,
+      'perfil',
+      filename,
+      req.file.buffer,
+      { contentType: req.file.mimetype }
+    );
+
+    const archivo = await db.queryOne(
+      `INSERT INTO archivos (usuario_id, formulario_id, tipo, filename, originalname, mimetype, size_bytes, minio_path, minio_bucket, metadata_json)
+       VALUES ($1, NULL, 'avatar', $2, $3, $4, $5, $6, $7, '{}')
+       RETURNING id`,
+      [req.user.id, filename, req.file.originalname, req.file.mimetype, req.file.buffer.length, subida.path, bucket]
+    );
+
+    await db.query('UPDATE usuarios SET avatar_archivo_id = $1 WHERE id = $2', [archivo.id, req.user.id]);
+
+    // Limpiar el avatar anterior (fila + objeto en MinIO) — best-effort,
+    // no debe hacer fallar la subida nueva si algo sale mal aquí.
+    if (anterior?.avatar_archivo_id) {
+      try {
+        const previo = await db.queryOne('SELECT minio_path FROM archivos WHERE id = $1', [anterior.avatar_archivo_id]);
+        await db.query('DELETE FROM archivos WHERE id = $1', [anterior.avatar_archivo_id]);
+        if (previo?.minio_path) await storage.deleteFile(previo.minio_path);
+      } catch (cleanupErr) {
+        console.warn('[Auth] No se pudo limpiar el avatar anterior:', cleanupErr.message);
+      }
+    }
+
+    res.json({ estado: 'ok', avatar_archivo_id: archivo.id });
+  } catch (error) {
+    console.error('[Auth] Error subiendo foto de perfil:', error);
+    res.status(500).json({ estado: 'error', mensaje: 'Error al subir la foto de perfil' });
+  }
+});
+
+// DELETE /api/auth/mi-foto — Quitar la foto de perfil propia.
+router.delete('/mi-foto', authenticateToken, async (req, res) => {
+  try {
+    const actual = await db.queryOne('SELECT avatar_archivo_id FROM usuarios WHERE id = $1', [req.user.id]);
+    if (!actual?.avatar_archivo_id) {
+      return res.json({ estado: 'ok', mensaje: 'No había foto de perfil' });
+    }
+
+    await db.query('UPDATE usuarios SET avatar_archivo_id = NULL WHERE id = $1', [req.user.id]);
+
+    try {
+      const previo = await db.queryOne('SELECT minio_path FROM archivos WHERE id = $1', [actual.avatar_archivo_id]);
+      await db.query('DELETE FROM archivos WHERE id = $1', [actual.avatar_archivo_id]);
+      if (previo?.minio_path) await storage.deleteFile(previo.minio_path);
+    } catch (cleanupErr) {
+      console.warn('[Auth] No se pudo limpiar el archivo de avatar:', cleanupErr.message);
+    }
+
+    res.json({ estado: 'ok', mensaje: 'Foto de perfil eliminada' });
+  } catch (error) {
+    console.error('[Auth] Error eliminando foto de perfil:', error);
+    res.status(500).json({ estado: 'error', mensaje: 'Error al eliminar la foto de perfil' });
   }
 });
 
@@ -129,7 +221,7 @@ router.get('/usuarios', authenticateToken, async (req, res) => {
       return res.status(403).json({ success: false, error: 'Solo administradores' });
     }
     const usuarios = await db.queryAll(
-      'SELECT id, usuario, nombre, cedula, email, rol, telefono, activo, contrasena_visible, created_at FROM usuarios ORDER BY nombre'
+      'SELECT id, usuario, nombre, cedula, email, rol, telefono, activo, contrasena_visible, avatar_archivo_id, created_at FROM usuarios ORDER BY nombre'
     );
     res.json({ success: true, total: usuarios.length, usuarios });
   } catch (error) {
@@ -142,7 +234,7 @@ router.get('/usuarios', authenticateToken, async (req, res) => {
 router.get('/tecnicos', authenticateToken, async (req, res) => {
   try {
     const tecnicos = await db.queryAll(
-      "SELECT id, usuario, nombre, cedula, email, telefono FROM usuarios WHERE rol = 'tecnico' AND activo = TRUE ORDER BY nombre"
+      "SELECT id, usuario, nombre, cedula, email, telefono, avatar_archivo_id FROM usuarios WHERE rol = 'tecnico' AND activo = TRUE ORDER BY nombre"
     );
     res.json({ success: true, total: tecnicos.length, tecnicos });
   } catch (error) {

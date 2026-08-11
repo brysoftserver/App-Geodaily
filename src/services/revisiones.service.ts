@@ -21,14 +21,28 @@ export interface Revision {
   created_at: string;
 }
 
+/**
+ * Referencia a un archivo ya subido a MinIO (vía /api/photos, /api/videos
+ * o /api/firmas) — el registro de evidencia del revisor solo guarda el id,
+ * el binario vive en MinIO y se sirve por /api/archivos/:id/contenido.
+ */
+export interface ArchivoRevisorRef {
+  archivo_id: string;
+  /** uri local (este dispositivo) — solo para vista previa inmediata, puede no existir en otros dispositivos */
+  uri?: string;
+}
+
 export interface EvidenciaRevisor {
   id: number;
   formulario_id: string;
   revisor_id: string;
   revisor_nombre: string | null;
   revisor_rol: 'supervisor' | 'interventor' | 'gerente' | 'admin';
-  fotos_json: { uri: string }[];
+  fotos_json: ArchivoRevisorRef[];
+  videos_json: ArchivoRevisorRef[];
+  /** Id de archivo en MinIO (registros nuevos) o base64 "data:image/..." (registros antiguos, previos a esta migración) */
   firma_beneficiario: string | null;
+  /** Id de archivo en MinIO (registros nuevos) o base64 "data:image/..." (registros antiguos, previos a esta migración) */
   firma_revisor: string | null;
   geo_latitud: number | null;
   geo_longitud: number | null;
@@ -100,8 +114,11 @@ export const registrarRevision = async (
 export const guardarEvidenciaRevisor = async (
   formularioId: string,
   datos: {
-    fotos?: { uri: string }[];
+    fotos?: ArchivoRevisorRef[];
+    videos?: ArchivoRevisorRef[];
+    /** Id de archivo en MinIO devuelto por subirFirma() */
     firma_beneficiario?: string;
+    /** Id de archivo en MinIO devuelto por subirFirma() */
     firma_revisor?: string;
     geo_latitud?: number;
     geo_longitud?: number;

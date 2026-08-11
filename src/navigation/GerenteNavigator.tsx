@@ -29,7 +29,7 @@ export type GerenteStackParamList = {
   MapaTecnicos: undefined;
   MapaGeneral: undefined;
   BaseDatosBeneficiarios: undefined;
-  SupervisionFormularioDetail: { formulario: import('../types').Formulario };
+  SupervisionFormularioDetail: { formulario: import('../types').Formulario; modo?: 'online' | 'campo' };
   GerentePlantacionesPorTecnico: undefined;
 };
 

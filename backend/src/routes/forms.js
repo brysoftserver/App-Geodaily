@@ -338,10 +338,30 @@ router.get('/', authenticateToken, async (req, res) => {
 
     const formularios = await db.queryAll(sql, params);
 
+    // En vista=calendario un técnico ve TODAS las visitas (quién, a quién,
+    // cuándo) para que el calendario sea universal, pero NO debe poder ver
+    // el contenido detallado de una visita que no es suya (fotos, firmas,
+    // huella, actividad, sociodemográfico, coordenadas, clima, PDF). Se
+    // recorta esa información aquí; supervisor/interventor/gerente/admin no
+    // se ven afectados.
+    const CAMPOS_DETALLE_SENSIBLE = [
+      'actividad_json', 'sociodemografico_json', 'caracterizacion_nueva_json',
+      'coordenadas_json', 'georeferencia_json', 'clima_json', 'fotos_json',
+      'firma_beneficiario', 'firma_tecnico', 'huella_beneficiario', 'pdf_url',
+    ];
+    const resultado = (esVistaCalendario && req.user.rol === 'tecnico')
+      ? formularios.map((f) => {
+          if (f.usuario_id === req.user.id) return f;
+          const limitado = { ...f };
+          for (const campo of CAMPOS_DETALLE_SENSIBLE) limitado[campo] = null;
+          return limitado;
+        })
+      : formularios;
+
     res.json({
       estado: 'ok',
-      total: formularios.length,
-      formularios,
+      total: resultado.length,
+      formularios: resultado,
     });
   } catch (error) {
     console.error('[Forms] Listar error:', error);
@@ -387,33 +407,90 @@ router.get('/:id', authenticateToken, async (req, res) => {
 });
 
 // DELETE /api/formularios/:id — Solo admin puede eliminar
+//
+// Borrado EN CASCADA de todo el árbol que depende del formulario: antes
+// solo se borraba la fila `formularios` y, de rebote, la FK con
+// ON DELETE CASCADE de `archivos` (fotos/videos/firmas) — pero
+// `revisiones_formulario`, `notificaciones` y `revision_evidencia_formulario`
+// no tienen FK (quedaban huérfanas apuntando a un formulario inexistente),
+// `mediciones`/`plantaciones` solo perdían el vínculo (ON DELETE SET NULL,
+// quedaban vivas pero sueltas), y los objetos físicos en MinIO nunca se
+// borraban (storage.deleteFile() existía pero nadie la llamaba desde aquí).
+// Los PDFs generados no llevan `archivos.formulario_id` (solo quedó en
+// metadata_json, ver subirBase64AMinIO/pdfs.js), por eso el SELECT de abajo
+// busca por ambos.
 router.delete('/:id', authenticateToken, async (req, res) => {
-  try {
-    if (req.user.rol !== 'admin') {
-      return res.status(403).json({ estado: 'error', mensaje: 'Solo administradores pueden eliminar formularios' });
-    }
+  if (req.user.rol !== 'admin') {
+    return res.status(403).json({ estado: 'error', mensaje: 'Solo administradores pueden eliminar formularios' });
+  }
 
-    const result = await db.query(
-      'DELETE FROM formularios WHERE id = $1 RETURNING id',
-      [req.params.id]
+  const formularioId = req.params.id;
+  const client = await db.pool.connect();
+  let archivosParaBorrar = [];
+  let deleted = false;
+
+  try {
+    await client.query('BEGIN');
+
+    const archivosResult = await client.query(
+      `SELECT id, minio_path FROM archivos
+        WHERE formulario_id = $1 OR metadata_json->>'formulario_id' = $1`,
+      [formularioId]
     );
-    const deleted = result?.rowCount > 0;
+    archivosParaBorrar = archivosResult.rows;
+
+    await client.query('DELETE FROM revisiones_formulario WHERE formulario_id = $1', [formularioId]);
+    await client.query('DELETE FROM notificaciones WHERE formulario_id = $1', [formularioId]);
+    await client.query('DELETE FROM revision_evidencia_formulario WHERE formulario_id = $1', [formularioId]);
+    await client.query('DELETE FROM mediciones WHERE formulario_id = $1', [formularioId]);
+    await client.query('DELETE FROM plantaciones WHERE formulario_id = $1', [formularioId]);
+    await client.query(
+      `DELETE FROM archivos WHERE formulario_id = $1 OR metadata_json->>'formulario_id' = $1`,
+      [formularioId]
+    );
+
+    const result = await client.query('DELETE FROM formularios WHERE id = $1 RETURNING id', [formularioId]);
+    deleted = result.rowCount > 0;
 
     if (deleted) {
-      await db.query(
+      await client.query(
         'INSERT INTO actividad_log (usuario_id, accion, detalle_json) VALUES ($1, $2, $3)',
-        [req.user.id, 'eliminar_formulario', JSON.stringify({ formulario_id: req.params.id })]
+        [req.user.id, 'eliminar_formulario', JSON.stringify({
+          formulario_id: formularioId,
+          archivos_borrados: archivosParaBorrar.length,
+        })]
       );
     }
 
-    res.json({
-      estado: deleted ? 'ok' : 'error',
-      mensaje: deleted ? 'Formulario eliminado' : 'Formulario no encontrado',
-    });
+    await client.query('COMMIT');
   } catch (error) {
+    await client.query('ROLLBACK');
+    client.release();
     console.error('[Forms] Delete error:', error);
-    res.status(500).json({ estado: 'error', mensaje: 'Error al eliminar formulario' });
+    return res.status(500).json({ estado: 'error', mensaje: 'Error al eliminar formulario' });
   }
+  client.release();
+
+  if (!deleted) {
+    return res.json({ estado: 'error', mensaje: 'Formulario no encontrado' });
+  }
+
+  // Borrado físico en MinIO — fuera de la transacción de Postgres (no es
+  // atómico con la BD a propósito: los registros ya quedaron consistentes;
+  // si un objeto puntual falla aquí, queda huérfano en el bucket pero no
+  // bloquea ni corrompe nada).
+  let archivosFisicosBorrados = 0;
+  for (const archivo of archivosParaBorrar) {
+    const ok = await storage.deleteFile(archivo.minio_path);
+    if (ok) archivosFisicosBorrados++;
+  }
+
+  res.json({
+    estado: 'ok',
+    mensaje: 'Formulario eliminado junto con revisiones, notificaciones, mediciones, plantaciones y archivos asociados',
+    archivos_totales: archivosParaBorrar.length,
+    archivos_fisicos_eliminados: archivosFisicosBorrados,
+  });
 });
 
 module.exports = router;

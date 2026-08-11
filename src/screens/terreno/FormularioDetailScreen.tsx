@@ -5,7 +5,7 @@
 // con miniaturas de evidencias y opciones de PDF.
 // ============================================================
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   View,
   Text,
@@ -53,12 +53,17 @@ import {
 import { useRevisiones } from '../../hooks/useRevisiones';
 import { useLocation } from '../../hooks/useLocation';
 import * as ImagePicker from 'expo-image-picker';
+import * as DocumentPicker from 'expo-document-picker';
 import SignaturePad from '../../components/SignaturePad';
 import MapViewOffline from '../../components/MapViewOffline';
+import { uploadPhoto } from '../../services/photos.service';
+import { uploadVideo } from '../../services/videos.service';
+import { subirDocumento } from '../../services/documentos.service';
+import { subirFirma } from '../../services/firmas.service';
 
 type FormularioDetailScreenProps = {
   navigation: NativeStackNavigationProp<Record<string, any>>;
-  route: RouteProp<Record<string, any> & { params: { formulario: Formulario } }, 'params'>;
+  route: RouteProp<Record<string, any> & { params: { formulario: Formulario; modo?: 'online' | 'campo' } }, 'params'>;
 };
 
 // ============================================================
@@ -368,30 +373,135 @@ const mini = StyleSheet.create({
 // rol sobre el formulario.
 // ============================================================
 
-const SeccionFinalRevisor: React.FC<{ formulario: Formulario; recargarRevisiones: () => Promise<void> }> = ({ formulario, recargarRevisiones }) => {
+/** Foto/video propio del revisor, en tránsito hacia MinIO o ya subido. */
+type EvidenciaLocal = {
+  id: string;
+  uri: string;
+  archivoId?: string;
+  subiendo: boolean;
+  error?: boolean;
+};
+
+/** Documento/anexo propio del revisor, subido directo a MinIO (asociado al formulario). */
+type DocumentoLocal = {
+  id: string;
+  nombre: string;
+  /** Copia local (cache) del archivo — permite abrirlo de inmediato sin re-descargarlo del servidor. */
+  uri: string;
+  mimetype?: string;
+  /** id del archivo en MinIO una vez subido — evita duplicarlo con la lista ya persistida. */
+  archivoId?: string;
+  subiendo: boolean;
+  error?: boolean;
+};
+
+/** Firma propia del revisor: vista previa local + referencia a MinIO una vez subida. */
+type FirmaLocal = {
+  preview: string;
+  archivoId?: string;
+  subiendo: boolean;
+  error?: boolean;
+};
+
+const SeccionFinalRevisor: React.FC<{ formulario: Formulario; revisiones: Revision[]; recargarRevisiones: () => Promise<void> }> = ({ formulario, revisiones, recargarRevisiones }) => {
   const { user } = useAuth();
   const rol = user?.rol || 'tecnico';
   const esRevisor = ['supervisor', 'interventor', 'gerente', 'admin'].includes(rol);
+  const nombreRol = ROL_LABEL[rol] || 'Revisor';
+  const yaAprobadoPorMiRol = revisiones.some((r) => r.revisor_rol === rol && r.tipo === 'visto_bueno');
 
   const [evidencias, setEvidencias] = useState<EvidenciaRevisor[]>([]);
-  const [fotos, setFotos] = useState<{ uri: string }[]>([]);
-  const [firmaBeneficiario, setFirmaBeneficiario] = useState<string | null>(null);
-  const [firmaRevisor, setFirmaRevisor] = useState<string | null>(null);
+  const [documentosRevision, setDocumentosRevision] = useState<DocumentoDeFormulario[]>([]);
+  const [fotos, setFotos] = useState<EvidenciaLocal[]>([]);
+  const [videos, setVideos] = useState<EvidenciaLocal[]>([]);
+  const [documentos, setDocumentos] = useState<DocumentoLocal[]>([]);
+  const [firmaBeneficiario, setFirmaBeneficiario] = useState<FirmaLocal | null>(null);
+  const [firmaRevisor, setFirmaRevisor] = useState<FirmaLocal | null>(null);
   const [geoPoint, setGeoPoint] = useState<{ lat: number; lon: number } | null>(null);
   const [observaciones, setObservaciones] = useState('');
   const [padActivo, setPadActivo] = useState<'beneficiario' | 'revisor' | null>(null);
-  const [guardando, setGuardando] = useState(false);
+  const [guardandoEvidencia, setGuardandoEvidencia] = useState(false);
+  const [aprobando, setAprobando] = useState(false);
   const [obteniendoUbicacion, setObteniendoUbicacion] = useState(false);
+  const [headersArchivo, setHeadersArchivo] = useState<Record<string, string>>({});
+  const [videoPreview, setVideoPreview] = useState<{ uri: string; headers: Record<string, string> } | null>(null);
+  /** Foto o firma abierta en el visor ampliado (null = cerrado). */
+  const [imagenAmpliada, setImagenAmpliada] = useState<{ uri: string; headers?: Record<string, string>; titulo: string } | null>(null);
+  const [abriendoDocumentoId, setAbriendoDocumentoId] = useState<string | null>(null);
   const { getCurrentPosition } = useLocation();
+  const insets = useSafeAreaInsets();
 
   const cargarEvidencias = useCallback(async () => {
-    setEvidencias(await fetchEvidenciasRevisor(formulario.id));
+    const [evid, docs] = await Promise.all([
+      fetchEvidenciasRevisor(formulario.id),
+      fetchDocumentosDeFormulario(formulario.id),
+    ]);
+    setEvidencias(evid);
+    setDocumentosRevision(docs.filter((d) => d.categoria === 'revision'));
   }, [formulario.id]);
 
-  useEffect(() => { cargarEvidencias(); }, [cargarEvidencias]);
+  useEffect(() => {
+    cargarEvidencias();
+    cabecerasDeArchivo().then(setHeadersArchivo);
+  }, [cargarEvidencias]);
 
   const miEvidencia = evidencias.find((e) => e.revisor_rol === rol);
   const otrasEvidencias = evidencias.filter((e) => e.revisor_rol !== rol);
+  /** Documentos de este rol ya persistidos — se excluyen los que ya están en la lista local para no duplicarlos. */
+  const documentosPropiosGuardados = documentosRevision.filter(
+    (d) => d.descripcion?.includes(nombreRol) && !documentos.some((ld) => ld.archivoId === d.id)
+  );
+
+  const urlDeArchivoId = (archivoId: string) => `${API_CONFIG.BASE_URL}/api/archivos/${archivoId}/contenido`;
+
+  /** Registros viejos guardaban la firma como base64 crudo; los nuevos guardan el id del archivo en MinIO. */
+  const resolverFirmaValor = (valor: string | null): { uri: string; headers: Record<string, string> } | null => {
+    if (!valor) return null;
+    if (valor.startsWith('data:')) return { uri: valor, headers: {} };
+    return { uri: urlDeArchivoId(valor), headers: headersArchivo };
+  };
+
+  /** Fuente de imagen que agrega las cabeceras de auth solo cuando la uri viene del servidor (evidencia ya guardada). */
+  const fuenteArchivoLocal = (uri: string): { uri: string; headers?: Record<string, string> } =>
+    uri.startsWith('http') ? { uri, headers: headersArchivo } : { uri };
+
+  /**
+   * Si este rol ya había guardado evidencia antes, la trae al formulario
+   * editable en cuanto se conocen las cabeceras de auth — antes se perdía
+   * de vista al salir y volver a entrar, aunque siguiera guardada en el
+   * servidor (solo se veía mezclada en "otrasEvidencias" de otros roles,
+   * nunca la propia).
+   */
+  const hidratadoRef = useRef(false);
+  useEffect(() => {
+    if (hidratadoRef.current || !miEvidencia || !Object.keys(headersArchivo).length) return;
+    hidratadoRef.current = true;
+    setFotos(
+      (miEvidencia.fotos_json || []).map((f, i) => ({
+        id: f.archivo_id || `foto-guardada-${i}`,
+        uri: f.archivo_id ? urlDeArchivoId(f.archivo_id) : f.uri || '',
+        archivoId: f.archivo_id,
+        subiendo: false,
+      }))
+    );
+    setVideos(
+      (miEvidencia.videos_json || []).map((v, i) => ({
+        id: v.archivo_id || `video-guardada-${i}`,
+        uri: v.archivo_id ? urlDeArchivoId(v.archivo_id) : v.uri || '',
+        archivoId: v.archivo_id,
+        subiendo: false,
+      }))
+    );
+    const benef = resolverFirmaValor(miEvidencia.firma_beneficiario);
+    if (benef) setFirmaBeneficiario({ preview: benef.uri, archivoId: miEvidencia.firma_beneficiario || undefined, subiendo: false });
+    const revF = resolverFirmaValor(miEvidencia.firma_revisor);
+    if (revF) setFirmaRevisor({ preview: revF.uri, archivoId: miEvidencia.firma_revisor || undefined, subiendo: false });
+    if (miEvidencia.geo_latitud != null && miEvidencia.geo_longitud != null) {
+      setGeoPoint({ lat: Number(miEvidencia.geo_latitud), lon: Number(miEvidencia.geo_longitud) });
+    }
+    if (miEvidencia.observaciones) setObservaciones(miEvidencia.observaciones);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [miEvidencia, headersArchivo]);
 
   const tomarFoto = async () => {
     const permiso = await ImagePicker.requestCameraPermissionsAsync();
@@ -400,9 +510,144 @@ const SeccionFinalRevisor: React.FC<{ formulario: Formulario; recargarRevisiones
       return;
     }
     const resultado = await ImagePicker.launchCameraAsync({ quality: 0.6 });
-    if (!resultado.canceled && resultado.assets?.[0]?.uri) {
-      setFotos((prev) => [...prev, { uri: resultado.assets[0].uri }]);
+    if (resultado.canceled || !resultado.assets?.[0]?.uri) return;
+
+    const uri = resultado.assets[0].uri;
+    const localId = `foto-${Date.now()}`;
+    setFotos((prev) => [...prev, { id: localId, uri, subiendo: true }]);
+
+    // Sin formularioId: esta evidencia es propia del revisor y no debe
+    // mezclarse con la galería de fotos del técnico (formulario.fotos).
+    // Queda organizada en MinIO bajo la carpeta del propio revisor:
+    // {rol}s/{usuario}/{item}_{nombre}/Formulario_{1|2}/fotos/...
+    const subida = await uploadPhoto(
+      uri,
+      undefined,
+      undefined,
+      undefined,
+      `Revisión ${nombreRol} — Formulario ${formulario.id}`,
+      undefined,
+      formulario.beneficiario?.cedula,
+      formulario.beneficiario?.nombre,
+      new Date().toISOString(),
+      formulario.tipo
+    );
+    setFotos((prev) => prev.map((f) => (f.id === localId ? { ...f, subiendo: false, archivoId: subida?.id, error: !subida } : f)));
+  };
+
+  const grabarVideo = async () => {
+    const permiso = await ImagePicker.requestCameraPermissionsAsync();
+    if (!permiso.granted) {
+      Alert.alert('Permiso requerido', 'Se necesita acceso a la cámara para grabar el video.');
+      return;
     }
+    const resultado = await ImagePicker.launchCameraAsync({ mediaTypes: ['videos'], videoMaxDuration: 30 });
+    if (resultado.canceled || !resultado.assets?.[0]?.uri) return;
+
+    const uri = resultado.assets[0].uri;
+    const localId = `video-${Date.now()}`;
+    setVideos((prev) => [...prev, { id: localId, uri, subiendo: true }]);
+
+    const subida = await uploadVideo(
+      uri,
+      undefined,
+      undefined,
+      `Revisión ${nombreRol} — Formulario ${formulario.id}`,
+      formulario.beneficiario?.cedula,
+      formulario.beneficiario?.nombre,
+      formulario.tipo
+    );
+    setVideos((prev) => prev.map((v) => (v.id === localId ? { ...v, subiendo: false, archivoId: subida?.id, error: !subida } : v)));
+  };
+
+  const agregarDocumento = async () => {
+    try {
+      const resultado = await DocumentPicker.getDocumentAsync({
+        type: ['application/pdf', 'image/*'],
+        copyToCacheDirectory: true,
+      });
+      if (resultado.canceled || !resultado.assets?.[0]) return;
+
+      const asset = resultado.assets[0];
+      const nombre = asset.name || `documento_${Date.now()}`;
+      const localId = `doc-${Date.now()}`;
+      const esPdf = nombre.toLowerCase().endsWith('.pdf');
+      const mimetype = esPdf ? 'application/pdf' : asset.mimeType || 'image/jpeg';
+      setDocumentos((prev) => [...prev, { id: localId, nombre, uri: asset.uri, mimetype, subiendo: true }]);
+
+      // Este sí lleva formularioId — los documentos del formulario son
+      // compartidos entre todos los roles (misma lista de "Documentos de
+      // la finca" que ya se muestra más abajo en esta pantalla).
+      const subida = await subirDocumento(
+        asset.uri,
+        `Evidencia de revisión — ${nombreRol}`,
+        'revision',
+        nombre,
+        formulario.beneficiario?.cedula,
+        formulario.beneficiario?.nombre,
+        formulario.tipo,
+        mimetype,
+        formulario.id
+      );
+      setDocumentos((prev) => prev.map((d) => (d.id === localId ? { ...d, subiendo: false, archivoId: subida?.id, error: !subida } : d)));
+      if (!subida) Alert.alert('No se pudo subir', 'El documento no se pudo subir — verifica tu conexión.');
+      else await cargarEvidencias();
+    } catch (error) {
+      console.error('[Revisor] Error agregando documento:', error);
+      Alert.alert('Error', 'No se pudo agregar el documento.');
+    }
+  };
+
+  /** Abre el documento usando la copia local en cache — no requiere re-descargarlo del servidor. */
+  const abrirDocumentoLocal = async (doc: DocumentoLocal) => {
+    setAbriendoDocumentoId(doc.id);
+    try {
+      if (await Sharing.isAvailableAsync()) {
+        await Sharing.shareAsync(doc.uri, { mimeType: doc.mimetype });
+      } else {
+        Alert.alert('Documento', `Guardado en: ${doc.uri}`);
+      }
+    } catch (error) {
+      console.error('[Revisor] No se pudo abrir el documento:', doc.id, error);
+      Alert.alert('Error', 'No se pudo abrir el documento.');
+    } finally {
+      setAbriendoDocumentoId(null);
+    }
+  };
+
+  /** Abre un documento ya guardado en sesiones anteriores — hay que descargarlo, no hay copia local en cache. */
+  const abrirDocumentoRemoto = async (doc: DocumentoDeFormulario) => {
+    setAbriendoDocumentoId(doc.id);
+    try {
+      const url = doc.url.startsWith('http') ? doc.url : `${API_CONFIG.BASE_URL}${doc.url}`;
+      const extension = doc.nombre.includes('.') ? doc.nombre.split('.').pop() : 'dat';
+      const destino = `${FileSystem.cacheDirectory}doc_revision_${doc.id}.${extension}`;
+      const { uri } = await FileSystem.downloadAsync(url, destino, { headers: headersArchivo });
+      if (await Sharing.isAvailableAsync()) {
+        await Sharing.shareAsync(uri, { mimeType: doc.mimetype });
+      } else {
+        Alert.alert('Documento descargado', `Guardado en: ${uri}`);
+      }
+    } catch (error) {
+      console.error('[Revisor] No se pudo abrir el documento remoto:', doc.id, error);
+      Alert.alert('Error', 'No se pudo abrir el documento. Verifica tu conexión.');
+    } finally {
+      setAbriendoDocumentoId(null);
+    }
+  };
+
+  const capturarFirma = async (tipo: 'beneficiario' | 'revisor', sig: string) => {
+    setPadActivo(null);
+    const setFirma = tipo === 'beneficiario' ? setFirmaBeneficiario : setFirmaRevisor;
+    setFirma({ preview: sig, subiendo: true });
+    const subida = await subirFirma(
+      tipo,
+      sig,
+      formulario.beneficiario?.cedula,
+      formulario.beneficiario?.nombre,
+      formulario.tipo
+    );
+    setFirma({ preview: sig, subiendo: false, archivoId: subida?.id, error: !subida });
   };
 
   const usarUbicacionActual = async () => {
@@ -416,34 +661,66 @@ const SeccionFinalRevisor: React.FC<{ formulario: Formulario; recargarRevisiones
     }
   };
 
-  const guardarYAprobar = async () => {
-    setGuardando(true);
+  /**
+   * Guarda las evidencias (fotos, videos, firmas, geo, observaciones) del
+   * rol — se hace UNA sola vez por formulario y luego se puede actualizar.
+   * Separado de la aprobación: antes un solo botón hacía ambas cosas, lo
+   * que obligaba a re-aprobar cada vez que solo se quería completar
+   * evidencia.
+   */
+  const guardarEvidencias = async () => {
+    if (fotos.some((f) => f.subiendo) || videos.some((v) => v.subiendo) || documentos.some((d) => d.subiendo) || firmaBeneficiario?.subiendo || firmaRevisor?.subiendo) {
+      Alert.alert('Espera un momento', 'Todavía se están subiendo evidencias — inténtalo de nuevo en unos segundos.');
+      return;
+    }
+    const pendientes = fotos.filter((f) => !f.archivoId).length + videos.filter((v) => !v.archivoId).length;
+    if (pendientes > 0) {
+      Alert.alert(
+        'Evidencias sin subir',
+        `${pendientes} evidencia(s) no se pudieron subir (sin conexión). Quítalas con ✕ o vuelve a intentarlo antes de guardar.`
+      );
+      return;
+    }
+
+    setGuardandoEvidencia(true);
     try {
       await guardarEvidenciaRevisor(formulario.id, {
-        fotos,
-        firma_beneficiario: firmaBeneficiario || undefined,
-        firma_revisor: firmaRevisor || undefined,
+        fotos: fotos.filter((f): f is EvidenciaLocal & { archivoId: string } => !!f.archivoId).map((f) => ({ archivo_id: f.archivoId, uri: f.uri })),
+        videos: videos.filter((v): v is EvidenciaLocal & { archivoId: string } => !!v.archivoId).map((v) => ({ archivo_id: v.archivoId, uri: v.uri })),
+        firma_beneficiario: firmaBeneficiario?.archivoId,
+        firma_revisor: firmaRevisor?.archivoId,
         geo_latitud: geoPoint?.lat,
         geo_longitud: geoPoint?.lon,
         observaciones: observaciones.trim() || undefined,
       });
-      if (!miEvidencia) {
-        // Solo registra el visto bueno global la primera vez — evita
-        // duplicar el error 409 si el revisor solo está actualizando su
-        // evidencia después de haber aprobado.
-        try {
-          await registrarRevision(formulario.id, 'visto_bueno');
-        } catch {
-          // Ya aprobado antes por este rol — no es un error real aquí.
-        }
-      }
-      await Promise.all([cargarEvidencias(), recargarRevisiones()]);
-      Alert.alert('✅ Guardado', 'Evidencia final registrada y formulario aprobado.');
+      await cargarEvidencias();
+      Alert.alert('✅ Evidencias guardadas', `Las evidencias de ${nombreRol} quedaron registradas para este formulario.`);
     } catch (error) {
       Alert.alert('No se pudo guardar', error instanceof Error ? error.message : String(error));
     } finally {
-      setGuardando(false);
+      setGuardandoEvidencia(false);
     }
+  };
+
+  const aprobarFormulario = () => {
+    Alert.alert('Aprobar formulario', `¿Confirmas que este formulario está correcto como ${nombreRol}?`, [
+      { text: 'Cancelar', style: 'cancel' },
+      {
+        text: 'Aprobar',
+        onPress: async () => {
+          setAprobando(true);
+          try {
+            await registrarRevision(formulario.id, 'visto_bueno');
+            await recargarRevisiones();
+            Alert.alert('✅ Formulario aprobado');
+          } catch (error) {
+            Alert.alert('No se pudo aprobar', error instanceof Error ? error.message : String(error));
+          } finally {
+            setAprobando(false);
+          }
+        },
+      },
+    ]);
   };
 
   if (!esRevisor && evidencias.length === 0) return null;
@@ -452,7 +729,8 @@ const SeccionFinalRevisor: React.FC<{ formulario: Formulario; recargarRevisiones
     ? { latitud: geoPoint.lat, longitud: geoPoint.lon }
     : formulario.coordenadas || { latitud: 1.914, longitud: -75.145 };
 
-  const nombreRol = ROL_LABEL[rol] || 'Revisor';
+  const estadoDe = (item: { subiendo: boolean; error?: boolean; archivoId?: string }) =>
+    item.subiendo ? '⏳ Subiendo…' : item.error ? '⚠️ No se subió' : '✅ En MinIO';
 
   return (
     <View style={finalStyles.section}>
@@ -461,9 +739,10 @@ const SeccionFinalRevisor: React.FC<{ formulario: Formulario; recargarRevisiones
       {esRevisor && (
         <>
           {/* Evidencias — mismo estilo de tarjetas que usa el técnico en
-              su propio formulario (icono, título, descripción, check verde). */}
+              su propio formulario (icono, título, descripción, check verde),
+              subidas a MinIO igual que las del técnico. */}
           <TouchableOpacity
-            style={[finalStyles.evidenciaCard, fotos.length > 0 && finalStyles.evidenciaCardOk]}
+            style={[finalStyles.evidenciaCard, fotos.some((f) => f.archivoId) && finalStyles.evidenciaCardOk]}
             onPress={tomarFoto}
             activeOpacity={0.7}
           >
@@ -480,10 +759,25 @@ const SeccionFinalRevisor: React.FC<{ formulario: Formulario; recargarRevisiones
           </TouchableOpacity>
           {fotos.length > 0 && (
             <ScrollView horizontal showsHorizontalScrollIndicator={false} style={finalStyles.fotosRow}>
-              {fotos.map((f, idx) => (
-                <View key={idx} style={finalStyles.fotoThumb}>
-                  <Image source={{ uri: f.uri }} style={finalStyles.fotoImg} />
-                  <TouchableOpacity style={finalStyles.fotoRemove} onPress={() => setFotos((prev) => prev.filter((_, i) => i !== idx))}>
+              {fotos.map((f) => (
+                <View key={f.id} style={finalStyles.fotoThumb}>
+                  <TouchableOpacity
+                    onPress={() => setImagenAmpliada({ ...fuenteArchivoLocal(f.uri), titulo: `Foto de la revisión — ${nombreRol}` })}
+                    activeOpacity={0.8}
+                  >
+                    <Image source={fuenteArchivoLocal(f.uri)} style={finalStyles.fotoImg} />
+                    {f.subiendo && (
+                      <View style={finalStyles.fotoOverlay}>
+                        <ActivityIndicator size="small" color="#fff" />
+                      </View>
+                    )}
+                    {f.error && (
+                      <View style={[finalStyles.fotoOverlay, finalStyles.fotoOverlayError]}>
+                        <Text style={finalStyles.fotoOverlayText}>⚠️</Text>
+                      </View>
+                    )}
+                  </TouchableOpacity>
+                  <TouchableOpacity style={finalStyles.fotoRemove} onPress={() => setFotos((prev) => prev.filter((x) => x.id !== f.id))}>
                     <Text style={finalStyles.fotoRemoveText}>✕</Text>
                   </TouchableOpacity>
                 </View>
@@ -492,8 +786,100 @@ const SeccionFinalRevisor: React.FC<{ formulario: Formulario; recargarRevisiones
           )}
 
           <TouchableOpacity
-            style={[finalStyles.evidenciaCard, !!firmaBeneficiario && finalStyles.evidenciaCardOk]}
-            onPress={() => setPadActivo(padActivo === 'beneficiario' ? null : 'beneficiario')}
+            style={[finalStyles.evidenciaCard, videos.some((v) => v.archivoId) && finalStyles.evidenciaCardOk]}
+            onPress={grabarVideo}
+            activeOpacity={0.7}
+          >
+            <View style={finalStyles.evidenciaIcon}>
+              <Text style={finalStyles.evidenciaIconText}>🎥</Text>
+            </View>
+            <View style={finalStyles.evidenciaContent}>
+              <Text style={finalStyles.evidenciaCardTitle}>Video de la revisión</Text>
+              <Text style={finalStyles.evidenciaCardDesc}>
+                {videos.length > 0 ? `${videos.length} video(s) grabado(s) — toca para agregar otro (máx. 30s)` : 'Toca para grabar un video (máx. 30s)'}
+              </Text>
+            </View>
+            <Text style={finalStyles.evidenciaArrow}>›</Text>
+          </TouchableOpacity>
+          {videos.length > 0 && (
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} style={finalStyles.fotosRow}>
+              {videos.map((v, idx) => (
+                <View key={v.id} style={finalStyles.videoThumbWrap}>
+                  <TouchableOpacity
+                    style={finalStyles.videoThumb}
+                    onPress={() => setVideoPreview({ uri: v.uri, headers: v.uri.startsWith('http') ? headersArchivo : {} })}
+                    disabled={v.subiendo}
+                    activeOpacity={0.8}
+                  >
+                    {v.subiendo ? (
+                      <ActivityIndicator size="small" color="#fff" />
+                    ) : v.error ? (
+                      <Text style={finalStyles.videoThumbIcon}>⚠️</Text>
+                    ) : (
+                      <Text style={finalStyles.videoThumbIcon}>▶️</Text>
+                    )}
+                  </TouchableOpacity>
+                  <Text style={finalStyles.videoThumbLabel} numberOfLines={1}>
+                    Video {idx + 1} {v.subiendo ? '· subiendo…' : v.error ? '· no subió' : '· toca para ver'}
+                  </Text>
+                  <TouchableOpacity style={finalStyles.fotoRemove} onPress={() => setVideos((prev) => prev.filter((x) => x.id !== v.id))}>
+                    <Text style={finalStyles.fotoRemoveText}>✕</Text>
+                  </TouchableOpacity>
+                </View>
+              ))}
+            </ScrollView>
+          )}
+
+          <TouchableOpacity
+            style={[finalStyles.evidenciaCard, (documentos.some((d) => !d.subiendo && !d.error) || documentosPropiosGuardados.length > 0) && finalStyles.evidenciaCardOk]}
+            onPress={agregarDocumento}
+            activeOpacity={0.7}
+          >
+            <View style={finalStyles.evidenciaIcon}>
+              <Text style={finalStyles.evidenciaIconText}>📄</Text>
+            </View>
+            <View style={finalStyles.evidenciaContent}>
+              <Text style={finalStyles.evidenciaCardTitle}>Documentos / anexos</Text>
+              <Text style={finalStyles.evidenciaCardDesc}>
+                {documentos.length + documentosPropiosGuardados.length > 0
+                  ? `${documentos.length + documentosPropiosGuardados.length} documento(s) adjunto(s) — toca para agregar otro`
+                  : 'Toca para adjuntar un PDF o imagen'}
+              </Text>
+            </View>
+            <Text style={finalStyles.evidenciaArrow}>›</Text>
+          </TouchableOpacity>
+          {(documentos.length > 0 || documentosPropiosGuardados.length > 0) && (
+            <View style={finalStyles.chipsWrap}>
+              {documentos.map((d) => (
+                <TouchableOpacity
+                  key={d.id}
+                  style={finalStyles.chip}
+                  onPress={() => abrirDocumentoLocal(d)}
+                  disabled={d.subiendo || abriendoDocumentoId === d.id}
+                >
+                  <Text style={finalStyles.chipText} numberOfLines={1}>
+                    📄 {d.nombre} — {abriendoDocumentoId === d.id ? 'abriendo…' : d.subiendo ? '⏳' : d.error ? '⚠️' : '✅ toca para abrir'}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+              {documentosPropiosGuardados.map((d) => (
+                <TouchableOpacity
+                  key={d.id}
+                  style={finalStyles.chip}
+                  onPress={() => abrirDocumentoRemoto(d)}
+                  disabled={abriendoDocumentoId === d.id}
+                >
+                  <Text style={finalStyles.chipText} numberOfLines={1}>
+                    📄 {d.nombre} — {abriendoDocumentoId === d.id ? 'abriendo…' : '✅ toca para abrir'}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+          )}
+
+          <TouchableOpacity
+            style={[finalStyles.evidenciaCard, !!firmaBeneficiario?.archivoId && finalStyles.evidenciaCardOk]}
+            onPress={() => setPadActivo('beneficiario')}
             activeOpacity={0.7}
           >
             <View style={finalStyles.evidenciaIcon}>
@@ -502,21 +888,27 @@ const SeccionFinalRevisor: React.FC<{ formulario: Formulario; recargarRevisiones
             <View style={finalStyles.evidenciaContent}>
               <Text style={finalStyles.evidenciaCardTitle}>Firma del Beneficiario</Text>
               <Text style={finalStyles.evidenciaCardDesc}>
-                {firmaBeneficiario ? 'Firma registrada ✓ — toca para rehacer' : 'Capturar firma del beneficiario'}
+                {firmaBeneficiario
+                  ? `${estadoDe(firmaBeneficiario)} — toca para rehacer`
+                  : 'Capturar firma del beneficiario'}
               </Text>
             </View>
             <Text style={finalStyles.evidenciaArrow}>›</Text>
           </TouchableOpacity>
-          {padActivo === 'beneficiario' && (
-            <SignaturePad onOK={(sig) => { setFirmaBeneficiario(sig); setPadActivo(null); }} description="Firma del beneficiario" />
-          )}
-          {!!firmaBeneficiario && padActivo !== 'beneficiario' && (
-            <Image source={{ uri: firmaBeneficiario }} style={finalStyles.firmaImg} />
+          {!!firmaBeneficiario && (
+            <TouchableOpacity
+              style={finalStyles.firmaPreviewRow}
+              onPress={() => setImagenAmpliada({ ...fuenteArchivoLocal(firmaBeneficiario.preview), titulo: 'Firma del Beneficiario' })}
+              activeOpacity={0.8}
+            >
+              <Image source={fuenteArchivoLocal(firmaBeneficiario.preview)} style={finalStyles.firmaImg} />
+              <Text style={finalStyles.tapHint}>Toca la firma para verla en grande</Text>
+            </TouchableOpacity>
           )}
 
           <TouchableOpacity
-            style={[finalStyles.evidenciaCard, !!firmaRevisor && finalStyles.evidenciaCardOk]}
-            onPress={() => setPadActivo(padActivo === 'revisor' ? null : 'revisor')}
+            style={[finalStyles.evidenciaCard, !!firmaRevisor?.archivoId && finalStyles.evidenciaCardOk]}
+            onPress={() => setPadActivo('revisor')}
             activeOpacity={0.7}
           >
             <View style={finalStyles.evidenciaIcon}>
@@ -525,16 +917,20 @@ const SeccionFinalRevisor: React.FC<{ formulario: Formulario; recargarRevisiones
             <View style={finalStyles.evidenciaContent}>
               <Text style={finalStyles.evidenciaCardTitle}>Firma del {nombreRol}</Text>
               <Text style={finalStyles.evidenciaCardDesc}>
-                {firmaRevisor ? 'Firma registrada ✓ — toca para rehacer' : 'Capturar tu firma'}
+                {firmaRevisor ? `${estadoDe(firmaRevisor)} — toca para rehacer` : 'Capturar tu firma'}
               </Text>
             </View>
             <Text style={finalStyles.evidenciaArrow}>›</Text>
           </TouchableOpacity>
-          {padActivo === 'revisor' && (
-            <SignaturePad onOK={(sig) => { setFirmaRevisor(sig); setPadActivo(null); }} description={`Firma del ${nombreRol}`} />
-          )}
-          {!!firmaRevisor && padActivo !== 'revisor' && (
-            <Image source={{ uri: firmaRevisor }} style={finalStyles.firmaImg} />
+          {!!firmaRevisor && (
+            <TouchableOpacity
+              style={finalStyles.firmaPreviewRow}
+              onPress={() => setImagenAmpliada({ ...fuenteArchivoLocal(firmaRevisor.preview), titulo: `Firma del ${nombreRol}` })}
+              activeOpacity={0.8}
+            >
+              <Image source={fuenteArchivoLocal(firmaRevisor.preview)} style={finalStyles.firmaImg} />
+              <Text style={finalStyles.tapHint}>Toca la firma para verla en grande</Text>
+            </TouchableOpacity>
           )}
 
           <Text style={finalStyles.label}>Georeferencia puntual (captura única)</Text>
@@ -568,34 +964,166 @@ const SeccionFinalRevisor: React.FC<{ formulario: Formulario; recargarRevisiones
             placeholderTextColor={COLORS.textLight}
           />
 
-          <TouchableOpacity style={finalStyles.btnPrincipal} onPress={guardarYAprobar} disabled={guardando}>
+          <TouchableOpacity style={finalStyles.btnPrincipal} onPress={guardarEvidencias} disabled={guardandoEvidencia}>
             <Text style={finalStyles.btnPrincipalText}>
-              {guardando ? 'Guardando…' : miEvidencia ? '💾 Actualizar evidencia' : '💾 Guardar y aprobar formulario'}
+              {guardandoEvidencia ? 'Guardando…' : miEvidencia ? `💾 Actualizar evidencias de ${nombreRol}` : `💾 Guardar evidencias de ${nombreRol}`}
+            </Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={[finalStyles.btnPrincipal, finalStyles.btnAprobar, yaAprobadoPorMiRol && finalStyles.btnDeshabilitado]}
+            onPress={aprobarFormulario}
+            disabled={aprobando || yaAprobadoPorMiRol}
+          >
+            <Text style={finalStyles.btnPrincipalText}>
+              {aprobando ? 'Aprobando…' : yaAprobadoPorMiRol ? '✔ Formulario aprobado' : '✅ Aprobar formulario'}
             </Text>
           </TouchableOpacity>
         </>
       )}
 
-      {otrasEvidencias.map((e) => (
-        <View key={e.id} style={finalStyles.otraEvidencia}>
-          <Text style={finalStyles.label}>Evidencia de {ROL_LABEL[e.revisor_rol] || e.revisor_rol} ({e.revisor_nombre})</Text>
-          {!!e.fotos_json?.length && (
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} style={finalStyles.fotosRow}>
-              {e.fotos_json.map((f, idx) => (
-                <Image key={idx} source={{ uri: f.uri }} style={finalStyles.fotoImg} />
-              ))}
-            </ScrollView>
-          )}
-          <View style={finalStyles.firmasRow}>
-            {!!e.firma_beneficiario && <Image source={{ uri: e.firma_beneficiario }} style={finalStyles.firmaImg} />}
-            {!!e.firma_revisor && <Image source={{ uri: e.firma_revisor }} style={finalStyles.firmaImg} />}
+      {otrasEvidencias.map((e) => {
+        const firmaBenefResuelta = resolverFirmaValor(e.firma_beneficiario);
+        const firmaRevResuelta = resolverFirmaValor(e.firma_revisor);
+        const nombreRolOtro = ROL_LABEL[e.revisor_rol] || e.revisor_rol;
+        const documentosDeEsteRol = documentosRevision.filter((d) => d.descripcion?.includes(nombreRolOtro));
+        return (
+          <View key={e.id} style={finalStyles.otraEvidencia}>
+            <Text style={finalStyles.label}>Evidencia de {ROL_LABEL[e.revisor_rol] || e.revisor_rol} ({e.revisor_nombre})</Text>
+            {!!e.fotos_json?.length && (
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} style={finalStyles.fotosRow}>
+                {e.fotos_json.map((f, idx) => {
+                  const fuente = f.archivo_id ? { uri: urlDeArchivoId(f.archivo_id), headers: headersArchivo } : { uri: f.uri || '' };
+                  return (
+                    <TouchableOpacity
+                      key={idx}
+                      onPress={() => setImagenAmpliada({ ...fuente, titulo: `Foto de ${ROL_LABEL[e.revisor_rol] || e.revisor_rol}` })}
+                      activeOpacity={0.8}
+                    >
+                      <Image source={fuente} style={finalStyles.fotoImg} />
+                    </TouchableOpacity>
+                  );
+                })}
+              </ScrollView>
+            )}
+            {!!e.videos_json?.length && (
+              <View style={finalStyles.chipsWrap}>
+                {e.videos_json.map((v, idx) => (
+                  <TouchableOpacity
+                    key={idx}
+                    style={finalStyles.chip}
+                    onPress={() =>
+                      setVideoPreview(
+                        v.archivo_id
+                          ? { uri: urlDeArchivoId(v.archivo_id), headers: headersArchivo }
+                          : { uri: v.uri || '', headers: {} }
+                      )
+                    }
+                  >
+                    <Text style={finalStyles.chipText}>▶ Video {idx + 1}</Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            )}
+            <View style={finalStyles.firmasRow}>
+              {firmaBenefResuelta && (
+                <TouchableOpacity
+                  onPress={() => setImagenAmpliada({ ...firmaBenefResuelta, titulo: `Firma del Beneficiario — evidencia de ${ROL_LABEL[e.revisor_rol] || e.revisor_rol}` })}
+                  activeOpacity={0.8}
+                >
+                  <Image source={firmaBenefResuelta} style={finalStyles.firmaImg} />
+                </TouchableOpacity>
+              )}
+              {firmaRevResuelta && (
+                <TouchableOpacity
+                  onPress={() => setImagenAmpliada({ ...firmaRevResuelta, titulo: `Firma de ${ROL_LABEL[e.revisor_rol] || e.revisor_rol}` })}
+                  activeOpacity={0.8}
+                >
+                  <Image source={firmaRevResuelta} style={finalStyles.firmaImg} />
+                </TouchableOpacity>
+              )}
+            </View>
+            {documentosDeEsteRol.length > 0 && (
+              <View style={finalStyles.chipsWrap}>
+                {documentosDeEsteRol.map((d) => (
+                  <TouchableOpacity
+                    key={d.id}
+                    style={finalStyles.chip}
+                    onPress={() => abrirDocumentoRemoto(d)}
+                    disabled={abriendoDocumentoId === d.id}
+                  >
+                    <Text style={finalStyles.chipText} numberOfLines={1}>
+                      📄 {d.nombre} — {abriendoDocumentoId === d.id ? 'abriendo…' : '✅ toca para abrir'}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            )}
+            {e.geo_latitud != null && e.geo_longitud != null && (
+              <Text style={finalStyles.hint}>📍 Lat: {Number(e.geo_latitud).toFixed(6)}  Lon: {Number(e.geo_longitud).toFixed(6)}</Text>
+            )}
+            {!!e.observaciones && <Text style={finalStyles.hint}>{e.observaciones}</Text>}
           </View>
-          {e.geo_latitud != null && e.geo_longitud != null && (
-            <Text style={finalStyles.hint}>📍 Lat: {Number(e.geo_latitud).toFixed(6)}  Lon: {Number(e.geo_longitud).toFixed(6)}</Text>
+        );
+      })}
+
+      <VideoPlayerModal
+        uri={videoPreview?.uri ?? null}
+        visible={!!videoPreview}
+        onClose={() => setVideoPreview(null)}
+        headers={videoPreview?.headers}
+      />
+
+      {/* 📸 Visor ampliado de foto/firma propia o de otro rol */}
+      <Modal
+        visible={!!imagenAmpliada}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setImagenAmpliada(null)}
+      >
+        <Pressable style={styles.fotoModalOverlay} onPress={() => setImagenAmpliada(null)}>
+          {imagenAmpliada && (
+            <>
+              <Image
+                source={{ uri: imagenAmpliada.uri, headers: imagenAmpliada.headers }}
+                style={[styles.fotoModalImage, { backgroundColor: '#fff' }]}
+                resizeMode="contain"
+              />
+              <Text style={styles.fotoModalInfo}>{imagenAmpliada.titulo}</Text>
+              <Text style={styles.fotoModalHint}>Toca para cerrar</Text>
+            </>
           )}
-          {!!e.observaciones && <Text style={finalStyles.hint}>{e.observaciones}</Text>}
+        </Pressable>
+      </Modal>
+
+      {/* ✍️ Pantalla dedicada para firmar — fuera del ScrollView del detalle,
+          así el gesto de dibujar no se confunde con el scroll de la pantalla. */}
+      <Modal
+        visible={padActivo !== null}
+        animationType="slide"
+        onRequestClose={() => setPadActivo(null)}
+      >
+        <View style={[finalStyles.firmaModalContainer, { paddingTop: insets.top + SPACING.sm }]}>
+          <View style={finalStyles.firmaModalHeader}>
+            <Text style={finalStyles.firmaModalTitle}>
+              ✍️ {padActivo === 'beneficiario' ? 'Firma del Beneficiario' : `Firma del ${nombreRol}`}
+            </Text>
+            <TouchableOpacity onPress={() => setPadActivo(null)}>
+              <Text style={finalStyles.firmaModalClose}>✕ Cerrar</Text>
+            </TouchableOpacity>
+          </View>
+          <Text style={finalStyles.hint}>Dibuja la firma con el dedo dentro del recuadro blanco.</Text>
+          {padActivo && (
+            <SignaturePad
+              key={padActivo}
+              onOK={(sig) => capturarFirma(padActivo, sig)}
+              description={padActivo === 'beneficiario' ? 'Firma del beneficiario' : `Firma del ${nombreRol}`}
+              containerStyle={finalStyles.firmaModalPadContainer}
+              height={Dimensions.get('window').height * 0.45}
+            />
+          )}
         </View>
-      ))}
+      </Modal>
     </View>
   );
 };
@@ -651,6 +1179,21 @@ const finalStyles = StyleSheet.create({
   fotoAddText: { fontSize: 24 },
   fotoRemove: { position: 'absolute', top: -6, right: 2, backgroundColor: COLORS.error, borderRadius: 10, width: 20, height: 20, justifyContent: 'center', alignItems: 'center' },
   fotoRemoveText: { color: '#fff', fontSize: 12, fontWeight: FONTS.weights.bold },
+  fotoOverlay: {
+    position: 'absolute', top: 0, left: 0, right: SPACING.sm, bottom: 0,
+    backgroundColor: 'rgba(0,0,0,0.35)', borderRadius: BORDER_RADIUS.sm,
+    justifyContent: 'center', alignItems: 'center',
+  },
+  fotoOverlayError: { backgroundColor: 'rgba(211,47,47,0.45)' },
+  fotoOverlayText: { fontSize: 20 },
+  chipsWrap: { flexDirection: 'row', flexWrap: 'wrap', gap: SPACING.xs, marginBottom: SPACING.sm },
+  chip: {
+    flexDirection: 'row', alignItems: 'center', gap: 6,
+    backgroundColor: COLORS.surfaceAlt, borderRadius: BORDER_RADIUS.full,
+    paddingHorizontal: SPACING.sm, paddingVertical: 6, maxWidth: '100%',
+  },
+  chipText: { fontSize: FONTS.sizes.xs, color: COLORS.textPrimary },
+  chipRemove: { fontSize: 12, color: COLORS.error, fontWeight: FONTS.weights.bold, marginLeft: 4 },
   firmaOk: { flexDirection: 'row', alignItems: 'center', gap: SPACING.sm },
   firmaImg: { width: 100, height: 60, borderRadius: BORDER_RADIUS.sm, backgroundColor: COLORS.background, marginRight: SPACING.sm },
   link: { color: COLORS.info, fontSize: FONTS.sizes.sm, fontWeight: FONTS.weights.medium },
@@ -663,8 +1206,31 @@ const finalStyles = StyleSheet.create({
   },
   btnPrincipal: { backgroundColor: COLORS.success, borderRadius: BORDER_RADIUS.md, paddingVertical: SPACING.sm, alignItems: 'center', marginTop: SPACING.md },
   btnPrincipalText: { color: '#fff', fontWeight: FONTS.weights.semibold, fontSize: FONTS.sizes.md },
+  btnAprobar: { backgroundColor: COLORS.info },
+  btnDeshabilitado: { backgroundColor: COLORS.textLight },
   otraEvidencia: { marginTop: SPACING.sm, paddingTop: SPACING.sm, borderTopWidth: 1, borderTopColor: COLORS.divider },
   firmasRow: { flexDirection: 'row', gap: SPACING.sm },
+  // Miniatura de video — mismo lenguaje visual que las miniaturas de foto,
+  // para que quede claro que también se puede tocar (antes era solo texto).
+  videoThumbWrap: { marginRight: SPACING.sm, width: 80, position: 'relative' },
+  videoThumb: {
+    width: 80, height: 70, borderRadius: BORDER_RADIUS.sm,
+    backgroundColor: '#1a1a2e', justifyContent: 'center', alignItems: 'center',
+  },
+  videoThumbIcon: { fontSize: 28 },
+  videoThumbLabel: { fontSize: FONTS.sizes.xs, color: COLORS.textSecondary, marginTop: 2, textAlign: 'center' },
+  firmaPreviewRow: { marginBottom: SPACING.sm },
+  tapHint: { fontSize: FONTS.sizes.xs, color: COLORS.info, marginTop: 2 },
+  // Pantalla dedicada de firma (Modal) — así el gesto de dibujar no
+  // compite con el scroll del detalle del formulario.
+  firmaModalContainer: { flex: 1, backgroundColor: COLORS.background, padding: SPACING.md },
+  firmaModalHeader: {
+    flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
+    marginBottom: SPACING.xs,
+  },
+  firmaModalTitle: { fontSize: FONTS.sizes.lg, fontWeight: FONTS.weights.semibold, color: COLORS.textPrimary },
+  firmaModalClose: { fontSize: FONTS.sizes.md, color: COLORS.error, fontWeight: FONTS.weights.medium },
+  firmaModalPadContainer: { flex: 1, marginVertical: SPACING.sm },
 });
 
 const rev = StyleSheet.create({
@@ -712,11 +1278,20 @@ const rev = StyleSheet.create({
 });
 
 const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, navigation: _navigation }) => {
-  const { formulario } = route.params;
+  const { formulario, modo } = route.params;
   const insets = useSafeAreaInsets();
   const { user: usuarioActual } = useAuth();
   const rolActual = usuarioActual?.rol || 'tecnico';
   const esRevisorActual = ['supervisor', 'interventor', 'gerente', 'admin'].includes(rolActual);
+  /**
+   * Modo de la pantalla: 'online' y 'campo' habilitan los controles de
+   * Novedad/Aprobado por sección (revisión); solo 'campo' añade además la
+   * Sección del Administrador (evidencia propia del revisor) al final.
+   * Sin modo (entrada normal desde "Ver"/"PDF") se ve el formulario tal
+   * cual lo diligenció el técnico, sin nada de revisión.
+   */
+  const mostrarRevision = modo === 'online' || modo === 'campo';
+  const mostrarSeccionFinalRevisor = modo === 'campo';
   const { revisiones, cargando: cargandoRevisiones, recargar: recargarRevisiones } = useRevisiones(formulario.id);
   const [generatingPdf, setGeneratingPdf] = useState(false);
   const [pdfUri, setPdfUri] = useState<string | null>(null);
@@ -1222,6 +1797,19 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
     ...(formulario.huella_beneficiario ? [true] : []),
   ].length;
 
+  /** Control de Novedad/Aprobado al pie de cada sección, solo en modo revisión. */
+  const renderMiniRevision = (seccionTitulo: string) =>
+    mostrarRevision ? (
+      <SeccionMiniRevision
+        formularioId={formulario.id}
+        seccionTitulo={seccionTitulo}
+        revisiones={revisiones}
+        rol={rolActual}
+        esRevisor={esRevisorActual}
+        recargar={recargarRevisiones}
+      />
+    ) : null;
+
   return (
     <View style={styles.container}>
       <ScrollView contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + SPACING.xxl }]}>
@@ -1239,13 +1827,17 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
           </Text>
         </View>
 
-        {/* Revisión jerárquica: novedades y vistos buenos */}
-        <SeccionRevision
-          formulario={formulario}
-          revisiones={revisiones}
-          cargando={cargandoRevisiones}
-          recargar={recargarRevisiones}
-        />
+        {/* Revisión jerárquica: novedades y vistos buenos — solo en modo
+            "Revisión en línea"/"Revisión en campo", nunca en el formulario
+            normal que ve el técnico. */}
+        {mostrarRevision && (
+          <SeccionRevision
+            formulario={formulario}
+            revisiones={revisiones}
+            cargando={cargandoRevisiones}
+            recargar={recargarRevisiones}
+          />
+        )}
 
         {/* Encuesta Social AgroAmbiental — resumen COMPLETO (53 preguntas).
             Las secciones vienen del esquema canónico compartido con el
@@ -1277,14 +1869,16 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
                   )}
                 </View>
               ))}
-              <SeccionMiniRevision
-                formularioId={formulario.id}
-                seccionTitulo={seccion.titulo}
-                revisiones={revisiones}
-                rol={rolActual}
-                esRevisor={esRevisorActual}
-                recargar={recargarRevisiones}
-              />
+              {mostrarRevision && (
+                <SeccionMiniRevision
+                  formularioId={formulario.id}
+                  seccionTitulo={seccion.titulo}
+                  revisiones={revisiones}
+                  rol={rolActual}
+                  esRevisor={esRevisorActual}
+                  recargar={recargarRevisiones}
+                />
+              )}
             </View>
           ))}
 
@@ -1346,6 +1940,7 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
             </ScrollView>
           </View>
         )}
+        {renderMiniRevision('Evidencias')}
 
         {/* Firmas recolectadas — antes solo se contaban (✓/✗) en el resumen
             de arriba, pero no había forma de VERLAS en la pantalla; solo
@@ -1426,6 +2021,7 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
                 )}
               </View>
             </View>
+            {renderMiniRevision('Firmas')}
           </View>
         )}
 
@@ -1458,6 +2054,7 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
                 </Text>
               </TouchableOpacity>
             ))}
+            {renderMiniRevision('Documentos')}
           </View>
         )}
 
@@ -1468,6 +2065,7 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
           <View style={styles.row}><Text style={styles.label}>Cédula:</Text><Text style={styles.value}>{formulario.tecnico.cedula}</Text></View>
           <View style={styles.row}><Text style={styles.label}>Teléfono:</Text><Text style={styles.value}>{formulario.tecnico.telefono || '—'}</Text></View>
           <View style={styles.row}><Text style={styles.label}>Email:</Text><Text style={styles.value}>{formulario.tecnico.email || '—'}</Text></View>
+          {renderMiniRevision('Datos del Técnico')}
         </View>
 
         {/* Datos del Beneficiario */}
@@ -1480,6 +2078,7 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
           <View style={styles.row}><Text style={styles.label}>Municipio:</Text><Text style={styles.value}>{formulario.beneficiario.municipio || '—'}</Text></View>
           <View style={styles.row}><Text style={styles.label}>Vereda:</Text><Text style={styles.value}>{formulario.beneficiario.vereda || '—'}</Text></View>
           <View style={styles.row}><Text style={styles.label}>Finca:</Text><Text style={styles.value}>{formulario.beneficiario.finca || '—'}</Text></View>
+          {renderMiniRevision('Datos del Beneficiario')}
         </View>
 
         {/* Actividad (solo para formularios tradicionales) */}
@@ -1489,6 +2088,7 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
             <View style={styles.row}><Text style={styles.label}>Descripción:</Text><Text style={styles.value}>{formulario.actividad.descripcion || '—'}</Text></View>
             <View style={styles.row}><Text style={styles.label}>Observaciones:</Text><Text style={styles.value}>{formulario.actividad.observaciones || '—'}</Text></View>
             <View style={styles.row}><Text style={styles.label}>Recomendaciones:</Text><Text style={styles.value}>{formulario.actividad.recomendaciones || '—'}</Text></View>
+            {renderMiniRevision('Actividad Realizada')}
           </View>
         )}
 
@@ -1509,6 +2109,7 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
             {formulario.coordenadas.altitud && (
               <View style={styles.row}><Text style={styles.label}>Altitud:</Text><Text style={styles.value}>{formulario.coordenadas?.altitud?.toFixed(1) ?? '—'} m</Text></View>
             )}
+            {renderMiniRevision('Ubicación')}
           </View>
         )}
 
@@ -1517,12 +2118,16 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
           <Text style={styles.sectionTitle}>⏱️ Fechas</Text>
           <View style={styles.row}><Text style={styles.label}>Creado:</Text><Text style={styles.value}>{formatFecha(formulario.created_at)}</Text></View>
           <View style={styles.row}><Text style={styles.label}>Actualizado:</Text><Text style={styles.value}>{formatFecha(formulario.updated_at)}</Text></View>
+          {renderMiniRevision('Fechas')}
         </View>
 
         {/* Sección final del revisor: evidencia propia, firma dual y
             georeferencia puntual — cierra la revisión con visto bueno global.
-            Va al final de todo el detalle, después de Fechas. */}
-        <SeccionFinalRevisor formulario={formulario} recargarRevisiones={recargarRevisiones} />
+            Solo en modo "Revisión en campo"; va al final de todo el detalle,
+            después de Fechas. */}
+        {mostrarSeccionFinalRevisor && (
+          <SeccionFinalRevisor formulario={formulario} revisiones={revisiones} recargarRevisiones={recargarRevisiones} />
+        )}
       </ScrollView>
 
       {/* 📄 Visor PDF embebido */}

@@ -26,7 +26,7 @@ function base64ToBuffer(dataUri) {
 // POST /api/firmas/subir — Subir una firma (base64) a MinIO
 router.post('/subir', authenticateToken, async (req, res) => {
   try {
-    const { tipo, data, beneficiario_cedula, beneficiario_nombre, tipo_formulario } = req.body; // tipo: 'beneficiario' | 'tecnico'
+    const { tipo, data, beneficiario_cedula, beneficiario_nombre, tipo_formulario } = req.body; // tipo: 'beneficiario' | 'tecnico' | 'revisor'
 
     if (!data || !tipo) {
       return res.status(400).json({
@@ -35,10 +35,14 @@ router.post('/subir', authenticateToken, async (req, res) => {
       });
     }
 
-    if (!['beneficiario', 'tecnico'].includes(tipo)) {
+    // 'revisor' = firma de supervisor/interventor/gerente/admin en su
+    // sección de evidencia final (no se asocia a formularios.firma_tecnico
+    // como las otras, por eso solo pasa por /subir y no por
+    // /guardar-en-formulario).
+    if (!['beneficiario', 'tecnico', 'revisor'].includes(tipo)) {
       return res.status(400).json({
         estado: 'error',
-        mensaje: 'tipo debe ser "beneficiario" o "tecnico"',
+        mensaje: 'tipo debe ser "beneficiario", "tecnico" o "revisor"',
       });
     }
 

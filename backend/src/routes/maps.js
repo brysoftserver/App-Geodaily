@@ -4,7 +4,21 @@
 
 const express = require('express');
 const { authenticateToken } = require('../middleware/auth');
+const db = require('../database');
 const router = express.Router();
+
+/** Quita del listado las veredas que el admin ocultó (ver /veredas/:id DELETE). */
+async function filtrarVeredasExcluidas(veredas) {
+  try {
+    const excluidas = await db.queryAll('SELECT id FROM veredas_excluidas');
+    if (excluidas.length === 0) return veredas;
+    const idsExcluidos = new Set(excluidas.map((e) => e.id));
+    return veredas.filter((v) => !idsExcluidos.has(v.id));
+  } catch (err) {
+    console.warn('[Maps] No se pudo filtrar veredas excluidas:', err.message);
+    return veredas;
+  }
+}
 
 // ============================================================
 // Veredas de Puerto Rico, Caquetá
@@ -148,6 +162,7 @@ router.get('/veredas', authenticateToken, async (req, res) => {
   try {
     // Usar cache si está fresco
     if (veredasCache && (Date.now() - veredasCacheTime) < CACHE_TTL) {
+      const visibles = await filtrarVeredasExcluidas(veredasCache);
       return res.json({
         estado: 'ok',
         fuente: 'cache',
@@ -155,8 +170,8 @@ router.get('/veredas', authenticateToken, async (req, res) => {
         departamento: PUERTO_RICO.departamento,
         centro: PUERTO_RICO.centro,
         zoom: PUERTO_RICO.zoom,
-        total: veredasCache.length,
-        veredas: veredasCache,
+        total: visibles.length,
+        veredas: visibles,
       });
     }
 
@@ -191,10 +206,12 @@ router.get('/veredas', authenticateToken, async (req, res) => {
       console.log(`[Maps] Usando fallback: ${veredas.length} veredas aproximadas`);
     }
 
-    // Actualizar cache
+    // Actualizar cache (sin filtrar — el filtro se aplica al servir, así una
+    // exclusión nueva del admin no tiene que esperar a que expire el cache)
     veredasCache = veredas;
     veredasCacheTime = Date.now();
 
+    const visibles = await filtrarVeredasExcluidas(veredas);
     res.json({
       estado: 'ok',
       fuente,
@@ -202,14 +219,14 @@ router.get('/veredas', authenticateToken, async (req, res) => {
       departamento: PUERTO_RICO.departamento,
       centro: PUERTO_RICO.centro,
       zoom: PUERTO_RICO.zoom,
-      total: veredas.length,
-      veredas,
+      total: visibles.length,
+      veredas: visibles,
     });
   } catch (error) {
     console.error('[Maps] Error al obtener veredas:', error);
 
     // Fallback de emergencia
-    const fallback = getFallbackVeredas();
+    const fallback = await filtrarVeredasExcluidas(getFallbackVeredas());
     res.json({
       estado: 'ok',
       fuente: 'fallback-emergencia',
@@ -220,6 +237,29 @@ router.get('/veredas', authenticateToken, async (req, res) => {
       total: fallback.length,
       veredas: fallback,
     });
+  }
+});
+
+// DELETE /api/maps/veredas/:id — Ocultar una vereda del mapa (solo admin).
+// No borra el dato real (viene de OpenStreetMap/Overpass o de un fallback
+// hardcodeado, no de una tabla propia) — solo la excluye de lo que la app
+// muestra, vía `veredas_excluidas`.
+router.delete('/veredas/:id', authenticateToken, async (req, res) => {
+  try {
+    if (req.user.rol !== 'admin') {
+      return res.status(403).json({ estado: 'error', mensaje: 'Solo administradores pueden ocultar veredas' });
+    }
+
+    await db.query(
+      `INSERT INTO veredas_excluidas (id, nombre, excluida_por) VALUES ($1, $2, $3)
+       ON CONFLICT (id) DO NOTHING`,
+      [req.params.id, req.body?.nombre || null, req.user.id]
+    );
+
+    res.json({ estado: 'ok', mensaje: 'Vereda ocultada del mapa' });
+  } catch (error) {
+    console.error('[Maps] Error ocultando vereda:', error);
+    res.status(500).json({ estado: 'error', mensaje: 'Error al ocultar la vereda' });
   }
 });
 

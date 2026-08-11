@@ -27,6 +27,7 @@ import {
   fetchFormulariosDelServidor,
   fetchVisitasProgramadasDelServidor,
   eliminarVisitaProgramadaDelServidor,
+  eliminarFormularioDelServidor,
 } from '../services/formularios.service';
 import { getFormulariosLocales, getVisitasProgramadas, saveVisitaProgramada, deleteVisitaProgramadaLocal } from '../services/database';
 import { formatFecha, getLocalDateString, generarId } from '../utils/formatters';
@@ -79,6 +80,7 @@ const CalendarioGlobalScreen: React.FC<CalendarioGlobalScreenProps> = ({ navigat
 
   const rol = user?.rol ?? 'tecnico';
   const esTecnico = rol === 'tecnico';
+  const esAdmin = rol === 'admin';
 
   // ================================================================
   // CARGA DE DATOS
@@ -257,10 +259,55 @@ const CalendarioGlobalScreen: React.FC<CalendarioGlobalScreenProps> = ({ navigat
     );
   };
 
+  // --- ELIMINAR VISITA REALIZADA (solo admin) ---
+  // Borra el formulario y TODO su árbol (revisiones, notificaciones,
+  // mediciones, plantaciones, archivos en MinIO) — ver
+  // backend/src/routes/forms.js DELETE /api/formularios/:id.
+  const [eliminandoFormId, setEliminandoFormId] = useState<string | null>(null);
+
+  const handleDeleteFormulario = (form: Formulario) => {
+    if (!esAdmin) return;
+    Alert.alert(
+      'Eliminar visita realizada',
+      `¿Eliminar definitivamente esta visita de "${form.beneficiario?.nombre || 'este beneficiario'}"?\n\nSe borrará también todo lo asociado: revisiones, notificaciones, mediciones, plantaciones, fotos, videos, firmas y PDF. Esta acción NO se puede deshacer.`,
+      [
+        { text: 'Cancelar', style: 'cancel' },
+        {
+          text: 'Eliminar todo',
+          style: 'destructive',
+          onPress: async () => {
+            setEliminandoFormId(form.id);
+            try {
+              await eliminarFormularioDelServidor(form.id);
+              setTodasLasVisitas((prev) => prev.filter((f) => f.id !== form.id));
+            } catch (error: any) {
+              Alert.alert('Error', error?.message || 'No se pudo eliminar la visita');
+            } finally {
+              setEliminandoFormId(null);
+            }
+          },
+        },
+      ]
+    );
+  };
+
   // ================================================================
   // NAVEGACIÓN A DETALLE
   // ================================================================
   const navigateToDetail = (form: any) => {
+    // El calendario es universal (todos ven que la visita ocurrió), pero un
+    // técnico NO puede abrir el detalle completo de una visita que no es
+    // suya — el backend ya recorta esos datos en vista=calendario, así que
+    // esto evita además que aterrice en una pantalla de detalle incompleta.
+    const esDueno = form.usuario_id === user?.id || form.tecnico?.usuario_id === user?.id;
+    if (esTecnico && !esDueno) {
+      Alert.alert(
+        'Visita de otro técnico',
+        `Esta visita fue realizada por ${form.tecnico?.nombre || 'otro técnico'}. Solo puedes ver el detalle de tus propias visitas.`
+      );
+      return;
+    }
+
     // Detecta el navigador activo para escoger la ruta correcta
     const state = navigation.getState();
     const currentRoute = state?.routes?.[state.index];
@@ -397,7 +444,9 @@ const CalendarioGlobalScreen: React.FC<CalendarioGlobalScreenProps> = ({ navigat
                     key={visita.id}
                     style={[styles.itemCard, { borderLeftColor: COLORS.info }]}
                     onLongPress={
-                      esTecnico ? () => handleDeletePlannedVisit(visita) : undefined
+                      esAdmin || (esTecnico && visita.usuario_id === user?.id)
+                        ? () => handleDeletePlannedVisit(visita)
+                        : undefined
                     }
                     activeOpacity={0.7}
                   >
@@ -430,8 +479,14 @@ const CalendarioGlobalScreen: React.FC<CalendarioGlobalScreenProps> = ({ navigat
                 {dayForms.map((form) => (
                   <TouchableOpacity
                     key={form.id}
-                    style={[styles.itemCard, { borderLeftColor: COLORS.success }]}
+                    style={[
+                      styles.itemCard,
+                      { borderLeftColor: COLORS.success },
+                      eliminandoFormId === form.id && { opacity: 0.5 },
+                    ]}
                     onPress={() => navigateToDetail(form)}
+                    onLongPress={esAdmin ? () => handleDeleteFormulario(form) : undefined}
+                    disabled={eliminandoFormId === form.id}
                     activeOpacity={0.7}
                   >
                     <View style={styles.itemDot}>
@@ -489,6 +544,11 @@ const CalendarioGlobalScreen: React.FC<CalendarioGlobalScreenProps> = ({ navigat
                         {form.beneficiario?.municipio || ''}
                         {form.beneficiario?.vereda ? ` — ${form.beneficiario.vereda}` : ''}
                       </Text>
+                      {esAdmin && (
+                        <Text style={[styles.itemSubtitle, { color: COLORS.error }]}>
+                          {eliminandoFormId === form.id ? 'Eliminando…' : '🗑 Mantener presionado para eliminar'}
+                        </Text>
+                      )}
                       <View style={styles.activityFooter}>
                         {form.sincronizado ? (
                           <Text style={styles.syncedText}>✓ Sincronizado</Text>

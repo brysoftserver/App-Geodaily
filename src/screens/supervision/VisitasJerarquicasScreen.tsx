@@ -17,14 +17,20 @@ import {
   StyleSheet,
   RefreshControl,
   BackHandler,
+  Alert,
 } from 'react-native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useFocusEffect } from '@react-navigation/native';
 import { COLORS, FONTS, SPACING, BORDER_RADIUS, SHADOWS } from '../../theme';
 import { Formulario } from '../../types';
+import { useAuth } from '../../store/AuthContext';
 import { getFormulariosLocales } from '../../services/database';
-import { fetchFormulariosDelServidor } from '../../services/formularios.service';
+import {
+  fetchFormulariosDelServidor,
+  eliminarFormularioDelServidor,
+} from '../../services/formularios.service';
 import LoadingSpinner from '../../components/LoadingSpinner';
+import BotonPdfDashboard from '../../components/dashboard/BotonPdfDashboard';
 
 type VisitasJerarquicasScreenProps = {
   navigation: NativeStackNavigationProp<Record<string, any>>;
@@ -55,10 +61,12 @@ interface BeneficiarioAgrupado {
 type Nivel = 'tecnicos' | 'beneficiarios' | 'visitas';
 
 const VisitasJerarquicasScreen: React.FC<VisitasJerarquicasScreenProps> = ({ navigation }) => {
+  const { user, isAdmin } = useAuth();
   const [formularios, setFormularios] = useState<Formulario[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [eliminandoId, setEliminandoId] = useState<string | null>(null);
 
   // Estado de navegación jerárquica
   const [nivel, setNivel] = useState<Nivel>('tecnicos');
@@ -134,6 +142,12 @@ const VisitasJerarquicasScreen: React.FC<VisitasJerarquicasScreenProps> = ({ nav
 
     return Array.from(mapa.values()).sort((a, b) => (a.nombre || '').localeCompare(b.nombre || ''));
   }, [formularios]);
+
+  /** Todas las visitas del técnico actualmente seleccionado (para el informe PDF por técnico). */
+  const formulariosDelTecnicoSeleccionado = useMemo(
+    () => (tecnicoSeleccionado ? tecnicoSeleccionado.beneficiarios.flatMap((b) => b.visitas) : []),
+    [tecnicoSeleccionado]
+  );
 
   // --- Cargar datos (servidor + local) ---
   const loadData = useCallback(async () => {
@@ -271,13 +285,49 @@ const VisitasJerarquicasScreen: React.FC<VisitasJerarquicasScreenProps> = ({ nav
     setBeneficiarioSeleccionado(null);
   };
 
-  const abrirDetalleFormulario = (form: Formulario) => {
+  // --- ELIMINAR (solo admin, long-press) ---
+  // Borra el formulario y TODO su árbol: revisiones, notificaciones,
+  // mediciones, plantaciones y archivos (fotos/videos/firmas/PDF) —
+  // ver backend/src/routes/forms.js (DELETE /api/formularios/:id).
+  const confirmarEliminarVisita = (form: Formulario) => {
+    if (!isAdmin) return;
+    Alert.alert(
+      'Eliminar visita',
+      `¿Eliminar definitivamente esta visita de "${form.beneficiario?.nombre || 'este beneficiario'}"?\n\nSe borrará también todo lo asociado: revisiones, notificaciones, mediciones, plantaciones, fotos, videos, firmas y PDF. Esta acción NO se puede deshacer.`,
+      [
+        { text: 'Cancelar', style: 'cancel' },
+        {
+          text: 'Eliminar todo',
+          style: 'destructive',
+          onPress: async () => {
+            setEliminandoId(form.id);
+            try {
+              await eliminarFormularioDelServidor(form.id);
+              setFormularios((prev) => prev.filter((f) => f.id !== form.id));
+              setBeneficiarioSeleccionado((prev) =>
+                prev ? { ...prev, visitas: prev.visitas.filter((v) => v.id !== form.id) } : prev
+              );
+              setTecnicoSeleccionado((prev) =>
+                prev ? { ...prev, totalVisitas: Math.max(0, prev.totalVisitas - 1) } : prev
+              );
+            } catch (error: any) {
+              Alert.alert('Error', error?.message || 'No se pudo eliminar la visita');
+            } finally {
+              setEliminandoId(null);
+            }
+          },
+        },
+      ]
+    );
+  };
+
+  const abrirDetalleFormulario = (form: Formulario, modo?: 'online' | 'campo') => {
     // Detectar qué navegador está usando esta pantalla
     const state = navigation.getState();
     const currentRoute = state?.routes?.[state.index];
     const isInterventor = currentRoute?.name?.startsWith('Interventor');
     const detailScreen = isInterventor ? 'InterventorFormularioDetail' : 'SupervisionFormularioDetail';
-    navigation.navigate(detailScreen, { formulario: form });
+    navigation.navigate(detailScreen, { formulario: form, modo });
   };
 
   // --- Render por nivel ---
@@ -381,14 +431,21 @@ const VisitasJerarquicasScreen: React.FC<VisitasJerarquicasScreenProps> = ({ nav
   // --- Nivel 3: Visitas ---
   const renderVisita = ({ item, index }: { item: Formulario; index: number }) => (
     <TouchableOpacity
-      style={styles.visitaCard}
+      style={[styles.visitaCard, eliminandoId === item.id && styles.visitaCardEliminando]}
       onPress={() => abrirDetalleFormulario(item)}
+      onLongPress={isAdmin ? () => confirmarEliminarVisita(item) : undefined}
+      disabled={eliminandoId === item.id}
       activeOpacity={0.7}
     >
       <View style={styles.visitaHeader}>
         <View style={styles.visitaNumero}>
           <Text style={styles.visitaNumeroText}>Visita {index + 1}</Text>
         </View>
+        {isAdmin && (
+          <Text style={styles.visitaAdminHint}>
+            {eliminandoId === item.id ? 'Eliminando…' : '🗑 Mantener para eliminar'}
+          </Text>
+        )}
         <Text style={styles.visitaFecha}>
           {new Date(item.created_at).toLocaleDateString('es-CO', {
             day: 'numeric',
@@ -426,6 +483,18 @@ const VisitasJerarquicasScreen: React.FC<VisitasJerarquicasScreenProps> = ({ nav
           </Text>
         </View>
         <View style={styles.visitaActions}>
+          <TouchableOpacity
+            style={[styles.actionBtn, styles.actionBtnRevisionOnline]}
+            onPress={() => abrirDetalleFormulario(item, 'online')}
+          >
+            <Text style={styles.actionBtnTextRevisionOnline}>🌐 Revisión en línea</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.actionBtn, styles.actionBtnRevisionCampo]}
+            onPress={() => abrirDetalleFormulario(item, 'campo')}
+          >
+            <Text style={styles.actionBtnTextRevisionCampo}>🚜 Revisión en campo</Text>
+          </TouchableOpacity>
           <TouchableOpacity
             style={styles.actionBtn}
             onPress={() => abrirDetalleFormulario(item)}
@@ -512,10 +581,21 @@ const VisitasJerarquicasScreen: React.FC<VisitasJerarquicasScreenProps> = ({ nav
           contentContainerStyle={styles.listContent}
           ListHeaderComponent={
             <View style={styles.levelHeader}>
-              <Text style={styles.levelTitle}>Beneficiarios de {tecnicoSeleccionado.nombre}</Text>
-              <Text style={styles.levelCount}>
-                {tecnicoSeleccionado.totalBeneficiarios} beneficiario(s), {tecnicoSeleccionado.totalVisitas} visita(s)
-              </Text>
+              <View style={styles.levelHeaderRow}>
+                <View style={styles.levelHeaderTextos}>
+                  <Text style={styles.levelTitle}>Beneficiarios de {tecnicoSeleccionado.nombre}</Text>
+                  <Text style={styles.levelCount}>
+                    {tecnicoSeleccionado.totalBeneficiarios} beneficiario(s), {tecnicoSeleccionado.totalVisitas} visita(s)
+                  </Text>
+                </View>
+                <BotonPdfDashboard
+                  datos={{
+                    formularios: formulariosDelTecnicoSeleccionado,
+                    rolUsuario: user?.rol || 'supervisor',
+                    nombreUsuario: user?.nombre || 'Usuario',
+                  }}
+                />
+              </View>
             </View>
           }
           ListEmptyComponent={
@@ -627,6 +707,15 @@ const styles = StyleSheet.create({
     paddingHorizontal: SPACING.md,
     paddingVertical: SPACING.sm,
   },
+  levelHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+  },
+  levelHeaderTextos: {
+    flex: 1,
+    marginRight: SPACING.sm,
+  },
   levelTitle: {
     fontSize: FONTS.sizes.md,
     fontWeight: FONTS.weights.bold,
@@ -717,6 +806,13 @@ const styles = StyleSheet.create({
     padding: SPACING.md,
     ...SHADOWS.sm,
   },
+  visitaCardEliminando: {
+    opacity: 0.5,
+  },
+  visitaAdminHint: {
+    fontSize: 10,
+    color: COLORS.error,
+  },
   visitaHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
@@ -754,12 +850,10 @@ const styles = StyleSheet.create({
     marginTop: 2,
   },
   visitaFooter: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
     borderTopWidth: 1,
     borderTopColor: COLORS.divider,
     paddingTop: SPACING.sm,
+    gap: SPACING.xs,
   },
   statusIndicator: {
     flexDirection: 'row',
@@ -777,6 +871,8 @@ const styles = StyleSheet.create({
   },
   visitaActions: {
     flexDirection: 'row',
+    flexWrap: 'wrap',
+    justifyContent: 'flex-end',
     gap: 8,
   },
   actionBtn: {
@@ -797,6 +893,22 @@ const styles = StyleSheet.create({
     fontSize: FONTS.sizes.xs,
     fontWeight: FONTS.weights.medium,
     color: COLORS.error,
+  },
+  actionBtnRevisionOnline: {
+    backgroundColor: COLORS.roleSupervisor + '15',
+  },
+  actionBtnTextRevisionOnline: {
+    fontSize: FONTS.sizes.xs,
+    fontWeight: FONTS.weights.medium,
+    color: COLORS.roleSupervisor,
+  },
+  actionBtnRevisionCampo: {
+    backgroundColor: COLORS.warning + '15',
+  },
+  actionBtnTextRevisionCampo: {
+    fontSize: FONTS.sizes.xs,
+    fontWeight: FONTS.weights.medium,
+    color: COLORS.warning,
   },
 
   // --- List ---
