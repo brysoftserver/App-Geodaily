@@ -20,10 +20,13 @@ import {
   Alert,
   ActivityIndicator,
   ScrollView,
+  Platform,
 } from 'react-native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { CameraView, useCameraPermissions } from 'expo-camera';
+import * as FileSystem from 'expo-file-system/legacy';
+import * as Sharing from 'expo-sharing';
 import { useForm } from '../../store/FormContext';
 import { COLORS, FONTS, SPACING, BORDER_RADIUS, SHADOWS, API_CONFIG } from '../../theme';
 import { DocumentoFinca } from '../../types';
@@ -37,6 +40,8 @@ import {
 } from '../../services/database';
 import apiClient, { isOfflineError } from '../../services/api';
 import { persistirEvidencia } from '../../services/mediaStorage.service';
+import { fetchDocumentosDeBeneficiario, DocumentoDeFormulario } from '../../services/documentos.service';
+import { cabecerasDeArchivo } from '../../services/archivos.service';
 
 type DocumentosScreenProps = {
   navigation: NativeStackNavigationProp<Record<string, any>>;
@@ -65,6 +70,8 @@ const DocumentosScreen: React.FC<DocumentosScreenProps> = ({ navigation, route }
     '';
 
   const [documentos, setDocumentos] = useState<DocumentoFinca[]>([]);
+  const [documentosRemotos, setDocumentosRemotos] = useState<DocumentoDeFormulario[]>([]);
+  const [abriendoRemotoId, setAbriendoRemotoId] = useState<string | null>(null);
   const [subiendoDoc, setSubiendoDoc] = useState(false);
   const [subiendoDocAMinIO, setSubiendoDocAMinIO] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -75,7 +82,7 @@ const DocumentosScreen: React.FC<DocumentosScreenProps> = ({ navigation, route }
   const [capturandoFoto, setCapturandoFoto] = useState(false);
   const cameraRef = useRef<CameraView>(null);
 
-  // ─── Cargar documentos desde SQLite ────────────────────────
+  // ─── Cargar documentos desde SQLite (local) + servidor (remotos) ───
   const cargarDocumentos = useCallback(async () => {
     try {
       setLoading(true);
@@ -86,6 +93,22 @@ const DocumentosScreen: React.FC<DocumentosScreenProps> = ({ navigation, route }
         formularioActual?.id
       );
       setDocumentos(docs);
+
+      // Además de lo local, se trae lo que el servidor tenga registrado
+      // para este beneficiario: documentos subidos desde otro dispositivo,
+      // por otro técnico, o cargados manualmente a MinIO. Sin esto, la
+      // pantalla solo mostraba lo que este mismo teléfono había subido.
+      if (cedulaBeneficiario) {
+        const remotos = await fetchDocumentosDeBeneficiario(cedulaBeneficiario);
+        // Evita duplicar (best-effort) los que este dispositivo ya subió y
+        // muestra como locales sincronizados.
+        const nombresLocales = new Set(
+          docs.filter((d) => d.sincronizado).map((d) => d.nombre)
+        );
+        setDocumentosRemotos(remotos.filter((r) => !nombresLocales.has(r.nombre)));
+      } else {
+        setDocumentosRemotos([]);
+      }
     } catch (e) {
       console.warn('[Documentos] Error al cargar documentos:', e);
     } finally {
@@ -303,6 +326,60 @@ const DocumentosScreen: React.FC<DocumentosScreenProps> = ({ navigation, route }
     }
   };
 
+  // ─── Abrir un documento remoto (no capturado en este dispositivo) ───
+  const abrirDocumentoRemoto = async (doc: DocumentoDeFormulario) => {
+    const url = doc.url.startsWith('http') ? doc.url : `${API_CONFIG.BASE_URL}${doc.url}`;
+
+    // En web no hay sistema de archivos ni selector de apps nativo — expo-
+    // file-system/expo-sharing no aplican ahí. El navegador sí sabe mostrar
+    // un PDF si se navega directo a la URL, así que se abre en pestaña
+    // nueva con el token como query param (el backend lo acepta vía
+    // authenticateTokenOrQuery, igual que <Image>/<video> en fuenteConAuth).
+    // window.open() debe ser lo primero, antes de cualquier await, o el
+    // navegador lo bloquea como pop-up (mismo motivo que abrirVentanaDeCarga
+    // en printWeb.ts).
+    if (Platform.OS === 'web') {
+      const ventana = window.open('', '_blank');
+      try {
+        const headers = await cabecerasDeArchivo();
+        const token = headers.Authorization?.replace('Bearer ', '');
+        const separador = url.includes('?') ? '&' : '?';
+        const urlConToken = token ? `${url}${separador}token=${encodeURIComponent(token)}` : url;
+        if (ventana) {
+          ventana.location.href = urlConToken;
+        } else {
+          Alert.alert('Ventana bloqueada', 'Habilita las ventanas emergentes para ver el documento.');
+        }
+      } catch (error) {
+        console.error('[Documentos] No se pudo abrir el documento remoto (web):', doc.id, error);
+        ventana?.close();
+        Alert.alert('Error', 'No se pudo abrir el documento.');
+      }
+      return;
+    }
+
+    // Nativo (iOS/Android): mismo patrón que FormularioDetailScreen —
+    // se descarga a caché con el token de auth y se delega la apertura
+    // al selector de apps nativo del sistema.
+    setAbriendoRemotoId(doc.id);
+    try {
+      const extension = doc.nombre.includes('.') ? doc.nombre.split('.').pop() : 'dat';
+      const destino = `${FileSystem.cacheDirectory}doc_finca_${doc.id}.${extension}`;
+      const headers = await cabecerasDeArchivo();
+      const { uri } = await FileSystem.downloadAsync(url, destino, { headers });
+      if (await Sharing.isAvailableAsync()) {
+        await Sharing.shareAsync(uri, { mimeType: doc.mimetype });
+      } else {
+        Alert.alert('Documento descargado', `Guardado en: ${uri}`);
+      }
+    } catch (error) {
+      console.error('[Documentos] No se pudo abrir el documento remoto:', doc.id, error);
+      Alert.alert('Error', 'No se pudo abrir el documento. Verifica tu conexión.');
+    } finally {
+      setAbriendoRemotoId(null);
+    }
+  };
+
   // ─── Eliminar documento ─────────────────────────────────────
   const handleEliminarDocumento = (doc: DocumentoFinca) => {
     Alert.alert('Eliminar documento', `¿Estás seguro de eliminar "${doc.nombre}"?`, [
@@ -404,19 +481,60 @@ const DocumentosScreen: React.FC<DocumentosScreenProps> = ({ navigation, route }
           </View>
         )}
 
+        {/* Documentos que existen en el servidor pero no en este dispositivo:
+            subidos por otro técnico, otro teléfono, o cargados manualmente. */}
+        {!loading && documentosRemotos.length > 0 && (
+          <View style={styles.docList}>
+            <Text style={styles.docCount}>
+              {documentosRemotos.length} documento(s) en el servidor
+            </Text>
+            {documentosRemotos.map((doc) => (
+              <TouchableOpacity
+                key={doc.id}
+                style={styles.docItem}
+                onPress={() => abrirDocumentoRemoto(doc)}
+                activeOpacity={0.7}
+                disabled={abriendoRemotoId === doc.id}
+              >
+                <Text style={styles.docIcon}>
+                  {doc.mimetype === 'application/pdf' || doc.nombre?.toLowerCase().endsWith('.pdf')
+                    ? '📕'
+                    : '🖼️'}
+                </Text>
+                <View style={styles.docInfo}>
+                  <Text style={styles.docNombre} numberOfLines={1}>{doc.nombre}</Text>
+                  <Text style={styles.docFecha}>
+                    {new Date(doc.created_at).toLocaleDateString('es-CO', {
+                      year: 'numeric',
+                      month: 'long',
+                      day: 'numeric',
+                      hour: '2-digit',
+                      minute: '2-digit',
+                    })}
+                  </Text>
+                </View>
+                <Text style={styles.docSynced}>
+                  {abriendoRemotoId === doc.id ? '⏳' : '⬇️'}
+                </Text>
+              </TouchableOpacity>
+            ))}
+            <Text style={styles.docHint}>👆 Toca un documento para descargarlo y abrirlo</Text>
+          </View>
+        )}
+
         {/* Listado de documentos o loading */}
         {loading ? (
           <View style={styles.loadingContainer}>
             <ActivityIndicator size="small" color={COLORS.primary} />
             <Text style={styles.loadingText}>Cargando documentos...</Text>
           </View>
-        ) : documentos.length === 0 ? (
+        ) : documentos.length === 0 && documentosRemotos.length === 0 ? (
           <View style={styles.emptyContainer}>
             <Text style={styles.emptyIcon}>📂</Text>
             <Text style={styles.emptyText}>No hay documentos vinculados</Text>
             <Text style={styles.emptySubtext}>Sube un archivo o toma una foto</Text>
           </View>
-        ) : (
+        ) : documentos.length > 0 ? (
           <View style={styles.docList}>
             <Text style={styles.docCount}>{documentos.length} documento(s) vinculado(s)</Text>
             {documentos.map((doc) => (
@@ -453,7 +571,7 @@ const DocumentosScreen: React.FC<DocumentosScreenProps> = ({ navigation, route }
             </Text>
             <Text style={styles.docHint}>👆 Mantén presionado para eliminar un documento</Text>
           </View>
-        )}
+        ) : null}
 
         {/* Botón de continuar */}
         <TouchableOpacity

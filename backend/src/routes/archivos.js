@@ -13,7 +13,7 @@
 // ============================================================
 
 const express = require('express');
-const { authenticateToken } = require('../middleware/auth');
+const { authenticateToken, authenticateTokenOrQuery } = require('../middleware/auth');
 const db = require('../database');
 const storage = require('../storage');
 
@@ -26,10 +26,10 @@ const ROLES_SUPERVISION = ['supervisor', 'interventor', 'gerente', 'admin'];
  * GET /api/archivos/:id/contenido
  * Devuelve el binario de la evidencia (foto, video, firma, documento).
  */
-router.get('/:id/contenido', authenticateToken, async (req, res) => {
+router.get('/:id/contenido', authenticateTokenOrQuery, async (req, res) => {
   try {
     const archivo = await db.queryOne(
-      'SELECT id, usuario_id, tipo, filename, mimetype, minio_path FROM archivos WHERE id = $1',
+      'SELECT id, usuario_id, tipo, filename, mimetype, minio_path, metadata_json FROM archivos WHERE id = $1',
       [req.params.id]
     );
 
@@ -38,9 +38,14 @@ router.get('/:id/contenido', authenticateToken, async (req, res) => {
     }
 
     // El técnico solo accede a sus propias evidencias; supervisión ve todo.
+    // Excepción: documentos de la finca (tipo 'other' con beneficiario_cedula
+    // en metadata_json) son de la finca, no de quien los subió — cualquier
+    // técnico autenticado puede verlos, igual que ya puede listarlos vía
+    // GET /api/documentos/beneficiario/:cedula.
     const esPropio = archivo.usuario_id === req.user.id;
     const esSupervision = ROLES_SUPERVISION.includes(req.user.rol);
-    if (!esPropio && !esSupervision) {
+    const esDocumentoDeFinca = archivo.tipo === 'other' && !!archivo.metadata_json?.beneficiario_cedula;
+    if (!esPropio && !esSupervision && !esDocumentoDeFinca) {
       return res.status(403).json({ estado: 'error', mensaje: 'No autorizado' });
     }
 

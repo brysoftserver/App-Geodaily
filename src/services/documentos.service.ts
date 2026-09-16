@@ -162,3 +162,31 @@ export const fetchDocumentosDeFormulario = async (
     return [];
   }
 };
+
+/**
+ * Documentos de la finca vinculados directamente al beneficiario (no a una
+ * visita puntual): incluye los subidos desde otro dispositivo/técnico, o
+ * cargados manualmente a MinIO y registrados en el servidor.
+ */
+export const fetchDocumentosDeBeneficiario = async (
+  cedula: string
+): Promise<DocumentoDeFormulario[]> => {
+  try {
+    const response = await apiClient.get(
+      `${API_CONFIG.ENDPOINTS.DOCUMENTOS}/beneficiario/${encodeURIComponent(cedula)}`,
+      { timeout: 15000 }
+    );
+    if (response.data?.estado === 'ok' && Array.isArray(response.data?.documentos)) {
+      return response.data.documentos as DocumentoDeFormulario[];
+    }
+    return [];
+  } catch (error) {
+    const err = error as any;
+    if (isOfflineError(err)) {
+      console.warn('[Documentos] Sin conexión — no se pueden traer documentos del beneficiario');
+    } else {
+      console.warn('[Documentos] Error obteniendo documentos del beneficiario:', err?.message || error);
+    }
+    return [];
+  }
+};

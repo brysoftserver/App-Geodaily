@@ -306,6 +306,46 @@ router.get('/formulario/:formularioId', authenticateToken, async (req, res) => {
   }
 });
 
+/**
+ * GET /api/documentos/beneficiario/:cedula
+ * Documentos de la finca vinculados directamente al beneficiario (no a una
+ * visita puntual): incluye los subidos desde cualquier dispositivo/técnico,
+ * y los cargados manualmente a MinIO y registrados aquí. A diferencia de
+ * /formulario/:id, NO se filtra por usuario_id — son documentos de la
+ * finca, compartidos entre técnicos, no propiedad de quien los subió.
+ * Debe ir ANTES de GET /:id por el mismo motivo que /formulario/:id.
+ */
+router.get('/beneficiario/:cedula', authenticateToken, async (req, res) => {
+  try {
+    const cedula = req.params.cedula.trim();
+    const docs = await db.queryAll(
+      `SELECT id, tipo, filename, originalname, mimetype, size_bytes, created_at, metadata_json
+       FROM archivos
+       WHERE tipo = 'other' AND metadata_json->>'beneficiario_cedula' = $1
+       ORDER BY created_at DESC`,
+      [cedula]
+    );
+
+    res.json({
+      estado: 'ok',
+      total: docs.length,
+      documentos: docs.map((d) => ({
+        id: d.id,
+        nombre: d.originalname || d.filename,
+        mimetype: d.mimetype,
+        size_bytes: d.size_bytes,
+        created_at: d.created_at,
+        descripcion: d.metadata_json?.descripcion || null,
+        categoria: d.metadata_json?.categoria || null,
+        url: `/api/archivos/${d.id}/contenido`,
+      })),
+    });
+  } catch (error) {
+    console.error('[Documentos] Error listando por beneficiario:', error);
+    res.status(500).json({ estado: 'error', mensaje: 'Error al listar documentos del beneficiario' });
+  }
+});
+
 // GET /api/documentos/:id
 router.get('/:id', authenticateToken, async (req, res) => {
   try {
