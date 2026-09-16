@@ -288,17 +288,22 @@ const CamaraScreen: React.FC<CamaraScreenProps> = ({ navigation, route }) => {
           '[Camara] Sin formulario en curso: las evidencias quedan en memoria y se encolarán al completar el formulario'
         );
       }
+      const formActual = formularioActualRef.current;
+      const beneficiarioActual = formActual
+        ? { cedula: formActual.beneficiario?.cedula, nombre: formActual.beneficiario?.nombre }
+        : undefined;
+      const tipoFormularioActual = formActual?.tipo;
       for (const foto of sinGuardar) {
         addFoto(foto);
         if (formId) {
           try {
             if (foto.tipo === 'video') {
               // Guardar video en videos_locales para sync offline
-              await saveVideoLocal(foto.id, formId, foto.uri, foto.coordenadas);
+              await saveVideoLocal(foto.id, formId, foto.uri, foto.coordenadas, beneficiarioActual, tipoFormularioActual);
               console.log('[Camara] Video encolado para sync:', foto.id);
             } else {
               // Guardar foto en fotos_locales para sync offline
-              await saveFotoLocal(foto.id, formId, foto.uri, foto.coordenadas);
+              await saveFotoLocal(foto.id, formId, foto.uri, foto.coordenadas, beneficiarioActual, tipoFormularioActual);
             }
           } catch (queueErr) {
             console.warn('[Camara] No se pudo encolar para sync:', foto.id, queueErr);

@@ -95,7 +95,7 @@ const MENU_ITEMS = [
   {
     id: 'beneficiarios',
     title: 'Base de Datos Beneficiarios',
-    subtitle: '76 beneficiarios, asignación a técnicos',
+    subtitle: 'Beneficiarios, asignación a técnicos',
     icon: '👤',
     color: COLORS.roleGerente,
     screen: 'BaseDatosBeneficiarios',

@@ -284,6 +284,10 @@ const EncuestaSocialAgroambientalScreen: React.FC<Props> = ({ navigation, route 
   const formIdRef = useRef<string>('');
   const formularioRef = useRef(formularioActual);
   useEffect(() => { formularioRef.current = formularioActual; }, [formularioActual]);
+  /** Se activa al completar con éxito para que el autoguardado (interval,
+   *  AppState, cleanup al desmontar) deje de recrear el borrador que ya
+   *  se eliminó — sin tocar el autoguardado normal durante el llenado. */
+  const completadoRef = useRef(false);
   /** Cédula del productor — leída en callbacks que no dependen de `data` */
   const documentoRef = useRef('');
   useEffect(() => { documentoRef.current = data.documento?.trim() || ''; }, [data.documento]);
@@ -489,6 +493,7 @@ const EncuestaSocialAgroambientalScreen: React.FC<Props> = ({ navigation, route 
   useEffect(() => {
     autoguardarRef.current = async () => {
       try {
+        if (completadoRef.current) return;
         const draftIdActual = formIdRef.current || formularioActual?.id;
         if (!draftIdActual) return;
         // Nada que guardar todavía: evita crear borradores vacíos
@@ -635,11 +640,12 @@ const EncuestaSocialAgroambientalScreen: React.FC<Props> = ({ navigation, route 
       // repetía la subida. Ya hay duplicados reales en MinIO por esto.
       // Ahora la cola es el ÚNICO camino de subida.
       try {
+        const beneficiarioActual = { cedula: data.documento, nombre: data.productor_nombre };
         for (const foto of fotosActuales) {
           if (foto.tipo === 'video') {
-            saveVideoLocal(foto.id, draftIdActual, foto.uri, foto.coordenadas).catch(() => {});
+            saveVideoLocal(foto.id, draftIdActual, foto.uri, foto.coordenadas, beneficiarioActual, 'caracterizacion').catch(() => {});
           } else {
-            saveFotoLocal(foto.id, draftIdActual, foto.uri, foto.coordenadas).catch(() => {});
+            saveFotoLocal(foto.id, draftIdActual, foto.uri, foto.coordenadas, beneficiarioActual, 'caracterizacion').catch(() => {});
           }
         }
       } catch { /* ignorar */ }
@@ -691,11 +697,12 @@ const EncuestaSocialAgroambientalScreen: React.FC<Props> = ({ navigation, route 
       // videos los sube SyncContext desde la cola marcándolos como
       // sincronizados. Subirlos también aquí generaba duplicados.
       try {
+        const beneficiarioActual = { cedula: data.documento, nombre: data.productor_nombre };
         for (const foto of fotosParaUpload) {
           if (foto.tipo === 'video') {
-            saveVideoLocal(foto.id, formId, foto.uri, foto.coordenadas).catch(() => {});
+            saveVideoLocal(foto.id, formId, foto.uri, foto.coordenadas, beneficiarioActual, 'caracterizacion').catch(() => {});
           } else {
-            saveFotoLocal(foto.id, formId, foto.uri, foto.coordenadas).catch(() => {});
+            saveFotoLocal(foto.id, formId, foto.uri, foto.coordenadas, beneficiarioActual, 'caracterizacion').catch(() => {});
           }
         }
       } catch { /* ignorar */ }
@@ -820,6 +827,9 @@ const EncuestaSocialAgroambientalScreen: React.FC<Props> = ({ navigation, route 
         if (!verificado) {
           throw new Error('El formulario no aparece en la base local tras guardarlo');
         }
+        // Ya quedó guardado de verdad: de aquí en adelante ningún autoguardado
+        // (interval, AppState o cleanup al salir) debe volver a crear un borrador.
+        completadoRef.current = true;
       } catch (errGuardado) {
         console.error('[Carac] Error guardando el formulario:', errGuardado);
         setIsSubmitting(false);
@@ -889,7 +899,8 @@ const EncuestaSocialAgroambientalScreen: React.FC<Props> = ({ navigation, route 
       Alert.alert(
         '✅ Formulario completado',
         'La caracterización ha sido guardada correctamente.',
-        [{ text: 'Ver listado', onPress: () => navigation.navigate('TerrenoFormularioList') }]
+        [{ text: 'Ver listado', onPress: () => navigation.navigate('TerrenoFormularioList') }],
+        { cancelable: false }
       );
     } catch (err) {
       console.error('[Carac] Error al completar:', err);

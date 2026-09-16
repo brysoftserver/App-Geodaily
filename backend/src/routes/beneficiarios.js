@@ -1,6 +1,6 @@
 // ============================================================
 // Beneficiarios Routes — Base de datos compartida del proyecto
-// (76 beneficiarios + asignación a técnicos)
+// (301 beneficiarios: los 300 verificados + 1 de pruebas + asignación a técnicos)
 // Persistencia: PostgreSQL — fuente de verdad compartida entre
 // todos los dispositivos; la app mantiene un espejo en SQLite
 // local para trabajo offline.
@@ -95,6 +95,81 @@ router.put('/:item/asignacion', authenticateToken, async (req, res) => {
   } catch (error) {
     console.error('[Beneficiarios] Error asignando:', error);
     res.status(500).json({ estado: 'error', mensaje: 'Error al asignar técnico' });
+  }
+});
+
+// PUT /api/beneficiarios/:item — Editar datos del beneficiario
+// body: { corregimiento, vereda, nombre_completo } — la cédula NO se puede
+// editar por este endpoint: se usa como llave de búsqueda en documentos,
+// fotos, firmas y videos ya generados en MinIO.
+router.put('/:item', authenticateToken, async (req, res) => {
+  try {
+    if (!puedeModificar(req.user.rol)) {
+      return res.status(403).json({ estado: 'error', mensaje: 'No autorizado para editar beneficiarios' });
+    }
+    const item = parseInt(req.params.item, 10);
+    const { corregimiento, vereda, nombre_completo } = req.body;
+    if (!corregimiento || !vereda || !nombre_completo) {
+      return res.status(400).json({
+        estado: 'error',
+        mensaje: 'Campos requeridos: corregimiento, vereda, nombre_completo',
+      });
+    }
+
+    const existente = await db.queryOne('SELECT item FROM beneficiarios WHERE item = $1', [item]);
+    if (!existente) {
+      return res.status(404).json({ estado: 'error', mensaje: 'Beneficiario no encontrado' });
+    }
+
+    await db.query(
+      `UPDATE beneficiarios
+       SET corregimiento = $1, vereda = $2, nombre_completo = $3, updated_at = NOW()
+       WHERE item = $4`,
+      [corregimiento, vereda, nombre_completo, item]
+    );
+
+    console.log(`[Beneficiarios] Item ${item} editado por ${req.user.usuario}`);
+    res.json({ estado: 'ok', mensaje: 'Beneficiario actualizado' });
+  } catch (error) {
+    console.error('[Beneficiarios] Error editando:', error);
+    res.status(500).json({ estado: 'error', mensaje: 'Error al editar beneficiario' });
+  }
+});
+
+// PUT /api/beneficiarios/:item/contacto — Completar datos de contacto y
+// calidad del predio (correo, teléfono, calidad_predio). A diferencia de
+// PUT /:item (solo coordinación), CUALQUIER usuario autenticado puede
+// llamarlo — lo usa el técnico en terreno al diligenciar el Acta de
+// Compromiso, donde se captura esta info por primera vez.
+router.put('/:item/contacto', authenticateToken, async (req, res) => {
+  try {
+    const item = parseInt(req.params.item, 10);
+    const { telefono, correo_electronico, calidad_predio } = req.body;
+
+    if (calidad_predio && !['propietario', 'poseedor', 'otro'].includes(calidad_predio)) {
+      return res.status(400).json({ estado: 'error', mensaje: 'calidad_predio inválida' });
+    }
+
+    const existente = await db.queryOne('SELECT item FROM beneficiarios WHERE item = $1', [item]);
+    if (!existente) {
+      return res.status(404).json({ estado: 'error', mensaje: 'Beneficiario no encontrado' });
+    }
+
+    await db.query(
+      `UPDATE beneficiarios
+       SET telefono = COALESCE($1, telefono),
+           correo_electronico = COALESCE($2, correo_electronico),
+           calidad_predio = COALESCE($3, calidad_predio),
+           updated_at = NOW()
+       WHERE item = $4`,
+      [telefono || null, correo_electronico || null, calidad_predio || null, item]
+    );
+
+    console.log(`[Beneficiarios] Item ${item} — datos de contacto actualizados por ${req.user.usuario}`);
+    res.json({ estado: 'ok', mensaje: 'Datos de contacto actualizados' });
+  } catch (error) {
+    console.error('[Beneficiarios] Error actualizando contacto:', error);
+    res.status(500).json({ estado: 'error', mensaje: 'Error al actualizar datos de contacto' });
   }
 });
 

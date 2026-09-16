@@ -9,6 +9,7 @@
 // visita se pueda revisar completa desde cualquier teléfono.
 // ============================================================
 
+import { Platform } from 'react-native';
 import * as FileSystem from 'expo-file-system/legacy';
 import apiClient, { getApiAuthToken } from './api';
 import { API_CONFIG } from '../theme';
@@ -45,6 +46,30 @@ export const urlDeArchivo = (archivo: ArchivoRemoto): string =>
 export const cabecerasDeArchivo = async (): Promise<Record<string, string>> => {
   const token = await getApiAuthToken();
   return token ? { Authorization: `Bearer ${token}` } : {};
+};
+
+/**
+ * Fuente lista para <Image>/<VideoView> a partir de una URL de la API y las
+ * cabeceras de `cabecerasDeArchivo()`.
+ *
+ * En nativo (iOS/Android), <Image>/<VideoView> usan networking nativo y sí
+ * pueden adjuntar la cabecera Authorization. En web (react-native-web), esas
+ * mismas etiquetas se convierten en <img>/<video> del navegador, que NO
+ * pueden enviar cabeceras personalizadas — la petición llegaba sin token y
+ * el archivo no cargaba (foto/firma/video en blanco). Por eso en web el
+ * token se manda como query param en vez de cabecera; el backend acepta
+ * ambas formas en /api/archivos/:id/contenido.
+ */
+export const fuenteConAuth = (
+  uri: string,
+  headers: Record<string, string>
+): { uri: string; headers: Record<string, string> } => {
+  if (!uri.startsWith('http')) return { uri, headers: {} };
+  if (Platform.OS !== 'web') return { uri, headers };
+  const token = headers.Authorization?.replace('Bearer ', '');
+  if (!token) return { uri, headers: {} };
+  const separador = uri.includes('?') ? '&' : '?';
+  return { uri: `${uri}${separador}token=${encodeURIComponent(token)}`, headers: {} };
 };
 
 /** Evidencias que el servidor tiene asociadas a un formulario */
@@ -188,11 +213,11 @@ export const resolverFirmasRemotas = async (
 
   if (faltaBenef) {
     const encontrada = masReciente('beneficiario');
-    if (encontrada) resultado.beneficiario = { uri: urlDeArchivo(encontrada), headers };
+    if (encontrada) resultado.beneficiario = fuenteConAuth(urlDeArchivo(encontrada), headers);
   }
   if (faltaTec) {
     const encontrada = masReciente('tecnico');
-    if (encontrada) resultado.tecnico = { uri: urlDeArchivo(encontrada), headers };
+    if (encontrada) resultado.tecnico = fuenteConAuth(urlDeArchivo(encontrada), headers);
   }
 
   return resultado;

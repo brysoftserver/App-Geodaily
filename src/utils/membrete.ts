@@ -54,7 +54,7 @@ export const ENTIDADES: Record<MembreteVariante, {
     razonSocial1: 'AGROINDUSTRIAL CACAOTERA',
     razonSocial2: 'DE PUERTO RICO S.A.S.',
     nit: 'NIT. 902.073.443-4',
-    dependencia: 'DIRECCIÓN JURÍDICA',
+    dependencia: 'DIRECCIÓN TÉCNICA',
     direccion: 'Calle 17 No. 6H – 70 B. Siete de Agosto, Florencia (Caquetá) – Celular 3208618968,',
     email: 'agrocacaoterapr@gmail.com',
   },
@@ -66,7 +66,7 @@ export const ENTIDADES: Record<MembreteVariante, {
     razonSocial1: 'ASEMP GRUPO EMPRESARIAL',
     razonSocial2: 'ZOMAC S.A.S',
     nit: 'NIT. 901.211.874-4',
-    dependencia: 'DIRECCIÓN JURÍDICA',
+    dependencia: 'DIRECCIÓN TÉCNICA',
     direccion: 'Calle 21 No. 11 A – 54 B. La Consolata, Florencia (Caquetá) – Celular 3125429798,',
     email: 'interventoria.asemp@gmail.com',
   },
@@ -74,6 +74,94 @@ export const ENTIDADES: Record<MembreteVariante, {
 
 /** Retrocompatibilidad: `ENTIDAD` = entidad ejecutora (ACPR) */
 export const ENTIDAD = ENTIDADES.ejecucion;
+
+/**
+ * Los formatos oficiales (Nuevos_Formatos_10_Sept): cada uno agrega al
+ * membrete base de su entidad una franja de título y el código de control
+ * documental (PA./FO./Versión) que aparece en los PDF oficiales.
+ * Ingreso de Beneficiarios, Caracterización, Visita Técnica y Supervisión
+ * los firma ACPR ('ejecucion'); Interventoría, ASEMP — igual que ya
+ * distinguía `MembreteVariante`.
+ */
+export type TipoFormatoOficial =
+  | 'ingreso_beneficiarios'
+  | 'acta_compromiso'
+  | 'autorizacion_imagen'
+  | 'autorizacion_imagen_menor'
+  | 'consentimiento_datos'
+  | 'evaluacion_eca'
+  | 'caracterizacion'
+  | 'tecnica'
+  | 'supervision'
+  | 'interventoria';
+
+export const FORMATOS_OFICIALES: Record<TipoFormatoOficial, {
+  variante: MembreteVariante;
+  codigo: string;
+  version: string;
+  titulo: string;
+}> = {
+  ingreso_beneficiarios: {
+    variante: 'ejecucion',
+    codigo: 'PA. 2 FO. 31',
+    version: 'Versión 1',
+    titulo: 'FORMATO DE INGRESO DE BENEFICIARIOS',
+  },
+  acta_compromiso: {
+    variante: 'ejecucion',
+    codigo: 'PA. 2 FO. 30',
+    version: 'Versión 1',
+    titulo: 'FORMATO ACTA DE COMPROMISO PARA LA IMPLEMENTACIÓN DE UNIDADES PRODUCTORAS',
+  },
+  autorizacion_imagen: {
+    variante: 'ejecucion',
+    codigo: 'PA. 2 FO. 11',
+    version: 'Versión 1',
+    titulo: 'FORMATO DE AUTORIZACIÓN USO DE IMAGEN',
+  },
+  autorizacion_imagen_menor: {
+    variante: 'ejecucion',
+    codigo: 'PA. 2 FO. 11',
+    version: 'Versión 1',
+    titulo: 'FORMATO DE AUTORIZACIÓN USO DE IMAGEN',
+  },
+  consentimiento_datos: {
+    variante: 'ejecucion',
+    codigo: 'PA. 2 FO. 32',
+    version: 'Versión 1',
+    titulo: 'FORMATO DE CONSENTIMIENTO INFORMADO Y TRATAMIENTO DE DATOS PERSONALES',
+  },
+  evaluacion_eca: {
+    variante: 'ejecucion',
+    codigo: 'PA. 2 FO. 33',
+    version: 'Versión 1',
+    titulo: 'FORMATO DE EVALUACIÓN DE ESCUELA DE CAMPO PARA AGRICULTORES – ECA 1',
+  },
+  caracterizacion: {
+    variante: 'ejecucion',
+    codigo: 'PA. 2 FO. 34',
+    version: 'Versión 1',
+    titulo: 'FORMATO INFORME DE CARACTERIZACIÓN (VISITA 1)',
+  },
+  tecnica: {
+    variante: 'ejecucion',
+    codigo: 'PA. 2 FO. 35',
+    version: 'Versión 1',
+    titulo: 'FORMATO INFORME DE VISITA TÉCNICA',
+  },
+  supervision: {
+    variante: 'ejecucion',
+    codigo: 'PA. 2 FO. 36',
+    version: 'Versión 1',
+    titulo: 'FORMATO INFORME DE SUPERVISIÓN',
+  },
+  interventoria: {
+    variante: 'interventoria',
+    codigo: 'PA. 2 FO. 24',
+    version: 'Versión 1',
+    titulo: 'FORMATO INFORME DE INTERVENTORÍA',
+  },
+};
 
 /**
  * Apertura del documento: abre la tabla que envuelve TODO el contenido.
@@ -89,9 +177,13 @@ export const ENTIDAD = ENTIDADES.ejecucion;
  * `membreteCierreHtml()`.
  */
 export const membreteAperturaHtml = (
-  variante: MembreteVariante = 'ejecucion'
+  variante: MembreteVariante = 'ejecucion',
+  tipoFormato?: TipoFormatoOficial,
+  totalPaginas: number = 1,
+  paginaActual: number = 1
 ): string => {
   const ent = ENTIDADES[variante] ?? ENTIDADES.ejecucion;
+  const fmt = tipoFormato ? FORMATOS_OFICIALES[tipoFormato] : null;
   return `
   <table class="mb-doc">
     <thead>
@@ -99,19 +191,28 @@ export const membreteAperturaHtml = (
         <div class="mb-header">
           <table class="mb-header-tabla">
             <tr>
-              <td class="mb-logo-celda">
+              <td class="mb-logo-celda"${fmt ? ' rowspan="3"' : ''}>
                 <img src="${ent.logo}" alt="${ent.alt}" class="mb-logo" />
               </td>
-              <td class="mb-razon">
+              <td class="mb-razon"${fmt ? ' rowspan="3"' : ''}>
                 <div>${ent.pais}</div>
                 <div>${ent.departamento}</div>
                 <div>${ent.razonSocial1}</div>
                 <div>${ent.razonSocial2}</div>
                 <div>${ent.nit}</div>
               </td>
-              <td class="mb-dependencia">${ent.dependencia}</td>
+              <td class="mb-dependencia"${fmt ? ' colspan="2"' : ''}>${ent.dependencia}</td>
             </tr>
+            ${fmt ? `
+            <tr>
+              <td class="mb-pagina" colspan="2">Página ${paginaActual} de ${totalPaginas}</td>
+            </tr>
+            <tr>
+              <td class="mb-codigo-celda">${fmt.codigo}</td>
+              <td class="mb-version-celda">${fmt.version}</td>
+            </tr>` : ''}
           </table>
+          ${fmt ? `<div class="mb-titulo">${fmt.titulo}</div>` : ''}
         </div>
       </td></tr>
     </thead>
@@ -174,6 +275,30 @@ export const membreteCss = (): string => `
   .mb-dependencia {
     width: 3.82cm; text-align: center;
     font-size: 9.5pt; font-weight: bold; color: #000;
+  }
+
+  /* Filas 2 y 3 de la columna de dependencia: página y código de control
+     documental (PA./FO. | Versión), solo en los formatos oficiales — cada
+     una es una celda de verdad, con sus propios bordes, tal como el
+     membrete oficial (no texto apilado dentro de una sola celda). */
+  .mb-pagina {
+    text-align: center;
+    font-size: 8pt; font-weight: bold; color: #000;
+  }
+  .mb-codigo-celda, .mb-version-celda {
+    width: 1.91cm; text-align: center;
+    font-size: 7pt; font-weight: bold; color: #000;
+  }
+
+  /* Franja de título del formato, justo debajo del encabezado — solo en
+     los 4 formatos oficiales (Nuevos_Formatos_10_Sept). */
+  .mb-titulo {
+    border: 1pt solid #000;
+    border-top: none;
+    text-align: center;
+    font-family: 'Arial Narrow', Arial, sans-serif;
+    font-size: 10pt; font-weight: bold; color: #000;
+    padding: 0.15cm;
   }
 
   /* Pie: solo texto centrado, sin filete (el membrete oficial no lo lleva) */

@@ -272,7 +272,7 @@ router.delete('/veredas/:id', authenticateToken, async (req, res) => {
 // Mapbox) que descargan estilos/teselas para caché offline generalmente no
 // soportan adjuntar un header Authorization personalizado en esas
 // peticiones. El estilo solo referencia fuentes de teselas ya públicas
-// (CartoDB, Esri) — no expone datos privados de la app.
+// (Esri) — no expone datos privados de la app.
 //
 // Reemplaza el antiguo intento de servir teselas vectoriales propias vía
 // /tesela (esa ruta nunca existió; QGIS no tiene datos base cargados —
@@ -285,18 +285,17 @@ const MAP_STYLES = {
     version: 8,
     name: 'GEODAILY - Relieve',
     sources: {
-      'carto-positron': {
+      'esri-light-gray': {
         type: 'raster',
-        // Sin {r}: convención de Leaflet que MapLibre nativo no sustituye.
-        tiles: ['https://a.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png'],
+        tiles: ['https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Light_Gray_Base/MapServer/tile/{z}/{y}/{x}'],
         tileSize: 256,
         minzoom: 0,
-        maxzoom: 19,
-        attribution: '© OpenStreetMap contributors, © CARTO',
+        maxzoom: 16,
+        attribution: '© Esri, HERE, Garmin, © OpenStreetMap contributors',
       },
     },
     layers: [
-      { id: 'carto-bg', source: 'carto-positron', type: 'raster', paint: { 'raster-opacity': 1 } },
+      { id: 'esri-bg', source: 'esri-light-gray', type: 'raster', paint: { 'raster-opacity': 1 } },
     ],
   },
   satelite: {

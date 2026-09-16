@@ -166,6 +166,15 @@ const crearEsquemaBase = async (): Promise<void> => {
           cedula TEXT NOT NULL DEFAULT '',
           tecnico_asignado_id TEXT,
           tecnico_asignado_nombre TEXT,
+          departamento TEXT,
+          municipio TEXT,
+          telefono TEXT,
+          nombre_predio TEXT,
+          area_predio REAL,
+          latitud REAL,
+          longitud REAL,
+          correo_electronico TEXT,
+          calidad_predio TEXT,
           created_at TEXT NOT NULL,
           updated_at TEXT NOT NULL
         );
@@ -396,10 +405,22 @@ export const getEvidenciasPurgables = async (
  * Los formularios que entran del servidor se marcan como sincronizados
  * para que no vuelvan a encolarse para subida.
  *
+ * También purga localmente los formularios que el servidor ya NO tiene
+ * (p. ej. borrados por un admin desde otro dispositivo) — así un
+ * dispositivo que los había cacheado antes deja de mostrarlos como
+ * "fantasmas" tras el próximo refresco. Solo se purgan filas ya
+ * `sincronizado = 1`; un borrador offline pendiente de subir jamás se
+ * toca aunque no aparezca en `remotos`. Si se pasa `usuarioId`, la purga
+ * se limita a las filas de ese usuario, porque `remotos` en ese caso solo
+ * representa SU alcance completo (p. ej. la pantalla de técnico solo trae
+ * sus propios formularios) — sin ese límite se borrarían por error datos
+ * de otros usuarios que el fetch actual ni siquiera consultó.
+ *
  * @returns cuántos formularios se insertaron o actualizaron desde el servidor
  */
 export const mergeFormulariosDelServidor = async (
-  remotos: Formulario[]
+  remotos: Formulario[],
+  opts?: { usuarioId?: string }
 ): Promise<number> => {
   const database = await ensureDb();
   if (!database) {
@@ -473,6 +494,29 @@ export const mergeFormulariosDelServidor = async (
   if (aplicados > 0) {
     console.log(`[DB] ${aplicados} formulario(s) traídos del servidor`);
   }
+
+  try {
+    const idsRemotos = new Set(remotos.map((r) => r.id));
+    const sincronizadosLocales = await database.getAllAsync<{ id: string }>(
+      opts?.usuarioId
+        ? 'SELECT id FROM formularios WHERE sincronizado = 1 AND usuario_id = ?'
+        : 'SELECT id FROM formularios WHERE sincronizado = 1',
+      opts?.usuarioId ? [opts.usuarioId] : ([] as any)
+    );
+    let purgados = 0;
+    for (const row of sincronizadosLocales) {
+      if (!idsRemotos.has(row.id)) {
+        await database.runAsync('DELETE FROM formularios WHERE id = ?', [row.id]);
+        purgados++;
+      }
+    }
+    if (purgados > 0) {
+      console.log(`[DB] ${purgados} formulario(s) locales purgados (ya no existen en el servidor)`);
+    }
+  } catch (e) {
+    console.warn('[DB] Error purgando formularios eliminados del servidor:', e);
+  }
+
   return aplicados;
 };
 
@@ -586,13 +630,15 @@ export const saveFotoLocal = async (
   id: string,
   formularioId: string,
   uri: string,
-  coordenadas?: Coordenadas
+  coordenadas?: Coordenadas,
+  beneficiario?: { cedula?: string; nombre?: string },
+  tipoFormulario?: string
 ): Promise<void> => {
   const database = await ensureDb();
   if (!database) return;
   await database.runAsync(
-    `INSERT OR REPLACE INTO fotos_locales (id, formulario_id, uri, latitud, longitud, altitud, timestamp)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT OR REPLACE INTO fotos_locales (id, formulario_id, uri, latitud, longitud, altitud, timestamp, beneficiario_cedula, beneficiario_nombre, tipo_formulario)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       id,
       formularioId,
@@ -601,6 +647,9 @@ export const saveFotoLocal = async (
       coordenadas?.longitud || null,
       coordenadas?.altitud || null,
       new Date().toISOString(),
+      beneficiario?.cedula || null,
+      beneficiario?.nombre || null,
+      tipoFormulario || null,
     ]
   );
 };
@@ -673,13 +722,15 @@ export const saveVideoLocal = async (
   id: string,
   formularioId: string,
   uri: string,
-  coordenadas?: Coordenadas
+  coordenadas?: Coordenadas,
+  beneficiario?: { cedula?: string; nombre?: string },
+  tipoFormulario?: string
 ): Promise<void> => {
   const database = await ensureDb();
   if (!database) return;
   await database.runAsync(
-    `INSERT OR REPLACE INTO videos_locales (id, formulario_id, uri, latitud, longitud, timestamp)
-     VALUES (?, ?, ?, ?, ?, ?)`,
+    `INSERT OR REPLACE INTO videos_locales (id, formulario_id, uri, latitud, longitud, timestamp, beneficiario_cedula, beneficiario_nombre, tipo_formulario)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       id,
       formularioId,
@@ -687,6 +738,9 @@ export const saveVideoLocal = async (
       coordenadas?.latitud || null,
       coordenadas?.longitud || null,
       new Date().toISOString(),
+      beneficiario?.cedula || null,
+      beneficiario?.nombre || null,
+      tipoFormulario || null,
     ]
   );
 };
@@ -1088,13 +1142,47 @@ export const runMigrations = async (): Promise<void> => {
     // Migración: referencia remota de las evidencias en MinIO.
     // La `uri` local solo sirve en el teléfono que capturó la evidencia;
     // guardar el id de archivo y la ruta permite recuperarla desde otro.
+    //
+    // Además se guarda el contexto del beneficiario/formulario en el momento
+    // de la captura (beneficiario_cedula, beneficiario_nombre, tipo_formulario):
+    // sin esto, el barrido de "evidencias huérfanas" (subirEvidenciasHuerfanas
+    // en SyncContext) reintentaba la subida sin ese contexto y el backend
+    // guardaba la foto en la carpeta genérica del técnico en vez de la del
+    // beneficiario correspondiente.
     for (const tabla of ['fotos_locales', 'videos_locales']) {
-      for (const columna of ['archivo_id TEXT', 'ruta_remota TEXT']) {
+      for (const columna of [
+        'archivo_id TEXT',
+        'ruta_remota TEXT',
+        'beneficiario_cedula TEXT',
+        'beneficiario_nombre TEXT',
+        'tipo_formulario TEXT',
+      ]) {
         try {
           await db.runAsync(`ALTER TABLE ${tabla} ADD COLUMN ${columna}`);
         } catch {
           // Ya existe, ignorar
         }
+      }
+    }
+
+    // Migración: columnas de la base verificada de 300 beneficiarios
+    // (ubicación administrativa, contacto y predio) — instalaciones previas
+    // a esta versión solo tenían corregimiento/vereda/nombre/cedula.
+    for (const columna of [
+      'departamento TEXT',
+      'municipio TEXT',
+      'telefono TEXT',
+      'nombre_predio TEXT',
+      'area_predio REAL',
+      'latitud REAL',
+      'longitud REAL',
+      'correo_electronico TEXT',
+      'calidad_predio TEXT',
+    ]) {
+      try {
+        await db.runAsync(`ALTER TABLE beneficiarios ADD COLUMN ${columna}`);
+      } catch {
+        // Ya existe, ignorar
       }
     }
 

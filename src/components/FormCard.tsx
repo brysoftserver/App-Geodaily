@@ -8,6 +8,7 @@ import {
   Text,
   TouchableOpacity,
   StyleSheet,
+  ActivityIndicator,
 } from 'react-native';
 import { COLORS, FONTS, SPACING, BORDER_RADIUS, SHADOWS } from '../theme';
 import { Formulario } from '../types';
@@ -29,9 +30,22 @@ interface FormCardProps {
   onRetry?: (formulario: Formulario) => void;
   /** Estado de revisión jerárquica (novedades / vistos buenos) */
   estadoRevision?: EstadoRevisionCard;
+  /** Descargar fotos/videos del formulario como .zip — solo si ya sincronizó */
+  onDownloadMedia?: (formulario: Formulario) => void;
+  /** true mientras se arma el paquete de este formulario (deshabilita el botón) */
+  downloadingMedia?: boolean;
 }
 
-const FormCard: React.FC<FormCardProps> = ({ formulario, onPress, onViewPDF, failed, onRetry, estadoRevision }) => {
+const FormCard: React.FC<FormCardProps> = ({
+  formulario,
+  onPress,
+  onViewPDF,
+  failed,
+  onRetry,
+  estadoRevision,
+  onDownloadMedia,
+  downloadingMedia,
+}) => {
   const getTipoColor = () => {
     return formulario.tipo === 'visita_tecnica' ? COLORS.roleTecnico : COLORS.primary;
   };
@@ -119,13 +133,33 @@ const FormCard: React.FC<FormCardProps> = ({ formulario, onPress, onViewPDF, fai
         )}
       </View>
 
-      {onViewPDF && formulario.pdf_url && (
-        <TouchableOpacity
-          style={styles.pdfButton}
-          onPress={() => onViewPDF(formulario)}
-        >
-          <Text style={styles.pdfButtonText}>PDF</Text>
-        </TouchableOpacity>
+      {((onViewPDF && formulario.pdf_url) || (onDownloadMedia && formulario.sincronizado)) && (
+        <View style={styles.sideActions}>
+          {onViewPDF && formulario.pdf_url && (
+            <TouchableOpacity
+              style={styles.pdfButton}
+              onPress={() => onViewPDF(formulario)}
+            >
+              <Text style={styles.pdfButtonText}>PDF</Text>
+            </TouchableOpacity>
+          )}
+          {onDownloadMedia && formulario.sincronizado && (
+            <TouchableOpacity
+              style={[
+                styles.mediaButton,
+                onViewPDF && formulario.pdf_url && styles.mediaButtonConDivisor,
+              ]}
+              onPress={() => onDownloadMedia(formulario)}
+              disabled={downloadingMedia}
+            >
+              {downloadingMedia ? (
+                <ActivityIndicator size="small" color={COLORS.primary} />
+              ) : (
+                <Text style={styles.mediaButtonText}>📦{'\n'}Media</Text>
+              )}
+            </TouchableOpacity>
+          )}
+        </View>
       )}
     </TouchableOpacity>
   );
@@ -235,16 +269,38 @@ const styles = StyleSheet.create({
     color: COLORS.error,
     fontWeight: FONTS.weights.semibold,
   },
+  sideActions: {
+    width: 56,
+  },
   pdfButton: {
+    flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
-    paddingHorizontal: SPACING.md,
+    paddingHorizontal: SPACING.sm,
     backgroundColor: COLORS.error + '10',
   },
   pdfButtonText: {
     fontSize: FONTS.sizes.xs,
     fontWeight: FONTS.weights.bold,
     color: COLORS.error,
+  },
+  mediaButton: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: SPACING.xs,
+    backgroundColor: COLORS.primary + '10',
+  },
+  mediaButtonConDivisor: {
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: COLORS.divider,
+  },
+  mediaButtonText: {
+    fontSize: 10,
+    fontWeight: FONTS.weights.bold,
+    color: COLORS.primary,
+    textAlign: 'center',
+    lineHeight: 12,
   },
 });
 

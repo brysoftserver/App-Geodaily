@@ -20,6 +20,7 @@ import {
 } from 'react-native';
 import { useVideoPlayer, VideoView } from 'expo-video';
 import { COLORS, FONTS, SPACING, BORDER_RADIUS } from '../theme';
+import { fuenteConAuth } from '../services/archivos.service';
 
 type VideoPlayerModalProps = {
   /** URI del video (file:// local o https:// remoto). null cierra el modal. */
@@ -48,9 +49,7 @@ const VideoPlayerModal: React.FC<VideoPlayerModalProps> = ({
   // los locales (file://) se abren directamente.
   const fuente = React.useMemo(() => {
     if (!uri) return null;
-    return uri.startsWith('http') && headers && Object.keys(headers).length > 0
-      ? { uri, headers }
-      : { uri };
+    return fuenteConAuth(uri, headers || {});
   }, [uri, headers]);
 
   const player = useVideoPlayer(fuente, (p) => {

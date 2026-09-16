@@ -37,15 +37,36 @@ router.post('/subir', authenticateToken, upload.single('archivo'), async (req, r
     // ─── Resolver datos del beneficiario para carpeta en MinIO ───
     let benefItem = null;
     let benefNombre = null;
-    if (beneficiario_cedula) {
+    let cedulaResuelta = beneficiario_cedula || null;
+    let tipoFormularioResuelto = tipo_formulario || null;
+
+    // Red de seguridad: ver nota en photos.js — si no llegó la cédula pero
+    // sí el formulario_id, se resuelve consultando el formulario.
+    if (!cedulaResuelta && formulario_id) {
+      try {
+        const formulario = await db.queryOne(
+          `SELECT tipo, beneficiario_json->>'cedula' AS cedula FROM formularios WHERE id = $1`,
+          [formulario_id]
+        );
+        if (formulario) {
+          cedulaResuelta = formulario.cedula || null;
+          tipoFormularioResuelto = tipoFormularioResuelto || formulario.tipo || null;
+        }
+      } catch (lookupErr) {
+        console.warn('[Videos] Error resolviendo beneficiario desde formulario:', lookupErr.message);
+      }
+    }
+
+    if (cedulaResuelta) {
       try {
         const benef = await db.queryOne(
           'SELECT item, nombre_completo FROM beneficiarios WHERE cedula = $1',
-          [beneficiario_cedula.trim()]
+          [cedulaResuelta.trim()]
         );
         if (benef) {
           benefItem = benef.item;
-          benefNombre = beneficiario_nombre || benef.nombre_completo;
+          // Ver nota en photos.js: el nombre oficial siempre gana.
+          benefNombre = benef.nombre_completo || beneficiario_nombre;
         }
       } catch (lookupErr) {
         console.warn('[Videos] Error buscando beneficiario:', lookupErr.message);
@@ -63,7 +84,7 @@ router.post('/subir', authenticateToken, upload.single('archivo'), async (req, r
         contentType: req.file.mimetype,
         beneficiarioItem: benefItem,
         beneficiarioNombre: benefNombre,
-        tipoFormulario: tipo_formulario,
+        tipoFormulario: tipoFormularioResuelto,
       }
     );
 
@@ -73,7 +94,7 @@ router.post('/subir', authenticateToken, upload.single('archivo'), async (req, r
     let minioPath;
     if (benefItem && benefNombre) {
       const subpath = storage.getBeneficiarySubpath(benefItem, benefNombre);
-      const formFolder = storage.getFormTypeFolder(tipo_formulario);
+      const formFolder = storage.getFormTypeFolder(tipoFormularioResuelto);
       minioPath = formFolder ? `${basePath}/${subpath}/${formFolder}/videos/${filename}` : `${basePath}/${subpath}/videos/${filename}`;
     } else {
       minioPath = `${basePath}/videos/${filename}`;
@@ -82,7 +103,7 @@ router.post('/subir', authenticateToken, upload.single('archivo'), async (req, r
     const metadataExtra = {
       descripcion: descripcion || null,
       beneficiario_item: benefItem,
-      beneficiario_cedula: beneficiario_cedula || null,
+      beneficiario_cedula: cedulaResuelta || null,
       // Ver nota en photos.js: la evidencia suele subirse antes que el
       // formulario, así que el vínculo también se guarda en metadata.
       formulario_id: formulario_id || null,

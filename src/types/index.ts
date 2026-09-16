@@ -273,6 +273,17 @@ export interface BeneficiarioDB {
   cedula: string;
   tecnico_asignado_id?: string | null;
   tecnico_asignado_nombre?: string | null;
+  departamento?: string | null;
+  municipio?: string | null;
+  telefono?: string | null;
+  nombre_predio?: string | null;
+  area_predio?: number | null;
+  latitud?: number | null;
+  longitud?: number | null;
+  /** Capturado al diligenciar el Acta de Compromiso (Otros Formatos). */
+  correo_electronico?: string | null;
+  /** Capturado al diligenciar el Acta de Compromiso (Otros Formatos). */
+  calidad_predio?: 'propietario' | 'poseedor' | 'otro' | null;
   created_at: string;
   updated_at: string;
 }

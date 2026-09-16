@@ -6,7 +6,8 @@
 // ============================================================
 
 import React, { useState, useEffect } from 'react';
-import { View, Text, TouchableOpacity, StyleSheet } from 'react-native';
+import { View, Text, TouchableOpacity, StyleSheet, ScrollView } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { COLORS, FONTS, SPACING, BORDER_RADIUS, SHADOWS } from '../../theme';
 import { contarBorradores } from '../../store/FormDraftStore';
@@ -24,6 +25,7 @@ type SeleccionarTipoProps = {
 
 const SeleccionarTipoFormulario: React.FC<SeleccionarTipoProps> = ({ navigation, route }) => {
   const { setBeneficiario } = useForm();
+  const insets = useSafeAreaInsets();
   const [borradorCount, setBorradorCount] = useState(0);
 
   const beneficiario = route?.params?.beneficiario;
@@ -51,7 +53,11 @@ const SeleccionarTipoFormulario: React.FC<SeleccionarTipoProps> = ({ navigation,
   }, [navigation]);
 
   return (
-    <View style={styles.container}>
+    <ScrollView
+      style={styles.container}
+      contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + SPACING.xl }]}
+      showsVerticalScrollIndicator={false}
+    >
       {beneficiario && (
         <View style={styles.beneficiarioBanner}>
           <Text style={styles.beneficiarioBannerIcon}>👤</Text>
@@ -120,7 +126,22 @@ const SeleccionarTipoFormulario: React.FC<SeleccionarTipoProps> = ({ navigation,
           <Text style={styles.arrow}>›</Text>
         </View>
       </TouchableOpacity>
-    </View>
+
+      <TouchableOpacity
+        style={[styles.card, { borderLeftColor: COLORS.secondary }]}
+        onPress={() => navigation.navigate('OtrosFormatos', { beneficiario })}
+        activeOpacity={0.7}
+      >
+        <Text style={styles.cardIcon}>🗂️</Text>
+        <View style={styles.cardContent}>
+          <Text style={styles.cardTitle}>Otros Formatos</Text>
+          <Text style={styles.cardDesc}>
+            Ingreso de beneficiarios, actas, autorizaciones y consentimientos
+          </Text>
+        </View>
+        <Text style={styles.arrow}>›</Text>
+      </TouchableOpacity>
+    </ScrollView>
   );
 };
 
@@ -128,61 +149,62 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: COLORS.background,
+  },
+  content: {
     padding: SPACING.lg,
-    justifyContent: 'center',
   },
   title: {
-    fontSize: FONTS.sizes.xl,
+    fontSize: FONTS.sizes.lg,
     fontWeight: FONTS.weights.bold,
     color: COLORS.textPrimary,
-    textAlign: 'center',
-    marginBottom: SPACING.xl,
+    marginBottom: SPACING.md,
   },
   card: {
     flexDirection: 'row',
     alignItems: 'center',
     backgroundColor: COLORS.surface,
-    borderRadius: BORDER_RADIUS.lg,
-    padding: SPACING.lg,
-    marginBottom: SPACING.md,
+    borderRadius: BORDER_RADIUS.md,
+    padding: SPACING.md,
+    marginBottom: SPACING.sm,
     borderLeftWidth: 4,
-    ...SHADOWS.md,
+    ...SHADOWS.sm,
   },
   cardIcon: {
-    fontSize: 36,
-    marginRight: SPACING.md,
+    fontSize: 24,
+    marginRight: SPACING.sm,
   },
   cardContent: {
     flex: 1,
   },
   cardTitle: {
-    fontSize: FONTS.sizes.lg,
-    fontWeight: FONTS.weights.bold,
+    fontSize: FONTS.sizes.md,
+    fontWeight: FONTS.weights.semibold,
     color: COLORS.textPrimary,
-    marginBottom: SPACING.xs,
   },
   cardDesc: {
-    fontSize: FONTS.sizes.sm,
+    fontSize: FONTS.sizes.xs,
     color: COLORS.textSecondary,
-    lineHeight: 20,
+    marginTop: 2,
+    lineHeight: 16,
   },
   arrow: {
-    fontSize: 28,
+    fontSize: 22,
     color: COLORS.textLight,
+    marginLeft: SPACING.xs,
   },
   badgeContainer: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: SPACING.sm,
+    gap: SPACING.xs,
   },
   badge: {
     backgroundColor: COLORS.warning,
-    minWidth: 24,
-    height: 24,
-    borderRadius: 12,
+    minWidth: 20,
+    height: 20,
+    borderRadius: 10,
     justifyContent: 'center',
     alignItems: 'center',
-    paddingHorizontal: 6,
+    paddingHorizontal: 5,
   },
   badgeText: {
     color: '#fff',
@@ -195,14 +217,14 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     backgroundColor: COLORS.secondary + '15',
     borderRadius: BORDER_RADIUS.md,
-    padding: SPACING.md,
-    marginBottom: SPACING.lg,
+    padding: SPACING.sm,
+    marginBottom: SPACING.md,
     borderWidth: 1,
     borderColor: COLORS.secondary + '30',
   },
   beneficiarioBannerIcon: {
-    fontSize: 32,
-    marginRight: SPACING.md,
+    fontSize: 26,
+    marginRight: SPACING.sm,
   },
   beneficiarioBannerInfo: {
     flex: 1,
@@ -215,13 +237,13 @@ const styles = StyleSheet.create({
     letterSpacing: 0.5,
   },
   beneficiarioBannerName: {
-    fontSize: FONTS.sizes.lg,
+    fontSize: FONTS.sizes.md,
     fontWeight: FONTS.weights.bold,
     color: COLORS.textPrimary,
     marginTop: 2,
   },
   beneficiarioBannerDetail: {
-    fontSize: FONTS.sizes.sm,
+    fontSize: FONTS.sizes.xs,
     color: COLORS.textSecondary,
     marginTop: 1,
   },

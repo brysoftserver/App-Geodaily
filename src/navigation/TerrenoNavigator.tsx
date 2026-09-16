@@ -19,6 +19,13 @@ import FirmaBiometricaScreen from '../screens/terreno/FirmaBiometricaScreen';
 import FormularioListScreen from '../screens/terreno/FormularioListScreen';
 import FormularioDetailScreen from '../screens/terreno/FormularioDetailScreen';
 import FormulariosIncompletosScreen from '../screens/terreno/FormulariosIncompletosScreen';
+import OtrosFormatosScreen from '../screens/terreno/OtrosFormatosScreen';
+import FormatoIngresoBeneficiariosScreen from '../screens/terreno/FormatoIngresoBeneficiariosScreen';
+import ActaCompromisoScreen from '../screens/terreno/ActaCompromisoScreen';
+import AutorizacionImagenScreen from '../screens/terreno/AutorizacionImagenScreen';
+import AutorizacionImagenMenorScreen from '../screens/terreno/AutorizacionImagenMenorScreen';
+import ConsentimientoDatosScreen from '../screens/terreno/ConsentimientoDatosScreen';
+import EvaluacionEcaScreen from '../screens/terreno/EvaluacionEcaScreen';
 import CalendarioScreen from '../screens/CalendarioGlobalScreen';
 import MapaScreen from '../screens/terreno/MapaScreen';
 import CapacitacionScreen from '../screens/terreno/CapacitacionScreen';
@@ -46,6 +53,13 @@ export type TerrenoStackParamList = {
   } | undefined;
   FormularioDetail: { formulario: Formulario };
   FormulariosIncompletos: undefined;
+  OtrosFormatos: { beneficiario?: DatosBeneficiario } | undefined;
+  FormatoIngresoBeneficiarios: undefined;
+  ActaCompromiso: { beneficiario?: DatosBeneficiario } | undefined;
+  AutorizacionImagen: { beneficiario?: DatosBeneficiario } | undefined;
+  AutorizacionImagenMenor: { beneficiario?: DatosBeneficiario } | undefined;
+  ConsentimientoDatos: { beneficiario?: DatosBeneficiario } | undefined;
+  EvaluacionEca: { beneficiario?: DatosBeneficiario } | undefined;
   TerrenoCalendario: undefined;
   TerrenoMapa: undefined;
   TerrenoCapacitacion: undefined;
@@ -141,6 +155,41 @@ const TerrenoNavigator: React.FC = () => {
         name="FormulariosIncompletos"
         component={FormulariosIncompletosScreen}
         options={{ title: 'Formularios Incompletos' }}
+      />
+      <Stack.Screen
+        name="OtrosFormatos"
+        component={OtrosFormatosScreen as any}
+        options={{ title: 'Otros Formatos' }}
+      />
+      <Stack.Screen
+        name="FormatoIngresoBeneficiarios"
+        component={FormatoIngresoBeneficiariosScreen}
+        options={{ title: 'Ingreso de Beneficiarios' }}
+      />
+      <Stack.Screen
+        name="ActaCompromiso"
+        component={ActaCompromisoScreen as any}
+        options={{ title: 'Acta de Compromiso' }}
+      />
+      <Stack.Screen
+        name="AutorizacionImagen"
+        component={AutorizacionImagenScreen as any}
+        options={{ title: 'Autorización Uso de Imagen' }}
+      />
+      <Stack.Screen
+        name="AutorizacionImagenMenor"
+        component={AutorizacionImagenMenorScreen as any}
+        options={{ title: 'Autorización — Menores de Edad' }}
+      />
+      <Stack.Screen
+        name="ConsentimientoDatos"
+        component={ConsentimientoDatosScreen as any}
+        options={{ title: 'Consentimiento y Tratamiento de Datos' }}
+      />
+      <Stack.Screen
+        name="EvaluacionEca"
+        component={EvaluacionEcaScreen as any}
+        options={{ title: 'Evaluación ECA 1' }}
       />
       <Stack.Screen
         name="TerrenoCalendario"

@@ -23,6 +23,7 @@ import { useSync } from '../../store/SyncContext';
 import { getFormulariosLocales, mergeFormulariosDelServidor } from '../../services/database';
 import { fetchFormulariosDelServidor } from '../../services/formularios.service';
 import { fetchResumenRevisiones, EstadoRevision } from '../../services/revisiones.service';
+import { descargarPaqueteMedia } from '../../services/mediaPackage.service';
 import { Formulario } from '../../types';
 import FormCard from '../../components/FormCard';
 import LoadingSpinner from '../../components/LoadingSpinner';
@@ -57,6 +58,7 @@ const FormularioListScreen: React.FC<FormularioListScreenProps> = ({ navigation,
   const [isLoading, setIsLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [estadosRevision, setEstadosRevision] = useState<Record<string, EstadoRevision>>({});
+  const [descargandoMediaId, setDescargandoMediaId] = useState<string | null>(null);
 
   // Filtrar por beneficiario si viene como parámetro
   // `undefined` = sin filtro (historial completo). Una cadena VACÍA sí es un
@@ -107,15 +109,17 @@ const FormularioListScreen: React.FC<FormularioListScreenProps> = ({ navigation,
     try {
       const remotos = await fetchFormulariosDelServidor();
       if (remotos.length > 0) {
-        const aplicados = await mergeFormulariosDelServidor(remotos);
-        if (aplicados > 0) await publicarLocales();
+        await mergeFormulariosDelServidor(remotos, { usuarioId: user?.id });
+        // Siempre republicar: el merge puede haber purgado formularios
+        // borrados en el servidor aunque no haya insertado/actualizado nada.
+        await publicarLocales();
       }
     } catch (e) {
       console.warn('[Listado] No se pudo traer del servidor, usando local:', e);
     } finally {
       setRefreshing(false);
     }
-  }, [publicarLocales]);
+  }, [publicarLocales, user?.id]);
 
   useEffect(() => {
     loadForms();
@@ -141,6 +145,16 @@ const FormularioListScreen: React.FC<FormularioListScreenProps> = ({ navigation,
   const handleViewPDF = (formulario: Formulario) => {
     // Ahora manejado desde FormularioDetailScreen
     navigation.navigate('FormularioDetail', { formulario });
+  };
+
+  const handleDownloadMedia = async (formulario: Formulario) => {
+    if (descargandoMediaId) return; // evita doble toque mientras arma otro paquete
+    setDescargandoMediaId(formulario.id);
+    try {
+      await descargarPaqueteMedia(formulario);
+    } finally {
+      setDescargandoMediaId(null);
+    }
   };
 
   if (isLoading) {
@@ -196,6 +210,8 @@ const FormularioListScreen: React.FC<FormularioListScreenProps> = ({ navigation,
               failed={failedForms.includes(item.id)}
               onRetry={(f) => reintentarFormulario(f.id)}
               estadoRevision={estadosRevision[item.id]}
+              onDownloadMedia={handleDownloadMedia}
+              downloadingMedia={descargandoMediaId === item.id}
             />
           )}
           contentContainerStyle={[styles.listContent, { paddingBottom: insets.bottom + SPACING.xxl }]}

@@ -16,6 +16,7 @@ import { COLORS, FONTS, SPACING, BORDER_RADIUS } from '../../theme';
 import { useForm } from '../../store/FormContext';
 import { getFormulariosLocales, mergeFormulariosDelServidor } from '../../services/database';
 import { fetchFormulariosDelServidor } from '../../services/formularios.service';
+import { descargarPaqueteMedia } from '../../services/mediaPackage.service';
 import { Formulario, FiltrosFormulario } from '../../types';
 import FormCard from '../../components/FormCard';
 import FilterBar from '../../components/FilterBar';
@@ -40,6 +41,7 @@ const FormularioListScreen: React.FC<FormularioListScreenProps> = ({ navigation 
   const { formularios, cargarFormularios } = useForm();
   const [isLoading, setIsLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [descargandoMediaId, setDescargandoMediaId] = useState<string | null>(null);
   const [filters, setFilters] = useState<FiltrosFormulario>({
     tipo: 'all',
     sincronizado: 'all',
@@ -62,10 +64,10 @@ const FormularioListScreen: React.FC<FormularioListScreenProps> = ({ navigation 
     try {
       const remotos = await fetchFormulariosDelServidor();
       if (remotos.length > 0) {
-        const aplicados = await mergeFormulariosDelServidor(remotos);
-        if (aplicados > 0) {
-          cargarFormularios(await getFormulariosLocales());
-        }
+        await mergeFormulariosDelServidor(remotos);
+        // Siempre recargar: el merge puede haber purgado formularios
+        // borrados en el servidor aunque no haya insertado/actualizado nada.
+        cargarFormularios(await getFormulariosLocales());
       }
     } catch (e) {
       console.warn('[Supervision Listado] No se pudo traer del servidor:', e);
@@ -118,6 +120,16 @@ const FormularioListScreen: React.FC<FormularioListScreenProps> = ({ navigation 
 
   const handleViewPDF = (formulario: Formulario) => {
     navigation.navigate('SupervisionFormularioDetail', { formulario });
+  };
+
+  const handleDownloadMedia = async (formulario: Formulario) => {
+    if (descargandoMediaId) return;
+    setDescargandoMediaId(formulario.id);
+    try {
+      await descargarPaqueteMedia(formulario);
+    } finally {
+      setDescargandoMediaId(null);
+    }
   };
 
   if (isLoading) {
@@ -178,6 +190,8 @@ const FormularioListScreen: React.FC<FormularioListScreenProps> = ({ navigation 
               formulario={item}
               onPress={handleFormPress}
               onViewPDF={handleViewPDF}
+              onDownloadMedia={handleDownloadMedia}
+              downloadingMedia={descargandoMediaId === item.id}
             />
           )}
           contentContainerStyle={styles.listContent}

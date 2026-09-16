@@ -32,6 +32,7 @@ import {
   resolverEvidenciasRemotas,
   cabecerasDeArchivo,
   resolverFirmasRemotas,
+  fuenteConAuth,
   FirmaResuelta,
 } from '../../services/archivos.service';
 import { fetchDocumentosDeFormulario, DocumentoDeFormulario } from '../../services/documentos.service';
@@ -42,6 +43,7 @@ import * as Print from 'expo-print';
 import * as Sharing from 'expo-sharing';
 import * as IntentLauncher from 'expo-intent-launcher';
 import { convertirFotosAHTML, generarSelloBiometrico } from '../../services/pdfLocal.service';
+import { abrirVentanaDeCarga, imprimirHtmlEnVentana } from '../../utils/printWeb';
 import { useAuth } from '../../store/AuthContext';
 import {
   registrarRevision,
@@ -58,6 +60,7 @@ import SignaturePad from '../../components/SignaturePad';
 import MapViewOffline from '../../components/MapViewOffline';
 import { uploadPhoto } from '../../services/photos.service';
 import { uploadVideo } from '../../services/videos.service';
+import { descargarPaqueteMedia } from '../../services/mediaPackage.service';
 import { subirDocumento } from '../../services/documentos.service';
 import { subirFirma } from '../../services/firmas.service';
 
@@ -458,12 +461,11 @@ const SeccionFinalRevisor: React.FC<{ formulario: Formulario; revisiones: Revisi
   const resolverFirmaValor = (valor: string | null): { uri: string; headers: Record<string, string> } | null => {
     if (!valor) return null;
     if (valor.startsWith('data:')) return { uri: valor, headers: {} };
-    return { uri: urlDeArchivoId(valor), headers: headersArchivo };
+    return fuenteConAuth(urlDeArchivoId(valor), headersArchivo);
   };
 
   /** Fuente de imagen que agrega las cabeceras de auth solo cuando la uri viene del servidor (evidencia ya guardada). */
-  const fuenteArchivoLocal = (uri: string): { uri: string; headers?: Record<string, string> } =>
-    uri.startsWith('http') ? { uri, headers: headersArchivo } : { uri };
+  const fuenteArchivoLocal = (uri: string) => fuenteConAuth(uri, headersArchivo);
 
   /**
    * Si este rol ya había guardado evidencia antes, la trae al formulario
@@ -807,7 +809,7 @@ const SeccionFinalRevisor: React.FC<{ formulario: Formulario; revisiones: Revisi
                 <View key={v.id} style={finalStyles.videoThumbWrap}>
                   <TouchableOpacity
                     style={finalStyles.videoThumb}
-                    onPress={() => setVideoPreview({ uri: v.uri, headers: v.uri.startsWith('http') ? headersArchivo : {} })}
+                    onPress={() => setVideoPreview(fuenteConAuth(v.uri, headersArchivo))}
                     disabled={v.subiendo}
                     activeOpacity={0.8}
                   >
@@ -993,7 +995,7 @@ const SeccionFinalRevisor: React.FC<{ formulario: Formulario; revisiones: Revisi
             {!!e.fotos_json?.length && (
               <ScrollView horizontal showsHorizontalScrollIndicator={false} style={finalStyles.fotosRow}>
                 {e.fotos_json.map((f, idx) => {
-                  const fuente = f.archivo_id ? { uri: urlDeArchivoId(f.archivo_id), headers: headersArchivo } : { uri: f.uri || '' };
+                  const fuente = f.archivo_id ? fuenteConAuth(urlDeArchivoId(f.archivo_id), headersArchivo) : { uri: f.uri || '', headers: {} };
                   return (
                     <TouchableOpacity
                       key={idx}
@@ -1015,7 +1017,7 @@ const SeccionFinalRevisor: React.FC<{ formulario: Formulario; revisiones: Revisi
                     onPress={() =>
                       setVideoPreview(
                         v.archivo_id
-                          ? { uri: urlDeArchivoId(v.archivo_id), headers: headersArchivo }
+                          ? fuenteConAuth(urlDeArchivoId(v.archivo_id), headersArchivo)
                           : { uri: v.uri || '', headers: {} }
                       )
                     }
@@ -1294,6 +1296,7 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
   const mostrarSeccionFinalRevisor = modo === 'campo';
   const { revisiones, cargando: cargandoRevisiones, recargar: recargarRevisiones } = useRevisiones(formulario.id);
   const [generatingPdf, setGeneratingPdf] = useState(false);
+  const [descargandoMedia, setDescargandoMedia] = useState(false);
   const [pdfUri, setPdfUri] = useState<string | null>(null);
   const [showPdf, setShowPdf] = useState(false);
   /** Evidencia abierta en visor ampliado (null = cerrado) */
@@ -1325,8 +1328,7 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
   const evidencias = evidenciasRemotas ?? formulario.fotos ?? [];
   /** Una evidencia servida por la API necesita la cabecera Authorization */
   const fuenteEvidencia = useCallback(
-    (uri: string) =>
-      uri.startsWith('http') ? { uri, headers: authHeaders } : { uri },
+    (uri: string) => fuenteConAuth(uri, authHeaders),
     [authHeaders]
   );
 
@@ -1623,6 +1625,19 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
   // Antes solo la Encuesta Social AgroAmbiental pasaba por él: las visitas
   // técnicas caían al generador de esta pantalla, que no lleva membrete —
   // por eso el formato institucional no salía en el PDF generado.
+  /**
+   * En web no existe forma de generar un archivo PDF real (expo-print no
+   * está implementado ahí — ver `utils/printWeb.ts`): en su lugar se abre
+   * el documento HTML en una pestaña aparte y se dispara la impresión del
+   * navegador sobre ese contenido; el usuario elige "Guardar como PDF"
+   * para descargarlo. Usada por "Ver PDF" y "Descargar PDF" en web.
+   */
+  const mostrarPdfEnNavegador = async (ventana: Window | null) => {
+    const { construirHtmlFormulario } = await import('../../services/pdfLocal.service');
+    const html = await construirHtmlFormulario(formulario, evidencias);
+    imprimirHtmlEnVentana(ventana, html);
+  };
+
   const generarPdfUri = async (): Promise<string | null> => {
     try {
       const { generarPDFLocal } = await import('../../services/pdfLocal.service');
@@ -1631,7 +1646,7 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
       // el generador leía formulario.fotos directo, con rutas file:// que
       // solo existen en el teléfono que capturó la visita. Generar el PDF
       // desde cualquier otro rol/dispositivo daba un documento sin fotos.
-      const uri = await generarPDFLocal(formulario, undefined, evidencias);
+      const uri = await generarPDFLocal(formulario, evidencias);
       if (uri) return uri;
       console.warn('[PDF] El generador canónico falló, usando el de respaldo');
     } catch (e) {
@@ -1689,6 +1704,24 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
   };
 
   const handleViewPDF = async () => {
+    if (Platform.OS === 'web') {
+      // window.open() debe llamarse ANTES de cualquier await — si se abre
+      // después de esperar una promesa, el navegador la bloquea como pop-up.
+      const ventana = abrirVentanaDeCarga();
+      setGeneratingPdf(true);
+      try {
+        await mostrarPdfEnNavegador(ventana);
+      } catch (e) {
+        console.warn('[PDF] Error generando el documento en el navegador:', e);
+        Alert.alert(
+          'No se pudo generar el documento',
+          'Verifica que el navegador no haya bloqueado la ventana emergente e inténtalo de nuevo.'
+        );
+      } finally {
+        setGeneratingPdf(false);
+      }
+      return;
+    }
     setGeneratingPdf(true);
     try {
       // 1. Regenerar el PDF a partir de los datos del formulario.
@@ -1773,6 +1806,22 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
   };
 
   const handleDownloadPDF = async () => {
+    if (Platform.OS === 'web') {
+      const ventana = abrirVentanaDeCarga();
+      setGeneratingPdf(true);
+      try {
+        await mostrarPdfEnNavegador(ventana);
+      } catch (e) {
+        console.warn('[PDF] Error generando el documento en el navegador:', e);
+        Alert.alert(
+          'No se pudo generar el documento',
+          'Verifica que el navegador no haya bloqueado la ventana emergente e inténtalo de nuevo.'
+        );
+      } finally {
+        setGeneratingPdf(false);
+      }
+      return;
+    }
     setGeneratingPdf(true);
     try {
       const uri = await generarPdfUri();
@@ -1787,6 +1836,16 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
       Alert.alert('Error', 'No se pudo descargar el PDF');
     } finally {
       setGeneratingPdf(false);
+    }
+  };
+
+  const handleDownloadMedia = async () => {
+    if (descargandoMedia) return;
+    setDescargandoMedia(true);
+    try {
+      await descargarPaqueteMedia(formulario);
+    } finally {
+      setDescargandoMedia(false);
     }
   };
 
@@ -2250,6 +2309,19 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
             {generatingPdf ? 'Generando...' : '⬇️ Descargar PDF'}
           </Text>
         </TouchableOpacity>
+        {formulario.sincronizado && (
+          <TouchableOpacity
+            style={styles.mediaButton}
+            onPress={handleDownloadMedia}
+            disabled={descargandoMedia}
+          >
+            {descargandoMedia ? (
+              <ActivityIndicator size="small" color={COLORS.primary} />
+            ) : (
+              <Text style={styles.mediaButtonText}>📦 Media</Text>
+            )}
+          </TouchableOpacity>
+        )}
       </View>
     </View>
   );
@@ -2509,6 +2581,21 @@ const styles = StyleSheet.create({
   downloadButtonText: {
     color: COLORS.primary,
     fontSize: FONTS.sizes.md,
+    fontWeight: FONTS.weights.bold,
+  },
+  mediaButton: {
+    paddingVertical: SPACING.sm + 4,
+    paddingHorizontal: SPACING.md,
+    borderRadius: BORDER_RADIUS.md,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: COLORS.primary,
+    backgroundColor: COLORS.primary + '10',
+  },
+  mediaButtonText: {
+    color: COLORS.primary,
+    fontSize: FONTS.sizes.sm,
     fontWeight: FONTS.weights.bold,
   },
   // ---- Visor PDF embebido ----

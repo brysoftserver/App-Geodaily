@@ -46,6 +46,12 @@ const BaseDatosBeneficiariosScreen: React.FC<Props> = ({ navigation }) => {
   const [assignModalVisible, setAssignModalVisible] = useState(false);
   const [selectedBeneficiario, setSelectedBeneficiario] = useState<BeneficiarioDB | null>(null);
 
+  // Modal de editar beneficiario (no incluye cédula: no es editable)
+  const [editModalVisible, setEditModalVisible] = useState(false);
+  const [editCorregimiento, setEditCorregimiento] = useState('');
+  const [editVereda, setEditVereda] = useState('');
+  const [editNombre, setEditNombre] = useState('');
+
   // Modal de crear beneficiario
   const [createModalVisible, setCreateModalVisible] = useState(false);
   const [newItem, setNewItem] = useState('');
@@ -147,6 +153,38 @@ const BaseDatosBeneficiariosScreen: React.FC<Props> = ({ navigation }) => {
         },
       ]
     );
+  };
+
+  // --- EDITAR DATOS (corregimiento, vereda, nombre; cédula no editable) ---
+  const handleEdit = (beneficiario: BeneficiarioDB) => {
+    setSelectedBeneficiario(beneficiario);
+    setEditCorregimiento(beneficiario.corregimiento);
+    setEditVereda(beneficiario.vereda);
+    setEditNombre(beneficiario.nombre_completo);
+    setAssignModalVisible(false);
+    setEditModalVisible(true);
+  };
+
+  const confirmEdit = async () => {
+    if (!selectedBeneficiario) return;
+    if (!editCorregimiento.trim() || !editVereda.trim() || !editNombre.trim()) {
+      Alert.alert('Campos incompletos', 'Corregimiento, Vereda y Nombre son obligatorios');
+      return;
+    }
+    try {
+      await BeneficiariosDB.updateBeneficiario(selectedBeneficiario.item, {
+        corregimiento: editCorregimiento.trim().toUpperCase(),
+        vereda: editVereda.trim(),
+        nombre_completo: editNombre.trim(),
+      });
+      setEditModalVisible(false);
+      setSelectedBeneficiario(null);
+      await loadData();
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      console.error('[BaseDatosBeneficiarios] Error editando:', msg);
+      Alert.alert('Error', `No se pudo actualizar el beneficiario: ${msg}`);
+    }
   };
 
   // --- ELIMINAR (long-press) ---
@@ -382,6 +420,15 @@ const BaseDatosBeneficiariosScreen: React.FC<Props> = ({ navigation }) => {
               </Text>
             )}
 
+            {selectedBeneficiario && (
+              <TouchableOpacity
+                style={styles.editButton}
+                onPress={() => handleEdit(selectedBeneficiario)}
+              >
+                <Text style={styles.editButtonText}>✏️ Editar datos (corregimiento, vereda, nombre)</Text>
+              </TouchableOpacity>
+            )}
+
             {selectedBeneficiario?.tecnico_asignado_nombre && (
               <TouchableOpacity
                 style={styles.unassignButton}
@@ -420,6 +467,71 @@ const BaseDatosBeneficiariosScreen: React.FC<Props> = ({ navigation }) => {
             >
               <Text style={styles.modalCloseText}>Cerrar</Text>
             </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
+      {/* MODAL — Editar datos del beneficiario (cédula no editable) */}
+      <Modal
+        visible={editModalVisible}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setEditModalVisible(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <Text style={styles.modalTitle}>Editar beneficiario</Text>
+            {selectedBeneficiario && (
+              <Text style={styles.modalSubtitle}>Item {selectedBeneficiario.item}</Text>
+            )}
+
+            <Text style={styles.inputLabel}>Corregimiento</Text>
+            <TextInput
+              style={styles.input}
+              placeholder="Ej: RIO NEGRO"
+              placeholderTextColor={COLORS.textLight}
+              value={editCorregimiento}
+              onChangeText={setEditCorregimiento}
+              autoCapitalize="characters"
+            />
+
+            <Text style={styles.inputLabel}>Vereda</Text>
+            <TextInput
+              style={styles.input}
+              placeholder="Ej: Siberia Baja"
+              placeholderTextColor={COLORS.textLight}
+              value={editVereda}
+              onChangeText={setEditVereda}
+            />
+
+            <Text style={styles.inputLabel}>Nombre Completo</Text>
+            <TextInput
+              style={styles.input}
+              placeholder="Ej: Juan Pérez"
+              placeholderTextColor={COLORS.textLight}
+              value={editNombre}
+              onChangeText={setEditNombre}
+            />
+
+            <Text style={styles.inputLabel}>Cédula (no editable)</Text>
+            <View style={[styles.input, styles.inputDisabled]}>
+              <Text style={styles.inputDisabledText}>{selectedBeneficiario?.cedula}</Text>
+            </View>
+
+            <View style={styles.modalButtons}>
+              <TouchableOpacity
+                style={styles.cancelButton}
+                onPress={() => {
+                  setEditModalVisible(false);
+                  setSelectedBeneficiario(null);
+                }}
+              >
+                <Text style={styles.cancelButtonText}>Cancelar</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.saveButton} onPress={confirmEdit}>
+                <Text style={styles.saveButtonText}>Guardar</Text>
+              </TouchableOpacity>
+            </View>
           </View>
         </View>
       </Modal>
@@ -681,6 +793,17 @@ const styles = StyleSheet.create({
     marginTop: SPACING.md,
     marginBottom: SPACING.sm,
   },
+  editButton: {
+    backgroundColor: COLORS.primary + '15',
+    borderRadius: BORDER_RADIUS.sm,
+    padding: SPACING.md,
+    marginBottom: SPACING.sm,
+  },
+  editButtonText: {
+    color: COLORS.primary,
+    fontWeight: FONTS.weights.medium,
+    fontSize: FONTS.sizes.md,
+  },
   unassignButton: {
     backgroundColor: COLORS.error + '15',
     borderRadius: BORDER_RADIUS.sm,
@@ -742,6 +865,14 @@ const styles = StyleSheet.create({
     fontSize: FONTS.sizes.md,
     color: COLORS.textPrimary,
     backgroundColor: COLORS.surface,
+  },
+  inputDisabled: {
+    justifyContent: 'center',
+    backgroundColor: COLORS.surfaceAlt,
+  },
+  inputDisabledText: {
+    fontSize: FONTS.sizes.md,
+    color: COLORS.textLight,
   },
   modalButtons: {
     flexDirection: 'row',

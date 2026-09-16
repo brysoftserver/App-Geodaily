@@ -63,15 +63,41 @@ router.post('/subir', authenticateToken, upload.single('archivo'), async (req, r
     // ─── Resolver datos del beneficiario para carpeta en MinIO ───
     let benefItem = null;
     let benefNombre = null;
-    if (beneficiario_cedula) {
+    let cedulaResuelta = beneficiario_cedula || null;
+    let tipoFormularioResuelto = tipo_formulario || null;
+
+    // Red de seguridad: si no llegó la cédula (ej. un reintento offline que
+    // perdió el contexto del beneficiario) pero sí el formulario_id, se
+    // resuelve consultando el formulario ya guardado en el servidor — evita
+    // que la foto caiga en la carpeta genérica del técnico.
+    if (!cedulaResuelta && formulario_id) {
+      try {
+        const formulario = await db.queryOne(
+          `SELECT tipo, beneficiario_json->>'cedula' AS cedula FROM formularios WHERE id = $1`,
+          [formulario_id]
+        );
+        if (formulario) {
+          cedulaResuelta = formulario.cedula || null;
+          tipoFormularioResuelto = tipoFormularioResuelto || formulario.tipo || null;
+        }
+      } catch (lookupErr) {
+        console.warn('[Photos] Error resolviendo beneficiario desde formulario:', lookupErr.message);
+      }
+    }
+
+    if (cedulaResuelta) {
       try {
         const benef = await db.queryOne(
           'SELECT item, nombre_completo FROM beneficiarios WHERE cedula = $1',
-          [beneficiario_cedula.trim()]
+          [cedulaResuelta.trim()]
         );
         if (benef) {
           benefItem = benef.item;
-          benefNombre = beneficiario_nombre || benef.nombre_completo;
+          // El nombre oficial de la tabla beneficiarios siempre gana sobre
+          // lo que mande el cliente: si no coincide exactamente (typo,
+          // corrección posterior del dato oficial), no debe crear una
+          // carpeta distinta para el mismo beneficiario.
+          benefNombre = benef.nombre_completo || beneficiario_nombre;
         }
       } catch (lookupErr) {
         console.warn('[Photos] Error buscando beneficiario:', lookupErr.message);
@@ -83,7 +109,7 @@ router.post('/subir', authenticateToken, upload.single('archivo'), async (req, r
       contentType: mimetypeFinal,
       beneficiarioItem: benefItem,
       beneficiarioNombre: benefNombre,
-      tipoFormulario: tipo_formulario,
+      tipoFormulario: tipoFormularioResuelto,
     };
     try {
       await storage.uploadFile(
@@ -104,7 +130,7 @@ router.post('/subir', authenticateToken, upload.single('archivo'), async (req, r
     let minioPath;
     if (benefItem && benefNombre) {
       const subpath = storage.getBeneficiarySubpath(benefItem, benefNombre);
-      const formFolder = storage.getFormTypeFolder(tipo_formulario);
+      const formFolder = storage.getFormTypeFolder(tipoFormularioResuelto);
       minioPath = formFolder ? `${basePath}/${subpath}/${formFolder}/fotos/${filename}` : `${basePath}/${subpath}/fotos/${filename}`;
     } else {
       minioPath = `${basePath}/fotos/${filename}`;
@@ -114,7 +140,7 @@ router.post('/subir', authenticateToken, upload.single('archivo'), async (req, r
       nombre: nombre || null,
       descripcion: descripcion || null,
       beneficiario_item: benefItem,
-      beneficiario_cedula: beneficiario_cedula || null,
+      beneficiario_cedula: cedulaResuelta || null,
       // Se guarda también en metadata porque la evidencia suele subirse
       // ANTES de que el formulario exista en el servidor (flujo offline).
       // La columna formulario_id se rellena luego, al guardar el formulario.

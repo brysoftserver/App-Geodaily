@@ -146,7 +146,13 @@ export const fetchFormularioDelServidor = async (id: string): Promise<Formulario
  */
 export const eliminarFormularioDelServidor = async (id: string): Promise<void> => {
   const response = await apiClient.delete(`${API_CONFIG.ENDPOINTS.FORMS}/${id}`);
-  if (response.data?.estado === 'ok') return;
+  if (response.data?.estado === 'ok') {
+    // Borrar también la copia local de ESTE dispositivo — si no, el
+    // próximo refresco la resucita fusionando lo local con el servidor
+    // (el servidor ya no la tiene, pero el SQLite local seguía intacto).
+    await deleteFormularioLocal(id);
+    return;
+  }
 
   if (response.data?.mensaje === 'Formulario no encontrado') {
     await deleteFormularioLocal(id);

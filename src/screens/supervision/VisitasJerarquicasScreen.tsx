@@ -18,19 +18,21 @@ import {
   RefreshControl,
   BackHandler,
   Alert,
+  ActivityIndicator,
 } from 'react-native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useFocusEffect } from '@react-navigation/native';
 import { COLORS, FONTS, SPACING, BORDER_RADIUS, SHADOWS } from '../../theme';
 import { Formulario } from '../../types';
 import { useAuth } from '../../store/AuthContext';
-import { getFormulariosLocales } from '../../services/database';
+import { getFormulariosLocales, mergeFormulariosDelServidor } from '../../services/database';
 import {
   fetchFormulariosDelServidor,
   eliminarFormularioDelServidor,
 } from '../../services/formularios.service';
 import LoadingSpinner from '../../components/LoadingSpinner';
 import BotonPdfDashboard from '../../components/dashboard/BotonPdfDashboard';
+import { descargarPaqueteMedia } from '../../services/mediaPackage.service';
 
 type VisitasJerarquicasScreenProps = {
   navigation: NativeStackNavigationProp<Record<string, any>>;
@@ -67,6 +69,7 @@ const VisitasJerarquicasScreen: React.FC<VisitasJerarquicasScreenProps> = ({ nav
   const [refreshing, setRefreshing] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [eliminandoId, setEliminandoId] = useState<string | null>(null);
+  const [descargandoMediaId, setDescargandoMediaId] = useState<string | null>(null);
 
   // Estado de navegación jerárquica
   const [nivel, setNivel] = useState<Nivel>('tecnicos');
@@ -163,12 +166,22 @@ const VisitasJerarquicasScreen: React.FC<VisitasJerarquicasScreenProps> = ({ nav
       localesCount = locales.length;
       servidorCount = servidor.length;
 
+      // Persistir lo del servidor en el SQLite local y purgar de paso
+      // cualquier formulario que ya no exista ahí (p. ej. borrado por un
+      // admin desde otro dispositivo) — sin esto, un formulario borrado
+      // reaparecía en este listado porque `locales` seguía trayéndolo.
+      let localesActualizados = locales;
+      if (servidor.length > 0) {
+        await mergeFormulariosDelServidor(servidor);
+        localesActualizados = await getFormulariosLocales();
+      }
+
       // Fusionar: servidor tiene los datos más completos,
       // locales tienen lo que aún no se ha sincronizado
       const mapaFusion = new Map<string, Formulario>();
 
       // Primero insertar locales (en caso de que haya datos no sincronizados)
-      for (const f of locales) {
+      for (const f of localesActualizados) {
         mapaFusion.set(f.id, f);
       }
 
@@ -328,6 +341,16 @@ const VisitasJerarquicasScreen: React.FC<VisitasJerarquicasScreenProps> = ({ nav
     const isInterventor = currentRoute?.name?.startsWith('Interventor');
     const detailScreen = isInterventor ? 'InterventorFormularioDetail' : 'SupervisionFormularioDetail';
     navigation.navigate(detailScreen, { formulario: form, modo });
+  };
+
+  const descargarMedia = async (form: Formulario) => {
+    if (descargandoMediaId) return; // evita doble toque mientras arma otro paquete
+    setDescargandoMediaId(form.id);
+    try {
+      await descargarPaqueteMedia(form);
+    } finally {
+      setDescargandoMediaId(null);
+    }
   };
 
   // --- Render por nivel ---
@@ -507,6 +530,19 @@ const VisitasJerarquicasScreen: React.FC<VisitasJerarquicasScreenProps> = ({ nav
           >
             <Text style={styles.actionBtnTextPDF}>📄 PDF</Text>
           </TouchableOpacity>
+          {item.sincronizado && (
+            <TouchableOpacity
+              style={[styles.actionBtn, styles.actionBtnMedia]}
+              onPress={() => descargarMedia(item)}
+              disabled={descargandoMediaId === item.id}
+            >
+              {descargandoMediaId === item.id ? (
+                <ActivityIndicator size="small" color={COLORS.primary} />
+              ) : (
+                <Text style={styles.actionBtnTextMedia}>📦 Media</Text>
+              )}
+            </TouchableOpacity>
+          )}
         </View>
       </View>
     </TouchableOpacity>
@@ -893,6 +929,17 @@ const styles = StyleSheet.create({
     fontSize: FONTS.sizes.xs,
     fontWeight: FONTS.weights.medium,
     color: COLORS.error,
+  },
+  actionBtnMedia: {
+    backgroundColor: COLORS.primary + '10',
+    minWidth: 40,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  actionBtnTextMedia: {
+    fontSize: FONTS.sizes.xs,
+    fontWeight: FONTS.weights.medium,
+    color: COLORS.primary,
   },
   actionBtnRevisionOnline: {
     backgroundColor: COLORS.roleSupervisor + '15',

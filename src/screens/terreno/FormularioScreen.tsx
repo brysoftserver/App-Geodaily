@@ -346,7 +346,7 @@ const FormularioScreen: React.FC<FormularioScreenProps> = ({ navigation, route }
         // todo pasaba por uploadPhoto y los videos quedaban como .jpg
         // en la carpeta de fotos.
         if (foto.tipo === 'video') {
-          saveVideoLocal(foto.id, formId, foto.uri, foto.coordenadas).catch(() => {});
+          saveVideoLocal(foto.id, formId, foto.uri, foto.coordenadas, beneficiario, 'visita_tecnica').catch(() => {});
           uploadVideo(
             foto.uri,
             foto.coordenadas?.latitud,
@@ -358,7 +358,7 @@ const FormularioScreen: React.FC<FormularioScreenProps> = ({ navigation, route }
             formId,
           ).catch(() => {});
         } else {
-          saveFotoLocal(foto.id, formId, foto.uri, foto.coordenadas).catch(() => {});
+          saveFotoLocal(foto.id, formId, foto.uri, foto.coordenadas, beneficiario, 'visita_tecnica').catch(() => {});
           uploadPhoto(
             foto.uri,
             foto.coordenadas?.latitud,
@@ -476,10 +476,10 @@ const FormularioScreen: React.FC<FormularioScreenProps> = ({ navigation, route }
         if (firmaTecUpload) subirFirma('tecnico', firmaTecUpload, beneficiario.cedula, beneficiario.nombre, 'visita_tecnica').catch(() => {});
         for (const foto of fotosParaUpload) {
           if (foto.tipo === 'video') {
-            saveVideoLocal(foto.id, formId, foto.uri, foto.coordenadas).catch(() => {});
+            saveVideoLocal(foto.id, formId, foto.uri, foto.coordenadas, beneficiario, 'visita_tecnica').catch(() => {});
             uploadVideo(foto.uri, foto.coordenadas?.latitud, foto.coordenadas?.longitud, `Formulario ${formId}`, beneficiario.cedula || undefined, beneficiario.nombre || undefined, 'visita_tecnica', formId).catch(() => {});
           } else {
-            saveFotoLocal(foto.id, formId, foto.uri, foto.coordenadas).catch(() => {});
+            saveFotoLocal(foto.id, formId, foto.uri, foto.coordenadas, beneficiario, 'visita_tecnica').catch(() => {});
             uploadPhoto(foto.uri, foto.coordenadas?.latitud, foto.coordenadas?.longitud, foto.coordenadas?.altitud, `Formulario ${formId}`, undefined, beneficiario.cedula || undefined, beneficiario.nombre || undefined, foto.timestamp, 'visita_tecnica', formId).catch(() => {});
           }
         }

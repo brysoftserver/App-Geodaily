@@ -288,6 +288,10 @@ export const SyncProvider: React.FC<{ children: React.ReactNode }> = ({
 
       for (const foto of fotos) {
         try {
+          // beneficiario_cedula/nombre/tipo_formulario se guardan en
+          // fotos_locales desde la captura (ver saveFotoLocal). Sin esto,
+          // esta subida caía en la carpeta genérica del técnico en MinIO en
+          // vez de la carpeta del beneficiario correspondiente.
           const r = await uploadPhoto(
             foto.uri,
             foto.latitud ?? undefined,
@@ -295,10 +299,10 @@ export const SyncProvider: React.FC<{ children: React.ReactNode }> = ({
             foto.altitud ?? undefined,
             `Formulario ${foto.formulario_id}`,
             undefined,
-            undefined,
-            undefined,
+            foto.beneficiario_cedula ?? undefined,
+            foto.beneficiario_nombre ?? undefined,
             foto.timestamp,
-            undefined,
+            foto.tipo_formulario ?? undefined,
             foto.formulario_id,
           );
           if (r) {
@@ -316,9 +320,9 @@ export const SyncProvider: React.FC<{ children: React.ReactNode }> = ({
             video.latitud ?? undefined,
             video.longitud ?? undefined,
             `Formulario ${video.formulario_id}`,
-            undefined,
-            undefined,
-            undefined,
+            video.beneficiario_cedula ?? undefined,
+            video.beneficiario_nombre ?? undefined,
+            video.tipo_formulario ?? undefined,
             video.formulario_id,
           );
           if (r) {

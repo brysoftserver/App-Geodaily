@@ -431,14 +431,43 @@ async function initSchema() {
     }
   }
 
+  // Migración: columnas de la base verificada de 300 beneficiarios
+  // (Base_de_datos_beneficiarios/300 beneficiarios final.csv) — antes la
+  // tabla solo tenía corregimiento/vereda/nombre/cedula; el listado
+  // verificado trae además ubicación administrativa, contacto y predio.
+  const columnasBeneficiarios300 = [
+    ['departamento', 'VARCHAR(100)'],
+    ['municipio', 'VARCHAR(100)'],
+    ['telefono', 'VARCHAR(50)'],
+    ['nombre_predio', 'VARCHAR(150)'],
+    ['area_predio', 'NUMERIC(10,2)'],
+    ['latitud', 'NUMERIC(10,7)'],
+    ['longitud', 'NUMERIC(10,7)'],
+    // Capturados al diligenciar el Acta de Compromiso (Otros Formatos) —
+    // no venían en la base verificada de 300 beneficiarios.
+    ['correo_electronico', 'VARCHAR(150)'],
+    ['calidad_predio', 'VARCHAR(20)'],
+  ];
+  for (const [col, tipo] of columnasBeneficiarios300) {
+    try {
+      await query(`ALTER TABLE beneficiarios ADD COLUMN ${col} ${tipo}`);
+      console.log(`[DB] ✅ Columna ${col} agregada a beneficiarios`);
+    } catch (err) {
+      if (!err.message.includes('already exists')) {
+        console.error(`[DB] Error agregando ${col} a beneficiarios:`, err.message);
+      }
+    }
+  }
+
   await seedBeneficiarios();
 
   console.log('[DB] ✅ Esquema de base de datos inicializado');
 }
 
-// Siembra inicial de los 76 beneficiarios del proyecto (una sola vez,
+// Siembra inicial de los 301 beneficiarios del proyecto (una sola vez,
 // solo si la tabla está vacía). Fuente: data/beneficiarios-seed.json,
-// generado desde la base de datos oficial del proyecto.
+// generado desde la base de datos oficial del proyecto (incluye la lista
+// verificada de 300 de Base_de_datos_beneficiarios/300 beneficiarios final.csv).
 async function seedBeneficiarios() {
   try {
     const { count } = await queryOne('SELECT COUNT(*)::int AS count FROM beneficiarios');
@@ -447,9 +476,15 @@ async function seedBeneficiarios() {
     const seed = require('./data/beneficiarios-seed.json');
     for (const b of seed) {
       await query(
-        `INSERT INTO beneficiarios (item, corregimiento, vereda, nombre_completo, cedula)
-         VALUES ($1, $2, $3, $4, $5) ON CONFLICT (item) DO NOTHING`,
-        [b.item, b.corregimiento, b.vereda, b.nombre_completo, b.cedula]
+        `INSERT INTO beneficiarios
+           (item, corregimiento, vereda, nombre_completo, cedula,
+            departamento, municipio, telefono, nombre_predio, area_predio, latitud, longitud)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) ON CONFLICT (item) DO NOTHING`,
+        [
+          b.item, b.corregimiento, b.vereda, b.nombre_completo, b.cedula,
+          b.departamento || null, b.municipio || null, b.telefono || null,
+          b.nombre_predio || null, b.area_predio ?? null, b.latitud ?? null, b.longitud ?? null,
+        ]
       );
     }
     console.log(`[DB] ✅ Beneficiarios sembrados: ${seed.length}`);

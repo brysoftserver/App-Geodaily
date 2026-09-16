@@ -123,7 +123,7 @@ interface MapViewOfflineProps {
 // ESTILOS DE MAPA
 // ============================================================
 
-// Estilo: Relieve — raster CartoDB Positron.
+// Estilo: Relieve — raster Esri World Light Gray Base.
 // IMPORTANTE: debe ser exactamente el mismo estilo (misma fuente/URL de
 // teselas) que backend/src/routes/maps.js sirve en GET /api/maps/style/relieve,
 // que es lo que OfflineManager.createPack() descarga para uso sin conexión —
@@ -132,23 +132,24 @@ interface MapViewOfflineProps {
 // "descargado". Antes esta capa tenía además una fuente vectorial que
 // apuntaba a una ruta backend inexistente (/tesela) y una capa "background"
 // opaca que tapaba por completo el raster — ambas eliminadas.
+// Se migró de CartoDB (a.basemaps.cartocdn.com) a Esri porque CARTO retiró
+// su CDN de teselas anónimas y ahora exige API key (watermark "API KEY
+// REQUIRED" en el mapa).
 const MAP_STYLE_RELIEVE = {
   version: 8 as const,
   name: 'GEODAILY - Relieve',
   sources: {
-    'carto-positron': {
+    'esri-light-gray': {
       type: 'raster' as const,
-      // Sin {r}: es una convención de Leaflet que MapLibre nativo NO
-      // sustituye (la enviaría literal en la URL).
-      tiles: ['https://a.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png'],
+      tiles: ['https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Light_Gray_Base/MapServer/tile/{z}/{y}/{x}'],
       tileSize: 256,
       minzoom: 0,
-      maxzoom: 19,
-      attribution: '© OpenStreetMap contributors, © CARTO',
+      maxzoom: 16,
+      attribution: '© Esri, HERE, Garmin, © OpenStreetMap contributors',
     },
   },
   layers: [
-    { id: 'carto-bg', source: 'carto-positron', type: 'raster' as const, paint: { 'raster-opacity': 1 } },
+    { id: 'esri-bg', source: 'esri-light-gray', type: 'raster' as const, paint: { 'raster-opacity': 1 } },
   ],
 };
 
@@ -368,11 +369,11 @@ const MapViewOffline: React.FC<MapViewOfflineProps> = ({
 
     const tileUrl = mapStyle === 'satelite'
       ? `'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'`
-      : `'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png'`;
+      : `'https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Light_Gray_Base/MapServer/tile/{z}/{y}/{x}'`;
 
     const tileAttribution = mapStyle === 'satelite'
       ? `'© Esri, Maxar, Earthstar Geographics'`
-      : `'© OpenStreetMap contributors, © CARTO'`;
+      : `'© Esri, HERE, Garmin, © OpenStreetMap contributors'`;
 
     return `
 <!DOCTYPE html>

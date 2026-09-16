@@ -5,6 +5,7 @@
 // firmas, sello de verificación biométrica.
 // ============================================================
 
+import { Platform } from 'react-native';
 import * as Print from 'expo-print';
 import * as FileSystem from 'expo-file-system/legacy';
 import { manipulateAsync, SaveFormat } from 'expo-image-manipulator';
@@ -29,6 +30,22 @@ async function resolverFirmaComoDataUri(firma: FirmaResuelta | null): Promise<st
   if (!firma) return null;
   if (firma.uri.startsWith('data:')) return firma.uri;
   try {
+    // En web no existe FileSystem.cacheDirectory/downloadAsync (son del
+    // dispositivo, no del navegador) — por eso las firmas remotas nunca se
+    // embebían ahí. `fetch` sí funciona en el navegador y, como `firma.uri`
+    // ya trae el token en la URL cuando aplica (ver `fuenteConAuth` en
+    // archivos.service.ts), no hace falta nada más para autenticarlo.
+    if (Platform.OS === 'web') {
+      const respuesta = await fetch(firma.uri, { headers: firma.headers });
+      if (!respuesta.ok) throw new Error(`HTTP ${respuesta.status}`);
+      const blob = await respuesta.blob();
+      return await new Promise<string>((resolve, reject) => {
+        const lector = new FileReader();
+        lector.onload = () => resolve(lector.result as string);
+        lector.onerror = () => reject(lector.error);
+        lector.readAsDataURL(blob);
+      });
+    }
     const destino = `${FileSystem.cacheDirectory}pdf_firma_${Date.now()}_${Math.round(Math.random() * 1e6)}.png`;
     const descarga = await FileSystem.downloadAsync(firma.uri, destino, { headers: firma.headers });
     const base64 = await FileSystem.readAsStringAsync(descarga.uri, { encoding: FileSystem.EncodingType.Base64 });
@@ -42,9 +59,10 @@ async function resolverFirmaComoDataUri(firma: FirmaResuelta | null): Promise<st
 /**
  * Generar PDF local con fotos, firmas y huella embebidas.
  *
- * @param variante  Membrete a aplicar según la entidad del usuario que
- *                  genera el PDF: 'ejecucion' (ACPR) por defecto, o
- *                  'interventoria' (ASEMP) cuando lo abre el rol interventor.
+ * Siempre lleva el membrete de Ejecución (ACPR) — caracterización y visita
+ * técnica son formatos institucionales fijos, sin importar el rol de quien
+ * los genera (a diferencia del PDF de revisión, que sí varía con el rol).
+ *
  * @param fotosResueltas  Evidencias YA resueltas (ver
  *                  `resolverEvidenciasRemotas`): locales si existen en este
  *                  dispositivo, o URLs del servidor si no. Si se omite, se
@@ -55,55 +73,66 @@ async function resolverFirmaComoDataUri(firma: FirmaResuelta | null): Promise<st
  *                  evidencias, aunque el resto del documento (membrete,
  *                  datos, respuestas) sí se generaba bien.
  */
+/**
+ * Construye el HTML completo del PDF institucional (membrete, respuestas,
+ * fotos, firmas y sello biométrico) sin generar el archivo — extraído de
+ * `generarPDFLocal` para poder reusarlo en web, donde `expo-print` no genera
+ * un PDF real (ver `imprimirHtmlWeb` en `utils/printWeb.ts`): ahí este mismo
+ * HTML se abre en una pestaña aparte para imprimir/guardar como PDF.
+ */
+export const construirHtmlFormulario = async (
+  formulario: Formulario,
+  fotosResueltas?: FotoGeotag[]
+): Promise<string> => {
+  // 1. Convertir fotos a base64 para embedir en HTML — local o remota
+  const fotosHtml = await convertirFotosAHTML(fotosResueltas ?? formulario.fotos ?? []);
+
+  // 2. Resolver firmas — recién completado el formulario son base64 en
+  // memoria, pero tras sincronizar el backend las reemplaza por su ruta
+  // interna de MinIO; hay que buscarlas en /api/archivos y descargarlas
+  // con autenticación antes de poder embeberlas en el PDF.
+  const firmasResueltas = await resolverFirmasRemotas(
+    formulario.id,
+    formulario.firma_beneficiario,
+    formulario.firma_tecnico
+  );
+  const [firmaBenefDataUri, firmaTecDataUri] = await Promise.all([
+    resolverFirmaComoDataUri(firmasResueltas.beneficiario),
+    resolverFirmaComoDataUri(firmasResueltas.tecnico),
+  ]);
+
+  const firmaBenefHtml = firmaBenefDataUri
+    ? `<div class="firma-item">
+         <p class="evidencia-label">✍️ Firma del Beneficiario — <strong>${escapeHtml(formulario.beneficiario.nombre)}</strong> (C.C. ${escapeHtml(formulario.beneficiario.cedula || '—')})</p>
+         <img src="${firmaBenefDataUri}" alt="Firma del beneficiario" class="firma-img" />
+       </div>`
+    : `<div class="firma-item"><p class="evidencia-label">✍️ Firma del Beneficiario</p><p class="no-data">No registrada</p></div>`;
+
+  const firmaTecHtml = firmaTecDataUri
+    ? `<div class="firma-item">
+         <p class="evidencia-label">🖊️ Firma del Técnico en Terreno — <strong>${escapeHtml(formulario.tecnico.nombre)}</strong> (C.C. ${escapeHtml(formulario.tecnico.cedula || '—')})</p>
+         <img src="${firmaTecDataUri}" alt="Firma del técnico" class="firma-img" />
+       </div>`
+    : `<div class="firma-item"><p class="evidencia-label">🖊️ Firma del Técnico</p><p class="no-data">No registrada</p></div>`;
+
+  // 3. Generar sello de verificación biométrica (con gráfico de huella SVG)
+  const selloBiometricoHtml = formulario.huella_beneficiario
+    ? generarSelloBiometrico(formulario.beneficiario.nombre)
+    : `<div class="evidencia-item"><p class="evidencia-label">🖐️ Certificación biométrica del técnico</p><p class="no-data">No registrada</p></div>`;
+
+  // 4. Construir HTML completo según el tipo de formulario
+  if (formulario.tipo === 'caracterizacion' && (formulario as any).caracterizacion_nueva) {
+    return construirHTMLCaracterizacion(formulario, fotosHtml, firmaBenefHtml, firmaTecHtml, selloBiometricoHtml);
+  }
+  return construirHTML(formulario, fotosHtml, firmaBenefHtml, firmaTecHtml, selloBiometricoHtml);
+};
+
 export const generarPDFLocal = async (
   formulario: Formulario,
-  variante: MembreteVariante = 'ejecucion',
   fotosResueltas?: FotoGeotag[]
 ): Promise<string | null> => {
   try {
-    // 1. Convertir fotos a base64 para embedir en HTML — local o remota
-    const fotosHtml = await convertirFotosAHTML(fotosResueltas ?? formulario.fotos ?? []);
-
-    // 2. Resolver firmas — recién completado el formulario son base64 en
-    // memoria, pero tras sincronizar el backend las reemplaza por su ruta
-    // interna de MinIO; hay que buscarlas en /api/archivos y descargarlas
-    // con autenticación antes de poder embeberlas en el PDF.
-    const firmasResueltas = await resolverFirmasRemotas(
-      formulario.id,
-      formulario.firma_beneficiario,
-      formulario.firma_tecnico
-    );
-    const [firmaBenefDataUri, firmaTecDataUri] = await Promise.all([
-      resolverFirmaComoDataUri(firmasResueltas.beneficiario),
-      resolverFirmaComoDataUri(firmasResueltas.tecnico),
-    ]);
-
-    const firmaBenefHtml = firmaBenefDataUri
-      ? `<div class="firma-item">
-           <p class="evidencia-label">✍️ Firma del Beneficiario — <strong>${escapeHtml(formulario.beneficiario.nombre)}</strong> (C.C. ${escapeHtml(formulario.beneficiario.cedula || '—')})</p>
-           <img src="${firmaBenefDataUri}" alt="Firma del beneficiario" class="firma-img" />
-         </div>`
-      : `<div class="firma-item"><p class="evidencia-label">✍️ Firma del Beneficiario</p><p class="no-data">No registrada</p></div>`;
-
-    const firmaTecHtml = firmaTecDataUri
-      ? `<div class="firma-item">
-           <p class="evidencia-label">🖊️ Firma del Técnico en Terreno — <strong>${escapeHtml(formulario.tecnico.nombre)}</strong> (C.C. ${escapeHtml(formulario.tecnico.cedula || '—')})</p>
-           <img src="${firmaTecDataUri}" alt="Firma del técnico" class="firma-img" />
-         </div>`
-      : `<div class="firma-item"><p class="evidencia-label">🖊️ Firma del Técnico</p><p class="no-data">No registrada</p></div>`;
-
-    // 3. Generar sello de verificación biométrica (con gráfico de huella SVG)
-    const selloBiometricoHtml = formulario.huella_beneficiario
-      ? generarSelloBiometrico(formulario.beneficiario.nombre)
-      : `<div class="evidencia-item"><p class="evidencia-label">🖐️ Certificación biométrica del técnico</p><p class="no-data">No registrada</p></div>`;
-
-    // 4. Construir HTML completo según el tipo de formulario
-    let html: string;
-    if (formulario.tipo === 'caracterizacion' && (formulario as any).caracterizacion_nueva) {
-      html = construirHTMLCaracterizacion(formulario, fotosHtml, firmaBenefHtml, firmaTecHtml, selloBiometricoHtml, variante);
-    } else {
-      html = construirHTML(formulario, fotosHtml, firmaBenefHtml, firmaTecHtml, selloBiometricoHtml, variante);
-    }
+    const html = await construirHtmlFormulario(formulario, fotosResueltas);
 
     // 5. Generar PDF con expo-print
     // Carta (612 × 792 pt), igual que el membrete oficial de ACPR.
@@ -204,6 +233,1002 @@ export const generarPDFRevisionChecklist = async (
   }
 };
 
+export interface FilaIngresoBeneficiario {
+  nombre: string;
+  identificacion: string;
+  telefono: string;
+  vereda: string;
+  finca: string;
+  latitud: string;
+  longitud: string;
+}
+
+/**
+ * Generar el PDF del "Formato de Ingreso de Beneficiarios" (PA. 2 FO. 31,
+ * Otros Formatos) a partir de las filas que el técnico escribió a mano en
+ * la planilla de la app.
+ */
+export const generarPDFIngresoBeneficiarios = async (
+  filas: FilaIngresoBeneficiario[],
+  tecnicoNombre: string
+): Promise<string | null> => {
+  try {
+    const html = construirHTMLIngresoBeneficiarios(filas);
+
+    // El formato oficial (PA. 2 FO. 31) es horizontal — la tabla de 8
+    // columnas no cabe legible en una hoja carta vertical.
+    const { uri } = await Print.printToFileAsync({
+      html,
+      width: 792,
+      height: 612,
+    });
+
+    const nombreTecnico = (tecnicoNombre || 'tecnico').replace(/[^a-zA-Z0-9áéíóúÁÉÍÓÚñÑ ]/g, '').trim().replace(/\s+/g, '_');
+    const fechaStr = new Date().toISOString().split('T')[0];
+    const pdfName = `INGRESO-BENEFICIARIOS-${nombreTecnico}-${fechaStr}.pdf`;
+    const pdfDir = uri.substring(0, uri.lastIndexOf('/'));
+    const pdfPath = `${pdfDir}/${pdfName}`;
+
+    try {
+      await FileSystem.moveAsync({ from: uri, to: pdfPath });
+      return pdfPath;
+    } catch (moveErr) {
+      console.warn('[PDF Ingreso Beneficiarios] No se pudo renombrar, retornando original:', moveErr);
+      return uri;
+    }
+  } catch (error) {
+    console.error('[PDF Ingreso Beneficiarios] Error al generar PDF:', error);
+    return null;
+  }
+};
+
+// Verificado contra el PDF oficial (coordenadas extraídas con pdftohtml):
+// 12 filas por página, 3 páginas fijas = 36 filas en blanco.
+const IB_FILAS_POR_PAGINA = 12;
+const IB_PAGINAS_FIJAS = 3;
+
+const IB_ENCABEZADO_TABLA = `
+      <tr>
+        <th>No.</th>
+        <th>Nombre y Apellidos</th>
+        <th>Identificación</th>
+        <th>Teléfono</th>
+        <th>Vereda</th>
+        <th>Nombre de la Finca</th>
+        <th>Latitud</th>
+        <th>Longitud</th>
+      </tr>`;
+
+function ibFilaHtml(f: FilaIngresoBeneficiario | undefined, numero: number): string {
+  if (f) {
+    return `
+    <tr>
+      <td class="ib-no">${numero}</td>
+      <td>${escapeHtml(f.nombre) || '—'}</td>
+      <td>${escapeHtml(f.identificacion) || '—'}</td>
+      <td>${escapeHtml(f.telefono) || '—'}</td>
+      <td>${escapeHtml(f.vereda) || '—'}</td>
+      <td>${escapeHtml(f.finca) || '—'}</td>
+      <td>${escapeHtml(f.latitud) || '—'}</td>
+      <td>${escapeHtml(f.longitud) || '—'}</td>
+    </tr>`;
+  }
+  return `
+    <tr>
+      <td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td>
+      <td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td>
+    </tr>`;
+}
+
+function construirHTMLIngresoBeneficiarios(
+  filas: FilaIngresoBeneficiario[]
+): string {
+  // El formato oficial siempre trae 3 páginas de 12 filas (36 en blanco),
+  // sin importar cuántas se diligencien — es una plantilla fija. Si el
+  // técnico registra más de 36, se agregan páginas adicionales completas.
+  const totalConRelleno = Math.max(
+    IB_FILAS_POR_PAGINA * IB_PAGINAS_FIJAS,
+    Math.ceil(filas.length / IB_FILAS_POR_PAGINA) * IB_FILAS_POR_PAGINA
+  );
+  const totalPaginas = totalConRelleno / IB_FILAS_POR_PAGINA;
+  const proyectoHtml = '“Implementación de Unidades Productoras de Cacao en Arreglo Agroforestal en el municipio de Puerto Rico, Caquetá”';
+
+  // El oficial repite el membrete COMPLETO (número de página correcto, y
+  // el renglón del proyecto) en cada una de sus 3 hojas — no es un
+  // encabezado que se repite igual en todas, cada página es su propio
+  // bloque. Confiar en que el navegador reparta 36 filas de una sola tabla
+  // en 3 páginas (dejándolo decidir dónde cortar, o incluso forzando el
+  // corte cada 12 filas) nunca iba a poder variar "Página X de 3" ni
+  // repetir el renglón del proyecto — por eso se arma cada página como un
+  // bloque independiente y completo, igual que el original.
+  const paginasHtml = Array.from({ length: totalPaginas }).map((_, p) => {
+    const inicio = p * IB_FILAS_POR_PAGINA;
+    const filasHtml = Array.from({ length: IB_FILAS_POR_PAGINA })
+      .map((_, i) => ibFilaHtml(filas[inicio + i], inicio + i + 1))
+      .join('');
+
+    return `
+    <div class="ib-pagina"${p > 0 ? ' style="page-break-before: always; break-before: page;"' : ''}>
+      ${membreteAperturaHtml('ejecucion', 'ingreso_beneficiarios', totalPaginas, p + 1)}
+
+      <div class="ib-proyecto">${proyectoHtml}</div>
+
+      <table class="ib-tabla">
+        <thead>${IB_ENCABEZADO_TABLA}</thead>
+        <tbody>${filasHtml}</tbody>
+      </table>
+
+      ${membreteCierreHtml()}
+    </div>`;
+  }).join('');
+
+  return `<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <title>Formato de Ingreso de Beneficiarios</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    ${membreteCss()}
+    /* El formato oficial (PA. 2 FO. 31) es horizontal — se sobreescribe el
+       tamaño de página vertical que define membreteCss() por defecto. */
+    @page {
+      size: 27.94cm 21.59cm;
+      margin: 1.3cm 2.5cm 1.0cm 2.5cm;
+    }
+    html, body { height: 100%; }
+    .ib-pagina { height: 100%; }
+    table.mb-doc { height: 100%; }
+    /* Estira cada página a su alto completo para que el pie quede fijo
+       abajo — cada bloque .ib-pagina es corto (12 filas), así que sin
+       esto el pie de página quedaría pegado justo debajo de la tabla. */
+    table.mb-doc > tbody > tr > td.mb-contenido {
+      height: 100%;
+      vertical-align: top;
+    }
+    body { font-family: 'Arial Narrow', Arial, sans-serif; color: #000; }
+    .ib-proyecto {
+      border: 1pt solid #000;
+      text-align: center;
+      font-weight: bold;
+      font-size: 9.5pt;
+      padding: 0.2cm;
+    }
+    table.ib-tabla {
+      width: 100%;
+      border-collapse: collapse;
+      border: 1pt solid #000;
+      font-size: 8.5pt;
+    }
+    table.ib-tabla th, table.ib-tabla td {
+      border: 1pt solid #000;
+      padding: 0.15cm 0.2cm;
+      text-align: left;
+      height: 0.7cm;
+    }
+    table.ib-tabla th {
+      font-size: 8pt;
+      text-align: center;
+      text-transform: uppercase;
+    }
+    .ib-no { width: 0.9cm; text-align: center; }
+  </style>
+</head>
+<body>
+  ${paginasHtml}
+</body>
+</html>`;
+}
+
+// ============================================================
+// Acta de Compromiso (PA. 2 FO. 30, Otros Formatos)
+// ============================================================
+
+export interface DatosActaCompromiso {
+  nombre: string;
+  cedula: string;
+  telefono: string;
+  correo: string;
+  vereda: string;
+  corregimiento: string;
+  predio: string;
+  calidadPredio: 'propietario' | 'poseedor' | 'otro';
+  /** Fecha de la firma (ISO) — de ahí se toman día/mes/año del cierre del acta. */
+  fecha: string;
+  /** Firma del beneficiario, como data URI (ver SignaturePad). */
+  firmaBeneficiario: string;
+  /** Firma del técnico de campo, como data URI. */
+  firmaTecnico: string;
+  tecnicoNombre: string;
+}
+
+const AC_MESES = [
+  'enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio',
+  'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre',
+];
+
+export const AC_DISPONIBILIDAD = [
+  'Facilitar el desarrollo de las actividades técnicas y operativas previstas en el proyecto, proporcionando al personal autorizado el acceso al predio y las condiciones necesarias para la realización de diagnósticos, visitas técnicas, georreferenciación, toma de muestras de suelo, establecimiento, seguimiento y demás actividades contempladas.',
+  'Participar activa y responsablemente en las actividades programadas dentro del proyecto, incluyendo jornadas de asistencia técnica, capacitación, socialización, Escuelas de Campo para Agricultores – ECA y demás actividades de fortalecimiento de capacidades.',
+  'Disponer del tiempo y colaboración necesarios para atender las visitas y actividades programadas por el equipo técnico, de acuerdo con el cronograma establecido para la ejecución del proyecto.',
+  'Informar oportunamente a AGROINDUSTRIAL CACAOTERA DE PUERTO RICO S.A.S. cualquier circunstancia que pueda afectar su participación, la disponibilidad del predio o el normal desarrollo de las actividades previstas.',
+];
+export const AC_ACREDITACION = [
+  'Presentar y mantener actualizada la documentación requerida para acreditar la relación jurídica o material con el predio objeto de intervención, de conformidad con los requisitos establecidos para el proyecto, incluyendo, cuando corresponda, certificado de libertad y tradición o certificado de sana posesión.',
+  'Manifestar que mantiene una relación efectiva con el predio rural objeto de intervención, en calidad de propietario(a) o poseedor(a) regular, de acuerdo con los requisitos establecidos para la vinculación al proyecto.',
+  'Permitir la georreferenciación, identificación, diagnóstico y verificación técnica del predio, así como las demás actividades necesarias para determinar su aptitud y condiciones para el establecimiento de la unidad productora.',
+];
+export const AC_USO_MANEJO = [
+  'Dar un uso adecuado y exclusivo a las herramientas, equipos, materiales, accesorios e insumos entregados en el marco del proyecto, destinándolos exclusivamente a las actividades relacionadas con la implementación y manejo de la unidad productora.',
+  'Asumir la custodia, conservación y adecuado manejo de los elementos, herramientas, equipos e insumos que le sean entregados para el desarrollo de las actividades del proyecto.',
+  'Abstenerse de vender, arrendar, permutar, transferir, ceder o destinar a fines diferentes los elementos, herramientas, equipos, materiales e insumos entregados en el marco del proyecto.',
+  'Informar oportunamente cualquier pérdida, daño, deterioro o inconveniente técnico que se presente respecto de los equipos o elementos entregados, con el fin de adelantar, cuando corresponda, las gestiones relacionadas con las garantías respectivas.',
+  'Utilizar los materiales e insumos entregados exclusivamente para las actividades contempladas en el proyecto, de acuerdo con las recomendaciones impartidas por el personal técnico.',
+];
+export const AC_TECNICOS_PRODUCTIVOS = [
+  'Seguir las recomendaciones, orientaciones e instrucciones técnicas impartidas por los profesionales y técnicos vinculados al proyecto para el adecuado establecimiento, manejo y mantenimiento de la unidad productora de cacao.',
+  'Implementar las buenas prácticas agrícolas y ambientales recomendadas durante las jornadas de asistencia técnica y capacitación.',
+  'Participar en las actividades relacionadas con el establecimiento, manejo, fertilización, manejo fitosanitario, conservación del suelo y mantenimiento del arreglo agroforestal, conforme a las orientaciones técnicas impartidas.',
+  'Permitir y facilitar el seguimiento técnico periódico de la unidad productora durante la ejecución del proyecto y el periodo de seguimiento establecido.',
+];
+export const AC_AMBIENTALES = [
+  'Respetar las franjas de protección de los cuerpos de agua, manteniendo una distancia mínima de treinta (30) metros, conforme a las condiciones y lineamientos establecidos para el proyecto.',
+  'Abstenerse de realizar actividades de deforestación o intervención de áreas boscosas para el establecimiento del sistema agroforestal, particularmente en áreas que correspondan a cañeros con antigüedad superior a cinco (5) años, de acuerdo con los criterios ambientales establecidos para el proyecto.',
+  'Implementar las prácticas de manejo recomendadas para contribuir a la conservación del suelo, protección de los recursos naturales, manejo adecuado de residuos y uso eficiente de los recursos.',
+];
+export const AC_PERMANENCIA = [
+  'Garantizar, dentro de sus posibilidades y de acuerdo con las orientaciones técnicas recibidas, el mantenimiento, cuidado y continuidad de la unidad productora de cacao implementada en el marco del proyecto.',
+  'Destinar los recursos, materiales e insumos entregados al cumplimiento de las finalidades previstas en el proyecto, teniendo en cuenta que estos se encuentran asociados a recursos de origen público y tienen una destinación específica.',
+  'En caso de decidir retirarse voluntariamente del proyecto, informar oportunamente a AGROINDUSTRIAL CACAOTERA DE PUERTO RICO S.A.S. y atender las disposiciones que correspondan respecto de los elementos y recursos entregados.',
+  'En caso de retiro del proyecto, cuando así corresponda de acuerdo con las condiciones aplicables, restituir los elementos, herramientas, equipos, materiales o demás bienes entregados que deban ser objeto de devolución.',
+];
+export const AC_ENTIDAD = [
+  'Brindar asistencia técnica y acompañamiento especializado a los beneficiarios durante las etapas previstas para la implementación y manejo de las unidades productoras de cacao.',
+  'Realizar las actividades técnicas contempladas en el proyecto, de acuerdo con el plan operativo, cronograma, términos de referencia y demás documentos que regulan su ejecución.',
+  'Entregar los materiales, herramientas, equipos e insumos contemplados dentro de los componentes del proyecto, conforme a las condiciones, cantidades y especificaciones establecidas.',
+  'Desarrollar jornadas de capacitación, fortalecimiento de capacidades y Escuelas de Campo para Agricultores – ECA, de acuerdo con la programación definida.',
+  'Realizar el seguimiento técnico al establecimiento y manejo de las unidades productoras, verificando el avance de las actividades y formulando las recomendaciones que correspondan.',
+  'Brindar orientación a los beneficiarios respecto del uso adecuado de los materiales, herramientas, equipos e insumos suministrados en el marco del proyecto.',
+  'Promover, dentro del alcance y condiciones del proyecto, acciones orientadas al fortalecimiento productivo, comercial y organizativo de los beneficiarios y al cumplimiento de los objetivos establecidos.',
+];
+
+function acListaHtml(items: string[]): string {
+  return `<ol class="ac-lista">${items.map((t) => `<li>${escapeHtml(t)}</li>`).join('')}</ol>`;
+}
+
+export const generarPDFActaCompromiso = async (datos: DatosActaCompromiso): Promise<string | null> => {
+  try {
+    const html = construirHTMLActaCompromiso(datos);
+    const { uri } = await Print.printToFileAsync({ html, width: 612, height: 792 });
+
+    const nombreBenef = (datos.nombre || 'beneficiario').replace(/[^a-zA-Z0-9áéíóúÁÉÍÓÚñÑ ]/g, '').trim().replace(/\s+/g, '_');
+    const fechaStr = new Date(datos.fecha || Date.now()).toISOString().split('T')[0];
+    const pdfName = `ACTA-COMPROMISO-${nombreBenef}-${fechaStr}.pdf`;
+    const pdfDir = uri.substring(0, uri.lastIndexOf('/'));
+    const pdfPath = `${pdfDir}/${pdfName}`;
+
+    try {
+      await FileSystem.moveAsync({ from: uri, to: pdfPath });
+      return pdfPath;
+    } catch (moveErr) {
+      console.warn('[PDF Acta Compromiso] No se pudo renombrar, retornando original:', moveErr);
+      return uri;
+    }
+  } catch (error) {
+    console.error('[PDF Acta Compromiso] Error al generar PDF:', error);
+    return null;
+  }
+};
+
+function construirHTMLActaCompromiso(datos: DatosActaCompromiso): string {
+  const nombre = escapeHtml(datos.nombre) || '—';
+  const cedula = escapeHtml(datos.cedula) || '—';
+  const predio = escapeHtml(datos.predio) || '—';
+  const vereda = escapeHtml(datos.vereda) || '—';
+  const corregimiento = escapeHtml(datos.corregimiento) || '—';
+
+  const fecha = datos.fecha ? new Date(datos.fecha) : new Date();
+  const dia = fecha.getDate();
+  const mes = AC_MESES[fecha.getMonth()];
+  const anio = fecha.getFullYear();
+
+  const marcaCalidad = (valor: 'propietario' | 'poseedor' | 'otro') =>
+    datos.calidadPredio === valor ? '<span class="ac-check">✓</span>' : '';
+
+  return `<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <title>Acta de Compromiso</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    ${membreteCss()}
+    html, body { height: 100%; }
+    table.mb-doc { height: 100%; }
+    /* Sin esto, el motor de impresión encoge la ÚLTIMA página al tamaño
+       real del contenido en vez de dejarla en tamaño carta completo — el
+       pie de página quedaba más arriba que en las demás hojas. */
+    table.mb-doc > tbody > tr > td.mb-contenido {
+      height: 100%;
+      vertical-align: top;
+    }
+    body { font-family: 'Arial Narrow', Arial, sans-serif; color: #000; font-size: 9.5pt; line-height: 1.4; }
+    .ac-proyecto { margin-bottom: 0.3cm; }
+    table.ac-info {
+      width: 100%;
+      border-collapse: collapse;
+      border: 1pt solid #000;
+      margin-bottom: 0.3cm;
+    }
+    table.ac-info td, table.ac-info th {
+      border: 1pt solid #000;
+      padding: 0.15cm 0.25cm;
+      text-align: left;
+      font-size: 9pt;
+    }
+    table.ac-info th { text-align: center; font-weight: bold; }
+    .ac-info-label { font-weight: bold; width: 5.5cm; }
+    .ac-calidad-op { display: inline-block; margin-right: 0.6cm; }
+    .ac-check { font-weight: bold; margin-right: 3px; }
+    .ac-h1 { font-weight: bold; margin: 0.35cm 0 0.15cm; font-size: 10.5pt; }
+    .ac-h2 { font-weight: bold; margin: 0.3cm 0 0.1cm; font-size: 9.5pt; }
+    p.ac-p { margin-bottom: 0.2cm; text-align: justify; }
+    ol.ac-lista { margin: 0 0 0.2cm 0.6cm; padding: 0; }
+    ol.ac-lista li { margin-bottom: 0.12cm; text-align: justify; }
+    .ac-blank { text-decoration: underline; font-weight: bold; padding: 0 2px; }
+    table.ac-firmas {
+      width: 100%;
+      border-collapse: collapse;
+      border: 1pt solid #000;
+      margin-top: 0.6cm;
+    }
+    table.ac-firmas td {
+      border: 1pt solid #000;
+      width: 50%;
+      text-align: center;
+      vertical-align: bottom;
+      padding: 0.2cm;
+    }
+    .ac-firma-img { max-height: 2.2cm; max-width: 90%; margin-bottom: 0.15cm; }
+    .ac-firma-label { font-weight: bold; font-size: 9pt; border-top: 1pt solid #000; padding-top: 0.1cm; }
+  </style>
+</head>
+<body>
+  ${membreteAperturaHtml('ejecucion', 'acta_compromiso')}
+
+  <p class="ac-proyecto"><strong>Proyecto:</strong> “Implementación de Unidades Productoras de Cacao en Arreglo Agroforestal en el municipio de Puerto Rico, Caquetá”.</p>
+
+  <table class="ac-info">
+    <tr><th colspan="2">INFORMACIÓN DEL BENEFICIARIO Y DEL PREDIO</th></tr>
+    <tr><td class="ac-info-label">Nombre del beneficiario(a)</td><td>${nombre}</td></tr>
+    <tr><td class="ac-info-label">Identificación</td><td>${cedula}</td></tr>
+    <tr><td class="ac-info-label">Teléfono</td><td>${escapeHtml(datos.telefono) || '—'}</td></tr>
+    <tr><td class="ac-info-label">Correo electrónico</td><td>${escapeHtml(datos.correo) || '—'}</td></tr>
+    <tr><td class="ac-info-label">Vereda</td><td>${vereda}</td></tr>
+    <tr><td class="ac-info-label">Corregimiento</td><td>${corregimiento}</td></tr>
+    <tr><td class="ac-info-label">Predio</td><td>${predio}</td></tr>
+    <tr>
+      <td class="ac-info-label">Calidad respecto del predio</td>
+      <td>
+        <span class="ac-calidad-op">${marcaCalidad('propietario')}Propietario(a)</span>
+        <span class="ac-calidad-op">${marcaCalidad('poseedor')}Poseedor(a)</span>
+        <span class="ac-calidad-op">${marcaCalidad('otro')}Otro</span>
+      </td>
+    </tr>
+  </table>
+
+  <div class="ac-h1">1. Consideración</div>
+  <p class="ac-p">El proyecto “Implementación de Unidades Productoras de Cacao en Arreglo Agroforestal en el municipio de Puerto Rico, Caquetá” tiene como propósito el establecimiento y fortalecimiento de unidades productoras de cacao mediante sistemas de arreglo agroforestal, integrando clones mejorados de cacao de alto rendimiento, asociados con plátano como sombrío temporal y especies forestales como sombrío permanente, bajo criterios de sostenibilidad productiva y ambiental.</p>
+  <p class="ac-p">En el marco de la ejecución del proyecto se contempla el desarrollo de un proceso integral de acompañamiento a los beneficiarios, que comprende, entre otras actividades, la realización de análisis de suelos, establecimiento y fortalecimiento de biofactorías para la producción de insumos orgánicos, aplicación de fertilización órgano-mineral de acuerdo con los requerimientos nutricionales del cultivo y los resultados de los análisis de suelo, manejo fitosanitario, suministro de herramientas, materiales e insumos, fortalecimiento de capacidades mediante jornadas de capacitación y Escuelas de Campo para Agricultores – ECA, así como asistencia técnica especializada durante el establecimiento y manejo de la unidad productora.</p>
+  <p class="ac-p">En este contexto, el(la) señor(a) <span class="ac-blank">${nombre}</span>, identificado(a) con cédula de ciudadanía No. <span class="ac-blank">${cedula}</span>, en calidad de beneficiario(a) del proyecto y en relación con el predio denominado <span class="ac-blank">${predio}</span>, ubicado en la vereda <span class="ac-blank">${vereda}</span>, corregimiento <span class="ac-blank">${corregimiento}</span>, del municipio de Puerto Rico, Caquetá, manifiesta de manera <strong>libre, voluntaria y expresa</strong> su decisión de participar en el proyecto y se compromete a facilitar las condiciones necesarias para el adecuado desarrollo de las actividades técnicas, productivas, ambientales y de acompañamiento previstas.</p>
+  <p class="ac-p">En consecuencia, mediante la suscripción de la presente acta, el(la) beneficiario(a) declara conocer las condiciones generales de participación y asume los compromisos relacionados con la implementación, cuidado, manejo y sostenibilidad de la unidad productora de cacao que sea establecida en el marco del proyecto.</p>
+
+  <div class="ac-h1">2. Compromisos del Beneficiario</div>
+  <p class="ac-p">Para garantizar el adecuado desarrollo de las actividades previstas, el(la) beneficiario(a) se compromete a:</p>
+
+  <div class="ac-h2">2.1. Disponibilidad y participación</div>
+  ${acListaHtml(AC_DISPONIBILIDAD)}
+  <div class="ac-h2">2.2. Acreditación y disponibilidad del predio</div>
+  ${acListaHtml(AC_ACREDITACION)}
+  <div class="ac-h2">2.3. Uso y manejo de los elementos entregados</div>
+  ${acListaHtml(AC_USO_MANEJO)}
+  <div class="ac-h2">2.4. Compromisos técnicos y productivos</div>
+  ${acListaHtml(AC_TECNICOS_PRODUCTIVOS)}
+  <div class="ac-h2">2.5. Compromisos ambientales</div>
+  ${acListaHtml(AC_AMBIENTALES)}
+  <div class="ac-h2">2.6. Permanencia y sostenibilidad de la unidad productora</div>
+  ${acListaHtml(AC_PERMANENCIA)}
+
+  <div class="ac-h1">3. Compromisos de la Entidad Ejecutora</div>
+  <p class="ac-p">En el marco de sus competencias y de las condiciones establecidas para la ejecución del proyecto, AGROINDUSTRIAL CACAOTERA DE PUERTO RICO S.A.S. se compromete a:</p>
+  ${acListaHtml(AC_ENTIDAD)}
+
+  <div class="ac-h1">4. Vigencia</div>
+  <p class="ac-p">La presente Acta de Compromiso tendrá vigencia durante la ejecución del proyecto y durante el periodo de seguimiento establecido para las unidades productoras de cacao, sin perjuicio de aquellos compromisos que, por su naturaleza, deban mantenerse con posterioridad a la finalización de las actividades de implementación.</p>
+  <p class="ac-p">En constancia de lo anterior, se suscribe la presente Acta de Compromiso para la Implementación y Manejo Sostenible de Unidades Productoras de Cacao, en el municipio de Puerto Rico, departamento del Caquetá, a los <span class="ac-blank">${dia}</span> días del mes de <span class="ac-blank">${mes}</span> de <span class="ac-blank">${anio}</span>, previa lectura y aceptación de su contenido por quienes intervienen.</p>
+
+  <table class="ac-firmas">
+    <tr>
+      <td>
+        ${datos.firmaBeneficiario ? `<img class="ac-firma-img" src="${datos.firmaBeneficiario}" />` : '<div style="height:2.2cm"></div>'}
+        <div class="ac-firma-label">Firma del Beneficiario</div>
+      </td>
+      <td>
+        ${datos.firmaTecnico ? `<img class="ac-firma-img" src="${datos.firmaTecnico}" />` : '<div style="height:2.2cm"></div>'}
+        <div class="ac-firma-label">Firma del Técnico de Campo</div>
+      </td>
+    </tr>
+  </table>
+
+  ${membreteCierreHtml()}
+</body>
+</html>`;
+}
+
+// ============================================================
+// Estilos compartidos por los formatos cortos de "Otros Formatos"
+// (autorizaciones y consentimiento) — recuadro de check, párrafos
+// justificados y bloque de firma, reutilizados por los 3 generadores
+// de abajo.
+// ============================================================
+const OF_ESTILOS_COMUNES = `
+  html, body { height: 100%; }
+  table.mb-doc { height: 100%; }
+  table.mb-doc > tbody > tr > td.mb-contenido {
+    height: 100%;
+    vertical-align: top;
+  }
+  body { font-family: 'Arial Narrow', Arial, sans-serif; color: #000; font-size: 9.5pt; line-height: 1.4; }
+  p.of-p { margin-bottom: 0.25cm; text-align: justify; }
+  .of-h1 { font-weight: bold; margin: 0.3cm 0 0.15cm; font-size: 10pt; }
+  .of-blank { text-decoration: underline; font-weight: bold; padding: 0 2px; }
+  .of-check-row { display: flex; flex-wrap: wrap; gap: 0.5cm; margin: 0.2cm 0 0.3cm; }
+  .of-check-item { display: flex; align-items: center; font-weight: bold; }
+  .of-check-box {
+    display: inline-block; width: 0.35cm; height: 0.35cm;
+    border: 1pt solid #000; margin-right: 4px; text-align: center;
+    line-height: 0.35cm; font-size: 8pt;
+  }
+  ol.of-lista { margin: 0 0 0.25cm 0.6cm; padding: 0; }
+  ol.of-lista li { margin-bottom: 0.12cm; text-align: justify; }
+  table.of-firma {
+    width: 60%;
+    border-collapse: collapse;
+    margin-top: 0.6cm;
+  }
+  table.of-firma td { border-bottom: 1pt solid #000; padding: 0.15cm 0; font-size: 9pt; }
+  .of-firma-img { max-height: 2cm; max-width: 6cm; display: block; margin-bottom: 0.1cm; }
+`;
+
+function ofCheck(marcado: boolean): string {
+  return `<span class="of-check-box">${marcado ? '✓' : ''}</span>`;
+}
+
+// ============================================================
+// Autorización Uso de Imagen (PA. 2 FO. 11)
+// ============================================================
+
+export interface DatosAutorizacionImagen {
+  nombre: string;
+  cedula: string;
+  expedidaEn: string;
+  telefono: string;
+  autorizaFotos: boolean;
+  autorizaAudios: boolean;
+  autorizaVideos: boolean;
+  autorizaOtros: boolean;
+  firma: string;
+}
+
+export const generarPDFAutorizacionImagen = async (datos: DatosAutorizacionImagen): Promise<string | null> => {
+  try {
+    const html = construirHTMLAutorizacionImagen(datos);
+    const { uri } = await Print.printToFileAsync({ html, width: 612, height: 792 });
+    const nombreBenef = (datos.nombre || 'beneficiario').replace(/[^a-zA-Z0-9áéíóúÁÉÍÓÚñÑ ]/g, '').trim().replace(/\s+/g, '_');
+    const fechaStr = new Date().toISOString().split('T')[0];
+    const pdfName = `AUTORIZACION-IMAGEN-${nombreBenef}-${fechaStr}.pdf`;
+    const pdfDir = uri.substring(0, uri.lastIndexOf('/'));
+    const pdfPath = `${pdfDir}/${pdfName}`;
+    try {
+      await FileSystem.moveAsync({ from: uri, to: pdfPath });
+      return pdfPath;
+    } catch {
+      return uri;
+    }
+  } catch (error) {
+    console.error('[PDF Autorización Imagen] Error:', error);
+    return null;
+  }
+};
+
+function construirHTMLAutorizacionImagen(datos: DatosAutorizacionImagen): string {
+  const nombre = escapeHtml(datos.nombre) || '—';
+  const cedula = escapeHtml(datos.cedula) || '—';
+  const expedidaEn = escapeHtml(datos.expedidaEn) || '—';
+
+  return `<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <title>Autorización Uso de Imagen</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    ${membreteCss()}
+    ${OF_ESTILOS_COMUNES}
+  </style>
+</head>
+<body>
+  ${membreteAperturaHtml('ejecucion', 'autorizacion_imagen')}
+
+  <p class="of-p"><strong>Proyecto:</strong> “Implementación de Unidades Productoras de Cacao en Arreglo Agroforestal en el municipio de Puerto Rico, Caquetá”.</p>
+
+  <div class="of-h1">Autorización para el uso de imagen, voz y datos personales con fines institucionales y de divulgación del proyecto:</div>
+  <p class="of-p"><span class="of-blank">${nombre}</span>, identificado(a) con cédula de ciudadanía No. <span class="of-blank">${cedula}</span> expedida en <span class="of-blank">${expedidaEn}</span>, en calidad de beneficiario(a) del proyecto antes mencionado, actuando de manera libre, voluntaria, previa, expresa e informada, de conformidad con lo dispuesto en la Ley 1581 de 2012, el Decreto 1074 de 2015 y las demás normas que regulan la protección de datos personales, mediante el presente escrito, autorizo a <strong>AGROINDUSTRIAL CACAOTERA DE PUERTO RICO S.A.S.</strong>, como contratista ejecutor del proyecto, así como a <strong>E-DESARROLLO</strong>, y a las demás entidades que participen en su ejecución, para recolectar y divulgar:</p>
+
+  <div class="of-check-row">
+    <span class="of-check-item">${ofCheck(datos.autorizaFotos)}Fotos</span>
+    <span class="of-check-item">${ofCheck(datos.autorizaAudios)}Audios</span>
+    <span class="of-check-item">${ofCheck(datos.autorizaVideos)}Videos</span>
+    <span class="of-check-item">${ofCheck(datos.autorizaOtros)}Otros datos personales</span>
+  </div>
+
+  <div class="of-h1">La presente autorización comprende y tiene como finalidad:</div>
+  <ol class="of-lista">
+    <li>Autorizar a AGROINDUSTRIAL CACAOTERA DE PUERTO RICO S.A.S., en calidad de contratista ejecutor del proyecto, así como a E-DESARROLLO y a las entidades que participen en la ejecución, supervisión o interventoría del proyecto, para captar, registrar, almacenar, editar, reproducir, utilizar y conservar fotografías, imágenes, videos, audios, testimonios y demás registros audiovisuales obtenidos durante el desarrollo de las actividades relacionadas con el proyecto.</li>
+    <li>Autorizar la utilización, reproducción, publicación, comunicación, difusión y divulgación del material anteriormente descrito a través de cualquier medio físico, impreso, audiovisual, electrónico, digital o virtual, existente o que llegue a existir, incluyendo, entre otros, informes técnicos, administrativos y de supervisión, páginas web institucionales, redes sociales, boletines, cartillas, material pedagógico, piezas gráficas, presentaciones institucionales, publicaciones impresas o digitales, pendones, vallas informativas, material publicitario, campañas institucionales, eventos de socialización, rendición de cuentas y demás estrategias de comunicación y divulgación desarrolladas en el marco del proyecto.</li>
+    <li>Autorizar que el material obtenido sea utilizado exclusivamente con fines institucionales, técnicos, informativos, educativos, académicos, de seguimiento, supervisión, interventoría, promoción, divulgación y visibilización de las actividades, avances, resultados, impactos y buenas prácticas derivadas de la ejecución del proyecto.</li>
+  </ol>
+
+  <div class="of-h1">Declaraciones:</div>
+  <p class="of-p">Declaro que esta autorización se otorga de manera libre, voluntaria y sin generar contraprestación económica alguna por el uso autorizado de mi imagen, voz o registros audiovisuales. Así mismo, manifiesto que conozco mis derechos como titular de los datos personales, especialmente los de conocer, actualizar, rectificar, solicitar la supresión de mis datos y revocar la presente autorización cuando sea legalmente procedente, a través de los canales dispuestos por el responsable del tratamiento de la información.</p>
+
+  <p class="of-p">Atentamente,</p>
+
+  <table class="of-firma">
+    <tr><td>${datos.firma ? `<img class="of-firma-img" src="${datos.firma}" />` : ''}Nombre: ${nombre}</td></tr>
+    <tr><td>C.C. No. ${cedula}</td></tr>
+    <tr><td>Teléfono: ${escapeHtml(datos.telefono) || '—'}</td></tr>
+  </table>
+
+  ${membreteCierreHtml()}
+</body>
+</html>`;
+}
+
+// ============================================================
+// Autorización Uso de Imagen — Menores de Edad (PA. 2 FO. 11)
+// ============================================================
+
+export interface DatosAutorizacionImagenMenor {
+  nombreRepresentante: string;
+  cedulaRepresentante: string;
+  expedidaEn: string;
+  documentoMenor: string;
+  calidad: 'padre' | 'madre' | 'representante';
+  telefono: string;
+  autorizaFotos: boolean;
+  autorizaAudios: boolean;
+  autorizaVideos: boolean;
+  autorizaOtros: boolean;
+  firma: string;
+}
+
+export const generarPDFAutorizacionImagenMenor = async (datos: DatosAutorizacionImagenMenor): Promise<string | null> => {
+  try {
+    const html = construirHTMLAutorizacionImagenMenor(datos);
+    const { uri } = await Print.printToFileAsync({ html, width: 612, height: 792 });
+    const nombreRep = (datos.nombreRepresentante || 'representante').replace(/[^a-zA-Z0-9áéíóúÁÉÍÓÚñÑ ]/g, '').trim().replace(/\s+/g, '_');
+    const fechaStr = new Date().toISOString().split('T')[0];
+    const pdfName = `AUTORIZACION-IMAGEN-MENOR-${nombreRep}-${fechaStr}.pdf`;
+    const pdfDir = uri.substring(0, uri.lastIndexOf('/'));
+    const pdfPath = `${pdfDir}/${pdfName}`;
+    try {
+      await FileSystem.moveAsync({ from: uri, to: pdfPath });
+      return pdfPath;
+    } catch {
+      return uri;
+    }
+  } catch (error) {
+    console.error('[PDF Autorización Imagen Menor] Error:', error);
+    return null;
+  }
+};
+
+function construirHTMLAutorizacionImagenMenor(datos: DatosAutorizacionImagenMenor): string {
+  const nombre = escapeHtml(datos.nombreRepresentante) || '—';
+  const cedula = escapeHtml(datos.cedulaRepresentante) || '—';
+  const expedidaEn = escapeHtml(datos.expedidaEn) || '—';
+  const documentoMenor = escapeHtml(datos.documentoMenor) || '—';
+
+  return `<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <title>Autorización Uso de Imagen — Menor de Edad</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    ${membreteCss()}
+    ${OF_ESTILOS_COMUNES}
+  </style>
+</head>
+<body>
+  ${membreteAperturaHtml('ejecucion', 'autorizacion_imagen_menor')}
+
+  <p class="of-p"><strong>Proyecto:</strong> “Implementación de Unidades Productoras de Cacao en Arreglo Agroforestal en el municipio de Puerto Rico, Caquetá”.</p>
+
+  <div class="of-h1">Autorización para el uso de imagen, voz y datos personales de menor de edad con fines institucionales y de divulgación del proyecto:</div>
+  <p class="of-p"><span class="of-blank">${nombre}</span>, identificado(a) con cédula de ciudadanía No. <span class="of-blank">${cedula}</span> expedida en <span class="of-blank">${expedidaEn}</span>, actuando en calidad de padre, madre o representante legal del menor de edad identificado(a) con el documento de identidad No. <span class="of-blank">${documentoMenor}</span>, obrando de manera libre, voluntaria, previa, expresa e informada, de conformidad con lo dispuesto en la Ley 1581 de 2012, el Decreto 1074 de 2015 y las demás normas que regulan la protección de datos personales, mediante el presente escrito, autorizo a <strong>AGROINDUSTRIAL CACAOTERA DE PUERTO RICO S.A.S.</strong>, como contratista ejecutor del proyecto, así como a <strong>E-DESARROLLO</strong>, y a las demás entidades que participen en su ejecución, para recolectar y divulgar los siguientes registros del menor:</p>
+
+  <div class="of-check-row">
+    <span class="of-check-item">${ofCheck(datos.autorizaFotos)}Fotos</span>
+    <span class="of-check-item">${ofCheck(datos.autorizaAudios)}Audios</span>
+    <span class="of-check-item">${ofCheck(datos.autorizaVideos)}Videos</span>
+    <span class="of-check-item">${ofCheck(datos.autorizaOtros)}Otros datos personales</span>
+  </div>
+
+  <div class="of-h1">La presente autorización comprende y tiene como finalidad:</div>
+  <ol class="of-lista">
+    <li>Autorizar la captura, registro, almacenamiento, edición, reproducción, conservación y utilización de fotografías, imágenes, audios, videos, testimonios y demás registros audiovisuales obtenidos durante el desarrollo de las actividades del proyecto en las que participe el menor de edad.</li>
+    <li>Autorizar la utilización, reproducción, publicación, comunicación, difusión y divulgación del material anteriormente descrito a través de medios físicos, impresos, audiovisuales, electrónicos, digitales o virtuales, incluyendo, entre otros, informes técnicos, administrativos y de supervisión, páginas web institucionales, redes sociales, boletines, cartillas, material pedagógico, piezas gráficas, presentaciones institucionales, publicaciones impresas o digitales, pendones, vallas informativas, campañas institucionales, eventos de socialización, rendición de cuentas y demás estrategias de divulgación desarrolladas en el marco del proyecto.</li>
+    <li>Autorizar que el material sea utilizado exclusivamente con fines institucionales, técnicos, educativos, informativos, académicos, de seguimiento, supervisión, interventoría, promoción y divulgación de las actividades, avances, resultados e impactos del proyecto, garantizando en todo momento el respeto por la dignidad, la intimidad, la honra, la imagen y los derechos fundamentales del menor de edad, así como la observancia de su interés superior.</li>
+  </ol>
+
+  <div class="of-h1">Declaraciones:</div>
+  <p class="of-p">Declaro que esta autorización se otorga de manera libre, voluntaria y sin generar contraprestación económica alguna por el uso autorizado de mi imagen, voz o registros audiovisuales. Así mismo, manifiesto que conozco mis derechos como titular de los datos personales, especialmente los de conocer, actualizar, rectificar, solicitar la supresión de mis datos y revocar la presente autorización cuando sea legalmente procedente, a través de los canales dispuestos por el responsable del tratamiento de la información.</p>
+
+  <p class="of-p">Atentamente,</p>
+
+  <table class="of-firma">
+    <tr><td>${datos.firma ? `<img class="of-firma-img" src="${datos.firma}" />` : ''}Nombre: ${nombre}</td></tr>
+    <tr><td>Calidad: ${datos.calidad === 'padre' ? 'Padre' : datos.calidad === 'madre' ? 'Madre' : 'Representante legal'}</td></tr>
+    <tr><td>C.C. No. ${cedula}</td></tr>
+    <tr><td>Teléfono: ${escapeHtml(datos.telefono) || '—'}</td></tr>
+  </table>
+
+  ${membreteCierreHtml()}
+</body>
+</html>`;
+}
+
+// ============================================================
+// Consentimiento Informado y Tratamiento de Datos (PA. 2 FO. 32)
+// ============================================================
+
+export interface DatosConsentimientoDatos {
+  nombre: string;
+  cedula: string;
+  expedidaEn: string;
+  autorizaIdentificacion: boolean;
+  autorizaPredio: boolean;
+  autorizaTecnica: boolean;
+  autorizaAsistencia: boolean;
+  fecha: string;
+  firma: string;
+}
+
+export const AC_FINALIDADES_TRATAMIENTO = [
+  'Realizar la identificación, caracterización, vinculación y seguimiento de los beneficiarios del proyecto.',
+  'Adelantar las actividades de diagnóstico, georreferenciación, asistencia técnica, seguimiento productivo y verificación de las unidades productoras de cacao.',
+  'Elaborar, consolidar y conservar las bases de datos, registros, informes, actas, matrices y demás documentos requeridos para la ejecución y seguimiento del proyecto.',
+  'Acreditar ante las entidades competentes, la supervisión y la interventoría el cumplimiento de las actividades, metas, productos e indicadores establecidos para el proyecto.',
+  'Realizar actividades de monitoreo, seguimiento, evaluación, supervisión, interventoría, control y cierre del proyecto.',
+  'Contactarme para efectos relacionados con la programación de visitas, asistencia técnica, capacitaciones, jornadas de campo, entrega de insumos y demás actividades propias del proyecto.',
+  'Atender requerimientos de información formulados por las entidades que tengan competencia sobre la ejecución, supervisión, interventoría, financiación o control del proyecto.',
+  'Conservar la información y los soportes documentales que acrediten mi participación como beneficiario(a), durante los términos que resulten aplicables.',
+  'Elaborar informes, piezas institucionales y material de divulgación, socialización y visibilización de los avances, resultados e impactos del proyecto, cuando para ello se cuente con la autorización correspondiente.',
+];
+
+export const generarPDFConsentimientoDatos = async (datos: DatosConsentimientoDatos): Promise<string | null> => {
+  try {
+    const html = construirHTMLConsentimientoDatos(datos);
+    const { uri } = await Print.printToFileAsync({ html, width: 612, height: 792 });
+    const nombreBenef = (datos.nombre || 'beneficiario').replace(/[^a-zA-Z0-9áéíóúÁÉÍÓÚñÑ ]/g, '').trim().replace(/\s+/g, '_');
+    const fechaStr = new Date(datos.fecha || Date.now()).toISOString().split('T')[0];
+    const pdfName = `CONSENTIMIENTO-DATOS-${nombreBenef}-${fechaStr}.pdf`;
+    const pdfDir = uri.substring(0, uri.lastIndexOf('/'));
+    const pdfPath = `${pdfDir}/${pdfName}`;
+    try {
+      await FileSystem.moveAsync({ from: uri, to: pdfPath });
+      return pdfPath;
+    } catch {
+      return uri;
+    }
+  } catch (error) {
+    console.error('[PDF Consentimiento Datos] Error:', error);
+    return null;
+  }
+};
+
+function construirHTMLConsentimientoDatos(datos: DatosConsentimientoDatos): string {
+  const nombre = escapeHtml(datos.nombre) || '—';
+  const cedula = escapeHtml(datos.cedula) || '—';
+  const expedidaEn = escapeHtml(datos.expedidaEn) || '—';
+
+  const fecha = datos.fecha ? new Date(datos.fecha) : new Date();
+  const dia = fecha.getDate();
+  const mes = AC_MESES[fecha.getMonth()];
+  const anio = fecha.getFullYear();
+
+  const filaTipo = (marcado: boolean, texto: string) => `
+    <tr><td>${escapeHtml(texto)}</td><td style="text-align:center">${ofCheck(marcado)}</td></tr>`;
+
+  return `<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <title>Consentimiento Informado y Tratamiento de Datos</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    ${membreteCss()}
+    ${OF_ESTILOS_COMUNES}
+    table.of-tipos { width: 100%; border-collapse: collapse; margin: 0.2cm 0 0.3cm; }
+    table.of-tipos th, table.of-tipos td { border: 1pt solid #000; padding: 0.15cm 0.25cm; font-size: 9pt; text-align: left; }
+    table.of-tipos th { text-align: center; font-weight: bold; }
+  </style>
+</head>
+<body>
+  ${membreteAperturaHtml('ejecucion', 'consentimiento_datos')}
+
+  <p class="of-p"><strong>Proyecto:</strong> “Implementación de Unidades Productoras de Cacao en Arreglo Agroforestal en el municipio de Puerto Rico, Caquetá”.</p>
+
+  <div class="of-h1">1. Consentimiento Informado para la Participación en el Proyecto</div>
+  <p class="of-p"><span class="of-blank">${nombre}</span>, identificado(a) con cédula de ciudadanía No. <span class="of-blank">${cedula}</span>, expedida en <span class="of-blank">${expedidaEn}</span>, actuando de manera libre, voluntaria, consciente y previamente informada, manifiesto que he recibido información clara, suficiente y comprensible sobre el proyecto “Implementación de Unidades Productoras de Cacao en Arreglo Agroforestal en el municipio de Puerto Rico, Caquetá”, así como sobre sus objetivos, actividades, condiciones generales de participación y compromisos asociados a mi vinculación como beneficiario(a).</p>
+  <p class="of-p">El proyecto tiene como propósito el establecimiento y fortalecimiento de unidades productoras de cacao mediante sistemas de arreglo agroforestal, integrando clones mejorados de cacao de alto rendimiento, asociados con plátano como sombrío temporal y especies forestales como sombrío permanente, bajo criterios de sostenibilidad productiva y ambiental.</p>
+  <p class="of-p">Así mismo, se me ha informado que, en desarrollo del proyecto, podrán realizarse actividades tales como diagnóstico técnico y social del predio, georreferenciación, análisis y toma de muestras de suelo, establecimiento y fortalecimiento de biofactorías, fertilización órgano-mineral, manejo fitosanitario, suministro de herramientas, materiales e insumos, asistencia técnica, capacitación y Escuelas de Campo para Agricultores – ECA, entre otras actividades previstas para la implementación y manejo de la unidad productora.</p>
+  <p class="of-p">En consecuencia, manifiesto que comprendo la naturaleza y finalidad de las actividades que serán desarrolladas en mi predio y acepto participar voluntariamente en el proyecto, comprometiéndome a facilitar el acceso al predio, proporcionar la información requerida y participar en las actividades técnicas, productivas, ambientales y de acompañamiento que correspondan.</p>
+
+  <div class="of-h1">2. Autorización para el Tratamiento de Datos Personales</div>
+  <p class="of-p">En mi calidad de titular de los datos personales y beneficiario(a) del proyecto, autorizo de manera previa, expresa, libre, voluntaria e informada a AGROINDUSTRIAL CACAOTERA DE PUERTO RICO S.A.S., en su calidad de entidad ejecutora del proyecto, así como, cuando resulte procedente dentro del marco de sus competencias, a E-DESARROLLO y a las demás entidades que intervengan en su ejecución, supervisión o interventoría, para realizar el tratamiento de los datos personales que sean suministrados con ocasión de mi participación en el proyecto.</p>
+  <p class="of-p">La autorización comprende la recolección, almacenamiento, organización, conservación, consulta, actualización, uso, circulación y demás operaciones necesarias sobre mis datos personales, de conformidad con las finalidades propias de la ejecución, seguimiento, supervisión, interventoría, evaluación, control y cierre del proyecto. Los datos que podrán ser tratados comprenden, entre otros:</p>
+
+  <table class="of-tipos">
+    <tr><th>Tipo de información</th><th>Autorizo</th></tr>
+    ${filaTipo(datos.autorizaIdentificacion, 'Datos de identificación y contacto')}
+    ${filaTipo(datos.autorizaPredio, 'Información relacionada con el predio objeto de intervención')}
+    ${filaTipo(datos.autorizaTecnica, 'Información técnica y productiva relacionada con la unidad productora')}
+    ${filaTipo(datos.autorizaAsistencia, 'Registros de asistencia y participación en actividades del proyecto')}
+  </table>
+
+  <div class="of-h1">3. Finalidades del Tratamiento de los Datos</div>
+  <p class="of-p">La información suministrada podrá ser utilizada para las siguientes finalidades:</p>
+  <ol class="of-lista">
+    ${AC_FINALIDADES_TRATAMIENTO.map((t) => `<li>${escapeHtml(t)}</li>`).join('')}
+  </ol>
+  <p class="of-p">La autorización para el tratamiento de los datos personales permanecerá vigente durante el tiempo que resulte necesario para cumplir las finalidades relacionadas con la ejecución, seguimiento, supervisión, interventoría, evaluación, control, cierre y conservación documental del proyecto, de acuerdo con las obligaciones legales y contractuales aplicables.</p>
+
+  <p class="of-p">En constancia de lo anterior, manifiesto que he leído, comprendido y aceptado el contenido del presente Consentimiento Informado y Autorización para el Tratamiento de Datos Personales, y que otorgo mi consentimiento de manera libre, voluntaria, previa, expresa e informada, en el municipio de Puerto Rico, departamento del Caquetá, a los <span class="of-blank">${dia}</span> días del mes de <span class="of-blank">${mes}</span> de <span class="of-blank">${anio}</span>, dejando constancia de mi aceptación de las condiciones y autorizaciones aquí establecidas.</p>
+
+  <table class="of-firma">
+    <tr><td>${datos.firma ? `<img class="of-firma-img" src="${datos.firma}" />` : ''}Firma del Beneficiario</td></tr>
+    <tr><td>C.C. No. ${cedula}</td></tr>
+  </table>
+
+  ${membreteCierreHtml()}
+</body>
+</html>`;
+}
+
+// ============================================================
+// Evaluación de Escuela de Campo para Agricultores — ECA 1 (PA. 2 FO. 33)
+// Encuesta sin firma: se aplica antes/después de cada jornada.
+// ============================================================
+
+export type EcaOpcionABC = 'A' | 'B' | 'C';
+export type EcaLikert = 'muy_buena' | 'buena' | 'regular' | 'mala';
+
+export interface DatosEvaluacionEca {
+  nombre: string;
+  identificacion: string;
+  vereda: string;
+  predio: string;
+  respuestasTecnicas: Record<string, EcaOpcionABC | null>;
+  respuestasJornada: Record<string, EcaLikert | null>;
+  temaMasUtil: string;
+  temaMasUtilOtro: string;
+  puedeAplicar: 'si' | 'parcial' | 'no' | null;
+  temaReforzar: string;
+  volveriaParticipar: 'si' | 'no' | 'tal_vez' | null;
+  temaProximaEca: string;
+  sugerencias: string;
+}
+
+export const ECA_PREGUNTAS_TECNICAS: { key: string; titulo: string; pregunta: string; opciones: string[] }[] = [
+  {
+    key: 'muestreo_suelos',
+    titulo: '1.1. Muestreo de suelos',
+    pregunta: '¿Cuál es la forma adecuada para realizar el recorrido y tomar las submuestras de suelo?',
+    opciones: [
+      'En línea recta por el camino de la finca.',
+      'En zigzag o en “X”, tomando muestras de diferentes puntos homogéneos del lote.',
+      'Únicamente en los lugares donde se acumula agua.',
+    ],
+  },
+  {
+    key: 'distancia_siembra',
+    titulo: '1.2. Distancia de siembra',
+    pregunta: '¿Cuál es la distancia establecida para la siembra del cacao en el arreglo agroforestal?',
+    opciones: ['2,0 m × 2,0 m.', '3,5 m × 3,5 m.', '5,0 m × 5,0 m.'],
+  },
+  {
+    key: 'preparacion_terreno',
+    titulo: '1.3. Preparación del terreno',
+    pregunta: '¿Cuáles son las dimensiones recomendadas para el hoyo de siembra del cacao?',
+    opciones: ['20 cm × 20 cm × 20 cm.', '40 cm × 40 cm × 40 cm.', '60 cm × 60 cm × 60 cm.'],
+  },
+  {
+    key: 'manejo_insumos',
+    titulo: '1.4. Manejo de insumos',
+    pregunta: '¿Qué indica el color de la franja de seguridad en los envases de agroquímicos?',
+    opciones: [
+      'La marca comercial del producto.',
+      'El nivel de peligrosidad y las precauciones para su manejo.',
+      'La fecha de vencimiento del producto.',
+    ],
+  },
+  {
+    key: 'siembra_platano',
+    titulo: '1.5. Siembra del plátano',
+    pregunta: 'Antes de sembrar el colino de plátano como sombrío temporal se debe:',
+    opciones: [
+      'Sembrar directamente sin ningún tratamiento.',
+      'Realizar el manejo y desinfección correspondiente del material de siembra.',
+      'Lavarlo únicamente con agua.',
+    ],
+  },
+];
+
+export const ECA_PREGUNTAS_JORNADA: { key: string; texto: string }[] = [
+  { key: 'objetivos', texto: '¿Se cumplieron los objetivos de la jornada?' },
+  { key: 'temas_claros', texto: '¿Los temas fueron claros y fáciles de entender?' },
+  { key: 'practica_util', texto: '¿La práctica de campo fue útil?' },
+  { key: 'aplicable_finca', texto: '¿Los conocimientos aprendidos son aplicables en su finca?' },
+  { key: 'explicacion_tecnico', texto: '¿La explicación del técnico fue clara?' },
+  { key: 'tiempo_adecuado', texto: '¿El tiempo destinado a la jornada fue adecuado?' },
+  { key: 'calificacion_general', texto: '¿Cómo califica en general la ECA?' },
+];
+
+export const ECA_TEMAS_UTILES = [
+  'Buenas Prácticas Agrícolas – BPA',
+  'Preparación del terreno',
+  'Muestreo de suelos',
+  'Siembra del cacao',
+  'Manejo del sombrío',
+  'Manejo de insumos',
+];
+
+const ECA_LIKERT_LABELS: Record<EcaLikert, string> = {
+  muy_buena: 'Muy buena', buena: 'Buena', regular: 'Regular', mala: 'Mala',
+};
+
+export const generarPDFEvaluacionEca = async (datos: DatosEvaluacionEca): Promise<string | null> => {
+  try {
+    const html = construirHTMLEvaluacionEca(datos);
+    const { uri } = await Print.printToFileAsync({ html, width: 612, height: 792 });
+    const nombreBenef = (datos.nombre || 'beneficiario').replace(/[^a-zA-Z0-9áéíóúÁÉÍÓÚñÑ ]/g, '').trim().replace(/\s+/g, '_');
+    const fechaStr = new Date().toISOString().split('T')[0];
+    const pdfName = `EVALUACION-ECA1-${nombreBenef}-${fechaStr}.pdf`;
+    const pdfDir = uri.substring(0, uri.lastIndexOf('/'));
+    const pdfPath = `${pdfDir}/${pdfName}`;
+    try {
+      await FileSystem.moveAsync({ from: uri, to: pdfPath });
+      return pdfPath;
+    } catch {
+      return uri;
+    }
+  } catch (error) {
+    console.error('[PDF Evaluación ECA] Error:', error);
+    return null;
+  }
+};
+
+function construirHTMLEvaluacionEca(datos: DatosEvaluacionEca): string {
+  const nombre = escapeHtml(datos.nombre) || '—';
+
+  const preguntasTecnicasHtml = ECA_PREGUNTAS_TECNICAS.map((p) => {
+    const marcada = datos.respuestasTecnicas[p.key];
+    const letras: EcaOpcionABC[] = ['A', 'B', 'C'];
+    return `
+    <div class="eca-pregunta">
+      <div class="eca-pregunta-titulo">${p.titulo}</div>
+      <div class="eca-pregunta-texto">${escapeHtml(p.pregunta)}</div>
+      ${p.opciones.map((op, i) => `
+        <div class="eca-opcion">${ofCheck(marcada === letras[i])} ${letras[i]}. ${escapeHtml(op)}</div>
+      `).join('')}
+    </div>`;
+  }).join('');
+
+  const jornadaFilasHtml = ECA_PREGUNTAS_JORNADA.map((p) => {
+    const marcada = datos.respuestasJornada[p.key];
+    return `
+    <tr>
+      <td>${escapeHtml(p.texto)}</td>
+      <td style="text-align:center">${ofCheck(marcada === 'muy_buena')}</td>
+      <td style="text-align:center">${ofCheck(marcada === 'buena')}</td>
+      <td style="text-align:center">${ofCheck(marcada === 'regular')}</td>
+      <td style="text-align:center">${ofCheck(marcada === 'mala')}</td>
+    </tr>`;
+  }).join('');
+
+  const temasUtilesHtml = ECA_TEMAS_UTILES.map((t) => `
+    <div class="eca-opcion">${ofCheck(datos.temaMasUtil === t)} ${escapeHtml(t)}</div>
+  `).join('') + `
+    <div class="eca-opcion">${ofCheck(datos.temaMasUtil === 'otro')} Otro: <span class="of-blank">${escapeHtml(datos.temaMasUtilOtro) || (datos.temaMasUtil === 'otro' ? '' : '—')}</span></div>`;
+
+  return `<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <title>Evaluación ECA 1</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    ${membreteCss()}
+    ${OF_ESTILOS_COMUNES}
+    table.eca-info { width: 100%; border-collapse: collapse; border: 1pt solid #000; margin-bottom: 0.3cm; }
+    table.eca-info td { border: 1pt solid #000; padding: 0.15cm 0.25cm; font-size: 9pt; }
+    .eca-info-label { font-weight: bold; width: 5cm; }
+    .eca-pregunta { margin-bottom: 0.3cm; break-inside: avoid; }
+    .eca-pregunta-titulo { font-weight: bold; font-size: 9.5pt; }
+    .eca-pregunta-texto { margin: 0.1cm 0; }
+    .eca-opcion { margin-left: 0.3cm; margin-bottom: 0.08cm; }
+    table.eca-jornada { width: 100%; border-collapse: collapse; margin: 0.2cm 0 0.3cm; }
+    table.eca-jornada th, table.eca-jornada td { border: 1pt solid #000; padding: 0.12cm 0.2cm; font-size: 8.5pt; }
+    table.eca-jornada th { text-align: center; font-weight: bold; }
+    .eca-texto-libre { border-bottom: 1pt solid #000; min-height: 0.5cm; margin-bottom: 0.15cm; }
+  </style>
+</head>
+<body>
+  ${membreteAperturaHtml('ejecucion', 'evaluacion_eca')}
+
+  <p class="of-p"><strong>Proyecto:</strong> “Implementación de Unidades Productoras de Cacao en Arreglo Agroforestal en el municipio de Puerto Rico, Caquetá”.</p>
+
+  <div class="of-h1">Objetivo de la evaluación</div>
+  <p class="of-p">Conocer y valorar el nivel de comprensión y apropiación de los conocimientos impartidos durante la Escuela de Campo para Agricultores – ECA, verificando qué tanto de la información técnica suministrada fue comprendida y asimilada por los participantes, así como su percepción sobre la utilidad y pertinencia de los temas y actividades desarrolladas y su capacidad para aplicar los conocimientos adquiridos en sus unidades productoras de cacao.</p>
+
+  <table class="eca-info">
+    <tr><td class="eca-info-label">Nombre del beneficiario</td><td>${nombre}</td></tr>
+    <tr><td class="eca-info-label">Identificación</td><td>${escapeHtml(datos.identificacion) || '—'}</td></tr>
+    <tr><td class="eca-info-label">Vereda</td><td>${escapeHtml(datos.vereda) || '—'}</td></tr>
+    <tr><td class="eca-info-label">Predio</td><td>${escapeHtml(datos.predio) || '—'}</td></tr>
+  </table>
+
+  <div class="of-h1">1. Evaluación de Conocimientos Técnicos</div>
+  <p class="of-p">Marque con una X la respuesta que considere correcta.</p>
+  ${preguntasTecnicasHtml}
+
+  <div class="of-h1">2. Evaluación de la Jornada</div>
+  <p class="of-p">Marque con una X la opción que mejor represente su opinión.</p>
+  <table class="eca-jornada">
+    <tr><th>Aspecto evaluado</th><th>Muy buena</th><th>Buena</th><th>Regular</th><th>Mala</th></tr>
+    ${jornadaFilasHtml}
+  </table>
+
+  <div class="of-h1">3. Aprendizaje y Aplicación</div>
+  <p class="of-p">¿Qué tema considera que fue más útil para su finca?</p>
+  ${temasUtilesHtml}
+
+  <p class="of-p" style="margin-top:0.25cm">¿Considera que puede aplicar lo aprendido en su finca?</p>
+  <div class="eca-opcion">${ofCheck(datos.puedeAplicar === 'si')} Sí</div>
+  <div class="eca-opcion">${ofCheck(datos.puedeAplicar === 'parcial')} Parcialmente</div>
+  <div class="eca-opcion">${ofCheck(datos.puedeAplicar === 'no')} No</div>
+
+  <p class="of-p" style="margin-top:0.25cm">¿Qué tema le gustaría reforzar en próximas jornadas?</p>
+  <div class="eca-texto-libre">${escapeHtml(datos.temaReforzar)}</div>
+
+  <div class="of-h1">4. Participación y Continuidad</div>
+  <p class="of-p">¿Volvería a participar en otra Escuela de Campo?</p>
+  <div class="eca-opcion">${ofCheck(datos.volveriaParticipar === 'si')} Sí &nbsp;&nbsp; ${ofCheck(datos.volveriaParticipar === 'no')} No &nbsp;&nbsp; ${ofCheck(datos.volveriaParticipar === 'tal_vez')} Tal vez</div>
+
+  <p class="of-p" style="margin-top:0.25cm">¿Qué tema le gustaría que se abordara en la próxima ECA?</p>
+  <div class="eca-texto-libre">${escapeHtml(datos.temaProximaEca)}</div>
+
+  <p class="of-p">Sugerencias para mejorar las próximas jornadas:</p>
+  <div class="eca-texto-libre">${escapeHtml(datos.sugerencias)}</div>
+
+  ${membreteCierreHtml()}
+</body>
+</html>`;
+}
+
 /**
  * Convertir array de fotos a bloques HTML con imágenes embebidas en base64
  * Las fotos se redimensionan a 800px para que el PDF no se sature
@@ -234,72 +1259,100 @@ export async function convertirFotosAHTML(fotos: FotoGeotag[]): Promise<string> 
     // adjuntar por su cuenta — hay que descargarla primero. Se hace fuera
     // del try principal para que el fallback de abajo también pueda usar la
     // copia ya descargada en vez de reintentar contra la URL remota.
+    //
+    // En web no existe FileSystem.cacheDirectory/downloadAsync (son del
+    // dispositivo) — y expo-image-manipulator ahí carga la imagen con un
+    // <img> plano (ver loadImageAsync en expo-image-manipulator/web), que
+    // tampoco puede mandar la cabecera Authorization. Por eso se descarga
+    // con `fetch` (sí acepta cabeceras) y se pasa como blob: URL — esa sí
+    // la puede leer un <img> sin problema de autenticación ni de CORS.
     let uriParaProcesar = foto.uri;
+    let blobRemotoWeb: Blob | null = null;
+    let blobUrlTemporal: string | null = null;
     if (foto.uri.startsWith('http')) {
       try {
         const headers = await cabecerasDeArchivo();
-        const destino = `${FileSystem.cacheDirectory}pdf_evidencia_${foto.id}.jpg`;
-        const descarga = await FileSystem.downloadAsync(foto.uri, destino, { headers });
-        uriParaProcesar = descarga.uri;
+        if (Platform.OS === 'web') {
+          const respuesta = await fetch(foto.uri, { headers });
+          if (!respuesta.ok) throw new Error(`HTTP ${respuesta.status}`);
+          blobRemotoWeb = await respuesta.blob();
+          blobUrlTemporal = URL.createObjectURL(blobRemotoWeb);
+          uriParaProcesar = blobUrlTemporal;
+        } else {
+          const destino = `${FileSystem.cacheDirectory}pdf_evidencia_${foto.id}.jpg`;
+          const descarga = await FileSystem.downloadAsync(foto.uri, destino, { headers });
+          uriParaProcesar = descarga.uri;
+        }
       } catch (descargaErr) {
         console.warn('[PDF Local] No se pudo descargar evidencia remota', foto.id, descargaErr);
       }
     }
 
     try {
-      // Leer la foto a máxima calidad — el espacio no es problema
-      // Se redimensiona solo a 1200px para evitar PDFs monstruosos,
-      // pero con calidad 0.9 para mantener nitidez
-      const resultado = await manipulateAsync(
-        uriParaProcesar,
-        [{ resize: { width: 1200 } }],
-        { compress: 0.9, format: SaveFormat.JPEG, base64: true }
-      );
-
-      if (!resultado.base64) {
-        throw new Error('No se obtuvo base64 de la imagen redimensionada');
-      }
-
-      const dataUri = `data:image/jpeg;base64,${resultado.base64}`;
-
-      const coords = formatCoordenadas(foto.coordenadas.latitud, foto.coordenadas.longitud, 4);
-      const fecha = formatFecha(foto.timestamp);
-
-      bloques.push(`
-        <div class="foto-item">
-          <p class="evidencia-label">📸 Foto ${i + 1} — ${fecha}</p>
-          <img src="${dataUri}" alt="Foto ${i + 1}" class="foto-img" />
-          <p class="foto-coords">📍 ${coords}</p>
-          ${foto.coordenadas.heading !== undefined ? `<p class="foto-heading">🧭 Rumbo: ${Math.round(foto.coordenadas.heading)}°</p>` : ''}
-        </div>
-      `);
-    } catch (e) {
-      console.warn('[PDF Local] Error al procesar foto', foto.id, e);
-      // Fallback: intentar leer la foto sin redimensionar (reutiliza la
-      // copia ya descargada si la evidencia era remota)
       try {
-        const base64 = await FileSystem.readAsStringAsync(uriParaProcesar, {
-          encoding: FileSystem.EncodingType.Base64,
-        });
-        const dataUri = `data:image/jpeg;base64,${base64}`;
+        // Leer la foto a máxima calidad — el espacio no es problema
+        // Se redimensiona solo a 1200px para evitar PDFs monstruosos,
+        // pero con calidad 0.9 para mantener nitidez
+        const resultado = await manipulateAsync(
+          uriParaProcesar,
+          [{ resize: { width: 1200 } }],
+          { compress: 0.9, format: SaveFormat.JPEG, base64: true }
+        );
+
+        if (!resultado.base64) {
+          throw new Error('No se obtuvo base64 de la imagen redimensionada');
+        }
+
+        const dataUri = `data:image/jpeg;base64,${resultado.base64}`;
+
         const coords = formatCoordenadas(foto.coordenadas.latitud, foto.coordenadas.longitud, 4);
         const fecha = formatFecha(foto.timestamp);
+
         bloques.push(`
           <div class="foto-item">
             <p class="evidencia-label">📸 Foto ${i + 1} — ${fecha}</p>
             <img src="${dataUri}" alt="Foto ${i + 1}" class="foto-img" />
             <p class="foto-coords">📍 ${coords}</p>
+            ${foto.coordenadas.heading !== undefined ? `<p class="foto-heading">🧭 Rumbo: ${Math.round(foto.coordenadas.heading)}°</p>` : ''}
           </div>
         `);
-      } catch (e2) {
-        console.warn('[PDF Local] Fallback también falló para foto', foto.id, e2);
-        bloques.push(`
-          <div class="foto-item">
-            <p class="evidencia-label">📸 Foto ${i + 1}</p>
-            <p class="no-data">No se pudo incrustar la imagen</p>
-          </div>
-        `);
+      } catch (e) {
+        console.warn('[PDF Local] Error al procesar foto', foto.id, e);
+        // Fallback: usar la foto sin redimensionar (reutiliza el blob ya
+        // descargado en web, o la copia ya descargada en nativo)
+        try {
+          const dataUri =
+            Platform.OS === 'web' && blobRemotoWeb
+              ? await new Promise<string>((resolve, reject) => {
+                  const lector = new FileReader();
+                  lector.onload = () => resolve(lector.result as string);
+                  lector.onerror = () => reject(lector.error);
+                  lector.readAsDataURL(blobRemotoWeb!);
+                })
+              : `data:image/jpeg;base64,${await FileSystem.readAsStringAsync(uriParaProcesar, {
+                  encoding: FileSystem.EncodingType.Base64,
+                })}`;
+          const coords = formatCoordenadas(foto.coordenadas.latitud, foto.coordenadas.longitud, 4);
+          const fecha = formatFecha(foto.timestamp);
+          bloques.push(`
+            <div class="foto-item">
+              <p class="evidencia-label">📸 Foto ${i + 1} — ${fecha}</p>
+              <img src="${dataUri}" alt="Foto ${i + 1}" class="foto-img" />
+              <p class="foto-coords">📍 ${coords}</p>
+            </div>
+          `);
+        } catch (e2) {
+          console.warn('[PDF Local] Fallback también falló para foto', foto.id, e2);
+          bloques.push(`
+            <div class="foto-item">
+              <p class="evidencia-label">📸 Foto ${i + 1}</p>
+              <p class="no-data">No se pudo incrustar la imagen</p>
+            </div>
+          `);
+        }
       }
+    } finally {
+      if (blobUrlTemporal) URL.revokeObjectURL(blobUrlTemporal);
     }
   }
 
@@ -451,7 +1504,7 @@ function construirHTMLRevisionChecklist(
   </style>
 </head>
 <body>
-  ${membreteAperturaHtml(variante)}
+  ${membreteAperturaHtml(variante, esInterventor ? 'interventoria' : 'supervision')}
 
   <div class="doc-titulo">
     <h1>${tituloDoc}</h1>
@@ -504,8 +1557,7 @@ function construirHTML(
   fotosHtml: string,
   firmaBenefHtml: string,
   firmaTecHtml: string,
-  huellaHtml: string,
-  variante: MembreteVariante = 'ejecucion'
+  huellaHtml: string
 ): string {
   const sd = form.sociodemografico;
   // El backend guarda georeferencia_json como '{}' (no NULL) cuando el
@@ -787,7 +1839,7 @@ function construirHTML(
   </style>
 </head>
 <body>
-  ${membreteAperturaHtml(variante)}
+  ${membreteAperturaHtml('ejecucion', 'tecnica')}
 
   <div class="doc-titulo">
     <h1>FORMULARIO DE VISITA TÉCNICA</h1>
@@ -889,8 +1941,7 @@ function construirHTMLCaracterizacion(
   fotosHtml: string,
   firmaBenefHtml: string,
   firmaTecHtml: string,
-  huellaHtml: string,
-  variante: MembreteVariante = 'ejecucion'
+  huellaHtml: string
 ): string {
   const c = (form as any).caracterizacion_nueva || {};
 
@@ -1079,7 +2130,7 @@ function construirHTMLCaracterizacion(
   </style>
 </head>
 <body>
-  ${membreteAperturaHtml(variante)}
+  ${membreteAperturaHtml('ejecucion', 'caracterizacion')}
 
   <div class="doc-titulo">
     <h1>ENCUESTA SOCIAL AGROAMBIENTAL</h1>

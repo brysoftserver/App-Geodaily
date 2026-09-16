@@ -55,6 +55,9 @@ export const STORAGE_KEYS = {
   TECNICO_CEDULA: 'geodaily.tecnico_cedula',
   VISITAS_PLANIFICADAS: 'geodaily.visitas_planificadas',
   FORM_DRAFTS: 'geodaily.form_drafts',
+  // Borrador de la planilla "Otros Formatos → Ingreso de Beneficiarios"
+  // (filas escritas a mano por el técnico antes de generar el PDF FO.31).
+  INGRESO_BENEFICIARIOS_DRAFT: 'geodaily.otros_formatos.ingreso_beneficiarios_draft',
   // Credencial cacheada para login offline — hash salteado de la contraseña
   // + datos de sesión de la última autenticación online exitosa. Permite
   // que un técnico en campo vuelva a entrar sin señal aunque haya cerrado la
