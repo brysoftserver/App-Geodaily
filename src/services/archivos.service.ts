@@ -233,13 +233,24 @@ const inferirTipo = (uri: string, tipoOriginal?: string): 'foto' | 'video' => {
 /**
  * Devuelve las evidencias de un formulario listas para mostrar.
  *
- * Si TODOS los archivos locales existen (el mismo teléfono que capturó la
- * visita) se usan tal cual — funciona sin conexión. Si falta AUNQUE SEA
- * UNO, se reconstruye la lista completa desde el servidor: antes bastaba
- * con que UNA sola evidencia existiera localmente para usar las demás tal
- * cual, aunque no existieran en este dispositivo — eso hacía que, desde un
- * teléfono distinto al que capturó la visita, se intentaran cargar rutas
- * file:// que nunca existieron ahí (miniaturas en blanco).
+ * Se combinan SIEMPRE las dos fuentes:
+ *
+ *  1. Las de `formulario.fotos` — las que TODAVÍA EXISTEN en este
+ *     dispositivo se usan tal cual, sin descargar nada: es lo que permite ver
+ *     las fotos sin conexión. Las que ya no están en disco se descartan en
+ *     vez de mostrarse rotas (antes se descartaba la lista entera si faltaba
+ *     UNA sola, y se reconstruía desde el servidor: desde un teléfono
+ *     distinto al que capturó la visita se intentaban cargar rutas file://
+ *     que nunca existieron ahí — miniaturas en blanco).
+ *  2. Las del servidor (`GET /api/archivos/formulario/:id`).
+ *
+ * Antes la fuente 1 CORTOCIRCUITABA a la 2. Eso dejaba invisible cualquier
+ * evidencia agregada DESPUÉS de guardarse el formulario: `formulario.fotos`
+ * es una foto fija del momento en que se guardó y no conoce las capturas del
+ * botón «＋ Agregar» del detalle (modo "evidencia dirigida"), así que una foto
+ * recién tomada sobre una visita ya completada desaparecía de la pantalla en
+ * cuanto se subía al servidor. Ahora se unen (sin duplicar) para que el
+ * usuario pueda comprobar que la foto quedó guardada, con o sin conexión.
  *
  * @returns `null` si no hizo falta sustituir nada (usar `form.fotos`)
  */
@@ -249,30 +260,51 @@ export const resolverEvidenciasRemotas = async (
 ): Promise<FotoGeotag[] | null> => {
   const lista = fotos || [];
 
-  if (lista.length > 0) {
-    const disponibles = await Promise.all(lista.map((f) => existeLocalmente(f.uri)));
-    if (disponibles.every(Boolean)) {
-      // Todo existe en este dispositivo — es el teléfono original. Se
-      // normaliza 'tipo' por si el formulario se sincronizó antes del fix.
-      return lista.map((f) => ({ ...f, tipo: inferirTipo(f.uri, f.tipo) }));
-    }
-  }
+  // ¿Qué evidencias del formulario siguen existiendo en ESTE dispositivo?
+  // (`existeLocalmente` devuelve true para http/data:, que no son archivos).
+  const disponibles = await Promise.all(lista.map((f) => existeLocalmente(f.uri)));
 
   const remotos = await fetchPayloadArchivos(formularioId);
+
+  const fueEliminadaEnServidor = (id: string) =>
+    remotos.eliminadas.some((e) => e.evidencia_local_id && String(e.evidencia_local_id) === String(id));
+
+  // Las locales: solo las que existen en disco (si falta el archivo no se
+  // puede mostrar) y que no hayan sido borradas desde el detalle en el
+  // servidor — la copia local seguiría ahí y no debe reaparecer.
+  const localesVigentes = lista
+    .filter((f, i) => disponibles[i] && !fueEliminadaEnServidor(f.id))
+    .map((f) => ({ ...f, tipo: inferirTipo(f.uri, f.tipo) }));
+
+  // Solo se descarta una evidencia del servidor si YA se está mostrando la
+  // copia local (archivo presente en este teléfono). Si el archivo local
+  // falta —visita abierta desde otro teléfono— la del servidor es la única
+  // forma de verla.
+  const idsVigentes = new Set(localesVigentes.map((f) => String(f.id)));
+
   // Firmas y PDFs se muestran aparte; aquí solo fotos y videos. Se descartan
-  // las que un admin/coordinador eliminó desde el detalle del formulario:
-  // la "tumba" del servidor evita que una copia que quedó en otro teléfono
-  // (o una re-subida) la haga reaparecer en la visita.
+  // las que ya están en la lista local (por id de `archivos` o por
+  // `evidencia_local_id`, que es el id que generó el celular al capturar).
   const evidencias = remotos.archivos.filter(
-    (a) => (a.tipo === 'foto' || a.tipo === 'video') && !estaEliminada(remotos.eliminadas, a)
+    (a) =>
+      (a.tipo === 'foto' || a.tipo === 'video') &&
+      !estaEliminada(remotos.eliminadas, a) &&
+      !idsVigentes.has(String(a.id)) &&
+      !(a.evidencia_local_id && idsVigentes.has(String(a.evidencia_local_id)))
   );
-  if (evidencias.length === 0) return null;
+
+  if (evidencias.length === 0) {
+    // Sin conexión, formulario aún no sincronizado o sin archivos en el
+    // servidor: la lista del formulario (o null si tampoco hay ninguna).
+    if (lista.length === 0) return null;
+    return localesVigentes.length > 0 ? localesVigentes : null;
+  }
 
   console.log(
     `[Archivos] ${evidencias.length} evidencia(s) recuperadas del servidor para ${formularioId}`
   );
 
-  return evidencias.map((a) => ({
+  const delServidor = evidencias.map((a) => ({
     id: a.id,
     uri: urlDeArchivo(a),
     tipo: a.tipo === 'video' ? 'video' : 'foto',
@@ -282,6 +314,9 @@ export const resolverEvidenciasRemotas = async (
       longitud: a.longitud ?? 0,
     },
   })) as FotoGeotag[];
+
+  // Las locales van primero: se muestran al instante, sin descargar nada.
+  return [...localesVigentes, ...delServidor];
 };
 
 /** ¿El valor ya es directamente usable como <Image source={{uri}}>? */

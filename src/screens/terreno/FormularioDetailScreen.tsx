@@ -738,6 +738,27 @@ const BloqueTexto: React.FC<{ titulo: string; texto: string }> = ({ titulo, text
   </View>
 );
 
+/**
+ * Fila de `fotos_locales` / `videos_locales` → evidencia mostrable.
+ *
+ * Estas tablas son la cola de subida del teléfono: mientras la fila exista
+ * con `sincronizada = 0`, la captura está guardada aquí pero todavía no en
+ * el servidor. Se muestran igual que las demás para poder comprobarlas.
+ */
+const filaLocalAEvidencia = (
+  fila: Record<string, any>,
+  tipo: 'foto' | 'video'
+): FotoGeotag => ({
+  id: String(fila.id),
+  uri: String(fila.uri),
+  tipo,
+  timestamp: String(fila.timestamp || ''),
+  coordenadas: {
+    latitud: Number(fila.latitud) || 0,
+    longitud: Number(fila.longitud) || 0,
+  },
+});
+
 const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, navigation: _navigation }) => {
   const { formulario: formularioInicial, modo } = route.params;
   const [formulario, setFormulario] = useState(formularioInicial);
@@ -800,6 +821,13 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
    * del formulario, que están en este dispositivo.
    */
   const [evidenciasRemotas, setEvidenciasRemotas] = useState<FotoGeotag[] | null>(null);
+  /**
+   * Evidencias capturadas para ESTE formulario que todavía no se han subido
+   * (`sincronizada = 0` en el teléfono). Se muestran junto con las demás:
+   * es la única forma de comprobar, con o sin conexión, que la foto que se
+   * acaba de volver a tomar quedó guardada.
+   */
+  const [evidenciasPendientes, setEvidenciasPendientes] = useState<FotoGeotag[]>([]);
   /** Cabeceras de autenticación para descargar evidencias de la API */
   const [authHeaders, setAuthHeaders] = useState<Record<string, string>>({});
   /** Documentos de finca vinculados a este formulario — visibles para todos los roles */
@@ -850,6 +878,15 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
    * de CamaraScreen) sin tocar el formulario en curso.
    */
   const puedeAgregarEvidencias = puedeEliminarEvidencias;
+  /**
+   * ¿Esta evidencia todavía no existe en el servidor? (capturada en este
+   * teléfono y pendiente de subir). Sirve para marcarla en pantalla y para
+   * descartarla sin llamar a la API.
+   */
+  const esPendienteDeSubir = useCallback(
+    (id: string) => evidenciasPendientes.some((p) => String(p.id) === String(id)),
+    [evidenciasPendientes]
+  );
 
   const abrirEdicionRespuesta = (
     seccionTitulo: string,
@@ -1006,6 +1043,25 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
   const eliminarEvidencia = async (foto: FotoGeotag) => {
     setEliminandoEvidenciaId(foto.id);
     try {
+      // Una evidencia recién capturada que todavía NO se ha subido no existe
+      // en el servidor: no hay nada remoto que borrar ni tumba que dejar. Se
+      // descarta solo en este teléfono (fila local + archivo). Antes se
+      // llamaba al DELETE igual y el técnico veía "No se pudo eliminar" con
+      // la foto nueva a medio guardar.
+      if (esPendienteDeSubir(foto.id)) {
+        try {
+          await deleteEvidenciaLocal(foto.id);
+          await eliminarArchivoLocal(foto.uri);
+        } catch (localErr) {
+          console.warn('[Detalle] No se pudo descartar la evidencia local:', localErr);
+        }
+        setEvidenciasPendientes((prev) => prev.filter((p) => String(p.id) !== String(foto.id)));
+        setFotoPreview((prev) => (prev?.id === foto.id ? null : prev));
+        setVideoPreview((prev) => (prev?.id === foto.id ? null : prev));
+        console.log(`[Detalle] Evidencia ${foto.id} descartada (todavía no subida)`);
+        return;
+      }
+
       // El backend acepta tanto el id de `archivos` (evidencia recuperada del
       // servidor) como el id local de la captura, así que no hace falta
       // resolver la correspondencia aquí.
@@ -1057,10 +1113,13 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
   /** Confirmación antes de borrar — el borrado es irreversible */
   const confirmarEliminarEvidencia = (foto: FotoGeotag) => {
     const esVideo = foto.tipo === 'video';
+    const pendiente = esPendienteDeSubir(foto.id);
     Alert.alert(
       esVideo ? 'Eliminar video' : 'Eliminar foto',
       `¿Está seguro que desea eliminar este ${esVideo ? 'video' : 'foto'} del formulario?\n\n` +
-        'Esta acción no se puede deshacer: la evidencia también se borra del servidor.',
+        (pendiente
+          ? 'Esta acción no se puede deshacer: la evidencia todavía no se ha subido, así que se descarta de este teléfono.'
+          : 'Esta acción no se puede deshacer: la evidencia también se borra del servidor.'),
       [
         { text: 'Cancelar', style: 'cancel' },
         {
@@ -1074,8 +1133,15 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
     );
   };
 
-  // Las evidencias mostradas: locales si están, remotas si no
-  const evidencias = evidenciasRemotas ?? formulario.fotos ?? [];
+  // Las evidencias mostradas: primero las capturadas en este teléfono y aún
+  // pendientes de subir (para que se vean de inmediato, sin conexión), y
+  // después las del formulario o las recuperadas del servidor.
+  const evidenciasBase = evidenciasRemotas ?? formulario.fotos ?? [];
+  const idsEvidenciasBase = new Set(evidenciasBase.map((f) => String(f.id)));
+  const evidencias = [
+    ...evidenciasPendientes.filter((p) => !idsEvidenciasBase.has(String(p.id))),
+    ...evidenciasBase,
+  ];
   /** Una evidencia servida por la API necesita la cabecera Authorization */
   const fuenteEvidencia = useCallback(
     (uri: string) => fuenteConAuth(uri, authHeaders),
@@ -1190,7 +1256,7 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
   const cargarEvidenciasYDocumentos = useCallback(async (): Promise<void> => {
     try {
       const cedulaBeneficiario = formulario.beneficiario?.cedula;
-      const [headers, remotas, docsFormulario, docsBeneficiario, firmas] = await Promise.all([
+      const [headers, remotas, docsFormulario, docsBeneficiario, firmas, fotosPend, videosPend] = await Promise.all([
         cabecerasDeArchivo(),
         resolverEvidenciasRemotas(formulario.id, formulario.fotos),
         fetchDocumentosDeFormulario(formulario.id),
@@ -1201,9 +1267,19 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
           ? fetchDocumentosDeBeneficiario(cedulaBeneficiario).catch(() => [] as DocumentoDeFormulario[])
           : Promise.resolve([] as DocumentoDeFormulario[]),
         resolverFirmasRemotas(formulario.id, formulario.firma_beneficiario, formulario.firma_tecnico),
+        // Evidencias capturadas aquí que aún no se han subido: se muestran
+        // para poder comprobar la captura sin esperar a la sincronización
+        // (y sin conexión). `getUnsynced*` ya devuelve [] si la BD local no
+        // está disponible.
+        getUnsyncedPhotos(formulario.id),
+        getUnsyncedVideos(formulario.id),
       ]);
       setAuthHeaders(headers);
       if (remotas) setEvidenciasRemotas(remotas);
+      setEvidenciasPendientes([
+        ...fotosPend.map((f) => filaLocalAEvidencia(f, 'foto')),
+        ...videosPend.map((v) => filaLocalAEvidencia(v, 'video')),
+      ]);
       // Merge + dedupe por id (los del formulario primero).
       const mapaDocs = new Map<string, DocumentoDeFormulario>();
       for (const d of [...docsFormulario, ...docsBeneficiario]) {
@@ -2097,6 +2173,14 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
                     {foto.tipo === 'video' && (
                       <Text style={styles.videoThumbLabel}>🎥</Text>
                     )}
+                    {/* Aviso de evidencia capturada aquí y todavía pendiente
+                        de subir: queda guardada en el teléfono y se enviará
+                        sola en la próxima sincronización. */}
+                    {esPendienteDeSubir(foto.id) && (
+                      <View style={styles.fotoPendienteBadge}>
+                        <Text style={styles.fotoPendienteBadgeText}>⏳</Text>
+                      </View>
+                    )}
                   </TouchableOpacity>
 
                   {/* ✕ Eliminar evidencia — admin/coordinador (cualquiera) y
@@ -2465,6 +2549,12 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
                   ? `  ·  🏙️ ${formulario.coordenadas?.lugar || formulario.clima?.actual?.ubicacion?.nombre}`
                   : ''}
               </Text>
+              {esPendienteDeSubir(fotoPreview.id) && (
+                <Text style={styles.fotoModalPendiente}>
+                  ⏳ Guardada en este teléfono — pendiente de subir. Se enviará automáticamente en la
+                  próxima sincronización.
+                </Text>
+              )}
               <Text style={styles.fotoModalHint}>Toca para cerrar</Text>
               {puedeEliminarEvidencias && (
                 <TouchableOpacity
@@ -2920,6 +3010,33 @@ const styles = StyleSheet.create({
   fotoModalHint: {
     color: 'rgba(255,255,255,0.6)',
     fontSize: FONTS.sizes.xs,
+    marginTop: SPACING.xs,
+  },
+  /**
+   * Aviso "pendiente de subir" sobre la miniatura: la evidencia ya está
+   * guardada en este teléfono (fotos_locales/videos_locales) y se enviará
+   * sola en la próxima sincronización.
+   */
+  fotoPendienteBadge: {
+    position: 'absolute',
+    bottom: 2,
+    left: 2,
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    backgroundColor: 'rgba(0,0,0,0.55)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  fotoPendienteBadgeText: {
+    fontSize: 12,
+    lineHeight: 14,
+  },
+  /** Mismo aviso, dentro del visor ampliado */
+  fotoModalPendiente: {
+    color: COLORS.warning,
+    fontSize: FONTS.sizes.xs,
+    textAlign: 'center',
     marginTop: SPACING.xs,
   },
   videoThumb: {
