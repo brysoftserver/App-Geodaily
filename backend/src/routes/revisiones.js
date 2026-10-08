@@ -9,7 +9,7 @@
 // (datos_formulario_json: concepto, observaciones, recomendaciones).
 //
 // JERARQUÍA DE CONTROL: el interventor solo puede revisar (y ver, ver
-// forms.js) formularios que YA tienen visto bueno del supervisor.
+// forms.js) formularios que YA tienen visto bueno del coordinador.
 // ============================================================
 
 const express = require('express');
@@ -18,7 +18,7 @@ const db = require('../database');
 const { crearNotificacion } = require('./notificaciones');
 const router = express.Router();
 
-const ROLES_REVISORES = ['supervisor', 'interventor', 'gerente', 'admin'];
+const ROLES_REVISORES = ['coordinador', 'interventor', 'gerente', 'admin'];
 
 /** ¿El formulario tiene visto bueno de un rol dado? */
 async function tieneVistoBueno(formularioId, rol) {
@@ -33,41 +33,66 @@ async function tieneVistoBueno(formularioId, rol) {
 
 // GET /api/revisiones/resumen — Estado de revisión de TODOS los formularios
 // (para pintar badges en listados sin pedir formulario por formulario).
-// Devuelve: { estados: { [formulario_id]: { supervisor: 'ok'|'novedades'|null, interventor: ..., novedades_total: n } } }
+// Devuelve: { estados: { [formulario_id]: { coordinador: 'ok'|'novedades'|null, interventor: ..., novedades_total: n } } }
+// novedades_total = novedades PENDIENTES del rol (ver criterio abajo).
 router.get('/resumen', authenticateToken, async (req, res) => {
   try {
-    // El estado "ok"/"novedades" por rol se calcula SOLO con el visto bueno
-    // FINAL (seccion IS NULL) — las marcas por sección son detalle interno
-    // de la revisión, no determinan el badge del listado.
-    const finales = await db.queryAll(
-      `SELECT formulario_id, revisor_rol, tipo, COUNT(*)::int AS total
+    // Último movimiento por (formulario, rol) considerando SOLO novedad/visto
+    // bueno (los checklists en línea/campo no afectan el estado). Si el último
+    // movimiento del rol fue un visto bueno, el rol está en 'ok'; si fue una
+    // novedad, está en 'novedades' (tiene observaciones sin cerrar).
+    const ultimoPorRol = await db.queryAll(
+      `SELECT DISTINCT ON (formulario_id, revisor_rol)
+         formulario_id, revisor_rol, tipo
        FROM revisiones_formulario
-       WHERE seccion IS NULL
-       GROUP BY formulario_id, revisor_rol, tipo`
+       WHERE tipo IN ('novedad', 'visto_bueno')
+       ORDER BY formulario_id, revisor_rol, created_at DESC, id DESC`
     );
-    // El conteo de novedades totales sí incluye las marcadas por sección —
-    // es el número de pendientes que el técnico debe corregir.
+    // Conteo de novedades PENDIENTES (sin corregir). Una novedad se considera
+    // resuelta cuando el MISMO rol que la marcó la da por buena:
+    //   1. el rol ya "dio OK" (su último movimiento fue un visto bueno) →
+    //      se resuelven TODAS sus novedades de ese formulario; o
+    //   2. existe un visto bueno posterior que la cubre: global (seccion NULL)
+    //      o de la MISMA sección.
+    // Es el mismo criterio que usa el detalle (src/utils/revisiones.ts →
+    // estaNovedadResuelta), de modo que la tarjeta del listado y el detalle
+    // siempre coinciden.
     const novedadesTotales = await db.queryAll(
-      `SELECT formulario_id, COUNT(*)::int AS total
-       FROM revisiones_formulario
-       WHERE tipo = 'novedad'
-       GROUP BY formulario_id`
+      `WITH ultimo AS (
+         SELECT DISTINCT ON (formulario_id, revisor_rol)
+           formulario_id, revisor_rol, tipo
+         FROM revisiones_formulario
+         WHERE tipo IN ('novedad', 'visto_bueno')
+         ORDER BY formulario_id, revisor_rol, created_at DESC, id DESC
+       )
+       SELECT n.formulario_id, COUNT(*)::int AS total
+       FROM revisiones_formulario n
+       JOIN ultimo u
+         ON u.formulario_id = n.formulario_id
+        AND u.revisor_rol = n.revisor_rol
+       WHERE n.tipo = 'novedad'
+         AND u.tipo <> 'visto_bueno'
+         AND NOT EXISTS (
+           SELECT 1 FROM revisiones_formulario vb
+           WHERE vb.formulario_id = n.formulario_id
+             AND vb.revisor_rol = n.revisor_rol
+             AND vb.tipo = 'visto_bueno'
+             AND (vb.seccion IS NULL OR vb.seccion = n.seccion)
+             AND vb.created_at >= n.created_at
+         )
+       GROUP BY n.formulario_id`
     );
 
     const estados = {};
     const getEstado = (id) => {
       if (!estados[id]) {
-        estados[id] = { supervisor: null, interventor: null, gerente: null, admin: null, novedades_total: 0 };
+        estados[id] = { coordinador: null, interventor: null, gerente: null, admin: null, novedades_total: 0 };
       }
       return estados[id];
     };
-    for (const f of finales) {
+    for (const f of ultimoPorRol) {
       const e = getEstado(f.formulario_id);
-      if (f.tipo === 'visto_bueno') {
-        e[f.revisor_rol] = 'ok';
-      } else if (f.tipo === 'novedad' && e[f.revisor_rol] !== 'ok') {
-        e[f.revisor_rol] = 'novedades';
-      }
+      e[f.revisor_rol] = f.tipo === 'visto_bueno' ? 'ok' : 'novedades';
     }
     for (const n of novedadesTotales) {
       getEstado(n.formulario_id).novedades_total = n.total;
@@ -108,7 +133,7 @@ router.post('/:formularioId', authenticateToken, async (req, res) => {
 
     const { tipo, comentario, datos_formulario, seccion } = req.body;
     // 'formulario_en_linea' / 'formulario_en_campo' = las dos listas de
-    // verificación del rol (supervisor/interventor), independientes del
+    // verificación del rol (coordinador/interventor), independientes del
     // visto bueno — no afectan el estado de aprobación. Reemplazan al
     // antiguo 'formulario_rol' (concepto/observaciones/recomendaciones
     // libres), que se deja de aceptar en formularios nuevos pero cuyo
@@ -127,14 +152,14 @@ router.post('/:formularioId', authenticateToken, async (req, res) => {
     const formularioId = req.params.formularioId;
     const seccionLimpia = seccion?.trim() || null;
 
-    // Jerarquía: el interventor solo revisa lo que el supervisor ya aprobó
+    // Jerarquía: el interventor solo revisa lo que el coordinador ya aprobó
     // (visto bueno FINAL, seccion=NULL — el que cierra la revisión completa).
     if (rol === 'interventor') {
-      const okSupervisor = await tieneVistoBueno(formularioId, 'supervisor');
-      if (!okSupervisor) {
+      const okCoordinador = await tieneVistoBueno(formularioId, 'coordinador');
+      if (!okCoordinador) {
         return res.status(409).json({
           estado: 'error',
-          mensaje: 'Este formulario aún no tiene el visto bueno del supervisor — no puede ser revisado por interventoría.',
+          mensaje: 'Este formulario aún no tiene el visto bueno del coordinador — no puede ser revisado por interventoría.',
         });
       }
     }
@@ -166,7 +191,7 @@ router.post('/:formularioId', authenticateToken, async (req, res) => {
 
     // Notificar cuando se marca una novedad: al técnico dueño del
     // formulario siempre, y si quien revisa es interventoría, también al
-    // supervisor (su aprobación previa quedó cuestionada).
+    // coordinador (su aprobación previa quedó cuestionada).
     if (tipo === 'novedad') {
       try {
         const form = await db.queryOne('SELECT usuario_id FROM formularios WHERE id = $1', [formularioId]);
@@ -181,15 +206,15 @@ router.post('/:formularioId', authenticateToken, async (req, res) => {
           );
         }
         if (rol === 'interventor') {
-          const ultimoSupervisor = await db.queryOne(
+          const ultimoCoordinador = await db.queryOne(
             `SELECT revisor_id FROM revisiones_formulario
-             WHERE formulario_id = $1 AND revisor_rol = 'supervisor' AND tipo = 'visto_bueno'
+             WHERE formulario_id = $1 AND revisor_rol = 'coordinador' AND tipo = 'visto_bueno'
              ORDER BY created_at DESC LIMIT 1`,
             [formularioId]
           );
-          if (ultimoSupervisor?.revisor_id) {
+          if (ultimoCoordinador?.revisor_id) {
             await crearNotificacion(
-              ultimoSupervisor.revisor_id,
+              ultimoCoordinador.revisor_id,
               'novedad_formulario',
               `Interventoría marcó una novedad${tituloSeccion}`,
               comentario?.trim() || 'Interventoría encontró una novedad en un formulario que ya aprobaste.',

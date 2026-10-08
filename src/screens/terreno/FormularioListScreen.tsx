@@ -5,7 +5,7 @@
 // la jerarquía BeneficiarioDetailScreen → "Ver visitas anteriores"
 // ============================================================
 
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import {
   View,
   Text,
@@ -13,6 +13,8 @@ import {
   StyleSheet,
   RefreshControl,
   ImageBackground,
+  Alert,
+  TouchableOpacity,
 } from 'react-native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -20,7 +22,12 @@ import { COLORS, FONTS, SPACING, BORDER_RADIUS } from '../../theme';
 import { useForm } from '../../store/FormContext';
 import { useAuth } from '../../store/AuthContext';
 import { useSync } from '../../store/SyncContext';
-import { getFormulariosLocales, mergeFormulariosDelServidor } from '../../services/database';
+import {
+  getFormulariosLocales,
+  mergeFormulariosDelServidor,
+  getFormulariosPurgados,
+  restaurarFormulariosPurgados,
+} from '../../services/database';
 import { fetchFormulariosDelServidor } from '../../services/formularios.service';
 import { fetchResumenRevisiones, EstadoRevision } from '../../services/revisiones.service';
 import { descargarPaqueteMedia } from '../../services/mediaPackage.service';
@@ -59,6 +66,10 @@ const FormularioListScreen: React.FC<FormularioListScreenProps> = ({ navigation,
   const [refreshing, setRefreshing] = useState(false);
   const [estadosRevision, setEstadosRevision] = useState<Record<string, EstadoRevision>>({});
   const [descargandoMediaId, setDescargandoMediaId] = useState<string | null>(null);
+  /** Cuántos formularios eliminados en el servidor siguen recuperables aquí. */
+  const [papeleraCount, setPapeleraCount] = useState(0);
+  /** Evita que el merge/purga corra dos veces a la vez (mount + focus). */
+  const cargaEnCursoRef = useRef(false);
 
   // Filtrar por beneficiario si viene como parámetro
   // `undefined` = sin filtro (historial completo). Una cadena VACÍA sí es un
@@ -88,6 +99,22 @@ const FormularioListScreen: React.FC<FormularioListScreenProps> = ({ navigation,
     cargarFormularios(validForms);
   }, [cargarFormularios, user?.id]);
 
+  /**
+   * Formularios pendientes de recuperar EN ESTE TELÉFONO para el usuario actual.
+   * Se limita por `usuario_id` para que un técnico no vea ni restaure el trabajo
+   * de otro si el equipo se reutilizó.
+   */
+  const leerPapeleraDelUsuario = useCallback(async () => {
+    const todas = await getFormulariosPurgados();
+    return todas.filter((p) => !user?.id || !p.usuario_id || p.usuario_id === user.id);
+  }, [user?.id]);
+
+  const contarPapelera = useCallback(() => {
+    leerPapeleraDelUsuario()
+      .then((p) => setPapeleraCount(p.length))
+      .catch(() => {});
+  }, [leerPapeleraDelUsuario]);
+
   const loadForms = useCallback(async () => {
     try {
       // Estado de revisiones (novedades / vistos buenos) — best effort,
@@ -96,6 +123,7 @@ const FormularioListScreen: React.FC<FormularioListScreenProps> = ({ navigation,
 
       // 1. Mostrar lo local de inmediato — el técnico en campo no espera red
       await publicarLocales();
+      contarPapelera();
     } catch (error) {
       console.warn('[Listado] Error cargando formularios locales:', error);
     } finally {
@@ -106,20 +134,60 @@ const FormularioListScreen: React.FC<FormularioListScreenProps> = ({ navigation,
     //    Esto es lo que permite que un técnico vea sus formularios al
     //    iniciar sesión en un teléfono distinto. Offline devuelve [] y
     //    la vista simplemente se queda con lo local.
+    //
+    //    El guard es importante: `loadForms` corre al montar Y al enfocar la
+    //    pantalla. Sin él, el merge (y con él la purga + el aviso) podía
+    //    dispararse dos veces en paralelo sobre la misma lista.
+    if (cargaEnCursoRef.current) {
+      setRefreshing(false);
+      return;
+    }
+    cargaEnCursoRef.current = true;
     try {
       const remotos = await fetchFormulariosDelServidor();
       if (remotos.length > 0) {
-        await mergeFormulariosDelServidor(remotos, { usuarioId: user?.id });
+        const { purgados } = await mergeFormulariosDelServidor(remotos, { usuarioId: user?.id });
         // Siempre republicar: el merge puede haber purgado formularios
         // borrados en el servidor aunque no haya insertado/actualizado nada.
         await publicarLocales();
+        contarPapelera();
+
+        // ⚠️ Si el servidor ya no tenía formularios que sí estaban en el
+        // teléfono (los borró alguien desde el panel: 530 borrados solo por
+        // el admin entre julio y septiembre), el técnico veía desaparecer su
+        // trabajo sin explicación. Ahora se le avisa y se le ofrece
+        // recuperarlos: la copia completa quedó en la papelera local.
+        if (purgados.length > 0) {
+          Alert.alert(
+            '⚠️ Formularios eliminados en el servidor',
+            `Se eliminaron ${purgados.length} formulario(s) que estaban guardados en este teléfono, porque ya no existen en el servidor.\n\n¿Deseas recuperarlos?`,
+            [
+              { text: 'No, dejarlos', style: 'cancel' },
+              {
+                text: 'Recuperar',
+                onPress: async () => {
+                  const n = await restaurarFormulariosPurgados(purgados);
+                  await publicarLocales();
+                  contarPapelera();
+                  Alert.alert(
+                    n > 0 ? '✅ Recuperados' : 'Sin cambios',
+                    n > 0
+                      ? `Se recuperaron ${n} formulario(s) con sus fotos y firmas. Quedan como pendientes de sincronizar.`
+                      : 'No se pudo recuperar ningún formulario.'
+                  );
+                },
+              },
+            ]
+          );
+        }
       }
     } catch (e) {
       console.warn('[Listado] No se pudo traer del servidor, usando local:', e);
     } finally {
+      cargaEnCursoRef.current = false;
       setRefreshing(false);
     }
-  }, [publicarLocales, user?.id]);
+  }, [publicarLocales, user?.id, contarPapelera]);
 
   useEffect(() => {
     loadForms();
@@ -137,6 +205,36 @@ const FormularioListScreen: React.FC<FormularioListScreenProps> = ({ navigation,
     setRefreshing(true);
     loadForms();
   };
+
+  /** Acceso manual a la papelera: recuperar formularios borrados en el servidor. */
+  const abrirPapelera = useCallback(async () => {
+    const enPapelera = await leerPapeleraDelUsuario();
+    if (enPapelera.length === 0) {
+      Alert.alert('Papelera vacía', 'No hay formularios eliminados pendientes de recuperar.');
+      return;
+    }
+    Alert.alert(
+      '🗑️ Papelera de formularios',
+      `Hay ${enPapelera.length} formulario(s) eliminados en el servidor que todavía se conservan en este teléfono:\n\n` +
+        enPapelera
+          .slice(0, 8)
+          .map((p) => `• ${p.beneficiario_nombre || p.id}`)
+          .join('\n') +
+        (enPapelera.length > 8 ? `\n… y ${enPapelera.length - 8} más` : ''),
+      [
+        { text: 'Cerrar', style: 'cancel' },
+        {
+          text: 'Recuperar todos',
+          onPress: async () => {
+            const n = await restaurarFormulariosPurgados(enPapelera.map((p) => p.id));
+            await publicarLocales();
+            contarPapelera();
+            Alert.alert('✅ Recuperados', `${n} formulario(s) restaurados. Quedan pendientes de sincronizar.`);
+          },
+        },
+      ]
+    );
+  }, [contarPapelera, leerPapeleraDelUsuario, publicarLocales]);
 
   const handleFormPress = (formulario: Formulario) => {
     navigation.navigate('FormularioDetail', { formulario });
@@ -186,6 +284,13 @@ const FormularioListScreen: React.FC<FormularioListScreenProps> = ({ navigation,
         <Text style={styles.count}>
           {safeFormularios.length} formulario(s)
         </Text>
+        {papeleraCount > 0 && (
+          <TouchableOpacity onPress={abrirPapelera} style={styles.papeleraLink}>
+            <Text style={styles.papeleraLinkText}>
+              🗑️ {papeleraCount} eliminado(s) en el servidor — tocar para recuperar
+            </Text>
+          </TouchableOpacity>
+        )}
       </View>
 
       {safeFormularios.length === 0 ? (
@@ -266,6 +371,17 @@ const styles = StyleSheet.create({
     paddingHorizontal: SPACING.sm,
     paddingVertical: 2,
     borderRadius: BORDER_RADIUS.full,
+  },
+  // Acceso a la papelera: los formularios que el servidor borró pero que
+  // siguen guardados en el teléfono y se pueden recuperar.
+  papeleraLink: {
+    marginTop: SPACING.xs,
+    paddingVertical: SPACING.xs,
+  },
+  papeleraLinkText: {
+    fontSize: FONTS.sizes.xs,
+    color: COLORS.warning ?? COLORS.primary,
+    textDecorationLine: 'underline',
   },
   listContent: {
     paddingVertical: SPACING.sm,

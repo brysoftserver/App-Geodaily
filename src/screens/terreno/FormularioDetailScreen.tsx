@@ -5,7 +5,7 @@
 // con miniaturas de evidencias y opciones de PDF.
 // ============================================================
 
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
   View,
   Text,
@@ -20,24 +20,64 @@ import {
   Pressable,
   TextInput,
   ActivityIndicator,
+  Linking,
 } from 'react-native';
 import * as FileSystem from 'expo-file-system/legacy';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
-import { RouteProp } from '@react-navigation/native';
+import { RouteProp, useFocusEffect } from '@react-navigation/native';
 import { WebView } from 'react-native-webview';
 import { COLORS, FONTS, SPACING, BORDER_RADIUS, SHADOWS, API_CONFIG } from '../../theme';
 import { Formulario, DatosCaracterizacionNueva, FotoGeotag } from '../../types';
 import VideoPlayerModal from '../../components/VideoPlayerModal';
+import CapturaGPSPrecisa from '../../components/CapturaGPSPrecisa';
 import {
   resolverEvidenciasRemotas,
   cabecerasDeArchivo,
   resolverFirmasRemotas,
   fuenteConAuth,
   FirmaResuelta,
+  eliminarEvidenciaRemota,
+  ROLES_PUEDEN_ELIMINAR_EVIDENCIA,
 } from '../../services/archivos.service';
-import { fetchDocumentosDeFormulario, DocumentoDeFormulario } from '../../services/documentos.service';
+import { deleteEvidenciaLocal, saveFormularioLocal, getUnsyncedPhotos, getUnsyncedVideos } from '../../services/database';
+import { eliminarArchivoLocal } from '../../services/mediaStorage.service';
+import { useSync } from '../../store/SyncContext';
+import { fetchDocumentosDeFormulario, fetchDocumentosDeBeneficiario, DocumentoDeFormulario } from '../../services/documentos.service';
 import { formatFecha } from '../../utils/formatters';
 import { construirSeccionesEncuesta, esEncuestaSocial } from '../../utils/encuestaSchema';
+import { esVisitaTecnicaV2, tituloVisitaTecnica } from '../../utils/visitaTecnica';
+import {
+  RECONOCIMIENTO_OPTS,
+  NIVEL_EDUCATIVO_ENV_OPTS,
+  FUENTE_INGRESOS_ENV_OPTS,
+  INGRESOS_SALARIOS_OPTS,
+  OCUPACION_SECUNDARIA_OPTS,
+  TIPO_ASOCIACION_OPTS,
+  VIVIENDA_UBICACION_OPTS,
+  TIPO_ENERGIA_OPTS,
+  AGUA_CONSUMO_OPTS,
+  ELEMENTOS_TECNOLOGICOS_OPTS,
+  QUIENES_TRABAJAN_OPTS,
+  MEDIO_TRANSPORTE_OPTS,
+  MEDIO_SALIDA_OPTS,
+  ANALISIS_SUELO_REALIZADO_OPTS,
+  TEXTURA_SUELO_OPTS,
+  COLOR_SUELO_OPTS,
+  DRENAJE_OPTS,
+  USO_TIERRA_HISTORICO_OPTS,
+  PRESENCIA_PIEDRAS_OPTS,
+  COMPACTACION_OPTS,
+  COBERTURA_SUELO_OPTS,
+  EVIDENCIA_EROSION_OPTS,
+  PROCESOS_EROSION_OPTS,
+  FUENTES_HIDRICAS_OPTS,
+  AREAS_CONSERVACION_OPTS,
+  PRACTICAS_CONSERVACION_OPTS,
+  TIPO_AGROQUIMICO_OPTS,
+  MANEJO_RESIDUOS_OPTS,
+  SEXO_OPTS,
+  SINO_OPTS,
+} from '../../utils/constants';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Print from 'expo-print';
 import * as Sharing from 'expo-sharing';
@@ -48,34 +88,225 @@ import { useAuth } from '../../store/AuthContext';
 import {
   registrarRevision,
   Revision,
-  EvidenciaRevisor,
-  guardarEvidenciaRevisor,
-  fetchEvidenciasRevisor,
 } from '../../services/revisiones.service';
 import { useRevisiones } from '../../hooks/useRevisiones';
-import { useLocation } from '../../hooks/useLocation';
-import * as ImagePicker from 'expo-image-picker';
-import * as DocumentPicker from 'expo-document-picker';
-import SignaturePad from '../../components/SignaturePad';
-import MapViewOffline from '../../components/MapViewOffline';
-import { uploadPhoto } from '../../services/photos.service';
-import { uploadVideo } from '../../services/videos.service';
 import { descargarPaqueteMedia } from '../../services/mediaPackage.service';
-import { subirDocumento } from '../../services/documentos.service';
-import { subirFirma } from '../../services/firmas.service';
+import SeguimientoCoordinacionSection from '../../components/SeguimientoCoordinacionSection';
+import { actualizarRespuestaFormulario } from '../../services/formularios.service';
 
 type FormularioDetailScreenProps = {
   navigation: NativeStackNavigationProp<Record<string, any>>;
   route: RouteProp<Record<string, any> & { params: { formulario: Formulario; modo?: 'online' | 'campo' } }, 'params'>;
 };
 
+const RUTAS_RESPUESTAS_FORMULARIO_1: Record<string, string> = {
+  'DATOS GENERALES__Fecha': 'fecha',
+  'DATOS GENERALES__Municipio': 'municipio',
+  'DATOS GENERALES__Vereda': 'vereda',
+  'DATOS GENERALES__Nombre del productor': 'productor_nombre',
+  'DATOS GENERALES__Edad (años)': 'edad',
+  'DATOS GENERALES__Sexo': 'sexo',
+  'DATOS GENERALES__Documento (C.C.)': 'documento',
+  'DATOS GENERALES__Teléfono': 'telefono',
+  'DATOS GENERALES__Técnico responsable': 'tecnico_responsable',
+  'DATOS GENERALES__Corregimiento': 'corregimiento',
+  'COMPONENTE SOCIAL__1': 'componente_social.reconocimiento',
+  'COMPONENTE SOCIAL__2': 'componente_social.nivel_educativo',
+  'COMPONENTE SOCIAL__3': 'componente_social.participo_eca',
+  'COMPONENTE SOCIAL__4': 'componente_social.personas_nucleo',
+  'COMPONENTE SOCIAL__5': 'componente_social.fuente_ingresos',
+  'COMPONENTE SOCIAL__6': 'componente_social.ingresos_salarios',
+  'COMPONENTE SOCIAL__7': 'componente_social.ocupacion_secundaria',
+  'COMPONENTE SOCIAL__8': 'componente_social.participa_organizacion',
+  'COMPONENTE SOCIAL__9': 'componente_social.tipo_asociacion',
+  'COMPONENTE SOCIAL__10': 'componente_social.rol_asociacion',
+  'COMPONENTE SOCIAL__11': 'componente_social.vivienda_ubicacion',
+  'COMPONENTE SOCIAL__12': 'componente_social.energia_electrica',
+  'COMPONENTE SOCIAL__13': 'componente_social.tipo_energia',
+  'COMPONENTE SOCIAL__14': 'componente_social.agua_consumo',
+  'COMPONENTE SOCIAL__15': 'componente_social.elementos_tecnologicos',
+  'COMPONENTE SOCIAL__16': 'componente_social.senal_celular',
+  'COMPONENTE SOCIAL__17': 'componente_social.quienes_trabajan',
+  'COMPONENTE SOCIAL__18': 'componente_social.medio_transporte',
+  'CARACTERIZACIÓN DE LA FINCA__19': 'caracterizacion_finca.nombre_finca',
+  'CARACTERIZACIÓN DE LA FINCA__20': 'caracterizacion_finca.latitud',
+  'CARACTERIZACIÓN DE LA FINCA__21': 'caracterizacion_finca.area_total',
+  'CARACTERIZACIÓN DE LA FINCA__22': 'caracterizacion_finca.division_bosque',
+  'CARACTERIZACIÓN DE LA FINCA__23': 'caracterizacion_finca.medio_salida',
+  'CARACTERIZACIÓN DE LA FINCA__24': 'caracterizacion_finca.distancia_km',
+  'CARACTERIZACIÓN DE LA FINCA__25': 'caracterizacion_finca.distancia_observaciones',
+  'CARACTERIZACIÓN DE LA FINCA__26': 'caracterizacion_finca.aprovechamiento_directo',
+  'CARACTERIZACIÓN DE LA FINCA__27': 'caracterizacion_finca.actividades_finca',
+  'COMPONENTE PRODUCTIVO__28': 'componente_productivo.actividad_principal',
+  'COMPONENTE PRODUCTIVO__29': 'componente_productivo.acceso_agua',
+  'COMPONENTE PRODUCTIVO__30': 'componente_productivo.sistemas_riego',
+  'COMPONENTE PRODUCTIVO__31': 'componente_productivo.asistencia_tecnica',
+  'SECCIÓN DE SUELO__32': 'analisis_suelo.intervencion_latitud',
+  'SECCIÓN DE SUELO__33': 'analisis_suelo.analisis_realizado',
+  'SECCIÓN DE SUELO__34': 'analisis_suelo.textura',
+  'SECCIÓN DE SUELO__35': 'analisis_suelo.color',
+  'SECCIÓN DE SUELO__36': 'analisis_suelo.drenaje',
+  'SECCIÓN DE SUELO__37': 'analisis_suelo.uso_tierra',
+  'SECCIÓN DE SUELO__38': 'analisis_suelo.piedras',
+  'SECCIÓN DE SUELO__39': 'analisis_suelo.compactacion',
+  'SECCIÓN DE SUELO__40': 'analisis_suelo.cobertura',
+  'SECCIÓN DE SUELO__41': 'analisis_suelo.erosion',
+  'SECCIÓN DE SUELO__42': 'analisis_suelo.pendiente',
+  'COMPONENTE AGROAMBIENTAL__43': 'componente_agroambiental.procesos_erosion',
+  'COMPONENTE AGROAMBIENTAL__44': 'componente_agroambiental.fuentes_hidricas',
+  'COMPONENTE AGROAMBIENTAL__45': 'componente_agroambiental.areas_conservacion',
+  'COMPONENTE AGROAMBIENTAL__46': 'componente_agroambiental.practicas_conservacion',
+  'COMPONENTE AGROAMBIENTAL__47': 'componente_agroambiental.uso_agroquimicos',
+  'COMPONENTE AGROAMBIENTAL__48': 'componente_agroambiental.tipo_agroquimicos',
+  'COMPONENTE AGROAMBIENTAL__49': 'componente_agroambiental.herbicidas_cuales',
+  'COMPONENTE AGROAMBIENTAL__50': 'componente_agroambiental.manejo_residuos',
+  'RECOMENDACIONES DEL TÉCNICO__51': 'recomendaciones.recomendaciones_tecnicas',
+  'RECOMENDACIONES DEL TÉCNICO__52': 'recomendaciones.compromisos_productor',
+  'RECOMENDACIONES DEL TÉCNICO__53': 'recomendaciones.recomendaciones_ambientales',
+  'DESARROLLO ACOMPAÑAMIENTO TÉCNICO__1': 'acompaniamiento.actividades_realizadas_obs',
+  'DESARROLLO ACOMPAÑAMIENTO TÉCNICO__2': 'acompaniamiento.manejo_plagas_hectareas',
+  'DESARROLLO ACOMPAÑAMIENTO TÉCNICO__3': 'acompaniamiento.manejo_suelo_cantidad',
+  'DESARROLLO ACOMPAÑAMIENTO TÉCNICO__4': 'acompaniamiento.capacitacion_obs',
+  'DESARROLLO ACOMPAÑAMIENTO TÉCNICO__5': 'acompaniamiento.seguimiento_obs',
+  'DESARROLLO ACOMPAÑAMIENTO TÉCNICO__6': 'acompaniamiento.entresacado_obs',
+  'DESARROLLO ACOMPAÑAMIENTO TÉCNICO__7': 'acompaniamiento.observaciones_visita',
+};
+
+/**
+ * Tipo de control con el que se completa cada pregunta del Formulario 1.
+ * Es el espejo del formulario original (FormularioCaracterizacionScreen):
+ * las preguntas de opción múltiple se responden marcando casillas, las de
+ * selección única tocando una opción, y el resto son campo abierto (texto).
+ * La clave es el path destino (mismo valor de RUTAS_RESPUESTAS_FORMULARIO_1).
+ * Si un path no aparece aquí, cae en campo de texto (comportamiento previo).
+ */
+type EspecRespuesta = {
+  tipo: 'texto' | 'seleccion' | 'multiple' | 'gps';
+  opciones?: readonly string[];
+  keyboardType?: 'default' | 'numeric' | 'phone-pad';
+  multiline?: boolean;
+  /**
+   * Solo para tipo 'gps': paths de los campos hermanos que acompañan a la
+   * latitud (longitud, altitud y precisión). La captura GPS de alta precisión
+   * produce los cuatro valores a la vez, así que al guardar hay que escribir
+   * cada uno en su propio campo del formulario.
+   */
+  gpsCampos?: {
+    latitud: string;
+    longitud: string;
+    altitud?: string;
+    precision?: string;
+  };
+};
+
+const RESPUESTA_ESPEC: Record<string, EspecRespuesta> = {
+  // --- DATOS GENERALES ---
+  fecha: { tipo: 'texto' },
+  municipio: { tipo: 'seleccion', opciones: ['Puerto Rico'] },
+  vereda: { tipo: 'texto' },
+  productor_nombre: { tipo: 'texto' },
+  edad: { tipo: 'texto', keyboardType: 'numeric' },
+  sexo: { tipo: 'seleccion', opciones: SEXO_OPTS },
+  documento: { tipo: 'texto', keyboardType: 'numeric' },
+  telefono: { tipo: 'texto', keyboardType: 'phone-pad' },
+  tecnico_responsable: { tipo: 'texto' },
+  corregimiento: { tipo: 'texto' },
+
+  // --- COMPONENTE SOCIAL ---
+  'componente_social.reconocimiento': { tipo: 'seleccion', opciones: RECONOCIMIENTO_OPTS },
+  'componente_social.nivel_educativo': { tipo: 'seleccion', opciones: NIVEL_EDUCATIVO_ENV_OPTS },
+  'componente_social.participo_eca': { tipo: 'seleccion', opciones: SINO_OPTS },
+  'componente_social.personas_nucleo': { tipo: 'texto', keyboardType: 'numeric' },
+  'componente_social.fuente_ingresos': { tipo: 'seleccion', opciones: FUENTE_INGRESOS_ENV_OPTS },
+  'componente_social.ingresos_salarios': { tipo: 'seleccion', opciones: INGRESOS_SALARIOS_OPTS },
+  'componente_social.ocupacion_secundaria': { tipo: 'seleccion', opciones: OCUPACION_SECUNDARIA_OPTS },
+  'componente_social.participa_organizacion': { tipo: 'seleccion', opciones: SINO_OPTS },
+  'componente_social.tipo_asociacion': { tipo: 'seleccion', opciones: TIPO_ASOCIACION_OPTS },
+  'componente_social.rol_asociacion': { tipo: 'texto' },
+  'componente_social.vivienda_ubicacion': { tipo: 'seleccion', opciones: VIVIENDA_UBICACION_OPTS },
+  'componente_social.energia_electrica': { tipo: 'seleccion', opciones: SINO_OPTS },
+  'componente_social.tipo_energia': { tipo: 'seleccion', opciones: TIPO_ENERGIA_OPTS },
+  'componente_social.agua_consumo': { tipo: 'seleccion', opciones: AGUA_CONSUMO_OPTS },
+  'componente_social.elementos_tecnologicos': { tipo: 'multiple', opciones: ELEMENTOS_TECNOLOGICOS_OPTS },
+  'componente_social.senal_celular': { tipo: 'seleccion', opciones: SINO_OPTS },
+  'componente_social.quienes_trabajan': { tipo: 'multiple', opciones: QUIENES_TRABAJAN_OPTS },
+  'componente_social.medio_transporte': { tipo: 'multiple', opciones: MEDIO_TRANSPORTE_OPTS },
+
+  // --- CARACTERIZACIÓN DE LA FINCA ---
+  'caracterizacion_finca.nombre_finca': { tipo: 'texto' },
+  // P20 — Coordenada de la finca: captura GPS de alta precisión (cuenta
+  // regresiva + mapa), igual que en el formulario original. Al guardar se
+  // escriben latitud, longitud y altitud en sus campos hermanos.
+  'caracterizacion_finca.latitud': {
+    tipo: 'gps',
+    gpsCampos: {
+      latitud: 'caracterizacion_finca.latitud',
+      longitud: 'caracterizacion_finca.longitud',
+      altitud: 'caracterizacion_finca.altitud',
+    },
+  },
+  'caracterizacion_finca.area_total': { tipo: 'texto', keyboardType: 'numeric' },
+  'caracterizacion_finca.medio_salida': { tipo: 'seleccion', opciones: MEDIO_SALIDA_OPTS },
+  'caracterizacion_finca.distancia_km': { tipo: 'texto', keyboardType: 'numeric' },
+  'caracterizacion_finca.distancia_observaciones': { tipo: 'texto', multiline: true },
+  'caracterizacion_finca.aprovechamiento_directo': { tipo: 'seleccion', opciones: SINO_OPTS },
+
+  // --- COMPONENTE PRODUCTIVO ---
+  'componente_productivo.acceso_agua': { tipo: 'seleccion', opciones: SINO_OPTS },
+  'componente_productivo.sistemas_riego': { tipo: 'seleccion', opciones: SINO_OPTS },
+  'componente_productivo.asistencia_tecnica': { tipo: 'seleccion', opciones: SINO_OPTS },
+
+  // --- SECCIÓN DE SUELO ---
+  // P32 — Coordenada de la intervención: captura GPS de alta precisión.
+  'analisis_suelo.intervencion_latitud': {
+    tipo: 'gps',
+    gpsCampos: {
+      latitud: 'analisis_suelo.intervencion_latitud',
+      longitud: 'analisis_suelo.intervencion_longitud',
+      altitud: 'analisis_suelo.intervencion_altitud',
+    },
+  },
+  'analisis_suelo.analisis_realizado': { tipo: 'seleccion', opciones: ANALISIS_SUELO_REALIZADO_OPTS },
+  'analisis_suelo.textura': { tipo: 'multiple', opciones: TEXTURA_SUELO_OPTS },
+  'analisis_suelo.color': { tipo: 'seleccion', opciones: COLOR_SUELO_OPTS },
+  'analisis_suelo.drenaje': { tipo: 'seleccion', opciones: DRENAJE_OPTS },
+  'analisis_suelo.uso_tierra': { tipo: 'seleccion', opciones: USO_TIERRA_HISTORICO_OPTS },
+  'analisis_suelo.piedras': { tipo: 'seleccion', opciones: PRESENCIA_PIEDRAS_OPTS },
+  'analisis_suelo.compactacion': { tipo: 'seleccion', opciones: COMPACTACION_OPTS },
+  'analisis_suelo.cobertura': { tipo: 'seleccion', opciones: COBERTURA_SUELO_OPTS },
+  'analisis_suelo.erosion': { tipo: 'seleccion', opciones: EVIDENCIA_EROSION_OPTS },
+  'analisis_suelo.pendiente': { tipo: 'texto', keyboardType: 'numeric' },
+
+  // --- COMPONENTE AGROAMBIENTAL ---
+  'componente_agroambiental.procesos_erosion': { tipo: 'seleccion', opciones: PROCESOS_EROSION_OPTS },
+  'componente_agroambiental.fuentes_hidricas': { tipo: 'seleccion', opciones: FUENTES_HIDRICAS_OPTS },
+  'componente_agroambiental.areas_conservacion': { tipo: 'multiple', opciones: AREAS_CONSERVACION_OPTS },
+  'componente_agroambiental.practicas_conservacion': { tipo: 'seleccion', opciones: PRACTICAS_CONSERVACION_OPTS },
+  'componente_agroambiental.uso_agroquimicos': { tipo: 'seleccion', opciones: SINO_OPTS },
+  'componente_agroambiental.tipo_agroquimicos': { tipo: 'seleccion', opciones: TIPO_AGROQUIMICO_OPTS },
+  'componente_agroambiental.herbicidas_cuales': { tipo: 'texto' },
+  'componente_agroambiental.manejo_residuos': { tipo: 'seleccion', opciones: MANEJO_RESIDUOS_OPTS },
+
+  // --- RECOMENDACIONES DEL TÉCNICO ---
+  'recomendaciones.recomendaciones_tecnicas': { tipo: 'texto', multiline: true },
+  'recomendaciones.compromisos_productor': { tipo: 'texto', multiline: true },
+  'recomendaciones.recomendaciones_ambientales': { tipo: 'texto', multiline: true },
+
+  // --- DESARROLLO ACOMPAÑAMIENTO TÉCNICO (observaciones) ---
+  'acompaniamiento.actividades_realizadas_obs': { tipo: 'texto', multiline: true },
+  'acompaniamiento.capacitacion_obs': { tipo: 'texto', multiline: true },
+  'acompaniamiento.seguimiento_obs': { tipo: 'texto', multiline: true },
+  'acompaniamiento.entresacado_obs': { tipo: 'texto', multiline: true },
+  'acompaniamiento.observaciones_visita': { tipo: 'texto', multiline: true },
+};
+
 // ============================================================
 // Sección de Revisión — flujo jerárquico de retroalimentación
-// (técnico ve el estado; supervisor/interventor/gerente/admin revisan)
+// (técnico ve el estado; coordinador/interventor/gerente/admin revisan)
 // ============================================================
 
 const ROL_LABEL: Record<string, string> = {
-  supervisor: 'Supervisor',
+  coordinador: 'Coordinador/a',
   interventor: 'Interventor',
   gerente: 'Gerente',
   admin: 'Administrador',
@@ -85,7 +316,7 @@ const SeccionRevision: React.FC<{ formulario: Formulario; revisiones: Revision[]
   const formularioId = formulario.id;
   const { user } = useAuth();
   const rol = user?.rol || 'tecnico';
-  const esRevisor = ['supervisor', 'interventor', 'gerente', 'admin'].includes(rol);
+  const esRevisor = ['coordinador', 'interventor', 'gerente', 'admin'].includes(rol);
 
   const [enviando, setEnviando] = useState(false);
   const [modalNovedad, setModalNovedad] = useState(false);
@@ -140,7 +371,7 @@ const SeccionRevision: React.FC<{ formulario: Formulario; revisiones: Revision[]
     ]);
   };
 
-  const Chip = ({ rolChip }: { rolChip: 'supervisor' | 'interventor' }) => {
+  const Chip = ({ rolChip }: { rolChip: 'coordinador' | 'interventor' }) => {
     const est = estadoDe(rolChip);
     return (
       <View style={[rev.chip, est === 'ok' ? rev.chipOk : est === 'novedades' ? rev.chipNov : rev.chipPend]}>
@@ -157,7 +388,7 @@ const SeccionRevision: React.FC<{ formulario: Formulario; revisiones: Revision[]
 
       {/* Estado jerárquico (visible para todos, incluido el técnico) */}
       <View style={rev.chipsRow}>
-        <Chip rolChip="supervisor" />
+        <Chip rolChip="coordinador" />
         <Chip rolChip="interventor" />
       </View>
 
@@ -292,7 +523,7 @@ const SeccionMiniRevision: React.FC<{
 
   return (
     <View style={mini.container}>
-      {(['supervisor', 'interventor'] as const).map((r) => {
+      {(['coordinador', 'interventor'] as const).map((r) => {
         const est = estadoDeRol(r);
         if (!est) return null;
         return (
@@ -369,872 +600,6 @@ const mini = StyleSheet.create({
   },
 });
 
-// ============================================================
-// Sección final del revisor — evidencia propia (fotos), firma dual
-// (beneficiario + revisor) y georeferencia puntual (captura única, NO
-// tracking en vivo). Guardar registra también el visto bueno GLOBAL del
-// rol sobre el formulario.
-// ============================================================
-
-/** Foto/video propio del revisor, en tránsito hacia MinIO o ya subido. */
-type EvidenciaLocal = {
-  id: string;
-  uri: string;
-  archivoId?: string;
-  subiendo: boolean;
-  error?: boolean;
-};
-
-/** Documento/anexo propio del revisor, subido directo a MinIO (asociado al formulario). */
-type DocumentoLocal = {
-  id: string;
-  nombre: string;
-  /** Copia local (cache) del archivo — permite abrirlo de inmediato sin re-descargarlo del servidor. */
-  uri: string;
-  mimetype?: string;
-  /** id del archivo en MinIO una vez subido — evita duplicarlo con la lista ya persistida. */
-  archivoId?: string;
-  subiendo: boolean;
-  error?: boolean;
-};
-
-/** Firma propia del revisor: vista previa local + referencia a MinIO una vez subida. */
-type FirmaLocal = {
-  preview: string;
-  archivoId?: string;
-  subiendo: boolean;
-  error?: boolean;
-};
-
-const SeccionFinalRevisor: React.FC<{ formulario: Formulario; revisiones: Revision[]; recargarRevisiones: () => Promise<void> }> = ({ formulario, revisiones, recargarRevisiones }) => {
-  const { user } = useAuth();
-  const rol = user?.rol || 'tecnico';
-  const esRevisor = ['supervisor', 'interventor', 'gerente', 'admin'].includes(rol);
-  const nombreRol = ROL_LABEL[rol] || 'Revisor';
-  const yaAprobadoPorMiRol = revisiones.some((r) => r.revisor_rol === rol && r.tipo === 'visto_bueno');
-
-  const [evidencias, setEvidencias] = useState<EvidenciaRevisor[]>([]);
-  const [documentosRevision, setDocumentosRevision] = useState<DocumentoDeFormulario[]>([]);
-  const [fotos, setFotos] = useState<EvidenciaLocal[]>([]);
-  const [videos, setVideos] = useState<EvidenciaLocal[]>([]);
-  const [documentos, setDocumentos] = useState<DocumentoLocal[]>([]);
-  const [firmaBeneficiario, setFirmaBeneficiario] = useState<FirmaLocal | null>(null);
-  const [firmaRevisor, setFirmaRevisor] = useState<FirmaLocal | null>(null);
-  const [geoPoint, setGeoPoint] = useState<{ lat: number; lon: number } | null>(null);
-  const [observaciones, setObservaciones] = useState('');
-  const [padActivo, setPadActivo] = useState<'beneficiario' | 'revisor' | null>(null);
-  const [guardandoEvidencia, setGuardandoEvidencia] = useState(false);
-  const [aprobando, setAprobando] = useState(false);
-  const [obteniendoUbicacion, setObteniendoUbicacion] = useState(false);
-  const [headersArchivo, setHeadersArchivo] = useState<Record<string, string>>({});
-  const [videoPreview, setVideoPreview] = useState<{ uri: string; headers: Record<string, string> } | null>(null);
-  /** Foto o firma abierta en el visor ampliado (null = cerrado). */
-  const [imagenAmpliada, setImagenAmpliada] = useState<{ uri: string; headers?: Record<string, string>; titulo: string } | null>(null);
-  const [abriendoDocumentoId, setAbriendoDocumentoId] = useState<string | null>(null);
-  const { getCurrentPosition } = useLocation();
-  const insets = useSafeAreaInsets();
-
-  const cargarEvidencias = useCallback(async () => {
-    const [evid, docs] = await Promise.all([
-      fetchEvidenciasRevisor(formulario.id),
-      fetchDocumentosDeFormulario(formulario.id),
-    ]);
-    setEvidencias(evid);
-    setDocumentosRevision(docs.filter((d) => d.categoria === 'revision'));
-  }, [formulario.id]);
-
-  useEffect(() => {
-    cargarEvidencias();
-    cabecerasDeArchivo().then(setHeadersArchivo);
-  }, [cargarEvidencias]);
-
-  const miEvidencia = evidencias.find((e) => e.revisor_rol === rol);
-  const otrasEvidencias = evidencias.filter((e) => e.revisor_rol !== rol);
-  /** Documentos de este rol ya persistidos — se excluyen los que ya están en la lista local para no duplicarlos. */
-  const documentosPropiosGuardados = documentosRevision.filter(
-    (d) => d.descripcion?.includes(nombreRol) && !documentos.some((ld) => ld.archivoId === d.id)
-  );
-
-  const urlDeArchivoId = (archivoId: string) => `${API_CONFIG.BASE_URL}/api/archivos/${archivoId}/contenido`;
-
-  /** Registros viejos guardaban la firma como base64 crudo; los nuevos guardan el id del archivo en MinIO. */
-  const resolverFirmaValor = (valor: string | null): { uri: string; headers: Record<string, string> } | null => {
-    if (!valor) return null;
-    if (valor.startsWith('data:')) return { uri: valor, headers: {} };
-    return fuenteConAuth(urlDeArchivoId(valor), headersArchivo);
-  };
-
-  /** Fuente de imagen que agrega las cabeceras de auth solo cuando la uri viene del servidor (evidencia ya guardada). */
-  const fuenteArchivoLocal = (uri: string) => fuenteConAuth(uri, headersArchivo);
-
-  /**
-   * Si este rol ya había guardado evidencia antes, la trae al formulario
-   * editable en cuanto se conocen las cabeceras de auth — antes se perdía
-   * de vista al salir y volver a entrar, aunque siguiera guardada en el
-   * servidor (solo se veía mezclada en "otrasEvidencias" de otros roles,
-   * nunca la propia).
-   */
-  const hidratadoRef = useRef(false);
-  useEffect(() => {
-    if (hidratadoRef.current || !miEvidencia || !Object.keys(headersArchivo).length) return;
-    hidratadoRef.current = true;
-    setFotos(
-      (miEvidencia.fotos_json || []).map((f, i) => ({
-        id: f.archivo_id || `foto-guardada-${i}`,
-        uri: f.archivo_id ? urlDeArchivoId(f.archivo_id) : f.uri || '',
-        archivoId: f.archivo_id,
-        subiendo: false,
-      }))
-    );
-    setVideos(
-      (miEvidencia.videos_json || []).map((v, i) => ({
-        id: v.archivo_id || `video-guardada-${i}`,
-        uri: v.archivo_id ? urlDeArchivoId(v.archivo_id) : v.uri || '',
-        archivoId: v.archivo_id,
-        subiendo: false,
-      }))
-    );
-    const benef = resolverFirmaValor(miEvidencia.firma_beneficiario);
-    if (benef) setFirmaBeneficiario({ preview: benef.uri, archivoId: miEvidencia.firma_beneficiario || undefined, subiendo: false });
-    const revF = resolverFirmaValor(miEvidencia.firma_revisor);
-    if (revF) setFirmaRevisor({ preview: revF.uri, archivoId: miEvidencia.firma_revisor || undefined, subiendo: false });
-    if (miEvidencia.geo_latitud != null && miEvidencia.geo_longitud != null) {
-      setGeoPoint({ lat: Number(miEvidencia.geo_latitud), lon: Number(miEvidencia.geo_longitud) });
-    }
-    if (miEvidencia.observaciones) setObservaciones(miEvidencia.observaciones);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [miEvidencia, headersArchivo]);
-
-  const tomarFoto = async () => {
-    const permiso = await ImagePicker.requestCameraPermissionsAsync();
-    if (!permiso.granted) {
-      Alert.alert('Permiso requerido', 'Se necesita acceso a la cámara para tomar la foto.');
-      return;
-    }
-    const resultado = await ImagePicker.launchCameraAsync({ quality: 0.6 });
-    if (resultado.canceled || !resultado.assets?.[0]?.uri) return;
-
-    const uri = resultado.assets[0].uri;
-    const localId = `foto-${Date.now()}`;
-    setFotos((prev) => [...prev, { id: localId, uri, subiendo: true }]);
-
-    // Sin formularioId: esta evidencia es propia del revisor y no debe
-    // mezclarse con la galería de fotos del técnico (formulario.fotos).
-    // Queda organizada en MinIO bajo la carpeta del propio revisor:
-    // {rol}s/{usuario}/{item}_{nombre}/Formulario_{1|2}/fotos/...
-    const subida = await uploadPhoto(
-      uri,
-      undefined,
-      undefined,
-      undefined,
-      `Revisión ${nombreRol} — Formulario ${formulario.id}`,
-      undefined,
-      formulario.beneficiario?.cedula,
-      formulario.beneficiario?.nombre,
-      new Date().toISOString(),
-      formulario.tipo
-    );
-    setFotos((prev) => prev.map((f) => (f.id === localId ? { ...f, subiendo: false, archivoId: subida?.id, error: !subida } : f)));
-  };
-
-  const grabarVideo = async () => {
-    const permiso = await ImagePicker.requestCameraPermissionsAsync();
-    if (!permiso.granted) {
-      Alert.alert('Permiso requerido', 'Se necesita acceso a la cámara para grabar el video.');
-      return;
-    }
-    const resultado = await ImagePicker.launchCameraAsync({ mediaTypes: ['videos'], videoMaxDuration: 30 });
-    if (resultado.canceled || !resultado.assets?.[0]?.uri) return;
-
-    const uri = resultado.assets[0].uri;
-    const localId = `video-${Date.now()}`;
-    setVideos((prev) => [...prev, { id: localId, uri, subiendo: true }]);
-
-    const subida = await uploadVideo(
-      uri,
-      undefined,
-      undefined,
-      `Revisión ${nombreRol} — Formulario ${formulario.id}`,
-      formulario.beneficiario?.cedula,
-      formulario.beneficiario?.nombre,
-      formulario.tipo
-    );
-    setVideos((prev) => prev.map((v) => (v.id === localId ? { ...v, subiendo: false, archivoId: subida?.id, error: !subida } : v)));
-  };
-
-  const agregarDocumento = async () => {
-    try {
-      const resultado = await DocumentPicker.getDocumentAsync({
-        type: ['application/pdf', 'image/*'],
-        copyToCacheDirectory: true,
-      });
-      if (resultado.canceled || !resultado.assets?.[0]) return;
-
-      const asset = resultado.assets[0];
-      const nombre = asset.name || `documento_${Date.now()}`;
-      const localId = `doc-${Date.now()}`;
-      const esPdf = nombre.toLowerCase().endsWith('.pdf');
-      const mimetype = esPdf ? 'application/pdf' : asset.mimeType || 'image/jpeg';
-      setDocumentos((prev) => [...prev, { id: localId, nombre, uri: asset.uri, mimetype, subiendo: true }]);
-
-      // Este sí lleva formularioId — los documentos del formulario son
-      // compartidos entre todos los roles (misma lista de "Documentos de
-      // la finca" que ya se muestra más abajo en esta pantalla).
-      const subida = await subirDocumento(
-        asset.uri,
-        `Evidencia de revisión — ${nombreRol}`,
-        'revision',
-        nombre,
-        formulario.beneficiario?.cedula,
-        formulario.beneficiario?.nombre,
-        formulario.tipo,
-        mimetype,
-        formulario.id
-      );
-      setDocumentos((prev) => prev.map((d) => (d.id === localId ? { ...d, subiendo: false, archivoId: subida?.id, error: !subida } : d)));
-      if (!subida) Alert.alert('No se pudo subir', 'El documento no se pudo subir — verifica tu conexión.');
-      else await cargarEvidencias();
-    } catch (error) {
-      console.error('[Revisor] Error agregando documento:', error);
-      Alert.alert('Error', 'No se pudo agregar el documento.');
-    }
-  };
-
-  /** Abre el documento usando la copia local en cache — no requiere re-descargarlo del servidor. */
-  const abrirDocumentoLocal = async (doc: DocumentoLocal) => {
-    setAbriendoDocumentoId(doc.id);
-    try {
-      if (await Sharing.isAvailableAsync()) {
-        await Sharing.shareAsync(doc.uri, { mimeType: doc.mimetype });
-      } else {
-        Alert.alert('Documento', `Guardado en: ${doc.uri}`);
-      }
-    } catch (error) {
-      console.error('[Revisor] No se pudo abrir el documento:', doc.id, error);
-      Alert.alert('Error', 'No se pudo abrir el documento.');
-    } finally {
-      setAbriendoDocumentoId(null);
-    }
-  };
-
-  /** Abre un documento ya guardado en sesiones anteriores — hay que descargarlo, no hay copia local en cache. */
-  const abrirDocumentoRemoto = async (doc: DocumentoDeFormulario) => {
-    setAbriendoDocumentoId(doc.id);
-    try {
-      const url = doc.url.startsWith('http') ? doc.url : `${API_CONFIG.BASE_URL}${doc.url}`;
-      const extension = doc.nombre.includes('.') ? doc.nombre.split('.').pop() : 'dat';
-      const destino = `${FileSystem.cacheDirectory}doc_revision_${doc.id}.${extension}`;
-      const { uri } = await FileSystem.downloadAsync(url, destino, { headers: headersArchivo });
-      if (await Sharing.isAvailableAsync()) {
-        await Sharing.shareAsync(uri, { mimeType: doc.mimetype });
-      } else {
-        Alert.alert('Documento descargado', `Guardado en: ${uri}`);
-      }
-    } catch (error) {
-      console.error('[Revisor] No se pudo abrir el documento remoto:', doc.id, error);
-      Alert.alert('Error', 'No se pudo abrir el documento. Verifica tu conexión.');
-    } finally {
-      setAbriendoDocumentoId(null);
-    }
-  };
-
-  const capturarFirma = async (tipo: 'beneficiario' | 'revisor', sig: string) => {
-    setPadActivo(null);
-    const setFirma = tipo === 'beneficiario' ? setFirmaBeneficiario : setFirmaRevisor;
-    setFirma({ preview: sig, subiendo: true });
-    const subida = await subirFirma(
-      tipo,
-      sig,
-      formulario.beneficiario?.cedula,
-      formulario.beneficiario?.nombre,
-      formulario.tipo
-    );
-    setFirma({ preview: sig, subiendo: false, archivoId: subida?.id, error: !subida });
-  };
-
-  const usarUbicacionActual = async () => {
-    setObteniendoUbicacion(true);
-    try {
-      const pos = await getCurrentPosition();
-      if (pos) setGeoPoint({ lat: pos.latitud, lon: pos.longitud });
-      else Alert.alert('Sin ubicación', 'No se pudo obtener el GPS. Verifica el permiso de ubicación.');
-    } finally {
-      setObteniendoUbicacion(false);
-    }
-  };
-
-  /**
-   * Guarda las evidencias (fotos, videos, firmas, geo, observaciones) del
-   * rol — se hace UNA sola vez por formulario y luego se puede actualizar.
-   * Separado de la aprobación: antes un solo botón hacía ambas cosas, lo
-   * que obligaba a re-aprobar cada vez que solo se quería completar
-   * evidencia.
-   */
-  const guardarEvidencias = async () => {
-    if (fotos.some((f) => f.subiendo) || videos.some((v) => v.subiendo) || documentos.some((d) => d.subiendo) || firmaBeneficiario?.subiendo || firmaRevisor?.subiendo) {
-      Alert.alert('Espera un momento', 'Todavía se están subiendo evidencias — inténtalo de nuevo en unos segundos.');
-      return;
-    }
-    const pendientes = fotos.filter((f) => !f.archivoId).length + videos.filter((v) => !v.archivoId).length;
-    if (pendientes > 0) {
-      Alert.alert(
-        'Evidencias sin subir',
-        `${pendientes} evidencia(s) no se pudieron subir (sin conexión). Quítalas con ✕ o vuelve a intentarlo antes de guardar.`
-      );
-      return;
-    }
-
-    setGuardandoEvidencia(true);
-    try {
-      await guardarEvidenciaRevisor(formulario.id, {
-        fotos: fotos.filter((f): f is EvidenciaLocal & { archivoId: string } => !!f.archivoId).map((f) => ({ archivo_id: f.archivoId, uri: f.uri })),
-        videos: videos.filter((v): v is EvidenciaLocal & { archivoId: string } => !!v.archivoId).map((v) => ({ archivo_id: v.archivoId, uri: v.uri })),
-        firma_beneficiario: firmaBeneficiario?.archivoId,
-        firma_revisor: firmaRevisor?.archivoId,
-        geo_latitud: geoPoint?.lat,
-        geo_longitud: geoPoint?.lon,
-        observaciones: observaciones.trim() || undefined,
-      });
-      await cargarEvidencias();
-      Alert.alert('✅ Evidencias guardadas', `Las evidencias de ${nombreRol} quedaron registradas para este formulario.`);
-    } catch (error) {
-      Alert.alert('No se pudo guardar', error instanceof Error ? error.message : String(error));
-    } finally {
-      setGuardandoEvidencia(false);
-    }
-  };
-
-  const aprobarFormulario = () => {
-    Alert.alert('Aprobar formulario', `¿Confirmas que este formulario está correcto como ${nombreRol}?`, [
-      { text: 'Cancelar', style: 'cancel' },
-      {
-        text: 'Aprobar',
-        onPress: async () => {
-          setAprobando(true);
-          try {
-            await registrarRevision(formulario.id, 'visto_bueno');
-            await recargarRevisiones();
-            Alert.alert('✅ Formulario aprobado');
-          } catch (error) {
-            Alert.alert('No se pudo aprobar', error instanceof Error ? error.message : String(error));
-          } finally {
-            setAprobando(false);
-          }
-        },
-      },
-    ]);
-  };
-
-  if (!esRevisor && evidencias.length === 0) return null;
-
-  const centroMapa = geoPoint
-    ? { latitud: geoPoint.lat, longitud: geoPoint.lon }
-    : formulario.coordenadas || { latitud: 1.914, longitud: -75.145 };
-
-  const estadoDe = (item: { subiendo: boolean; error?: boolean; archivoId?: string }) =>
-    item.subiendo ? '⏳ Subiendo…' : item.error ? '⚠️ No se subió' : '✅ En MinIO';
-
-  return (
-    <View style={finalStyles.section}>
-      <Text style={finalStyles.title}>🖊️ Sección del {nombreRol}</Text>
-
-      {esRevisor && (
-        <>
-          {/* Evidencias — mismo estilo de tarjetas que usa el técnico en
-              su propio formulario (icono, título, descripción, check verde),
-              subidas a MinIO igual que las del técnico. */}
-          <TouchableOpacity
-            style={[finalStyles.evidenciaCard, fotos.some((f) => f.archivoId) && finalStyles.evidenciaCardOk]}
-            onPress={tomarFoto}
-            activeOpacity={0.7}
-          >
-            <View style={finalStyles.evidenciaIcon}>
-              <Text style={finalStyles.evidenciaIconText}>📷</Text>
-            </View>
-            <View style={finalStyles.evidenciaContent}>
-              <Text style={finalStyles.evidenciaCardTitle}>Fotos de la revisión</Text>
-              <Text style={finalStyles.evidenciaCardDesc}>
-                {fotos.length > 0 ? `${fotos.length} foto(s) capturada(s) — toca para agregar otra` : 'Toca para tomar una foto'}
-              </Text>
-            </View>
-            <Text style={finalStyles.evidenciaArrow}>›</Text>
-          </TouchableOpacity>
-          {fotos.length > 0 && (
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} style={finalStyles.fotosRow}>
-              {fotos.map((f) => (
-                <View key={f.id} style={finalStyles.fotoThumb}>
-                  <TouchableOpacity
-                    onPress={() => setImagenAmpliada({ ...fuenteArchivoLocal(f.uri), titulo: `Foto de la revisión — ${nombreRol}` })}
-                    activeOpacity={0.8}
-                  >
-                    <Image source={fuenteArchivoLocal(f.uri)} style={finalStyles.fotoImg} />
-                    {f.subiendo && (
-                      <View style={finalStyles.fotoOverlay}>
-                        <ActivityIndicator size="small" color="#fff" />
-                      </View>
-                    )}
-                    {f.error && (
-                      <View style={[finalStyles.fotoOverlay, finalStyles.fotoOverlayError]}>
-                        <Text style={finalStyles.fotoOverlayText}>⚠️</Text>
-                      </View>
-                    )}
-                  </TouchableOpacity>
-                  <TouchableOpacity style={finalStyles.fotoRemove} onPress={() => setFotos((prev) => prev.filter((x) => x.id !== f.id))}>
-                    <Text style={finalStyles.fotoRemoveText}>✕</Text>
-                  </TouchableOpacity>
-                </View>
-              ))}
-            </ScrollView>
-          )}
-
-          <TouchableOpacity
-            style={[finalStyles.evidenciaCard, videos.some((v) => v.archivoId) && finalStyles.evidenciaCardOk]}
-            onPress={grabarVideo}
-            activeOpacity={0.7}
-          >
-            <View style={finalStyles.evidenciaIcon}>
-              <Text style={finalStyles.evidenciaIconText}>🎥</Text>
-            </View>
-            <View style={finalStyles.evidenciaContent}>
-              <Text style={finalStyles.evidenciaCardTitle}>Video de la revisión</Text>
-              <Text style={finalStyles.evidenciaCardDesc}>
-                {videos.length > 0 ? `${videos.length} video(s) grabado(s) — toca para agregar otro (máx. 30s)` : 'Toca para grabar un video (máx. 30s)'}
-              </Text>
-            </View>
-            <Text style={finalStyles.evidenciaArrow}>›</Text>
-          </TouchableOpacity>
-          {videos.length > 0 && (
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} style={finalStyles.fotosRow}>
-              {videos.map((v, idx) => (
-                <View key={v.id} style={finalStyles.videoThumbWrap}>
-                  <TouchableOpacity
-                    style={finalStyles.videoThumb}
-                    onPress={() => setVideoPreview(fuenteConAuth(v.uri, headersArchivo))}
-                    disabled={v.subiendo}
-                    activeOpacity={0.8}
-                  >
-                    {v.subiendo ? (
-                      <ActivityIndicator size="small" color="#fff" />
-                    ) : v.error ? (
-                      <Text style={finalStyles.videoThumbIcon}>⚠️</Text>
-                    ) : (
-                      <Text style={finalStyles.videoThumbIcon}>▶️</Text>
-                    )}
-                  </TouchableOpacity>
-                  <Text style={finalStyles.videoThumbLabel} numberOfLines={1}>
-                    Video {idx + 1} {v.subiendo ? '· subiendo…' : v.error ? '· no subió' : '· toca para ver'}
-                  </Text>
-                  <TouchableOpacity style={finalStyles.fotoRemove} onPress={() => setVideos((prev) => prev.filter((x) => x.id !== v.id))}>
-                    <Text style={finalStyles.fotoRemoveText}>✕</Text>
-                  </TouchableOpacity>
-                </View>
-              ))}
-            </ScrollView>
-          )}
-
-          <TouchableOpacity
-            style={[finalStyles.evidenciaCard, (documentos.some((d) => !d.subiendo && !d.error) || documentosPropiosGuardados.length > 0) && finalStyles.evidenciaCardOk]}
-            onPress={agregarDocumento}
-            activeOpacity={0.7}
-          >
-            <View style={finalStyles.evidenciaIcon}>
-              <Text style={finalStyles.evidenciaIconText}>📄</Text>
-            </View>
-            <View style={finalStyles.evidenciaContent}>
-              <Text style={finalStyles.evidenciaCardTitle}>Documentos / anexos</Text>
-              <Text style={finalStyles.evidenciaCardDesc}>
-                {documentos.length + documentosPropiosGuardados.length > 0
-                  ? `${documentos.length + documentosPropiosGuardados.length} documento(s) adjunto(s) — toca para agregar otro`
-                  : 'Toca para adjuntar un PDF o imagen'}
-              </Text>
-            </View>
-            <Text style={finalStyles.evidenciaArrow}>›</Text>
-          </TouchableOpacity>
-          {(documentos.length > 0 || documentosPropiosGuardados.length > 0) && (
-            <View style={finalStyles.chipsWrap}>
-              {documentos.map((d) => (
-                <TouchableOpacity
-                  key={d.id}
-                  style={finalStyles.chip}
-                  onPress={() => abrirDocumentoLocal(d)}
-                  disabled={d.subiendo || abriendoDocumentoId === d.id}
-                >
-                  <Text style={finalStyles.chipText} numberOfLines={1}>
-                    📄 {d.nombre} — {abriendoDocumentoId === d.id ? 'abriendo…' : d.subiendo ? '⏳' : d.error ? '⚠️' : '✅ toca para abrir'}
-                  </Text>
-                </TouchableOpacity>
-              ))}
-              {documentosPropiosGuardados.map((d) => (
-                <TouchableOpacity
-                  key={d.id}
-                  style={finalStyles.chip}
-                  onPress={() => abrirDocumentoRemoto(d)}
-                  disabled={abriendoDocumentoId === d.id}
-                >
-                  <Text style={finalStyles.chipText} numberOfLines={1}>
-                    📄 {d.nombre} — {abriendoDocumentoId === d.id ? 'abriendo…' : '✅ toca para abrir'}
-                  </Text>
-                </TouchableOpacity>
-              ))}
-            </View>
-          )}
-
-          <TouchableOpacity
-            style={[finalStyles.evidenciaCard, !!firmaBeneficiario?.archivoId && finalStyles.evidenciaCardOk]}
-            onPress={() => setPadActivo('beneficiario')}
-            activeOpacity={0.7}
-          >
-            <View style={finalStyles.evidenciaIcon}>
-              <Text style={finalStyles.evidenciaIconText}>✍️</Text>
-            </View>
-            <View style={finalStyles.evidenciaContent}>
-              <Text style={finalStyles.evidenciaCardTitle}>Firma del Beneficiario</Text>
-              <Text style={finalStyles.evidenciaCardDesc}>
-                {firmaBeneficiario
-                  ? `${estadoDe(firmaBeneficiario)} — toca para rehacer`
-                  : 'Capturar firma del beneficiario'}
-              </Text>
-            </View>
-            <Text style={finalStyles.evidenciaArrow}>›</Text>
-          </TouchableOpacity>
-          {!!firmaBeneficiario && (
-            <TouchableOpacity
-              style={finalStyles.firmaPreviewRow}
-              onPress={() => setImagenAmpliada({ ...fuenteArchivoLocal(firmaBeneficiario.preview), titulo: 'Firma del Beneficiario' })}
-              activeOpacity={0.8}
-            >
-              <Image source={fuenteArchivoLocal(firmaBeneficiario.preview)} style={finalStyles.firmaImg} />
-              <Text style={finalStyles.tapHint}>Toca la firma para verla en grande</Text>
-            </TouchableOpacity>
-          )}
-
-          <TouchableOpacity
-            style={[finalStyles.evidenciaCard, !!firmaRevisor?.archivoId && finalStyles.evidenciaCardOk]}
-            onPress={() => setPadActivo('revisor')}
-            activeOpacity={0.7}
-          >
-            <View style={finalStyles.evidenciaIcon}>
-              <Text style={finalStyles.evidenciaIconText}>🖊️</Text>
-            </View>
-            <View style={finalStyles.evidenciaContent}>
-              <Text style={finalStyles.evidenciaCardTitle}>Firma del {nombreRol}</Text>
-              <Text style={finalStyles.evidenciaCardDesc}>
-                {firmaRevisor ? `${estadoDe(firmaRevisor)} — toca para rehacer` : 'Capturar tu firma'}
-              </Text>
-            </View>
-            <Text style={finalStyles.evidenciaArrow}>›</Text>
-          </TouchableOpacity>
-          {!!firmaRevisor && (
-            <TouchableOpacity
-              style={finalStyles.firmaPreviewRow}
-              onPress={() => setImagenAmpliada({ ...fuenteArchivoLocal(firmaRevisor.preview), titulo: `Firma del ${nombreRol}` })}
-              activeOpacity={0.8}
-            >
-              <Image source={fuenteArchivoLocal(firmaRevisor.preview)} style={finalStyles.firmaImg} />
-              <Text style={finalStyles.tapHint}>Toca la firma para verla en grande</Text>
-            </TouchableOpacity>
-          )}
-
-          <Text style={finalStyles.label}>Georeferencia puntual (captura única)</Text>
-          <Text style={finalStyles.hint}>
-            Toca el mapa para ubicar el punto o usa tu ubicación GPS actual — esto NO inicia un seguimiento en vivo.
-          </Text>
-          <MapViewOffline
-            center={centroMapa}
-            zoom={15}
-            height={200}
-            markers={geoPoint ? [{ id: 'geo-revisor', latitud: geoPoint.lat, longitud: geoPoint.lon, title: 'Punto capturado', tipoIcono: 'pin', color: COLORS.error }] : []}
-            mapStyle="relieve"
-            showUserLocation={false}
-            onMapPress={(lat, lon) => setGeoPoint({ lat, lon })}
-          />
-          <TouchableOpacity style={finalStyles.btnSecundario} onPress={usarUbicacionActual} disabled={obteniendoUbicacion}>
-            <Text style={finalStyles.btnSecundarioText}>{obteniendoUbicacion ? 'Obteniendo…' : '📍 Usar mi ubicación actual'}</Text>
-          </TouchableOpacity>
-          {geoPoint && (
-            <Text style={finalStyles.hint}>Lat: {geoPoint.lat.toFixed(6)}  Lon: {geoPoint.lon.toFixed(6)}</Text>
-          )}
-
-          <Text style={finalStyles.label}>Observaciones finales</Text>
-          <TextInput
-            style={finalStyles.input}
-            multiline
-            numberOfLines={3}
-            value={observaciones}
-            onChangeText={setObservaciones}
-            placeholder="Observaciones de cierre de la revisión..."
-            placeholderTextColor={COLORS.textLight}
-          />
-
-          <TouchableOpacity style={finalStyles.btnPrincipal} onPress={guardarEvidencias} disabled={guardandoEvidencia}>
-            <Text style={finalStyles.btnPrincipalText}>
-              {guardandoEvidencia ? 'Guardando…' : miEvidencia ? `💾 Actualizar evidencias de ${nombreRol}` : `💾 Guardar evidencias de ${nombreRol}`}
-            </Text>
-          </TouchableOpacity>
-
-          <TouchableOpacity
-            style={[finalStyles.btnPrincipal, finalStyles.btnAprobar, yaAprobadoPorMiRol && finalStyles.btnDeshabilitado]}
-            onPress={aprobarFormulario}
-            disabled={aprobando || yaAprobadoPorMiRol}
-          >
-            <Text style={finalStyles.btnPrincipalText}>
-              {aprobando ? 'Aprobando…' : yaAprobadoPorMiRol ? '✔ Formulario aprobado' : '✅ Aprobar formulario'}
-            </Text>
-          </TouchableOpacity>
-        </>
-      )}
-
-      {otrasEvidencias.map((e) => {
-        const firmaBenefResuelta = resolverFirmaValor(e.firma_beneficiario);
-        const firmaRevResuelta = resolverFirmaValor(e.firma_revisor);
-        const nombreRolOtro = ROL_LABEL[e.revisor_rol] || e.revisor_rol;
-        const documentosDeEsteRol = documentosRevision.filter((d) => d.descripcion?.includes(nombreRolOtro));
-        return (
-          <View key={e.id} style={finalStyles.otraEvidencia}>
-            <Text style={finalStyles.label}>Evidencia de {ROL_LABEL[e.revisor_rol] || e.revisor_rol} ({e.revisor_nombre})</Text>
-            {!!e.fotos_json?.length && (
-              <ScrollView horizontal showsHorizontalScrollIndicator={false} style={finalStyles.fotosRow}>
-                {e.fotos_json.map((f, idx) => {
-                  const fuente = f.archivo_id ? fuenteConAuth(urlDeArchivoId(f.archivo_id), headersArchivo) : { uri: f.uri || '', headers: {} };
-                  return (
-                    <TouchableOpacity
-                      key={idx}
-                      onPress={() => setImagenAmpliada({ ...fuente, titulo: `Foto de ${ROL_LABEL[e.revisor_rol] || e.revisor_rol}` })}
-                      activeOpacity={0.8}
-                    >
-                      <Image source={fuente} style={finalStyles.fotoImg} />
-                    </TouchableOpacity>
-                  );
-                })}
-              </ScrollView>
-            )}
-            {!!e.videos_json?.length && (
-              <View style={finalStyles.chipsWrap}>
-                {e.videos_json.map((v, idx) => (
-                  <TouchableOpacity
-                    key={idx}
-                    style={finalStyles.chip}
-                    onPress={() =>
-                      setVideoPreview(
-                        v.archivo_id
-                          ? fuenteConAuth(urlDeArchivoId(v.archivo_id), headersArchivo)
-                          : { uri: v.uri || '', headers: {} }
-                      )
-                    }
-                  >
-                    <Text style={finalStyles.chipText}>▶ Video {idx + 1}</Text>
-                  </TouchableOpacity>
-                ))}
-              </View>
-            )}
-            <View style={finalStyles.firmasRow}>
-              {firmaBenefResuelta && (
-                <TouchableOpacity
-                  onPress={() => setImagenAmpliada({ ...firmaBenefResuelta, titulo: `Firma del Beneficiario — evidencia de ${ROL_LABEL[e.revisor_rol] || e.revisor_rol}` })}
-                  activeOpacity={0.8}
-                >
-                  <Image source={firmaBenefResuelta} style={finalStyles.firmaImg} />
-                </TouchableOpacity>
-              )}
-              {firmaRevResuelta && (
-                <TouchableOpacity
-                  onPress={() => setImagenAmpliada({ ...firmaRevResuelta, titulo: `Firma de ${ROL_LABEL[e.revisor_rol] || e.revisor_rol}` })}
-                  activeOpacity={0.8}
-                >
-                  <Image source={firmaRevResuelta} style={finalStyles.firmaImg} />
-                </TouchableOpacity>
-              )}
-            </View>
-            {documentosDeEsteRol.length > 0 && (
-              <View style={finalStyles.chipsWrap}>
-                {documentosDeEsteRol.map((d) => (
-                  <TouchableOpacity
-                    key={d.id}
-                    style={finalStyles.chip}
-                    onPress={() => abrirDocumentoRemoto(d)}
-                    disabled={abriendoDocumentoId === d.id}
-                  >
-                    <Text style={finalStyles.chipText} numberOfLines={1}>
-                      📄 {d.nombre} — {abriendoDocumentoId === d.id ? 'abriendo…' : '✅ toca para abrir'}
-                    </Text>
-                  </TouchableOpacity>
-                ))}
-              </View>
-            )}
-            {e.geo_latitud != null && e.geo_longitud != null && (
-              <Text style={finalStyles.hint}>📍 Lat: {Number(e.geo_latitud).toFixed(6)}  Lon: {Number(e.geo_longitud).toFixed(6)}</Text>
-            )}
-            {!!e.observaciones && <Text style={finalStyles.hint}>{e.observaciones}</Text>}
-          </View>
-        );
-      })}
-
-      <VideoPlayerModal
-        uri={videoPreview?.uri ?? null}
-        visible={!!videoPreview}
-        onClose={() => setVideoPreview(null)}
-        headers={videoPreview?.headers}
-      />
-
-      {/* 📸 Visor ampliado de foto/firma propia o de otro rol */}
-      <Modal
-        visible={!!imagenAmpliada}
-        transparent
-        animationType="fade"
-        onRequestClose={() => setImagenAmpliada(null)}
-      >
-        <Pressable style={styles.fotoModalOverlay} onPress={() => setImagenAmpliada(null)}>
-          {imagenAmpliada && (
-            <>
-              <Image
-                source={{ uri: imagenAmpliada.uri, headers: imagenAmpliada.headers }}
-                style={[styles.fotoModalImage, { backgroundColor: '#fff' }]}
-                resizeMode="contain"
-              />
-              <Text style={styles.fotoModalInfo}>{imagenAmpliada.titulo}</Text>
-              <Text style={styles.fotoModalHint}>Toca para cerrar</Text>
-            </>
-          )}
-        </Pressable>
-      </Modal>
-
-      {/* ✍️ Pantalla dedicada para firmar — fuera del ScrollView del detalle,
-          así el gesto de dibujar no se confunde con el scroll de la pantalla. */}
-      <Modal
-        visible={padActivo !== null}
-        animationType="slide"
-        onRequestClose={() => setPadActivo(null)}
-      >
-        <View style={[finalStyles.firmaModalContainer, { paddingTop: insets.top + SPACING.sm }]}>
-          <View style={finalStyles.firmaModalHeader}>
-            <Text style={finalStyles.firmaModalTitle}>
-              ✍️ {padActivo === 'beneficiario' ? 'Firma del Beneficiario' : `Firma del ${nombreRol}`}
-            </Text>
-            <TouchableOpacity onPress={() => setPadActivo(null)}>
-              <Text style={finalStyles.firmaModalClose}>✕ Cerrar</Text>
-            </TouchableOpacity>
-          </View>
-          <Text style={finalStyles.hint}>Dibuja la firma con el dedo dentro del recuadro blanco.</Text>
-          {padActivo && (
-            <SignaturePad
-              key={padActivo}
-              onOK={(sig) => capturarFirma(padActivo, sig)}
-              description={padActivo === 'beneficiario' ? 'Firma del beneficiario' : `Firma del ${nombreRol}`}
-              containerStyle={finalStyles.firmaModalPadContainer}
-              height={Dimensions.get('window').height * 0.45}
-            />
-          )}
-        </View>
-      </Modal>
-    </View>
-  );
-};
-
-const finalStyles = StyleSheet.create({
-  section: {
-    backgroundColor: COLORS.surface,
-    borderRadius: BORDER_RADIUS.lg,
-    padding: SPACING.md,
-    marginBottom: SPACING.md,
-    borderLeftWidth: 4,
-    borderLeftColor: COLORS.secondary || '#F9A825',
-    ...SHADOWS.sm,
-  },
-  title: { fontSize: FONTS.sizes.lg, fontWeight: FONTS.weights.semibold, color: COLORS.textPrimary, marginBottom: SPACING.sm },
-  label: { fontSize: FONTS.sizes.sm, fontWeight: FONTS.weights.semibold, color: COLORS.textPrimary, marginTop: SPACING.sm, marginBottom: 4 },
-  hint: { fontSize: FONTS.sizes.xs, color: COLORS.textSecondary, marginBottom: 4 },
-  // Tarjetas de evidencia — mismo estilo que EVIDENCIAS del técnico
-  // (FormularioCaracterizacionScreen.tsx) para mantener consistencia visual.
-  evidenciaCard: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: COLORS.surface,
-    padding: SPACING.md,
-    borderRadius: BORDER_RADIUS.md,
-    marginBottom: SPACING.sm,
-    borderWidth: 2,
-    borderColor: COLORS.border,
-    ...SHADOWS.sm,
-  },
-  evidenciaCardOk: {
-    borderColor: COLORS.success,
-    backgroundColor: COLORS.success + '08',
-  },
-  evidenciaIcon: {
-    width: 48,
-    height: 48,
-    borderRadius: 24,
-    backgroundColor: COLORS.surfaceAlt,
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginRight: SPACING.md,
-  },
-  evidenciaIconText: { fontSize: 24 },
-  evidenciaContent: { flex: 1 },
-  evidenciaCardTitle: { fontSize: FONTS.sizes.md, fontWeight: FONTS.weights.semibold, color: COLORS.textPrimary, marginBottom: 2 },
-  evidenciaCardDesc: { fontSize: FONTS.sizes.sm, color: COLORS.textSecondary },
-  evidenciaArrow: { fontSize: 28, color: '#b2bec3', fontWeight: '300', marginLeft: SPACING.sm },
-  fotosRow: { flexDirection: 'row', marginBottom: SPACING.sm },
-  fotoThumb: { marginRight: SPACING.sm, position: 'relative' },
-  fotoImg: { width: 70, height: 70, borderRadius: BORDER_RADIUS.sm, marginRight: SPACING.sm },
-  fotoAdd: { width: 70, height: 70, borderRadius: BORDER_RADIUS.sm, backgroundColor: COLORS.background, justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderColor: COLORS.border, borderStyle: 'dashed' },
-  fotoAddText: { fontSize: 24 },
-  fotoRemove: { position: 'absolute', top: -6, right: 2, backgroundColor: COLORS.error, borderRadius: 10, width: 20, height: 20, justifyContent: 'center', alignItems: 'center' },
-  fotoRemoveText: { color: '#fff', fontSize: 12, fontWeight: FONTS.weights.bold },
-  fotoOverlay: {
-    position: 'absolute', top: 0, left: 0, right: SPACING.sm, bottom: 0,
-    backgroundColor: 'rgba(0,0,0,0.35)', borderRadius: BORDER_RADIUS.sm,
-    justifyContent: 'center', alignItems: 'center',
-  },
-  fotoOverlayError: { backgroundColor: 'rgba(211,47,47,0.45)' },
-  fotoOverlayText: { fontSize: 20 },
-  chipsWrap: { flexDirection: 'row', flexWrap: 'wrap', gap: SPACING.xs, marginBottom: SPACING.sm },
-  chip: {
-    flexDirection: 'row', alignItems: 'center', gap: 6,
-    backgroundColor: COLORS.surfaceAlt, borderRadius: BORDER_RADIUS.full,
-    paddingHorizontal: SPACING.sm, paddingVertical: 6, maxWidth: '100%',
-  },
-  chipText: { fontSize: FONTS.sizes.xs, color: COLORS.textPrimary },
-  chipRemove: { fontSize: 12, color: COLORS.error, fontWeight: FONTS.weights.bold, marginLeft: 4 },
-  firmaOk: { flexDirection: 'row', alignItems: 'center', gap: SPACING.sm },
-  firmaImg: { width: 100, height: 60, borderRadius: BORDER_RADIUS.sm, backgroundColor: COLORS.background, marginRight: SPACING.sm },
-  link: { color: COLORS.info, fontSize: FONTS.sizes.sm, fontWeight: FONTS.weights.medium },
-  btnSecundario: { backgroundColor: COLORS.background, borderWidth: 1, borderColor: COLORS.border, borderRadius: BORDER_RADIUS.md, paddingVertical: SPACING.sm, alignItems: 'center', marginTop: 4 },
-  btnSecundarioText: { color: COLORS.textPrimary, fontWeight: FONTS.weights.medium, fontSize: FONTS.sizes.sm },
-  input: {
-    borderWidth: 1, borderColor: COLORS.border, borderRadius: BORDER_RADIUS.md,
-    padding: SPACING.sm, minHeight: 60, textAlignVertical: 'top',
-    fontSize: FONTS.sizes.sm, color: COLORS.textPrimary,
-  },
-  btnPrincipal: { backgroundColor: COLORS.success, borderRadius: BORDER_RADIUS.md, paddingVertical: SPACING.sm, alignItems: 'center', marginTop: SPACING.md },
-  btnPrincipalText: { color: '#fff', fontWeight: FONTS.weights.semibold, fontSize: FONTS.sizes.md },
-  btnAprobar: { backgroundColor: COLORS.info },
-  btnDeshabilitado: { backgroundColor: COLORS.textLight },
-  otraEvidencia: { marginTop: SPACING.sm, paddingTop: SPACING.sm, borderTopWidth: 1, borderTopColor: COLORS.divider },
-  firmasRow: { flexDirection: 'row', gap: SPACING.sm },
-  // Miniatura de video — mismo lenguaje visual que las miniaturas de foto,
-  // para que quede claro que también se puede tocar (antes era solo texto).
-  videoThumbWrap: { marginRight: SPACING.sm, width: 80, position: 'relative' },
-  videoThumb: {
-    width: 80, height: 70, borderRadius: BORDER_RADIUS.sm,
-    backgroundColor: '#1a1a2e', justifyContent: 'center', alignItems: 'center',
-  },
-  videoThumbIcon: { fontSize: 28 },
-  videoThumbLabel: { fontSize: FONTS.sizes.xs, color: COLORS.textSecondary, marginTop: 2, textAlign: 'center' },
-  firmaPreviewRow: { marginBottom: SPACING.sm },
-  tapHint: { fontSize: FONTS.sizes.xs, color: COLORS.info, marginTop: 2 },
-  // Pantalla dedicada de firma (Modal) — así el gesto de dibujar no
-  // compite con el scroll del detalle del formulario.
-  firmaModalContainer: { flex: 1, backgroundColor: COLORS.background, padding: SPACING.md },
-  firmaModalHeader: {
-    flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
-    marginBottom: SPACING.xs,
-  },
-  firmaModalTitle: { fontSize: FONTS.sizes.lg, fontWeight: FONTS.weights.semibold, color: COLORS.textPrimary },
-  firmaModalClose: { fontSize: FONTS.sizes.md, color: COLORS.error, fontWeight: FONTS.weights.medium },
-  firmaModalPadContainer: { flex: 1, marginVertical: SPACING.sm },
-});
-
 const rev = StyleSheet.create({
   section: {
     backgroundColor: COLORS.surface,
@@ -1277,24 +642,141 @@ const rev = StyleSheet.create({
     fontSize: FONTS.sizes.md, color: COLORS.textPrimary, marginBottom: SPACING.sm,
   },
   modalBotones: { flexDirection: 'row', gap: SPACING.sm, marginTop: SPACING.xs },
+  // Aviso de novedades que ve el TÉCNICO arriba del detalle
+  avisoBox: {
+    backgroundColor: COLORS.warning + '18',
+    borderRadius: BORDER_RADIUS.lg,
+    borderLeftWidth: 4,
+    borderLeftColor: COLORS.warning,
+    padding: SPACING.md,
+    marginBottom: SPACING.md,
+    ...SHADOWS.sm,
+  },
+  avisoTitulo: {
+    fontSize: FONTS.sizes.lg,
+    fontWeight: FONTS.weights.bold,
+    color: COLORS.textPrimary,
+    marginBottom: 2,
+  },
+  avisoSub: { fontSize: FONTS.sizes.sm, color: COLORS.textSecondary, marginBottom: SPACING.sm },
+  avisoItem: {
+    borderLeftWidth: 3,
+    borderLeftColor: COLORS.error,
+    paddingLeft: SPACING.sm,
+    marginBottom: SPACING.sm,
+  },
+  avisoMeta: { fontSize: FONTS.sizes.xs, color: COLORS.textSecondary },
+  avisoTexto: { fontSize: FONTS.sizes.md, color: COLORS.textPrimary },
+  avisoPie: {
+    fontSize: FONTS.sizes.xs,
+    color: COLORS.textSecondary,
+    fontStyle: 'italic',
+    marginTop: 2,
+  },
 });
 
+// ============================================================
+// Aviso de Novedades — se muestra ARRIBA del detalle cuando el
+// técnico abre un formulario que sus superiores marcaron con
+// observaciones. En modo revisión (online/campo) ya existe
+// SeccionRevision con esta misma información, por eso ese caso
+// no usa este banner.
+// ============================================================
+
+const BannerNovedades: React.FC<{ revisiones: Revision[] }> = ({ revisiones }) => {
+  // Si coordinación (o admin) ya dio el visto bueno global, las novedades
+  // quedan resueltas y el aviso desaparece — igual que el badge del listado.
+  const aprobadoGlobal = revisiones.some(
+    (r) =>
+      r.tipo === 'visto_bueno' &&
+      (r.revisor_rol === 'coordinador' || r.revisor_rol === 'admin') &&
+      !r.seccion
+  );
+  const novedades = revisiones
+    .filter((r) => r.tipo === 'novedad')
+    .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+
+  if (novedades.length === 0 || aprobadoGlobal) return null;
+
+  return (
+    <View style={rev.avisoBox}>
+      <Text style={rev.avisoTitulo}>⚠️ {novedades.length} novedad(es) por corregir</Text>
+      <Text style={rev.avisoSub}>Esto fue lo que señalaron tus superiores:</Text>
+      {novedades.map((n) => (
+        <View key={n.id} style={rev.avisoItem}>
+          <Text style={rev.avisoMeta}>
+            {ROL_LABEL[n.revisor_rol] || n.revisor_rol}
+            {n.revisor_nombre ? ` · ${n.revisor_nombre}` : ''}
+            {` · ${formatFecha(n.created_at)}`}
+            {n.seccion ? ` · Sección: ${n.seccion}` : ''}
+          </Text>
+          <Text style={rev.avisoTexto}>{n.comentario}</Text>
+        </View>
+      ))}
+      <Text style={rev.avisoPie}>
+        Corrige lo señalado. Si falta responder alguna pregunta, usa el botón «✎ Completar».
+      </Text>
+    </View>
+  );
+};
+
+/**
+ * Bloque de texto largo para el detalle: la etiqueta arriba y el contenido
+ * debajo, en vez de la fila etiqueta/valor alineada a la derecha (que queda
+ * ilegible con descripciones, objetivos y recomendaciones de varios renglones).
+ */
+const BloqueTexto: React.FC<{ titulo: string; texto: string }> = ({ titulo, texto }) => (
+  <View style={styles.bloqueTexto}>
+    <Text style={styles.bloqueTextoLabel}>{titulo}</Text>
+    <Text style={styles.listaItem}>{texto}</Text>
+  </View>
+);
+
 const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, navigation: _navigation }) => {
-  const { formulario, modo } = route.params;
+  const { formulario: formularioInicial, modo } = route.params;
+  const [formulario, setFormulario] = useState(formularioInicial);
   const insets = useSafeAreaInsets();
   const { user: usuarioActual } = useAuth();
   const rolActual = usuarioActual?.rol || 'tecnico';
-  const esRevisorActual = ['supervisor', 'interventor', 'gerente', 'admin'].includes(rolActual);
+  const esRevisorActual = ['coordinador', 'interventor', 'gerente', 'admin'].includes(rolActual);
+  const esAdmin = rolActual === 'admin';
+  /**
+   * Dueño de la visita. Mismo criterio y mismo orden que el backend en
+   * PATCH /formularios/:id/respuesta: el snapshot `tecnico.usuario_id` manda
+   * (es la atribución vigente — se reescribe al reasignar el beneficiario y
+   * POST /guardar lo protege de snapshots viejos); la columna `usuario_id`
+   * queda como respaldo para filas antiguas. Si aquí se usara un criterio
+   * distinto al del backend, el botón aparecería para luego responder 403.
+   */
+  const duenoFormulario = formulario.tecnico?.usuario_id || formulario.usuario_id;
+  /**
+   * Quién puede completar las preguntas que quedaron "Sin responder": el
+   * admin (cualquier formulario) y el técnico dueño de la visita. El backend
+   * valida lo mismo en PATCH /formularios/:id/respuesta.
+   */
+  const puedeCompletarRespuestas =
+    esAdmin || (rolActual === 'tecnico' && !!duenoFormulario && duenoFormulario === usuarioActual?.id);
   /**
    * Modo de la pantalla: 'online' y 'campo' habilitan los controles de
-   * Novedad/Aprobado por sección (revisión); solo 'campo' añade además la
-   * Sección del Administrador (evidencia propia del revisor) al final.
-   * Sin modo (entrada normal desde "Ver"/"PDF") se ve el formulario tal
-   * cual lo diligenció el técnico, sin nada de revisión.
+   * Novedad/Aprobado por sección (revisión); solo 'campo' añade además el
+   * formulario de Seguimiento de Coordinación/Interventoría al final (el
+   * mismo que se registra desde la tarjeta de inicio), para revisar la
+   * visita en terreno sin conexión.
+   * Sin modo (entrada normal desde "PDF") se ve el formulario tal cual lo
+   * diligenció el técnico, sin nada de revisión.
    */
   const mostrarRevision = modo === 'online' || modo === 'campo';
-  const mostrarSeccionFinalRevisor = modo === 'campo';
+  const mostrarSeguimientoCampo = modo === 'campo' && (rolActual === 'coordinador' || rolActual === 'interventor');
   const { revisiones, cargando: cargandoRevisiones, recargar: recargarRevisiones } = useRevisiones(formulario.id);
+  /**
+   * Sincronización: al volver de la cámara tras agregar evidencia, la foto
+   * queda en la cola local (`fotos_locales`) con formulario_id = este
+   * formulario, pero NO está en el servidor todavía. Sin subirla, el detalle
+   * (que lee las evidencias del servidor) no la muestra. Por eso se dispara
+   * un sync al enfocar la pantalla si hay evidencias pendientes de este
+   * formulario.
+   */
+  const { syncNow } = useSync();
   const [generatingPdf, setGeneratingPdf] = useState(false);
   const [descargandoMedia, setDescargandoMedia] = useState(false);
   const [pdfUri, setPdfUri] = useState<string | null>(null);
@@ -1323,6 +805,255 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
     beneficiario: FirmaResuelta | null;
     tecnico: FirmaResuelta | null;
   } | null>(null);
+  const [respuestaEditando, setRespuestaEditando] = useState<{ path: string; texto: string; espec?: EspecRespuesta; modo?: 'completar' | 'corregir' } | null>(null);
+  const [valorRespuesta, setValorRespuesta] = useState('');
+  const [guardandoRespuesta, setGuardandoRespuesta] = useState(false);
+  /**
+   * Captura GPS de alta precisión para las preguntas de coordenada (P20/P32).
+   * Se guarda aparte del `valorRespuesta` de texto porque la captura produce
+   * lat/lon/alt a la vez y hay que escribir cada uno en su campo hermano.
+   */
+  const [gpsCaptura, setGpsCaptura] = useState<{ lat: string; lon: string; alt: string; precision: string } | null>(null);
+  /** Evidencia que se está borrando (para mostrar el spinner) */
+  const [eliminandoEvidenciaId, setEliminandoEvidenciaId] = useState<string | null>(null);
+  /**
+   * Quién puede eliminar evidencias individuales: admin y coordinador
+   * (cualquier formulario) y el técnico dueño de la visita (solo las suyas).
+   * Debe coincidir con la validación de backend/src/routes/archivos.js.
+   */
+  const puedeEliminarEvidencias =
+    ROLES_PUEDEN_ELIMINAR_EVIDENCIA.includes(rolActual) ||
+    (rolActual === 'tecnico' && !!duenoFormulario && duenoFormulario === usuarioActual?.id);
+  /**
+   * Quién puede AGREGAR evidencia nueva a una visita ya completada: los
+   * mismos que pueden eliminarla (admin/coordinador y el técnico dueño).
+   * La captura se encola contra este formulario (modo "evidencia dirigida"
+   * de CamaraScreen) sin tocar el formulario en curso.
+   */
+  const puedeAgregarEvidencias = puedeEliminarEvidencias;
+
+  const abrirEdicionRespuesta = (
+    seccionTitulo: string,
+    pregunta: { numero: string; texto: string; valor: string },
+    modo: 'completar' | 'corregir' = 'completar'
+  ) => {
+    if (!puedeCompletarRespuestas) return;
+    // Completar solo aplica a preguntas vacías; corregir solo a las que ya
+    // tienen respuesta. Evita abrir el modal en el caso equivocado.
+    if (modo === 'completar' && pregunta.valor) return;
+    if (modo === 'corregir' && !pregunta.valor) return;
+    const path = RUTAS_RESPUESTAS_FORMULARIO_1[`${seccionTitulo}__${pregunta.numero === '\u2022' ? pregunta.texto : pregunta.numero}`];
+    if (!path) return;
+    const espec = RESPUESTA_ESPEC[path];
+    setRespuestaEditando({ path, texto: pregunta.texto, espec, modo });
+    // Al corregir se precarga el valor actual para editarlo; al completar se
+    // parte de vacío.
+    setValorRespuesta(modo === 'corregir' ? pregunta.valor : '');
+    // Preguntas de coordenada (P20/P32): precargar la captura GPS existente
+    // para que el mapa y el botón "Volver a capturar" muestren el punto actual.
+    if (espec?.tipo === 'gps' && espec.gpsCampos) {
+      const enc = ((formulario as any).caracterizacion_nueva || {}) as Record<string, any>;
+      const leer = (p: string) => {
+        const [sec, campo] = p.split('.');
+        return campo ? enc[sec]?.[campo] : enc[sec];
+      };
+      setGpsCaptura({
+        lat: String(leer(espec.gpsCampos.latitud) ?? ''),
+        lon: String(leer(espec.gpsCampos.longitud) ?? ''),
+        alt: espec.gpsCampos.altitud ? String(leer(espec.gpsCampos.altitud) ?? '') : '',
+        precision: espec.gpsCampos.precision ? String(leer(espec.gpsCampos.precision) ?? '') : '',
+      });
+    } else {
+      setGpsCaptura(null);
+    }
+  };
+
+  /** Marca/desmarca una opción cuando la pregunta es de respuesta múltiple */
+  const toggleValorMultiple = (opt: string) => {
+    setValorRespuesta((prev) => {
+      const actuales = prev ? prev.split(', ').filter(Boolean) : [];
+      const next = actuales.includes(opt) ? actuales.filter((o) => o !== opt) : [...actuales, opt];
+      return next.join(', ');
+    });
+  };
+
+  const guardarRespuestaAdmin = async () => {
+    if (!respuestaEditando || !valorRespuesta.trim()) {
+      Alert.alert('Respuesta vacía', 'Escribe una respuesta antes de guardar.');
+      return;
+    }
+    setGuardandoRespuesta(true);
+    try {
+      await actualizarRespuestaFormulario(
+        formulario.id,
+        respuestaEditando.path,
+        valorRespuesta.trim(),
+        respuestaEditando.modo || 'completar'
+      );
+      const partes = respuestaEditando.path.split('.');
+      setFormulario((prev) => {
+        const encuesta = { ...((prev as any).caracterizacion_nueva || {}) };
+        if (partes.length === 1) {
+          encuesta[partes[0]] = valorRespuesta.trim();
+        } else {
+          const [seccion, campo] = partes;
+          encuesta[seccion] = { ...(encuesta[seccion] || {}), [campo]: valorRespuesta.trim() };
+        }
+        return { ...prev, caracterizacion_nueva: encuesta } as typeof prev;
+      });
+      const fueCorreccion = respuestaEditando.modo === 'corregir';
+      setRespuestaEditando(null);
+      Alert.alert(
+        fueCorreccion ? 'Respuesta corregida' : 'Respuesta guardada',
+        'La respuesta quedó actualizada para este formulario.'
+      );
+    } catch (error) {
+      Alert.alert('No se pudo guardar', error instanceof Error ? error.message : String(error));
+    } finally {
+      setGuardandoRespuesta(false);
+    }
+  };
+
+  /**
+   * Guarda una respuesta de tipo coordenada (P20/P32).
+   *
+   * La captura GPS produce lat/lon/alt a la vez, así que hay que escribir cada
+   * valor en su campo hermano del formulario. Se guarda primero el campo que
+   * abrió el modal (latitud) y luego los compañeros (longitud, altitud) para
+   * que el backend valide el modo correcto (completar/corregir) sobre el campo
+   * principal. La precisión no se persiste porque el backend no la permite.
+   */
+  const guardarRespuestaGPS = async () => {
+    if (!respuestaEditando?.espec?.gpsCampos) return;
+    const campos = respuestaEditando.espec.gpsCampos;
+    const lat = (gpsCaptura?.lat || '').trim();
+    const lon = (gpsCaptura?.lon || '').trim();
+    if (!lat || !lon) {
+      Alert.alert('Sin coordenada', 'Captura la ubicación antes de guardar.');
+      return;
+    }
+    setGuardandoRespuesta(true);
+    try {
+      const modo = respuestaEditando.modo || 'completar';
+      const aGuardar: Array<[string, string]> = [[campos.latitud, lat]];
+      if (campos.longitud) aGuardar.push([campos.longitud, lon]);
+      if (campos.altitud && (gpsCaptura?.alt || '').trim()) {
+        aGuardar.push([campos.altitud, (gpsCaptura?.alt || '').trim()]);
+      }
+      for (const [path, value] of aGuardar) {
+        await actualizarRespuestaFormulario(formulario.id, path, value, modo);
+      }
+      // Reflejar los cambios en el estado local del formulario.
+      setFormulario((prev) => {
+        const encuesta = { ...((prev as any).caracterizacion_nueva || {}) };
+        for (const [path, value] of aGuardar) {
+          const [seccion, campo] = path.split('.');
+          if (campo) {
+            encuesta[seccion] = { ...(encuesta[seccion] || {}), [campo]: value };
+          } else {
+            encuesta[seccion] = value;
+          }
+        }
+        return { ...prev, caracterizacion_nueva: encuesta } as typeof prev;
+      });
+      const fueCorreccion = modo === 'corregir';
+      setRespuestaEditando(null);
+      setGpsCaptura(null);
+      Alert.alert(
+        fueCorreccion ? 'Coordenada corregida' : 'Coordenada guardada',
+        'La ubicación quedó actualizada para este formulario.'
+      );
+    } catch (error) {
+      Alert.alert('No se pudo guardar', error instanceof Error ? error.message : String(error));
+    } finally {
+      setGuardandoRespuesta(false);
+    }
+  };
+
+  /**
+   * Eliminar una evidencia (foto o video) del formulario.
+   *
+   * En campo se acumulan fotos idénticas (reintentos, duplicados de la misma
+   * toma), así que admin y coordinador pueden depurar la visita borrando la
+   * que sobra. El borrado es real, en tres capas:
+   *  1. Servidor: DELETE /api/archivos/:id → borra el objeto de MinIO, la
+   *     fila de `archivos`, la entrada del fotos_json del formulario y deja
+   *     una "tumba" para que la evidencia no reaparezca si el teléfono que la
+   *     capturó todavía la conserva en local y la reintenta subir.
+   *  2. Local: quita la fila de fotos_locales/videos_locales y el archivo
+   *     físico, para que el sincronizador no la vuelva a enviar.
+   *  3. Estado: la quita de la lista visible sin recargar la pantalla.
+   */
+  const eliminarEvidencia = async (foto: FotoGeotag) => {
+    setEliminandoEvidenciaId(foto.id);
+    try {
+      // El backend acepta tanto el id de `archivos` (evidencia recuperada del
+      // servidor) como el id local de la captura, así que no hace falta
+      // resolver la correspondencia aquí.
+      const borradoOk = await eliminarEvidenciaRemota(foto.id);
+      if (!borradoOk) {
+        Alert.alert(
+          'No se pudo eliminar',
+          'No fue posible eliminar la evidencia en el servidor. Revisa la conexión e inténtalo de nuevo.',
+        );
+        return;
+      }
+
+      // Capas locales: best-effort, el servidor ya es la fuente de verdad.
+      try {
+        await deleteEvidenciaLocal(foto.id);
+        await eliminarArchivoLocal(foto.uri);
+      } catch (localErr) {
+        console.warn('[Detalle] No se pudo limpiar la evidencia local:', localErr);
+      }
+
+      // Estado de la pantalla: lista remota (si se está mostrando esa) y
+      // fotos del formulario.
+      setEvidenciasRemotas((prev) => (prev ? prev.filter((f) => f.id !== foto.id) : prev));
+
+      const fotosLocales = formulario.fotos || [];
+      const nuevasFotos = fotosLocales.filter((f) => f.id !== foto.id);
+      setFormulario((prev) => ({ ...prev, fotos: nuevasFotos }));
+
+      if (nuevasFotos.length !== fotosLocales.length) {
+        // Se persiste la lista ya depurada: si solo se cambiara el estado, al
+        // reabrir la visita desde este mismo teléfono volvería a aparecer
+        // (sus archivos locales todavía existían y la pantalla los prefería
+        // sobre la lista del servidor).
+        saveFormularioLocal({ ...formulario, fotos: nuevasFotos }).catch((persistErr) =>
+          console.warn('[Detalle] No se pudo persistir la evidencia eliminada:', persistErr),
+        );
+      }
+
+      // Si estaba abierta en el visor ampliado, se cierra.
+      setFotoPreview((prev) => (prev?.id === foto.id ? null : prev));
+      setVideoPreview((prev) => (prev?.id === foto.id ? null : prev));
+
+      console.log(`[Detalle] Evidencia ${foto.id} eliminada del formulario ${formulario.id}`);
+    } finally {
+      setEliminandoEvidenciaId(null);
+    }
+  };
+
+  /** Confirmación antes de borrar — el borrado es irreversible */
+  const confirmarEliminarEvidencia = (foto: FotoGeotag) => {
+    const esVideo = foto.tipo === 'video';
+    Alert.alert(
+      esVideo ? 'Eliminar video' : 'Eliminar foto',
+      `¿Está seguro que desea eliminar este ${esVideo ? 'video' : 'foto'} del formulario?\n\n` +
+        'Esta acción no se puede deshacer: la evidencia también se borra del servidor.',
+      [
+        { text: 'Cancelar', style: 'cancel' },
+        {
+          text: 'Eliminar',
+          style: 'destructive',
+          onPress: () => {
+            void eliminarEvidencia(foto);
+          },
+        },
+      ],
+    );
+  };
 
   // Las evidencias mostradas: locales si están, remotas si no
   const evidencias = evidenciasRemotas ?? formulario.fotos ?? [];
@@ -1332,29 +1063,99 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
     [authHeaders]
   );
 
-  useEffect(() => {
-    let cancelado = false;
-    (async () => {
-      try {
-        const [headers, remotas, docs, firmas] = await Promise.all([
-          cabecerasDeArchivo(),
-          resolverEvidenciasRemotas(formulario.id, formulario.fotos),
-          fetchDocumentosDeFormulario(formulario.id),
-          resolverFirmasRemotas(formulario.id, formulario.firma_beneficiario, formulario.firma_tecnico),
-        ]);
-        if (cancelado) return;
-        setAuthHeaders(headers);
-        if (remotas) setEvidenciasRemotas(remotas);
-        setDocumentos(docs);
-        setFirmasResueltas(firmas);
-      } catch (e) {
-        console.warn('[Detalle] No se pudieron resolver las evidencias:', e);
+  /**
+   * Agregar evidencia nueva a esta visita ya completada. Abre la cámara en
+   * modo "evidencia dirigida": la captura se encola contra ESTE formulario
+   * (no contra el formulario en curso del FormContext). Al volver, se
+   * recargan las evidencias para que aparezca la recién capturada.
+   */
+  const agregarEvidencia = (tipo: 'photo' | 'video') => {
+    _navigation.navigate('Camara', {
+      mode: tipo,
+      formularioId: formulario.id,
+      beneficiarioCedula: formulario.beneficiario?.cedula,
+      beneficiarioNombre: formulario.beneficiario?.nombre,
+      tipoFormulario: formulario.tipo,
+    });
+  };
+
+  /** Menú para elegir foto o video al agregar evidencia */
+  const elegirTipoEvidencia = () => {
+    Alert.alert(
+      'Agregar evidencia',
+      '¿Qué deseas capturar? Se guardará con ubicación GPS y quedará vinculada a esta visita.',
+      [
+        { text: 'Cancelar', style: 'cancel' },
+        { text: '📷 Foto', onPress: () => agregarEvidencia('photo') },
+        { text: '🎥 Video', onPress: () => agregarEvidencia('video') },
+      ],
+    );
+  };
+
+  /**
+   * Carga (o recarga) evidencias, documentos y firmas de la visita.
+   * Se reutiliza al montar y al volver de la cámara tras agregar evidencia.
+   */
+  const cargarEvidenciasYDocumentos = useCallback(async (): Promise<void> => {
+    try {
+      const cedulaBeneficiario = formulario.beneficiario?.cedula;
+      const [headers, remotas, docsFormulario, docsBeneficiario, firmas] = await Promise.all([
+        cabecerasDeArchivo(),
+        resolverEvidenciasRemotas(formulario.id, formulario.fotos),
+        fetchDocumentosDeFormulario(formulario.id),
+        // Los documentos de la finca se comparten por beneficiario (cédula):
+        // pueden haberse subido desde OTRA visita del mismo beneficiario, así
+        // que se combinan con los vinculados a este formulario.
+        cedulaBeneficiario
+          ? fetchDocumentosDeBeneficiario(cedulaBeneficiario).catch(() => [] as DocumentoDeFormulario[])
+          : Promise.resolve([] as DocumentoDeFormulario[]),
+        resolverFirmasRemotas(formulario.id, formulario.firma_beneficiario, formulario.firma_tecnico),
+      ]);
+      setAuthHeaders(headers);
+      if (remotas) setEvidenciasRemotas(remotas);
+      // Merge + dedupe por id (los del formulario primero).
+      const mapaDocs = new Map<string, DocumentoDeFormulario>();
+      for (const d of [...docsFormulario, ...docsBeneficiario]) {
+        if (!mapaDocs.has(d.id)) mapaDocs.set(d.id, d);
       }
-    })();
-    return () => {
-      cancelado = true;
-    };
-  }, [formulario.id, formulario.fotos]);
+      setDocumentos(Array.from(mapaDocs.values()));
+      setFirmasResueltas(firmas);
+    } catch (e) {
+      console.warn('[Detalle] No se pudieron resolver las evidencias:', e);
+    }
+  }, [formulario.id, formulario.fotos, formulario.beneficiario?.cedula, formulario.firma_beneficiario, formulario.firma_tecnico]);
+
+  useEffect(() => {
+    void cargarEvidenciasYDocumentos();
+  }, [cargarEvidenciasYDocumentos]);
+
+  // Al volver a esta pantalla (p. ej. tras capturar evidencia nueva en la
+  // cámara) se recargan evidencias y documentos para reflejar los cambios.
+  // Si quedaron evidencias pendientes de subir para ESTE formulario (la
+  // captura dirigida se encola localmente), se dispara un sync para subirlas
+  // y, al terminar, se recarga la lista para que aparezcan.
+  useFocusEffect(
+    useCallback(() => {
+      let activo = true;
+      void (async () => {
+        try {
+          const [fotosPend, videosPend] = await Promise.all([
+            getUnsyncedPhotos(formulario.id),
+            getUnsyncedVideos(formulario.id),
+          ]);
+          if (activo && (fotosPend.length > 0 || videosPend.length > 0)) {
+            await syncNow();
+          }
+        } catch (e) {
+          console.warn('[Detalle] No se pudieron subir evidencias pendientes:', e);
+        }
+        if (activo) await cargarEvidenciasYDocumentos();
+      })();
+      return () => {
+        activo = false;
+      };
+    }, [cargarEvidenciasYDocumentos, formulario.id, syncNow])
+  );
 
   /**
    * Abrir un documento de finca: se descarga (con autenticación) a un
@@ -1484,6 +1285,24 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
       `;
     }
 
+    // Visita Técnica del formato nuevo (v2): el detalle por ítems. Se añade
+    // a la sección "Actividad Realizada" del PDF para que los compromisos
+    // adquiridos y la valoración del cumplimiento no se pierdan al generar
+    // el documento (antes solo salían descripción/observaciones/recomendaciones).
+    const act = f.actividad;
+    const compromisosV2 = act?.compromisos_siguiente_visita || [];
+    const visitaV2Html = esVisitaTecnicaV2(act)
+      ? `
+      ${row2('N° de visita', act?.visita_numero != null ? String(act.visita_numero) : undefined)}
+      ${row2('Identificación', act?.no_identificacion)}
+      ${row2('Objetivo', act?.objetivo)}
+      ${act?.seguimiento_compromisos ? `<div class="row" style="margin-top:8px;"><span class="label">Seguimiento de compromisos:</span></div><div class="desc-detallada">${escapeHtml(act.seguimiento_compromisos)}</div>` : ''}
+      ${row2('Valoración del cumplimiento', act?.valoracion_cumplimiento ? `${act.valoracion_cumplimiento}%` : undefined)}
+      ${act?.area_intervencion ? row2('Área a intervenir', `${act.area_intervencion} ha`) : ''}
+      ${compromisosV2.length > 0 ? `<div class="row" style="margin-top:8px;"><span class="label">Compromisos próxima visita:</span></div><div class="desc-detallada">${compromisosV2.map((t) => `• ${escapeHtml(t)}`).join('<br/>')}</div>` : ''}
+    `
+      : '';
+
     return `<!DOCTYPE html>
 <html lang="es">
 <head><meta charset="utf-8"><title>Formulario ${f.id}</title>
@@ -1533,7 +1352,7 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
 <body>
   <div class="header">
     <h1>🌱 GEODAILY — ${c || f.tipo === 'caracterizacion' ? 'Caracterización Sociodemográfica' : 'Formulario de Campo'}</h1>
-    <p><strong>ID:</strong> ${escapeHtml(f.id)} | <strong>Tipo:</strong> ${c || f.tipo === 'caracterizacion' ? 'Caracterización Sociodemográfica' : 'Visita Técnica'} | <strong>Fecha:</strong> ${c?.fecha || formatFecha(f.created_at)}</p>
+    <p><strong>ID:</strong> ${escapeHtml(f.id)} | <strong>Tipo:</strong> ${c || f.tipo === 'caracterizacion' ? 'Caracterización Sociodemográfica' : tituloVisitaTecnica(f.actividad?.visita_numero)} | <strong>Fecha:</strong> ${c?.fecha || formatFecha(f.created_at)}</p>
   </div>
 
   ${caracterizacionHtml}
@@ -1563,6 +1382,7 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
     ${f.actividad.descripcion_detallada ? `<div class="row"><span class="label">Descripción detallada:</span></div><div class="desc-detallada">${escapeHtml(f.actividad.descripcion_detallada)}</div>` : ''}
     <div class="row" style="margin-top:8px;"><span class="label">Observaciones:</span><span class="value">${escapeHtml(f.actividad.observaciones || '—')}</span></div>
     <div class="row"><span class="label">Recomendaciones:</span><span class="value">${escapeHtml(f.actividad.recomendaciones || '—')}</span></div>
+    ${visitaV2Html}
   </div>
 
   <div class="section">
@@ -1856,6 +1676,32 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
     ...(formulario.huella_beneficiario ? [true] : []),
   ].length;
 
+  /** Abre Google Maps (app o navegador) centrado en la coordenada capturada. */
+  const abrirEnGoogleMaps = (lat: string, lon: string) => {
+    Linking.openURL(`https://www.google.com/maps?q=${lat},${lon}`);
+  };
+
+  // Coordenadas crudas (no el texto ya formateado) de las preguntas 20 y 32,
+  // para el botón "Ver en Google Maps" — solo esas dos preguntas del
+  // formulario son capturas GPS con lat/lon propias.
+  const cCoordsRaw = (formulario as any).caracterizacion_nueva || {};
+  const coordenadasPorPregunta: Record<string, { lat?: string; lon?: string }> = {
+    'CARACTERIZACIÓN DE LA FINCA__20': {
+      lat: cCoordsRaw.caracterizacion_finca?.latitud,
+      lon: cCoordsRaw.caracterizacion_finca?.longitud,
+    },
+    'SECCIÓN DE SUELO__32': {
+      lat: cCoordsRaw.analisis_suelo?.intervencion_latitud,
+      lon: cCoordsRaw.analisis_suelo?.intervencion_longitud,
+    },
+  };
+
+  // Texto de referencia (municipio · vereda/corregimiento) que se muestra como
+  // insignia en la captura GPS del modal de corrección.
+  const ubicacionGPSTexto = [cCoordsRaw.municipio, cCoordsRaw.vereda || cCoordsRaw.corregimiento]
+    .filter(Boolean)
+    .join(' · ');
+
   /** Control de Novedad/Aprobado al pie de cada sección, solo en modo revisión. */
   const renderMiniRevision = (seccionTitulo: string) =>
     mostrarRevision ? (
@@ -1872,13 +1718,19 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
   return (
     <View style={styles.container}>
       <ScrollView contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + SPACING.xxl }]}>
+        {/* Novedades de los superiores — ARRIBA, para que el técnico sepa
+            de inmediato qué debe corregir. Solo en la vista normal (sin
+            controles de revisión) y solo para quien NO es revisor: en modo
+            "Revisión en línea/campo" ya lo muestra SeccionRevision. */}
+        {!mostrarRevision && !esRevisorActual && <BannerNovedades revisiones={revisiones} />}
+
         {/* Estado del formulario */}
         <View style={styles.statusBar}>
           <Text style={styles.statusTipo}>
             {(formulario as any).caracterizacion_nueva || formulario.tipo === 'caracterizacion'
               ? 'Caracterización Sociodemográfica'
               : formulario.tipo === 'visita_tecnica'
-              ? 'Visita Técnica'
+              ? tituloVisitaTecnica(formulario.actividad?.visita_numero)
               : 'Plantación'}
           </Text>
           <Text style={[styles.statusSync, formulario.sincronizado && styles.statusSyncOk]}>
@@ -1909,25 +1761,60 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
           ).map((seccion) => (
             <View key={seccion.titulo} style={styles.section}>
               <Text style={styles.sectionTitle}>{seccion.titulo}</Text>
-              {seccion.preguntas.map((pregunta) => (
-                <View key={`${seccion.titulo}-${pregunta.numero}-${pregunta.texto}`} style={styles.pregunta}>
-                  <Text style={styles.preguntaTexto}>
-                    {pregunta.numero === '\u2022' ? '' : `${pregunta.numero}. `}
-                    {pregunta.texto}
-                  </Text>
-                  <Text
-                    style={[
-                      styles.preguntaValor,
-                      !pregunta.valor && styles.preguntaValorVacio,
-                    ]}
-                  >
-                    {pregunta.valor || 'Sin responder'}
-                  </Text>
-                  {!!pregunta.observacion && (
-                    <Text style={styles.preguntaObs}>Obs: {pregunta.observacion}</Text>
-                  )}
-                </View>
-              ))}
+              {seccion.preguntas.map((pregunta) => {
+                const coordenadas = coordenadasPorPregunta[`${seccion.titulo}__${pregunta.numero}`];
+                const lat = coordenadas?.lat;
+                const lon = coordenadas?.lon;
+                return (
+                  <View key={`${seccion.titulo}-${pregunta.numero}-${pregunta.texto}`} style={styles.pregunta}>
+                    <Text style={styles.preguntaTexto}>
+                      {pregunta.numero === '\u2022' ? '' : `${pregunta.numero}. `}
+                      {pregunta.texto}
+                    </Text>
+                    <View style={styles.preguntaValorRow}>
+                      <Text
+                        style={[
+                          styles.preguntaValor,
+                          styles.preguntaValorFlex,
+                          !pregunta.valor && styles.preguntaValorVacio,
+                        ]}
+                      >
+                        {pregunta.valor || 'Sin responder'}
+                      </Text>
+                      {puedeCompletarRespuestas && !pregunta.valor && RUTAS_RESPUESTAS_FORMULARIO_1[`${seccion.titulo}__${pregunta.numero === '\u2022' ? pregunta.texto : pregunta.numero}`] && (
+                        <TouchableOpacity
+                          style={styles.adminEditarBtn}
+                          onPress={() => abrirEdicionRespuesta(seccion.titulo, pregunta, 'completar')}
+                          activeOpacity={0.7}
+                        >
+                          <Text style={styles.adminEditarBtnText}>✎ Completar</Text>
+                        </TouchableOpacity>
+                      )}
+                      {puedeCompletarRespuestas && !!pregunta.valor && RUTAS_RESPUESTAS_FORMULARIO_1[`${seccion.titulo}__${pregunta.numero === '\u2022' ? pregunta.texto : pregunta.numero}`] && (
+                        <TouchableOpacity
+                          style={styles.adminEditarBtn}
+                          onPress={() => abrirEdicionRespuesta(seccion.titulo, pregunta, 'corregir')}
+                          activeOpacity={0.7}
+                        >
+                          <Text style={styles.adminEditarBtnText}>✎ Corregir</Text>
+                        </TouchableOpacity>
+                      )}
+                      {lat && lon && (
+                        <TouchableOpacity
+                          style={styles.verEnMapsBtn}
+                          onPress={() => abrirEnGoogleMaps(lat, lon)}
+                          activeOpacity={0.7}
+                        >
+                          <Text style={styles.verEnMapsBtnText}>Ver en Google Maps</Text>
+                        </TouchableOpacity>
+                      )}
+                    </View>
+                    {!!pregunta.observacion && (
+                      <Text style={styles.preguntaObs}>Obs: {pregunta.observacion}</Text>
+                    )}
+                  </View>
+                );
+              })}
               {mostrarRevision && (
                 <SeccionMiniRevision
                   formularioId={formulario.id}
@@ -1941,6 +1828,113 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
             </View>
           ))}
 
+        {/* Datos del Técnico */}
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>👤 Datos del Técnico</Text>
+          <View style={styles.row}><Text style={styles.label}>Nombre:</Text><Text style={styles.value}>{formulario.tecnico?.nombre || '—'}</Text></View>
+          <View style={styles.row}><Text style={styles.label}>Cédula:</Text><Text style={styles.value}>{formulario.tecnico.cedula}</Text></View>
+          <View style={styles.row}><Text style={styles.label}>Teléfono:</Text><Text style={styles.value}>{formulario.tecnico.telefono || '—'}</Text></View>
+          <View style={styles.row}><Text style={styles.label}>Email:</Text><Text style={styles.value}>{formulario.tecnico.email || '—'}</Text></View>
+          {renderMiniRevision('Datos del Técnico')}
+        </View>
+
+        {/* Datos del Beneficiario */}
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>👥 Datos del Beneficiario</Text>
+          <View style={styles.row}><Text style={styles.label}>Nombre:</Text><Text style={styles.value}>{formulario.beneficiario?.nombre || '—'}</Text></View>
+          <View style={styles.row}><Text style={styles.label}>Cédula:</Text><Text style={styles.value}>{formulario.beneficiario.cedula || '—'}</Text></View>
+          <View style={styles.row}><Text style={styles.label}>Teléfono:</Text><Text style={styles.value}>{formulario.beneficiario.telefono || '—'}</Text></View>
+          <View style={styles.row}><Text style={styles.label}>Depto:</Text><Text style={styles.value}>{formulario.beneficiario.departamento || '—'}</Text></View>
+          <View style={styles.row}><Text style={styles.label}>Municipio:</Text><Text style={styles.value}>{formulario.beneficiario.municipio || '—'}</Text></View>
+          <View style={styles.row}><Text style={styles.label}>Vereda:</Text><Text style={styles.value}>{formulario.beneficiario.vereda || '—'}</Text></View>
+          <View style={styles.row}><Text style={styles.label}>Finca:</Text><Text style={styles.value}>{formulario.beneficiario.finca || '—'}</Text></View>
+          {renderMiniRevision('Datos del Beneficiario')}
+        </View>
+
+        {/* Actividad (solo para formularios tradicionales) */}
+        {!(formulario as any).caracterizacion_nueva && (
+          <View style={styles.section}>
+            <Text style={styles.sectionTitle}>📋 Actividad Realizada</Text>
+
+            {/* Visita Técnica formato nuevo (v2): se muestran TODOS los ítems
+                del formulario. Antes solo salían descripción/observaciones/
+                recomendaciones, así que los compromisos adquiridos y la
+                valoración del cumplimiento quedaban invisibles en el detalle. */}
+            {esVisitaTecnicaV2(formulario.actividad) ? (
+              <>
+                {!!formulario.actividad.no_identificacion && (
+                  <View style={styles.row}>
+                    <Text style={styles.label}>Identificación:</Text>
+                    <Text style={styles.value}>{formulario.actividad.no_identificacion}</Text>
+                  </View>
+                )}
+                {!!formulario.actividad.objetivo && (
+                  <BloqueTexto titulo="Objetivo" texto={formulario.actividad.objetivo} />
+                )}
+                {!!formulario.actividad.descripcion && (
+                  <BloqueTexto titulo="Descripción de la visita" texto={formulario.actividad.descripcion} />
+                )}
+                {!!formulario.actividad.seguimiento_compromisos && (
+                  <BloqueTexto titulo="Seguimiento de compromisos" texto={formulario.actividad.seguimiento_compromisos} />
+                )}
+                {!!formulario.actividad.valoracion_cumplimiento && (
+                  <View style={styles.row}>
+                    <Text style={styles.label}>Valoración cumplimiento:</Text>
+                    <Text style={styles.value}>{formulario.actividad.valoracion_cumplimiento}%</Text>
+                  </View>
+                )}
+                {!!formulario.actividad.recomendaciones && (
+                  <BloqueTexto titulo="Recomendaciones" texto={formulario.actividad.recomendaciones} />
+                )}
+                {!!formulario.actividad.area_intervencion && (
+                  <View style={styles.row}>
+                    <Text style={styles.label}>Área a intervenir:</Text>
+                    <Text style={styles.value}>{formulario.actividad.area_intervencion} ha</Text>
+                  </View>
+                )}
+                {(formulario.actividad.compromisos_siguiente_visita || []).length > 0 && (
+                  <View style={styles.bloqueTexto}>
+                    <Text style={styles.bloqueTextoLabel}>Compromisos próxima visita</Text>
+                    {(formulario.actividad.compromisos_siguiente_visita || []).map((compromiso, idx) => (
+                      <Text key={`${idx}-${compromiso}`} style={styles.listaItem}>• {compromiso}</Text>
+                    ))}
+                  </View>
+                )}
+                {!!formulario.actividad.observaciones && (
+                  <BloqueTexto titulo="Observaciones" texto={formulario.actividad.observaciones} />
+                )}
+              </>
+            ) : (
+              <>
+                <View style={styles.row}><Text style={styles.label}>Descripción:</Text><Text style={styles.value}>{formulario.actividad.descripcion || '—'}</Text></View>
+                <View style={styles.row}><Text style={styles.label}>Observaciones:</Text><Text style={styles.value}>{formulario.actividad.observaciones || '—'}</Text></View>
+                <View style={styles.row}><Text style={styles.label}>Recomendaciones:</Text><Text style={styles.value}>{formulario.actividad.recomendaciones || '—'}</Text></View>
+              </>
+            )}
+            {renderMiniRevision('Actividad Realizada')}
+          </View>
+        )}
+
+        {/* Sección "📍 Ubicación" (coordenadas GPS del formulario) OCULTA a
+            propósito en el Detalle de formulario: se retiró por solicitud
+            para que ningún rol la vea. Las coordenadas siguen guardándose
+            y siguen viajando al PDF/informes; solo no se muestran aquí.
+            Si algún día se necesita reactivar, recuperar el bloque desde el
+            historial de Git (buscaba `formulario.coordenadas.latitud`). */}
+
+        {/* Fecha */}
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>⏱️ Fechas</Text>
+          <View style={styles.row}><Text style={styles.label}>Creado:</Text><Text style={styles.value}>{formatFecha(formulario.created_at)}</Text></View>
+          <View style={styles.row}><Text style={styles.label}>Actualizado:</Text><Text style={styles.value}>{formatFecha(formulario.updated_at)}</Text></View>
+          {renderMiniRevision('Fechas')}
+        </View>
+
+        {/* ───── Evidencias al FINAL del detalle ─────
+            Resumen, miniaturas de fotos/videos, firmas y documentos de la
+            finca. Antes aparecían al principio (justo después de la encuesta)
+            y empujaban los datos del formulario hacia abajo; ahora cierran la
+            pantalla, después de la información y las fechas. */}
         {/* Resumen de evidencias */}
         <View style={styles.evidenciasSummary}>
           <Text style={styles.evidenciasSummaryTitle}>📸 Evidencias ({evidenciaCount})</Text>
@@ -1962,43 +1956,85 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
         </View>
 
         {/* Fotos/Videos en miniatura */}
-        {evidencias.length > 0 && (
-          <View style={styles.fotosSection}>
+        <View style={styles.fotosSection}>
+          <View style={styles.evidenciasHeaderRow}>
             <Text style={styles.sectionTitle}>
               Evidencias capturadas ({evidencias.length})
               {evidenciasRemotas ? ' · desde el servidor' : ''}
             </Text>
+            {puedeAgregarEvidencias && (
+              <TouchableOpacity
+                style={styles.agregarEvidenciaBtn}
+                onPress={elegirTipoEvidencia}
+                activeOpacity={0.8}
+                accessibilityRole="button"
+                accessibilityLabel="Agregar evidencia"
+              >
+                <Text style={styles.agregarEvidenciaBtnText}>＋ Agregar</Text>
+              </TouchableOpacity>
+            )}
+          </View>
+          {evidencias.length === 0 ? (
+            <Text style={styles.evidenciasVacias}>
+              No hay evidencias registradas en esta visita.
+              {puedeAgregarEvidencias ? ' Usa «＋ Agregar» para capturar una foto o video.' : ''}
+            </Text>
+          ) : (
             <ScrollView horizontal showsHorizontalScrollIndicator={false}>
               {evidencias.map((foto) => (
-                <TouchableOpacity
-                  key={foto.id}
-                  style={styles.fotoThumbContainer}
-                  // Los videos abren el reproductor; las fotos, el visor ampliado
-                  onPress={() =>
-                    foto.tipo === 'video'
-                      ? setVideoPreview(foto)
-                      : setFotoPreview(foto)
-                  }
-                  activeOpacity={0.8}
-                >
-                  {foto.tipo === 'video' ? (
-                    <View style={styles.videoThumb}>
-                      <Text style={styles.videoThumbIcon}>▶️</Text>
-                    </View>
-                  ) : (
-                    <Image
-                      source={fuenteEvidencia(foto.uri)}
-                      style={styles.fotoThumb}
-                    />
+                <View key={foto.id} style={styles.fotoThumbContainer}>
+                  <TouchableOpacity
+                    style={styles.fotoThumbTouchable}
+                    // Los videos abren el reproductor; las fotos, el visor ampliado
+                    onPress={() =>
+                      foto.tipo === 'video'
+                        ? setVideoPreview(foto)
+                        : setFotoPreview(foto)
+                    }
+                    activeOpacity={0.8}
+                  >
+                    {foto.tipo === 'video' ? (
+                      <View style={styles.videoThumb}>
+                        <Text style={styles.videoThumbIcon}>▶️</Text>
+                      </View>
+                    ) : (
+                      <Image
+                        source={fuenteEvidencia(foto.uri)}
+                        style={styles.fotoThumb}
+                      />
+                    )}
+                    {foto.tipo === 'video' && (
+                      <Text style={styles.videoThumbLabel}>🎥</Text>
+                    )}
+                  </TouchableOpacity>
+
+                  {/* ✕ Eliminar evidencia — admin/coordinador (cualquiera) y
+                      el técnico dueño de la visita. Va fuera del
+                      TouchableOpacity de la miniatura a propósito: así
+                      tocarla NO abre la foto ampliada. */}
+                  {puedeEliminarEvidencias && (
+                    <TouchableOpacity
+                      style={styles.fotoDeleteBtn}
+                      onPress={() => confirmarEliminarEvidencia(foto)}
+                      disabled={eliminandoEvidenciaId === foto.id}
+                      hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                      accessibilityRole="button"
+                      accessibilityLabel={
+                        foto.tipo === 'video' ? 'Eliminar video' : 'Eliminar foto'
+                      }
+                    >
+                      {eliminandoEvidenciaId === foto.id ? (
+                        <ActivityIndicator size="small" color={COLORS.surface} />
+                      ) : (
+                        <Text style={styles.fotoDeleteBtnText}>✕</Text>
+                      )}
+                    </TouchableOpacity>
                   )}
-                  {foto.tipo === 'video' && (
-                    <Text style={styles.videoThumbLabel}>🎥</Text>
-                  )}
-                </TouchableOpacity>
+                </View>
               ))}
             </ScrollView>
-          </View>
-        )}
+          )}
+        </View>
         {renderMiniRevision('Evidencias')}
 
         {/* Firmas recolectadas — antes solo se contaban (✓/✗) en el resumen
@@ -2085,12 +2121,17 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
         )}
 
         {/* Documentos de la finca — visible para todos los roles, no solo
-            el técnico que los subió. Antes no existía ninguna forma de que
-            supervisión revisara los documentos de una visita. */}
-        {documentos.length > 0 && (
-          <View style={styles.fotosSection}>
-            <Text style={styles.sectionTitle}>📎 Documentos de la finca ({documentos.length})</Text>
-            {documentos.map((doc) => (
+            el técnico que los subió. Se combinan los documentos vinculados a
+            este formulario con los del beneficiario (compartidos entre
+            visitas de la misma finca). */}
+        <View style={styles.fotosSection}>
+          <Text style={styles.sectionTitle}>📎 Documentos de la finca ({documentos.length})</Text>
+          {documentos.length === 0 ? (
+            <Text style={styles.evidenciasVacias}>
+              No hay documentos de finca registrados para este beneficiario.
+            </Text>
+          ) : (
+            documentos.map((doc) => (
               <TouchableOpacity
                 key={doc.id}
                 style={styles.documentoItem}
@@ -2112,82 +2153,122 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
                   {abriendoDocumentoId === doc.id ? '…' : '⬇️'}
                 </Text>
               </TouchableOpacity>
-            ))}
-            {renderMiniRevision('Documentos')}
-          </View>
-        )}
-
-        {/* Datos del Técnico */}
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>👤 Datos del Técnico</Text>
-          <View style={styles.row}><Text style={styles.label}>Nombre:</Text><Text style={styles.value}>{formulario.tecnico?.nombre || '—'}</Text></View>
-          <View style={styles.row}><Text style={styles.label}>Cédula:</Text><Text style={styles.value}>{formulario.tecnico.cedula}</Text></View>
-          <View style={styles.row}><Text style={styles.label}>Teléfono:</Text><Text style={styles.value}>{formulario.tecnico.telefono || '—'}</Text></View>
-          <View style={styles.row}><Text style={styles.label}>Email:</Text><Text style={styles.value}>{formulario.tecnico.email || '—'}</Text></View>
-          {renderMiniRevision('Datos del Técnico')}
+            ))
+          )}
+          {renderMiniRevision('Documentos')}
         </View>
 
-        {/* Datos del Beneficiario */}
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>👥 Datos del Beneficiario</Text>
-          <View style={styles.row}><Text style={styles.label}>Nombre:</Text><Text style={styles.value}>{formulario.beneficiario?.nombre || '—'}</Text></View>
-          <View style={styles.row}><Text style={styles.label}>Cédula:</Text><Text style={styles.value}>{formulario.beneficiario.cedula || '—'}</Text></View>
-          <View style={styles.row}><Text style={styles.label}>Teléfono:</Text><Text style={styles.value}>{formulario.beneficiario.telefono || '—'}</Text></View>
-          <View style={styles.row}><Text style={styles.label}>Depto:</Text><Text style={styles.value}>{formulario.beneficiario.departamento || '—'}</Text></View>
-          <View style={styles.row}><Text style={styles.label}>Municipio:</Text><Text style={styles.value}>{formulario.beneficiario.municipio || '—'}</Text></View>
-          <View style={styles.row}><Text style={styles.label}>Vereda:</Text><Text style={styles.value}>{formulario.beneficiario.vereda || '—'}</Text></View>
-          <View style={styles.row}><Text style={styles.label}>Finca:</Text><Text style={styles.value}>{formulario.beneficiario.finca || '—'}</Text></View>
-          {renderMiniRevision('Datos del Beneficiario')}
-        </View>
-
-        {/* Actividad (solo para formularios tradicionales) */}
-        {!(formulario as any).caracterizacion_nueva && (
-          <View style={styles.section}>
-            <Text style={styles.sectionTitle}>📋 Actividad Realizada</Text>
-            <View style={styles.row}><Text style={styles.label}>Descripción:</Text><Text style={styles.value}>{formulario.actividad.descripcion || '—'}</Text></View>
-            <View style={styles.row}><Text style={styles.label}>Observaciones:</Text><Text style={styles.value}>{formulario.actividad.observaciones || '—'}</Text></View>
-            <View style={styles.row}><Text style={styles.label}>Recomendaciones:</Text><Text style={styles.value}>{formulario.actividad.recomendaciones || '—'}</Text></View>
-            {renderMiniRevision('Actividad Realizada')}
+        {/* Sección final en modo "Revisión en Campo": el formulario de
+            Seguimiento de Coordinación/Interventoría (campos + Cuadro de
+            Evidencias + Ubicación), el mismo componente que usa la pantalla
+            de Seguimiento. Va al final de todo el detalle, después de Fechas,
+            y funciona sin conexión (se guarda en el dispositivo). */}
+        {mostrarSeguimientoCampo && (
+          <View style={styles.seccionSeguimientoCampo}>
+            <SeguimientoCoordinacionSection
+              embedded
+              formularioId={formulario.id}
+              beneficiarioCedula={formulario.beneficiario?.cedula}
+              beneficiarioNombre={formulario.beneficiario?.nombre}
+            />
           </View>
-        )}
-
-        {/* Coordenadas */}
-        {formulario.coordenadas && (
-          <View style={styles.section}>
-            <Text style={styles.sectionTitle}>📍 Ubicación</Text>
-            {(formulario.coordenadas.lugar || formulario.clima?.actual?.ubicacion?.nombre) && (
-              <View style={styles.row}>
-                <Text style={styles.label}>Lugar:</Text>
-                <Text style={styles.value}>
-                  {formulario.coordenadas.lugar || formulario.clima?.actual?.ubicacion?.nombre}
-                </Text>
-              </View>
-            )}
-            <View style={styles.row}><Text style={styles.label}>Latitud:</Text><Text style={styles.value}>{formulario.coordenadas?.latitud?.toFixed(6) ?? '—'}</Text></View>
-            <View style={styles.row}><Text style={styles.label}>Longitud:</Text><Text style={styles.value}>{formulario.coordenadas?.longitud?.toFixed(6) ?? '—'}</Text></View>
-            {formulario.coordenadas.altitud && (
-              <View style={styles.row}><Text style={styles.label}>Altitud:</Text><Text style={styles.value}>{formulario.coordenadas?.altitud?.toFixed(1) ?? '—'} m</Text></View>
-            )}
-            {renderMiniRevision('Ubicación')}
-          </View>
-        )}
-
-        {/* Fecha */}
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>⏱️ Fechas</Text>
-          <View style={styles.row}><Text style={styles.label}>Creado:</Text><Text style={styles.value}>{formatFecha(formulario.created_at)}</Text></View>
-          <View style={styles.row}><Text style={styles.label}>Actualizado:</Text><Text style={styles.value}>{formatFecha(formulario.updated_at)}</Text></View>
-          {renderMiniRevision('Fechas')}
-        </View>
-
-        {/* Sección final del revisor: evidencia propia, firma dual y
-            georeferencia puntual — cierra la revisión con visto bueno global.
-            Solo en modo "Revisión en campo"; va al final de todo el detalle,
-            después de Fechas. */}
-        {mostrarSeccionFinalRevisor && (
-          <SeccionFinalRevisor formulario={formulario} revisiones={revisiones} recargarRevisiones={recargarRevisiones} />
         )}
       </ScrollView>
+
+      <Modal
+        visible={!!respuestaEditando}
+        transparent
+        animationType="fade"
+        onRequestClose={() => !guardandoRespuesta && setRespuestaEditando(null)}
+      >
+        <View style={styles.adminModalOverlay}>
+          <View style={styles.adminModalCard}>
+            <Text style={styles.adminModalTitle}>
+              {respuestaEditando?.modo === 'corregir' ? 'Corregir respuesta' : 'Completar respuesta'}
+            </Text>
+            <Text style={styles.adminModalQuestion}>{respuestaEditando?.texto}</Text>
+
+            {respuestaEditando?.espec?.tipo === 'gps' ? (
+              <CapturaGPSPrecisa
+                label={respuestaEditando?.texto || 'Coordenada'}
+                latitud={gpsCaptura?.lat}
+                longitud={gpsCaptura?.lon}
+                altitud={gpsCaptura?.alt}
+                precision={gpsCaptura?.precision}
+                ubicacionTexto={ubicacionGPSTexto}
+                onCapture={(lat, lon, alt, precision) => setGpsCaptura({ lat, lon, alt, precision })}
+              />
+            ) : respuestaEditando?.espec?.tipo === 'seleccion' || respuestaEditando?.espec?.tipo === 'multiple' ? (
+              <>
+                {respuestaEditando?.espec?.tipo === 'multiple' && (
+                  <Text style={styles.adminOpcionHint}>Puedes marcar varias opciones.</Text>
+                )}
+                <ScrollView
+                  style={styles.adminOpcionesScroll}
+                  keyboardShouldPersistTaps="handled"
+                  nestedScrollEnabled
+                >
+                  {(respuestaEditando?.espec?.opciones || []).map((opt) => {
+                    const esMultiple = respuestaEditando?.espec?.tipo === 'multiple';
+                    const seleccionado = esMultiple
+                      ? valorRespuesta.split(', ').filter(Boolean).includes(opt)
+                      : valorRespuesta === opt;
+                    return (
+                      <TouchableOpacity
+                        key={opt}
+                        style={[styles.adminOpcionRow, seleccionado && styles.adminOpcionRowActiva]}
+                        activeOpacity={0.7}
+                        onPress={() => (esMultiple ? toggleValorMultiple(opt) : setValorRespuesta(opt))}
+                      >
+                        <Text style={[styles.adminOpcionMarca, seleccionado && styles.adminOpcionMarcaActiva]}>
+                          {esMultiple ? (seleccionado ? '☑' : '☐') : seleccionado ? '◉' : '○'}
+                        </Text>
+                        <Text style={[styles.adminOpcionTexto, seleccionado && styles.adminOpcionTextoActivo]}>
+                          {opt}
+                        </Text>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </ScrollView>
+              </>
+            ) : (
+              <TextInput
+                style={styles.adminRespuestaInput}
+                value={valorRespuesta}
+                onChangeText={setValorRespuesta}
+                placeholder="Escribe la respuesta"
+                placeholderTextColor={COLORS.textLight}
+                multiline={(respuestaEditando?.espec?.keyboardType ?? 'default') === 'default'}
+                keyboardType={respuestaEditando?.espec?.keyboardType || 'default'}
+                autoFocus
+              />
+            )}
+
+            <View style={styles.adminModalButtons}>
+              <TouchableOpacity
+                style={[styles.adminModalButton, styles.adminCancelButton]}
+                onPress={() => {
+                  setRespuestaEditando(null);
+                  setGpsCaptura(null);
+                }}
+                disabled={guardandoRespuesta}
+              >
+                <Text style={styles.adminCancelText}>Cancelar</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.adminModalButton, styles.adminSaveButton]}
+                onPress={respuestaEditando?.espec?.tipo === 'gps' ? guardarRespuestaGPS : guardarRespuestaAdmin}
+                disabled={
+                  guardandoRespuesta ||
+                  (respuestaEditando?.espec?.tipo === 'gps' && (!gpsCaptura?.lat || !gpsCaptura?.lon))
+                }
+              >
+                <Text style={styles.adminSaveText}>{guardandoRespuesta ? 'Guardando...' : 'Guardar'}</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
 
       {/* 📄 Visor PDF embebido */}
       {showPdf && pdfUri && (
@@ -2262,6 +2343,19 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
                   : ''}
               </Text>
               <Text style={styles.fotoModalHint}>Toca para cerrar</Text>
+              {puedeEliminarEvidencias && (
+                <TouchableOpacity
+                  style={styles.fotoModalDeleteBtn}
+                  onPress={() => confirmarEliminarEvidencia(fotoPreview)}
+                  disabled={eliminandoEvidenciaId === fotoPreview.id}
+                  accessibilityRole="button"
+                  accessibilityLabel="Eliminar foto"
+                >
+                  <Text style={styles.fotoModalDeleteText}>
+                    {eliminandoEvidenciaId === fotoPreview.id ? 'Eliminando…' : '🗑️ Eliminar foto'}
+                  </Text>
+                </TouchableOpacity>
+              )}
             </>
           )}
         </Pressable>
@@ -2335,6 +2429,13 @@ const styles = StyleSheet.create({
   content: {
     padding: SPACING.md,
   },
+  /** Envuelve el formulario de Seguimiento incrustado al final del detalle en modo campo. */
+  seccionSeguimientoCampo: {
+    marginTop: SPACING.xl,
+    paddingTop: SPACING.md,
+    borderTopWidth: 1,
+    borderTopColor: COLORS.divider,
+  },
   statusBar: {
     flexDirection: 'row',
     justifyContent: 'space-between',
@@ -2379,6 +2480,30 @@ const styles = StyleSheet.create({
   fotosSection: {
     marginBottom: SPACING.md,
   },
+  /** Fila del título de evidencias con el botón "＋ Agregar" a la derecha */
+  evidenciasHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  agregarEvidenciaBtn: {
+    backgroundColor: COLORS.primary,
+    paddingHorizontal: SPACING.sm,
+    paddingVertical: SPACING.xs,
+    borderRadius: BORDER_RADIUS.sm,
+    marginBottom: SPACING.xs,
+  },
+  agregarEvidenciaBtnText: {
+    color: COLORS.surface,
+    fontSize: FONTS.sizes.xs,
+    fontWeight: FONTS.weights.bold,
+  },
+  evidenciasVacias: {
+    fontSize: FONTS.sizes.xs,
+    color: COLORS.textSecondary,
+    fontStyle: 'italic',
+    paddingVertical: SPACING.sm,
+  },
   sectionTitle: {
     fontSize: FONTS.sizes.sm,
     fontWeight: FONTS.weights.bold,
@@ -2407,6 +2532,136 @@ const styles = StyleSheet.create({
     fontStyle: 'italic',
     fontWeight: FONTS.weights.regular,
   },
+  preguntaValorRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    flexWrap: 'wrap',
+  },
+  preguntaValorFlex: {
+    flex: 1,
+    marginRight: SPACING.sm,
+  },
+  adminEditarBtn: {
+    backgroundColor: COLORS.roleAdmin + '12',
+    borderWidth: 1,
+    borderColor: COLORS.roleAdmin,
+    borderRadius: BORDER_RADIUS.sm,
+    paddingVertical: SPACING.xs,
+    paddingHorizontal: SPACING.sm,
+  },
+  adminEditarBtnText: {
+    color: COLORS.roleAdmin,
+    fontSize: FONTS.sizes.xs,
+    fontWeight: FONTS.weights.semibold,
+  },
+  adminModalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    justifyContent: 'center',
+    padding: SPACING.lg,
+  },
+  adminModalCard: {
+    backgroundColor: COLORS.surface,
+    borderRadius: BORDER_RADIUS.lg,
+    padding: SPACING.lg,
+  },
+  adminModalTitle: {
+    fontSize: FONTS.sizes.lg,
+    fontWeight: FONTS.weights.bold,
+    color: COLORS.textPrimary,
+    marginBottom: SPACING.xs,
+  },
+  adminModalQuestion: {
+    fontSize: FONTS.sizes.sm,
+    color: COLORS.textSecondary,
+    marginBottom: SPACING.sm,
+  },
+  adminRespuestaInput: {
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    borderRadius: BORDER_RADIUS.md,
+    padding: SPACING.sm,
+    minHeight: 80,
+    textAlignVertical: 'top',
+    fontSize: FONTS.sizes.md,
+    color: COLORS.textPrimary,
+    marginBottom: SPACING.md,
+  },
+  adminOpcionesScroll: {
+    maxHeight: 280,
+    marginBottom: SPACING.md,
+  },
+  adminOpcionRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: SPACING.sm,
+    paddingHorizontal: SPACING.sm,
+    borderRadius: BORDER_RADIUS.sm,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    marginBottom: SPACING.xs,
+  },
+  adminOpcionRowActiva: {
+    borderColor: COLORS.roleAdmin,
+    backgroundColor: COLORS.roleAdmin + '12',
+  },
+  adminOpcionMarca: {
+    fontSize: FONTS.sizes.md,
+    color: COLORS.textLight,
+    marginRight: SPACING.sm,
+  },
+  adminOpcionMarcaActiva: {
+    color: COLORS.roleAdmin,
+  },
+  adminOpcionTexto: {
+    flex: 1,
+    fontSize: FONTS.sizes.sm,
+    color: COLORS.textPrimary,
+  },
+  adminOpcionTextoActivo: {
+    fontWeight: FONTS.weights.semibold,
+  },
+  adminOpcionHint: {
+    fontSize: FONTS.sizes.xs,
+    color: COLORS.textSecondary,
+    marginBottom: SPACING.xs,
+  },
+  adminModalButtons: {
+    flexDirection: 'row',
+    gap: SPACING.sm,
+  },
+  adminModalButton: {
+    flex: 1,
+    borderRadius: BORDER_RADIUS.md,
+    paddingVertical: SPACING.sm,
+    alignItems: 'center',
+  },
+  adminCancelButton: {
+    backgroundColor: COLORS.divider,
+  },
+  adminSaveButton: {
+    backgroundColor: COLORS.roleAdmin,
+  },
+  adminCancelText: {
+    color: COLORS.textPrimary,
+    fontWeight: FONTS.weights.semibold,
+  },
+  adminSaveText: {
+    color: '#fff',
+    fontWeight: FONTS.weights.semibold,
+  },
+  verEnMapsBtn: {
+    backgroundColor: COLORS.primary,
+    borderRadius: BORDER_RADIUS.sm,
+    paddingVertical: SPACING.xs,
+    paddingHorizontal: SPACING.sm,
+  },
+  verEnMapsBtnText: {
+    color: '#fff',
+    fontSize: FONTS.sizes.xs,
+    fontWeight: FONTS.weights.semibold,
+  },
   preguntaObs: {
     fontSize: FONTS.sizes.xs,
     color: COLORS.textSecondary,
@@ -2417,12 +2672,53 @@ const styles = StyleSheet.create({
     width: 100,
     height: 100,
     borderRadius: BORDER_RADIUS.sm,
-    marginRight: SPACING.sm,
     backgroundColor: COLORS.surfaceAlt,
   },
   fotoThumbContainer: {
     position: 'relative',
     marginRight: SPACING.sm,
+  },
+  /** Zona táctil de la miniatura (abre el visor) */
+  fotoThumbTouchable: {
+    width: 100,
+    height: 100,
+  },
+  /**
+   * "✕" para eliminar la evidencia — solo admin y coordinador.
+   * Vive FUERA del TouchableOpacity que abre el visor, para que tocarla no
+   * abra la foto además de borrarla.
+   */
+  fotoDeleteBtn: {
+    position: 'absolute',
+    top: 2,
+    right: 2,
+    width: 26,
+    height: 26,
+    borderRadius: 13,
+    backgroundColor: COLORS.error,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 2,
+    borderColor: COLORS.surface,
+  },
+  fotoDeleteBtnText: {
+    color: COLORS.surface,
+    fontSize: 13,
+    fontWeight: '700',
+    lineHeight: 15,
+  },
+  /** Botón "Eliminar" del visor ampliado */
+  fotoModalDeleteBtn: {
+    marginTop: SPACING.md,
+    backgroundColor: COLORS.error,
+    paddingHorizontal: SPACING.lg,
+    paddingVertical: SPACING.sm,
+    borderRadius: BORDER_RADIUS.md,
+  },
+  fotoModalDeleteText: {
+    color: COLORS.surface,
+    fontSize: FONTS.sizes.sm,
+    fontWeight: '700',
   },
   fotoModalOverlay: {
     flex: 1,
@@ -2535,6 +2831,23 @@ const styles = StyleSheet.create({
     paddingVertical: 3,
     borderBottomWidth: 1,
     borderBottomColor: COLORS.divider,
+  },
+  /** Bloque de texto largo (etiqueta arriba, contenido debajo) — ítems v2 */
+  bloqueTexto: {
+    paddingVertical: SPACING.xs,
+    borderBottomWidth: 1,
+    borderBottomColor: COLORS.divider,
+  },
+  bloqueTextoLabel: {
+    fontSize: FONTS.sizes.sm,
+    color: COLORS.textSecondary,
+    fontWeight: FONTS.weights.medium,
+    marginBottom: 2,
+  },
+  listaItem: {
+    fontSize: FONTS.sizes.sm,
+    color: COLORS.textPrimary,
+    lineHeight: 18,
   },
   label: {
     fontSize: FONTS.sizes.sm,

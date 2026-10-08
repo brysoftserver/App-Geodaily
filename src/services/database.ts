@@ -327,7 +327,7 @@ export const saveFormularioLocal = async (
 /**
  * Obtener formularios locales.
  * Si se provee usuarioId, filtra solo los de ese usuario (para técnicos).
- * Si no, devuelve todos (para supervisores/gerentes/admin).
+ * Si no, devuelve todos (para coordinadores/gerentes/admin).
  */
 export const getFormulariosLocales = async (usuarioId?: string): Promise<Formulario[]> => {
   const database = await ensureDb();
@@ -355,6 +355,97 @@ export const getFormulariosLocales = async (usuarioId?: string): Promise<Formula
   } catch (error) {
     console.error('[DB] Error al leer formularios:', error);
     return [];
+  }
+};
+
+/**
+ * Formularios que fueron purgados localmente porque el servidor dejó de
+ * devolverlos (papelera de seguridad — ver tabla `formularios_purgados`).
+ *
+ * Sirve para que "se me eliminó el formulario" siempre tenga vuelta atrás:
+ * el trabajo del técnico (datos, fotos, firmas) sigue en el teléfono hasta
+ * que la papelera se vacíe a mano.
+ */
+export const getFormulariosPurgados = async (): Promise<
+  { id: string; usuario_id: string | null; beneficiario_nombre: string | null; purgado_at: string; motivo: string | null }[]
+> => {
+  const database = await ensureDb();
+  if (!database) return [];
+  try {
+    return await database.getAllAsync(
+      `SELECT id, usuario_id, beneficiario_nombre, purgado_at, motivo
+         FROM formularios_purgados ORDER BY purgado_at DESC`
+    );
+  } catch {
+    return [];
+  }
+};
+
+/**
+ * Restaurar (total o parcialmente) la papelera de formularios purgados.
+ *
+ * ⚠️ Los formularios se restauran como **pendientes de sincronizar**
+ * (`sincronizado = 0`) a propósito: el servidor ya no los tiene, así que si
+ * se marcaran como sincronizados el próximo ciclo de sync los descartaría y
+ * volverían a desaparecer. Quedan visibles y con su evidencia, listos para
+ * reenviarse, en lugar de perderse.
+ */
+export const restaurarFormulariosPurgados = async (ids?: string[]): Promise<number> => {
+  const database = await ensureDb();
+  if (!database) return 0;
+  try {
+    const filas = await database.getAllAsync<{ id: string; payload_json: string }>(
+      ids && ids.length > 0
+        ? `SELECT id, payload_json FROM formularios_purgados WHERE id IN (${ids.map(() => '?').join(',')})`
+        : 'SELECT id, payload_json FROM formularios_purgados',
+      ids && ids.length > 0 ? ids : ([] as any)
+    );
+
+    let restaurados = 0;
+    for (const fila of filas) {
+      const row = parseSeguro<Record<string, any>>(fila.payload_json);
+      if (!row?.id) continue;
+      try {
+        // Las columnas se toman del propio snapshot (se guardó con `SELECT *`),
+        // así que nunca se pide una columna que no exista en esta versión del
+        // esquema. `sincronizado` se fuerza a 0 aparte.
+        const columnas = Object.keys(row).filter((k) => k !== 'sincronizado');
+        if (!columnas.includes('id')) continue;
+        const placeholders = columnas.map(() => '?').join(', ');
+        const valores = columnas.map((k) => (row[k] === undefined ? null : row[k]));
+        await database.runAsync(
+          `INSERT OR REPLACE INTO formularios (${columnas.join(', ')}, sincronizado)
+           VALUES (${placeholders}, 0)`,
+          valores
+        );
+        await database.runAsync('DELETE FROM formularios_purgados WHERE id = ?', [row.id]);
+        restaurados += 1;
+      } catch (e) {
+        console.warn('[DB] No se pudo restaurar el formulario purgado:', row.id, e);
+      }
+    }
+    if (restaurados > 0) {
+      console.log(`[DB] ${restaurados} formulario(s) restaurados desde la papelera`);
+    }
+    return restaurados;
+  } catch (e) {
+    console.warn('[DB] Error restaurando la papelera:', e);
+    return 0;
+  }
+};
+
+/**
+ * Vaciar la papelera. Solo debería llamarse con el usuario delante: es la
+ * única acción que hace definitivamente irrecuperable un formulario purgado.
+ */
+export const vaciarPapeleraFormularios = async (): Promise<void> => {
+  const database = await ensureDb();
+  if (!database) return;
+  try {
+    await database.runAsync('DELETE FROM formularios_purgados');
+    console.log('[DB] Papelera de formularios vaciada');
+  } catch (e) {
+    console.warn('[DB] Error vaciando la papelera:', e);
   }
 };
 
@@ -421,13 +512,13 @@ export const getEvidenciasPurgables = async (
 export const mergeFormulariosDelServidor = async (
   remotos: Formulario[],
   opts?: { usuarioId?: string }
-): Promise<number> => {
+): Promise<{ aplicados: number; purgados: string[] }> => {
   const database = await ensureDb();
   if (!database) {
     console.warn('[DB] BD local no disponible — merge omitido');
-    return 0;
+    return { aplicados: 0, purgados: [] };
   }
-  if (!remotos || remotos.length === 0) return 0;
+  if (!remotos || remotos.length === 0) return { aplicados: 0, purgados: [] };
 
   let aplicados = 0;
 
@@ -495,6 +586,7 @@ export const mergeFormulariosDelServidor = async (
     console.log(`[DB] ${aplicados} formulario(s) traídos del servidor`);
   }
 
+  const purgados: string[] = [];
   try {
     const idsRemotos = new Set(remotos.map((r) => r.id));
     const sincronizadosLocales = await database.getAllAsync<{ id: string }>(
@@ -503,21 +595,118 @@ export const mergeFormulariosDelServidor = async (
         : 'SELECT id FROM formularios WHERE sincronizado = 1',
       opts?.usuarioId ? [opts.usuarioId] : ([] as any)
     );
-    let purgados = 0;
-    for (const row of sincronizadosLocales) {
-      if (!idsRemotos.has(row.id)) {
-        await database.runAsync('DELETE FROM formularios WHERE id = ?', [row.id]);
-        purgados++;
+
+    const habriaQuePurgar = sincronizadosLocales.filter((row) => !idsRemotos.has(row.id));
+
+    // 🛡️ FRENO DE SEGURIDAD CONTRA RESPUESTAS PARCIALES.
+    //
+    // Esta purga asume que `remotos` es el conjunto COMPLETO de formularios
+    // del usuario. Si esa suposición se rompe (una respuesta truncada, un
+    // `limit`/filtro de fechas que se agregue al endpoint, un rol que cambia
+    // de alcance, un error de red que devuelve un subconjunto…), la app
+    // borraría de golpe montones de formularios legítimos creyendo que "ya
+    // no existen en el servidor".
+    //
+    // Cuando la desaparición es masiva (más de la mitad de lo local, y al
+    // menos 5 registros) es mucho más probable que la lista remota esté
+    // incompleta que que alguien borrara todo. En ese caso NO se purga: solo
+    // se avisa por consola. Preferimos dejar filas "fantasma" (que se pueden
+    // reclasificar) antes que borrar el trabajo de un técnico.
+    const totalLocalSync = sincronizadosLocales.length;
+    const proporcionDesaparicion =
+      totalLocalSync > 0 ? habriaQuePurgar.length / totalLocalSync : 0;
+    const sospechoso =
+      habriaQuePurgar.length >= 5 && proporcionDesaparicion > 0.5 && remotos.length < totalLocalSync;
+
+    if (sospechoso) {
+      console.warn(
+        `[DB] ⚠️ Purga CANCELADA por seguridad: el servidor devolvió ${remotos.length} ` +
+          `formulario(s) pero hay ${totalLocalSync} locales sincronizados ` +
+          `(${habriaQuePurgar.length} desaparecerían). Se conservan para no perder trabajo de campo.`
+      );
+    } else {
+      // La tabla se crea también en runMigrations, pero aquella migración va
+      // dentro de un bloque con timeout: si el teléfono está lento y el bloque
+      // se corta antes del final, aquí no habría papelera. Es idempotente y
+      // barata, así que se asegura justo antes de usarla.
+      try {
+        await database.execAsync(`
+          CREATE TABLE IF NOT EXISTS formularios_purgados (
+            id TEXT PRIMARY KEY,
+            payload_json TEXT NOT NULL,
+            usuario_id TEXT,
+            usuario_nombre TEXT,
+            beneficiario_nombre TEXT,
+            purgado_at TEXT NOT NULL,
+            motivo TEXT
+          );
+        `);
+      } catch (e) {
+        console.warn('[DB] No se pudo asegurar la papelera de formularios:', e);
       }
-    }
-    if (purgados > 0) {
-      console.log(`[DB] ${purgados} formulario(s) locales purgados (ya no existen en el servidor)`);
+
+      for (const row of habriaQuePurgar) {
+        // 📦 Copia de seguridad ANTES de borrar (ver tabla `formularios_purgados`).
+        //
+        // Regla de oro: si NO se pudo guardar la copia, NO se borra. Es mejor
+        // dejar una fila "fantasma" en la lista que perder el trabajo de campo
+        // sin posibilidad de recuperarlo.
+        let respaldado = false;
+        try {
+          const completa = await database.getFirstAsync<Record<string, any>>(
+            'SELECT * FROM formularios WHERE id = ?',
+            [row.id]
+          );
+          if (!completa) {
+            // La fila ya no está: no hay nada que perder ni que respaldar.
+            respaldado = true;
+          } else {
+            const tecnico = parseSeguro(completa.tecnico_json) as any;
+            const beneficiario = parseSeguro(completa.beneficiario_json) as any;
+            await database.runAsync(
+              `INSERT OR REPLACE INTO formularios_purgados
+                 (id, payload_json, usuario_id, usuario_nombre, beneficiario_nombre, purgado_at, motivo)
+               VALUES (?, ?, ?, ?, ?, ?, ?)`,
+              [
+                row.id,
+                JSON.stringify(completa),
+                completa.usuario_id || null,
+                tecnico?.nombre || null,
+                beneficiario?.nombre || null,
+                new Date().toISOString(),
+                'El servidor ya no lo devolvía en la lista de formularios',
+              ]
+            );
+            respaldado = true;
+          }
+        } catch (e) {
+          console.warn('[DB] No se pudo respaldar el formulario purgado:', row.id, e);
+        }
+
+        if (!respaldado) {
+          console.warn(
+            `[DB] 🛡️ No se purga ${row.id}: no se pudo guardar la copia de seguridad. ` +
+              'Se conserva el formulario en el teléfono.'
+          );
+          continue;
+        }
+
+        await database.runAsync('DELETE FROM sync_queue WHERE formulario_id = ?', [row.id]);
+        await database.runAsync('DELETE FROM formularios WHERE id = ?', [row.id]);
+        purgados.push(row.id);
+      }
+      if (purgados.length > 0) {
+        console.warn(
+          `[DB] ${purgados.length} formulario(s) locales purgados (ya no existen en el servidor). ` +
+            'Copia de seguridad guardada en `formularios_purgados`.'
+        );
+      }
     }
   } catch (e) {
     console.warn('[DB] Error purgando formularios eliminados del servidor:', e);
   }
 
-  return aplicados;
+  return { aplicados, purgados };
 };
 
 /**
@@ -553,6 +742,10 @@ export const deleteFormularioLocal = async (id: string): Promise<void> => {
     console.warn('[DB] BD local no disponible — no se eliminó el formulario local');
     return;
   }
+  // Sin esto, un formulario borrado que todavía tuviera una entrada
+  // pendiente en sync_queue quedaba huérfano ahí y el próximo ciclo de
+  // sync intentaba reenviarlo al servidor con su payload viejo.
+  await database.runAsync('DELETE FROM sync_queue WHERE formulario_id = ?', [id]);
   await database.runAsync('DELETE FROM formularios WHERE id = ?', [id]);
 };
 
@@ -562,8 +755,7 @@ export const deleteFormularioLocal = async (id: string): Promise<void> => {
 export const markAsSynced = async (id: string): Promise<void> => {
   const database = await ensureDb();
   if (!database) {
-    console.warn('[DB] BD local no disponible — markAsSynced ignorado');
-    return;
+    throw new Error('La base local no está disponible; el formulario sigue pendiente de sincronización');
   }
   await database.runAsync(
     'UPDATE formularios SET sincronizado = 1 WHERE id = ?',
@@ -577,8 +769,7 @@ export const markAsSynced = async (id: string): Promise<void> => {
 export const getPendingSyncForms = async (): Promise<Formulario[]> => {
   const database = await ensureDb();
   if (!database) {
-    console.warn('[DB] BD local no disponible — getPendingSyncForms retorna vacío');
-    return [];
+    throw new Error('La base local no está disponible; no se pudieron consultar formularios pendientes');
   }
   const rows = await database.getAllAsync<Record<string, any>>(
     'SELECT * FROM formularios WHERE sincronizado = 0 ORDER BY created_at ASC'
@@ -635,10 +826,29 @@ export const saveFotoLocal = async (
   tipoFormulario?: string
 ): Promise<void> => {
   const database = await ensureDb();
-  if (!database) return;
+  if (!database) throw new Error('La base de datos local no está disponible; la foto no quedó en la cola de sincronización');
+  // ON CONFLICT DO UPDATE (no INSERT OR REPLACE): un REPLACE borra la fila
+  // entera y la vuelve a crear, así que cualquier columna que no se liste
+  // aquí —sincronizada, archivo_id, ruta_remota— vuelve a su valor por
+  // defecto. Esta función se reinvoca a cada rato (autoguardado cada
+  // pocos segundos, "Guardar borrador") para TODAS las fotos del
+  // formulario, ya estén subidas o no, así que con REPLACE una foto ya
+  // subida quedaba marcada como pendiente otra vez en cada autoguardado
+  // — de ahí las subidas duplicadas que veíamos en el servidor. El UPDATE
+  // parcial preserva el estado de sincronización si ya existía.
   await database.runAsync(
-    `INSERT OR REPLACE INTO fotos_locales (id, formulario_id, uri, latitud, longitud, altitud, timestamp, beneficiario_cedula, beneficiario_nombre, tipo_formulario)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO fotos_locales (id, formulario_id, uri, latitud, longitud, altitud, timestamp, beneficiario_cedula, beneficiario_nombre, tipo_formulario)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(id) DO UPDATE SET
+       formulario_id = excluded.formulario_id,
+       uri = excluded.uri,
+       latitud = excluded.latitud,
+       longitud = excluded.longitud,
+       altitud = excluded.altitud,
+       timestamp = excluded.timestamp,
+       beneficiario_cedula = excluded.beneficiario_cedula,
+       beneficiario_nombre = excluded.beneficiario_nombre,
+       tipo_formulario = excluded.tipo_formulario`,
     [
       id,
       formularioId,
@@ -662,7 +872,7 @@ export const markFotoAsSynced = async (
   remoto?: { archivoId?: string; ruta?: string }
 ): Promise<void> => {
   const database = await ensureDb();
-  if (!database) return;
+  if (!database) throw new Error('La base local no está disponible; la foto sigue pendiente de sincronización');
   // Se guarda la referencia en MinIO (id de archivo y ruta) para poder
   // recuperar la evidencia desde otro dispositivo: la `uri` local apunta
   // al almacenamiento del teléfono que la capturó y allí no existe.
@@ -699,20 +909,26 @@ export const getEvidenciasPendientes = async (): Promise<{
   videos: Record<string, any>[];
 }> => {
   const database = await ensureDb();
-  if (!database) return { fotos: [], videos: [] };
+  if (!database) throw new Error('La base local no está disponible; no se pudieron consultar evidencias pendientes');
   try {
+    // Sin filtro por formulario_id: una evidencia capturada antes de que
+    // exista el formulario en curso se encola con formulario_id = '' (ver
+    // CamaraScreen.guardarEvidenciaInmediata). Antes se filtraba por
+    // `formulario_id != ''` y esas capturas quedaban fuera del barrido para
+    // siempre: el archivo existía en disco pero nunca se subía, y el técnico
+    // lo reportaba como "se borraron las fotos".
     const [fotos, videos] = await Promise.all([
       database.getAllAsync<Record<string, any>>(
-        "SELECT * FROM fotos_locales WHERE sincronizada = 0 AND formulario_id != ''"
+        'SELECT * FROM fotos_locales WHERE sincronizada = 0'
       ),
       database.getAllAsync<Record<string, any>>(
-        "SELECT * FROM videos_locales WHERE sincronizada = 0 AND formulario_id != ''"
+        'SELECT * FROM videos_locales WHERE sincronizada = 0'
       ),
     ]);
     return { fotos, videos };
   } catch (e) {
     console.warn('[DB] Error leyendo evidencias pendientes:', e);
-    return { fotos: [], videos: [] };
+    throw e;
   }
 };
 
@@ -727,10 +943,22 @@ export const saveVideoLocal = async (
   tipoFormulario?: string
 ): Promise<void> => {
   const database = await ensureDb();
-  if (!database) return;
+  if (!database) throw new Error('La base de datos local no está disponible; el video no quedó en la cola de sincronización');
+  // Ver nota en saveFotoLocal: UPDATE parcial en vez de INSERT OR REPLACE,
+  // para no resetear sincronizada/archivo_id/ruta_remota de un video que
+  // ya se había subido.
   await database.runAsync(
-    `INSERT OR REPLACE INTO videos_locales (id, formulario_id, uri, latitud, longitud, timestamp, beneficiario_cedula, beneficiario_nombre, tipo_formulario)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO videos_locales (id, formulario_id, uri, latitud, longitud, timestamp, beneficiario_cedula, beneficiario_nombre, tipo_formulario)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(id) DO UPDATE SET
+       formulario_id = excluded.formulario_id,
+       uri = excluded.uri,
+       latitud = excluded.latitud,
+       longitud = excluded.longitud,
+       timestamp = excluded.timestamp,
+       beneficiario_cedula = excluded.beneficiario_cedula,
+       beneficiario_nombre = excluded.beneficiario_nombre,
+       tipo_formulario = excluded.tipo_formulario`,
     [
       id,
       formularioId,
@@ -753,7 +981,7 @@ export const markVideoAsSynced = async (
   remoto?: { archivoId?: string; ruta?: string }
 ): Promise<void> => {
   const database = await ensureDb();
-  if (!database) return;
+  if (!database) throw new Error('La base local no está disponible; el video sigue pendiente de sincronización');
   await database.runAsync(
     'UPDATE videos_locales SET sincronizada = 1, archivo_id = ?, ruta_remota = ? WHERE id = ?',
     [remoto?.archivoId || null, remoto?.ruta || null, id]
@@ -810,7 +1038,7 @@ export const clearSyncQueueByFormId = async (
   formularioId: string
 ): Promise<void> => {
   const database = await ensureDb();
-  if (!database) return;
+  if (!database) throw new Error('La base local no está disponible; no se pudo limpiar la cola del formulario');
   await database.runAsync(
     'DELETE FROM sync_queue WHERE formulario_id = ?',
     [formularioId]
@@ -831,6 +1059,16 @@ export const resetSyncAttempts = async (formularioId: string): Promise<void> => 
 
 // --- Utilidades ---
 
+/** JSON.parse que nunca lanza (devuelve `fallback` si el texto es inválido). */
+const parseSeguro = <T>(texto: string | null | undefined, fallback: T | null = null): T | null => {
+  if (!texto) return fallback;
+  try {
+    return JSON.parse(texto) as T;
+  } catch {
+    return fallback;
+  }
+};
+
 const deserializeFormulario = (row: Record<string, any>): Formulario => {
   const safeJsonParse = (val: string | null, fallback: Record<string, any> = {}) => {
     if (!val) return fallback;
@@ -838,10 +1076,25 @@ const deserializeFormulario = (row: Record<string, any>): Formulario => {
     catch { return fallback; }
   };
 
+  const tecnico = safeJsonParse(row.tecnico_json, { nombre: '', cedula: '', telefono: '', email: '' });
+
   const form: Record<string, any> = {
     id: row.id,
     tipo: row.tipo,
-    tecnico: safeJsonParse(row.tecnico_json, { nombre: '', cedula: '', telefono: '', email: '' }),
+    // Dueño de la visita. Mismo criterio (y mismo orden) que valida el
+    // backend en PATCH /formularios/:id/respuesta: el snapshot
+    // `tecnico_json.usuario_id` manda — es la atribución vigente, la
+    // reescribe PUT /api/beneficiarios/:item/asignacion al reasignar el
+    // beneficiario, y POST /formularios/guardar la protege de snapshots
+    // viejos que lleguen de un dispositivo desactualizado. La columna
+    // `usuario_id` es el respaldo para filas antiguas sin snapshot.
+    //
+    // Antes esta clave se omitía al deserializar, así que el objeto
+    // `Formulario` llegaba a las pantallas SIN dueño y el botón
+    // «✎ Completar» nunca aparecía para ningún técnico, ni siquiera en los
+    // formularios propios.
+    usuario_id: tecnico.usuario_id || row.usuario_id || undefined,
+    tecnico,
     beneficiario: safeJsonParse(row.beneficiario_json, { nombre: '', cedula: '', telefono: '', departamento: '', municipio: '', vereda: '', finca: '' }),
     actividad: safeJsonParse(row.actividad_json, { descripcion: '', observaciones: '', recomendaciones: '' }),
     sociodemografico: row.sociodemografico_json ? safeJsonParse(row.sociodemografico_json, undefined) : undefined,
@@ -926,10 +1179,23 @@ export const saveDocumentoLocal = async (doc: DocumentoFinca): Promise<void> => 
   const database = await ensureDb();
   if (!database) throw new Error('BD local no disponible');
 
+  // Ver nota en saveFotoLocal: UPDATE parcial en vez de INSERT OR REPLACE,
+  // para no resetear `sincronizado` si el id ya existía (hoy esta función
+  // solo se llama una vez por documento nuevo, pero un REPLACE deja la
+  // trampa lista para el día que alguien la vuelva a invocar, como pasó
+  // con fotos/video).
   await database.runAsync(
-    `INSERT OR REPLACE INTO documentos_finca
+    `INSERT INTO documentos_finca
        (id, formulario_id, beneficiario_cedula, tipo, uri, nombre, descripcion, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(id) DO UPDATE SET
+       formulario_id = excluded.formulario_id,
+       beneficiario_cedula = excluded.beneficiario_cedula,
+       tipo = excluded.tipo,
+       uri = excluded.uri,
+       nombre = excluded.nombre,
+       descripcion = excluded.descripcion,
+       created_at = excluded.created_at`,
     [
       doc.id,
       doc.formulario_id,
@@ -946,26 +1212,22 @@ export const saveDocumentoLocal = async (doc: DocumentoFinca): Promise<void> => 
 /** Documentos de finca pendientes de subir al servidor */
 export const getDocumentosNoSincronizados = async (): Promise<DocumentoFinca[]> => {
   const database = await ensureDb();
-  if (!database) return [];
+  if (!database) throw new Error('La base local no está disponible; no se pudieron consultar documentos pendientes');
   try {
     return (await database.getAllAsync<any>(
       'SELECT * FROM documentos_finca WHERE sincronizado = 0 OR sincronizado IS NULL ORDER BY created_at ASC'
     )) as DocumentoFinca[];
   } catch (e) {
     console.warn('[DB] Error leyendo documentos pendientes:', e);
-    return [];
+    throw e;
   }
 };
 
 /** Marcar un documento de finca como subido al servidor */
 export const marcarDocumentoSincronizado = async (id: string): Promise<void> => {
   const database = await ensureDb();
-  if (!database) return;
-  try {
-    await database.runAsync('UPDATE documentos_finca SET sincronizado = 1 WHERE id = ?', [id]);
-  } catch (e) {
-    console.warn('[DB] No se pudo marcar el documento como sincronizado:', id, e);
-  }
+  if (!database) throw new Error('La base local no está disponible; el documento sigue pendiente de sincronización');
+  await database.runAsync('UPDATE documentos_finca SET sincronizado = 1 WHERE id = ?', [id]);
 };
 
 /** Eliminar un documento de finca */
@@ -1120,10 +1382,16 @@ export const runMigrations = async (): Promise<void> => {
       CREATE TABLE IF NOT EXISTS visitas_programadas (
         id TEXT PRIMARY KEY,
         usuario_id TEXT,
+        usuario_nombre TEXT,
         titulo TEXT,
         ubicacion TEXT,
         fecha TEXT NOT NULL,
         estado TEXT DEFAULT 'pendiente',
+        beneficiario_cedula TEXT,
+        beneficiario_nombre TEXT,
+        actividad_numero INTEGER,
+        vereda TEXT,
+        corregimiento TEXT,
         timestamp TEXT NOT NULL,
         sincronizado INTEGER DEFAULT 0
       );
@@ -1136,6 +1404,67 @@ export const runMigrations = async (): Promise<void> => {
         properties_json TEXT,
         cached_at TEXT NOT NULL,
         fuente TEXT DEFAULT 'overpass'
+      );
+
+      -- Seguimientos de Coordinación/Interventoría (offline-first, igual que
+      -- formularios): el rol superior puede registrar su acompañamiento en
+      -- campo sin conexión, junto al técnico, y se sincroniza solo cuando
+      -- vuelve la señal. Las fotos de evidencia van embebidas en fotos_json
+      -- (uri local + archivo_id una vez subidas), no en fotos_locales — un
+      -- seguimiento es una sola fila autocontenida, sin las demás columnas
+      -- que sí necesita un formulario completo del técnico.
+      CREATE TABLE IF NOT EXISTS seguimientos_locales (
+        id TEXT PRIMARY KEY,
+        autor_id TEXT,
+        autor_nombre TEXT,
+        autor_rol TEXT NOT NULL,
+        beneficiario_cedula TEXT,
+        beneficiario_nombre TEXT,
+        -- Visita (formulario del técnico) desde la cual se registró este
+        -- seguimiento — NULL cuando se hace desde la tarjeta general de
+        -- inicio, que no amarra ningún beneficiario.
+        formulario_id TEXT,
+        actividad TEXT NOT NULL DEFAULT '',
+        objetivo_visita TEXT,
+        descripcion_actividad TEXT,
+        observaciones TEXT,
+        fotos_json TEXT DEFAULT '[]',
+        videos_json TEXT DEFAULT '[]',
+        firma_beneficiario TEXT,
+        firma_autor TEXT,
+        geo_latitud REAL,
+        geo_longitud REAL,
+        geo_altitud REAL,
+        geo_precision REAL,
+        huella_beneficiario INTEGER DEFAULT 0,
+        pdf_url TEXT,
+        sincronizado INTEGER DEFAULT 0,
+        completado INTEGER DEFAULT 0,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
+      -- ⚠️ PAPELERA DE SEGURIDAD (no la borres sin leer esto)
+      --
+      -- Cuando el servidor deja de devolver un formulario (porque un admin o
+      -- un interventor lo eliminó en el panel web), el merge de formularios
+      -- lo purga del SQLite local para que no quede como "fantasma" en la lista.
+      -- Esa purga es irreversible desde la app, así que antes de borrar la fila
+      -- se guarda aquí una copia completa del formulario tal como lo tenía el
+      -- técnico (con fotos, firmas y huella).
+      --
+      -- Motivo: en campo, un formulario es el trabajo de media jornada de un
+      -- técnico. El borrado en el panel puede ser un error humano o una prueba,
+      -- y sin esta copia el técnico se quedaba sin nada que mostrar. Con esta
+      -- tabla, "se me eliminó el formulario" siempre es recuperable.
+      CREATE TABLE IF NOT EXISTS formularios_purgados (
+        id TEXT PRIMARY KEY,
+        payload_json TEXT NOT NULL,
+        usuario_id TEXT,
+        usuario_nombre TEXT,
+        beneficiario_nombre TEXT,
+        purgado_at TEXT NOT NULL,
+        motivo TEXT
       );
     `);
 
@@ -1284,6 +1613,26 @@ export const runMigrations = async (): Promise<void> => {
       }
     }
 
+    // Migración: columnas de programación por beneficiario y visita numerada.
+    // `usuario_nombre` guarda quién creó la planificación (puede ser técnico,
+    // interventor, coordinador, etc.) — antes solo llegaba por el JOIN del
+    // backend, así que la visita recién creada en el dispositivo aparecía sin
+    // el nombre hasta que el servidor la devolvía en un refresco.
+    for (const col of [
+      'beneficiario_cedula TEXT',
+      'beneficiario_nombre TEXT',
+      'actividad_numero INTEGER',
+      'vereda TEXT',
+      'corregimiento TEXT',
+      'usuario_nombre TEXT',
+    ]) {
+      try {
+        await db.runAsync(`ALTER TABLE visitas_programadas ADD COLUMN ${col}`);
+      } catch {
+        // Ya existe, ignorar
+      }
+    }
+
     // Migración: agregar columna sincronizado a tracking_posiciones si no existe
     try {
       await db.runAsync('ALTER TABLE tracking_posiciones ADD COLUMN sincronizado INTEGER DEFAULT 0');
@@ -1300,6 +1649,45 @@ export const runMigrations = async (): Promise<void> => {
     try {
       await db.runAsync('ALTER TABLE tracking_posiciones ADD COLUMN sesion_id TEXT DEFAULT NULL');
       console.log('[DB] Columna sesion_id agregada a tracking_posiciones');
+    } catch {
+      // Ya existe, ignorar
+    }
+
+    // Migración: video y firmas (beneficiario + autor) en seguimientos_locales
+    // — la tabla se creó sin estas columnas en la primera versión de la
+    // función (solo fotos). firma_beneficiario/firma_autor guardan base64
+    // mientras no se han subido, y el archivo_id de MinIO una vez sincronizadas.
+    for (const columna of [
+      'videos_json TEXT DEFAULT \'[]\'',
+      'firma_beneficiario TEXT',
+      'firma_autor TEXT',
+      'geo_latitud REAL',
+      'geo_longitud REAL',
+      'geo_altitud REAL',
+      'geo_precision REAL',
+      'huella_beneficiario INTEGER DEFAULT 0',
+      'formulario_id TEXT',
+    ]) {
+      try {
+        await db.runAsync(`ALTER TABLE seguimientos_locales ADD COLUMN ${columna}`);
+      } catch {
+        // Ya existe, ignorar
+      }
+    }
+
+    // Migración: columna `completado` — distingue un seguimiento TERMINADO
+    // (se presionó "Guardar Seguimiento") de un borrador autoguardado a
+    // medio llenar (igual idea que FormDraftStore para el técnico, pero en
+    // la misma fila en vez de un store aparte, porque un seguimiento es una
+    // sola fila simple). Los seguimientos guardados ANTES de que existiera
+    // esta columna se marcan retroactivamente como completados (con la
+    // versión anterior no había concepto de borrador, así que todo lo que
+    // ya existe se trató siempre como terminado) — solo se hace una vez,
+    // justo cuando la columna se crea por primera vez.
+    try {
+      await db.runAsync(`ALTER TABLE seguimientos_locales ADD COLUMN completado INTEGER DEFAULT 0`);
+      await db.runAsync(`UPDATE seguimientos_locales SET completado = 1`);
+      console.log('[DB] ✅ Columna completado agregada a seguimientos_locales (backfill: registros previos marcados como completados)');
     } catch {
       // Ya existe, ignorar
     }
@@ -1481,7 +1869,7 @@ export const savePlantacion = async (
   plantacion: import('../types').Plantacion
 ): Promise<void> => {
   const database = await ensureDb();
-  if (!database) return;
+  if (!database) throw new Error('La base de datos local no está disponible; el conteo no se guardó');
   try {
     const poligonoJson = plantacion.poligono ? JSON.stringify(plantacion.poligono) : null;
     await database.runAsync(
@@ -1555,7 +1943,7 @@ export const getPlantaciones = async (
  */
 export const getPlantacionesNoSincronizadas = async (): Promise<import('../types').Plantacion[]> => {
   const database = await ensureDb();
-  if (!database) return [];
+  if (!database) throw new Error('La base local no está disponible; no se pudieron consultar plantaciones pendientes');
   try {
     const rows = await database.getAllAsync<Record<string, any>>(
       'SELECT * FROM plantaciones WHERE sincronizado = 0 ORDER BY timestamp ASC'
@@ -1570,10 +1958,15 @@ export const getPlantacionesNoSincronizadas = async (): Promise<import('../types
       timestamp: r.timestamp,
       sincronizado: false,
       icono: r.icono || '🌱',
+      poligono: r.poligono_json ? JSON.parse(r.poligono_json) : undefined,
+      beneficiario_cedula: r.beneficiario_cedula || undefined,
+      beneficiario_nombre: r.beneficiario_nombre || undefined,
+      vereda: r.vereda || undefined,
+      corregimiento: r.corregimiento || undefined,
     }));
   } catch (error) {
     console.error('[DB] Error al obtener plantaciones no sincronizadas:', error);
-    return [];
+    throw error;
   }
 };
 
@@ -1582,14 +1975,14 @@ export const getPlantacionesNoSincronizadas = async (): Promise<import('../types
  */
 export const getTrackingNoSincronizado = async (): Promise<Record<string, any>[]> => {
   const database = await ensureDb();
-  if (!database) return [];
+  if (!database) throw new Error('La base local no está disponible; no se pudieron consultar puntos GPS pendientes');
   try {
     return await database.getAllAsync<Record<string, any>>(
       'SELECT * FROM tracking_posiciones WHERE sincronizado = 0 ORDER BY timestamp ASC'
     );
   } catch (error) {
     console.error('[DB] Error al obtener tracking no sincronizado:', error);
-    return [];
+    throw error;
   }
 };
 
@@ -1598,14 +1991,39 @@ export const getTrackingNoSincronizado = async (): Promise<Record<string, any>[]
  */
 export const getMedicionesNoSincronizadas = async (): Promise<Record<string, any>[]> => {
   const database = await ensureDb();
-  if (!database) return [];
+  if (!database) throw new Error('La base local no está disponible; no se pudieron consultar mediciones pendientes');
   try {
-    return await database.getAllAsync<Record<string, any>>(
+    const rows = await database.getAllAsync<Record<string, any>>(
       'SELECT * FROM mediciones_terreno WHERE sincronizado = 0 ORDER BY created_at ASC'
     );
+    return rows.map((row) => {
+      let puntos: { latitud: number; longitud: number }[] = [];
+      try {
+        puntos = row.puntos_json ? JSON.parse(row.puntos_json) : [];
+      } catch {
+        puntos = [];
+      }
+      const areaHectareas = Number(row.area_hectareas) || 0;
+      const medicionDeArea = areaHectareas > 0;
+      return {
+        id: row.id,
+        usuario_id: row.usuario_id,
+        formulario_id: row.formulario_id === 'mapa_directo' ? null : row.formulario_id,
+        tipo_medicion: medicionDeArea ? 'area' : 'distancia',
+        valor: medicionDeArea ? areaHectareas : Number(row.perimetro_metros) || 0,
+        unidad: medicionDeArea ? 'hectareas' : 'metros',
+        metadata_json: {
+          area_hectareas: areaHectareas,
+          area_metros2: Number(row.area_metros2) || 0,
+          perimetro_metros: Number(row.perimetro_metros) || 0,
+          puntos,
+        },
+        timestamp: row.created_at,
+      };
+    });
   } catch (error) {
     console.error('[DB] Error al obtener mediciones no sincronizadas:', error);
-    return [];
+    throw error;
   }
 };
 
@@ -1617,15 +2035,11 @@ export const marcarSincronizado = async (
   id: string
 ): Promise<void> => {
   const database = await ensureDb();
-  if (!database) return;
-  try {
-    await database.runAsync(
-      `UPDATE ${tabla} SET sincronizado = 1 WHERE id = ?`,
-      [id]
-    );
-  } catch (error) {
-    console.error(`[DB] Error al marcar ${tabla}/${id} como sincronizado:`, error);
-  }
+  if (!database) throw new Error(`La base local no está disponible; ${tabla}/${id} sigue pendiente de sincronización`);
+  await database.runAsync(
+    `UPDATE ${tabla} SET sincronizado = 1 WHERE id = ?`,
+    [id]
+  );
 };
 
 /**
@@ -1652,18 +2066,27 @@ export const saveVisitaProgramada = async (
   visita: import('../types').VisitaProgramada
 ): Promise<void> => {
   const database = await ensureDb();
-  if (!database) return;
+  if (!database) throw new Error('La base de datos local no está disponible; la visita no se guardó');
   try {
     await database.runAsync(
-      `INSERT OR REPLACE INTO visitas_programadas (id, usuario_id, titulo, ubicacion, fecha, estado, timestamp, sincronizado)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT OR REPLACE INTO visitas_programadas (
+        id, usuario_id, usuario_nombre, titulo, ubicacion, fecha, estado,
+        beneficiario_cedula, beneficiario_nombre, actividad_numero, vereda, corregimiento,
+        timestamp, sincronizado
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         visita.id,
         visita.usuario_id || null,
+        visita.usuario_nombre || null,
         visita.titulo,
         visita.ubicacion,
         visita.fecha,
         visita.estado || 'pendiente',
+        visita.beneficiario_cedula || null,
+        visita.beneficiario_nombre || null,
+        visita.actividad_numero ?? null,
+        visita.vereda || null,
+        visita.corregimiento || null,
         new Date().toISOString(),
         visita.sincronizado ? 1 : 0,
       ]
@@ -1691,10 +2114,16 @@ export const getVisitasProgramadas = async (
     return rows.filter(Boolean).map((r: Record<string, any>) => ({
       id: r.id,
       usuario_id: r.usuario_id,
+      usuario_nombre: r.usuario_nombre || undefined,
       titulo: r.titulo,
       ubicacion: r.ubicacion,
       fecha: r.fecha,
       estado: r.estado || 'pendiente',
+      beneficiario_cedula: r.beneficiario_cedula || undefined,
+      beneficiario_nombre: r.beneficiario_nombre || undefined,
+      actividad_numero: r.actividad_numero !== null && r.actividad_numero !== undefined ? Number(r.actividad_numero) : undefined,
+      vereda: r.vereda || undefined,
+      corregimiento: r.corregimiento || undefined,
       sincronizado: r.sincronizado === 1,
     }));
   } catch (error) {
@@ -1708,7 +2137,7 @@ export const getVisitasProgramadas = async (
  */
 export const getVisitasProgramadasNoSincronizadas = async (): Promise<import('../types').VisitaProgramada[]> => {
   const database = await ensureDb();
-  if (!database) return [];
+  if (!database) throw new Error('La base local no está disponible; no se pudieron consultar visitas pendientes');
   try {
     const rows = await database.getAllAsync<Record<string, any>>(
       'SELECT * FROM visitas_programadas WHERE sincronizado = 0 ORDER BY fecha ASC'
@@ -1716,15 +2145,21 @@ export const getVisitasProgramadasNoSincronizadas = async (): Promise<import('..
     return rows.filter(Boolean).map((r: Record<string, any>) => ({
       id: r.id,
       usuario_id: r.usuario_id,
+      usuario_nombre: r.usuario_nombre || undefined,
       titulo: r.titulo,
       ubicacion: r.ubicacion,
       fecha: r.fecha,
       estado: r.estado || 'pendiente',
+      beneficiario_cedula: r.beneficiario_cedula || undefined,
+      beneficiario_nombre: r.beneficiario_nombre || undefined,
+      actividad_numero: r.actividad_numero !== null && r.actividad_numero !== undefined ? Number(r.actividad_numero) : undefined,
+      vereda: r.vereda || undefined,
+      corregimiento: r.corregimiento || undefined,
       sincronizado: false,
     }));
   } catch (error) {
     console.error('[DB] Error al obtener visitas programadas no sincronizadas:', error);
-    return [];
+    throw error;
   }
 };
 
@@ -1801,7 +2236,7 @@ export const saveMedicion = async (
   }
 ): Promise<void> => {
   const database = await ensureDb();
-  if (!database) return;
+  if (!database) throw new Error('La base de datos local no está disponible; la medición no se guardó');
   try {
     await database.runAsync(
       `INSERT OR REPLACE INTO mediciones_terreno (
@@ -1918,5 +2353,421 @@ export const isVeredasCacheFresh = async (maxAgeMs: number = 86400000): Promise<
     return age < maxAgeMs;
   } catch {
     return false;
+  }
+};
+
+// ============================================================
+// Seguimientos de Coordinación/Interventoría (offline-first)
+// ============================================================
+
+export interface FotoSeguimientoLocal {
+  id: string;
+  uri: string;
+  /** Presente una vez que la foto se subió a MinIO durante la sincronización */
+  archivo_id?: string;
+}
+
+export interface SeguimientoLocal {
+  id: string;
+  autor_id: string;
+  autor_nombre: string;
+  autor_rol: 'coordinador' | 'interventor';
+  beneficiario_cedula?: string;
+  beneficiario_nombre?: string;
+  /** id del formulario (visita) del técnico al que queda amarrado este seguimiento, si se registró desde su detalle. */
+  formulario_id?: string;
+  actividad: string;
+  objetivo_visita?: string;
+  descripcion_actividad?: string;
+  observaciones?: string;
+  fotos: FotoSeguimientoLocal[];
+  videos: FotoSeguimientoLocal[];
+  /** 'data:...' (base64, pendiente de subir) o archivo_id de MinIO (ya sincronizada) */
+  firma_beneficiario?: string;
+  /** 'data:...' (base64, pendiente de subir) o archivo_id de MinIO (ya sincronizada) — firma de quien registra el seguimiento */
+  firma_autor?: string;
+  /** Georeferencia puntual (captura única de 8s de alta precisión — CapturaGPSPrecisa) */
+  geo_latitud?: number;
+  geo_longitud?: number;
+  geo_altitud?: number;
+  geo_precision?: number;
+  /** Confirmación con huella del sensor del dispositivo (atestigua presencia, no identidad del beneficiario) */
+  huella_beneficiario?: boolean;
+  pdf_url?: string;
+  sincronizado: boolean;
+  /** false mientras es un borrador autoguardado; true solo al presionar "Guardar Seguimiento". Un seguimiento incompleto nunca se sincroniza. */
+  completado: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+const deserializeSeguimiento = (row: Record<string, any>): SeguimientoLocal => {
+  const parseFotos = (json: string | null): FotoSeguimientoLocal[] => {
+    try {
+      return json ? JSON.parse(json) : [];
+    } catch {
+      return [];
+    }
+  };
+  return {
+    id: row.id,
+    autor_id: row.autor_id,
+    autor_nombre: row.autor_nombre,
+    autor_rol: row.autor_rol,
+    beneficiario_cedula: row.beneficiario_cedula || undefined,
+    beneficiario_nombre: row.beneficiario_nombre || undefined,
+    formulario_id: row.formulario_id || undefined,
+    actividad: row.actividad,
+    objetivo_visita: row.objetivo_visita || undefined,
+    descripcion_actividad: row.descripcion_actividad || undefined,
+    observaciones: row.observaciones || undefined,
+    fotos: parseFotos(row.fotos_json),
+    videos: parseFotos(row.videos_json),
+    firma_beneficiario: row.firma_beneficiario || undefined,
+    firma_autor: row.firma_autor || undefined,
+    geo_latitud: row.geo_latitud != null ? Number(row.geo_latitud) : undefined,
+    geo_longitud: row.geo_longitud != null ? Number(row.geo_longitud) : undefined,
+    geo_altitud: row.geo_altitud != null ? Number(row.geo_altitud) : undefined,
+    geo_precision: row.geo_precision != null ? Number(row.geo_precision) : undefined,
+    huella_beneficiario: row.huella_beneficiario === 1,
+    pdf_url: row.pdf_url || undefined,
+    sincronizado: row.sincronizado === 1,
+    completado: row.completado === 1,
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+  };
+};
+
+/** Guardar (crear o actualizar) un seguimiento local — llamado en cada cambio relevante (borrador) y al presionar "Guardar". */
+export const saveSeguimientoLocal = async (s: SeguimientoLocal): Promise<void> => {
+  const database = await ensureDb();
+  if (!database) {
+    throw new Error('La base de datos local no está disponible — el seguimiento NO se guardó');
+  }
+  await database.runAsync(
+    `INSERT OR REPLACE INTO seguimientos_locales
+       (id, autor_id, autor_nombre, autor_rol, beneficiario_cedula, beneficiario_nombre, formulario_id,
+        actividad, objetivo_visita, descripcion_actividad, observaciones, fotos_json,
+        videos_json, firma_beneficiario, firma_autor, geo_latitud, geo_longitud, geo_altitud, geo_precision,
+        huella_beneficiario, pdf_url, sincronizado, completado, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [
+      s.id,
+      s.autor_id,
+      s.autor_nombre,
+      s.autor_rol,
+      s.beneficiario_cedula || null,
+      s.beneficiario_nombre || null,
+      s.formulario_id || null,
+      s.actividad,
+      s.objetivo_visita || null,
+      s.descripcion_actividad || null,
+      s.observaciones || null,
+      JSON.stringify(s.fotos || []),
+      JSON.stringify(s.videos || []),
+      s.firma_beneficiario || null,
+      s.firma_autor || null,
+      s.geo_latitud ?? null,
+      s.geo_longitud ?? null,
+      s.geo_altitud ?? null,
+      s.geo_precision ?? null,
+      s.huella_beneficiario ? 1 : 0,
+      s.pdf_url || null,
+      s.sincronizado ? 1 : 0,
+      s.completado ? 1 : 0,
+      s.created_at,
+      s.updated_at,
+    ]
+  );
+};
+
+/** Seguimientos locales TERMINADOS — coordinador/interventor ven solo los de su propio rol. Los borradores incompletos no aparecen aquí (ver getSeguimientosIncompletos). */
+export const getSeguimientosLocales = async (autorRol?: string): Promise<SeguimientoLocal[]> => {
+  const database = await ensureDb();
+  if (!database) return [];
+  try {
+    const rows = await database.getAllAsync<Record<string, any>>(
+      autorRol
+        ? 'SELECT * FROM seguimientos_locales WHERE autor_rol = ? AND completado = 1 ORDER BY created_at DESC'
+        : 'SELECT * FROM seguimientos_locales WHERE completado = 1 ORDER BY created_at DESC',
+      autorRol ? [autorRol] : []
+    );
+    return rows.map(deserializeSeguimiento);
+  } catch (error) {
+    console.error('[DB] Error al leer seguimientos locales:', error);
+    return [];
+  }
+};
+
+/** Borradores de seguimiento sin terminar (no se presionó "Guardar Seguimiento"), del autor indicado — para la pantalla de "Seguimientos Incompletos". */
+export const getSeguimientosIncompletos = async (autorId?: string): Promise<SeguimientoLocal[]> => {
+  const database = await ensureDb();
+  if (!database) return [];
+  try {
+    const rows = await database.getAllAsync<Record<string, any>>(
+      autorId
+        ? 'SELECT * FROM seguimientos_locales WHERE completado = 0 AND autor_id = ? ORDER BY updated_at DESC'
+        : 'SELECT * FROM seguimientos_locales WHERE completado = 0 ORDER BY updated_at DESC',
+      autorId ? [autorId] : []
+    );
+    return rows.map(deserializeSeguimiento);
+  } catch (error) {
+    console.error('[DB] Error al leer borradores de seguimiento:', error);
+    return [];
+  }
+};
+
+/** Un seguimiento local por id — para reabrir un borrador y continuar llenándolo. */
+/**
+ * Seguimiento ya registrado para una visita concreta (por formulario_id).
+ * Se usa al abrir la revisión "en campo" de un formulario: si el revisor ya
+ * había empezado/completado el seguimiento de esa visita, se retoma ese
+ * mismo registro en vez de crear uno nuevo cada vez.
+ */
+export const getSeguimientoLocalPorFormulario = async (formularioId: string): Promise<SeguimientoLocal | null> => {
+  const database = await ensureDb();
+  if (!database) return null;
+  try {
+    const row = await database.getFirstAsync<any>(
+      'SELECT * FROM seguimientos_locales WHERE formulario_id = ? ORDER BY updated_at DESC LIMIT 1',
+      [formularioId]
+    );
+    return row ? deserializeSeguimiento(row) : null;
+  } catch (e) {
+    console.warn('[DB] Error leyendo seguimiento por formulario:', e);
+    return null;
+  }
+};
+
+export const getSeguimientoLocalById = async (id: string): Promise<SeguimientoLocal | null> => {
+  const database = await ensureDb();
+  if (!database) return null;
+  try {
+    const row = await database.getFirstAsync<Record<string, any>>(
+      'SELECT * FROM seguimientos_locales WHERE id = ?',
+      [id]
+    );
+    return row ? deserializeSeguimiento(row) : null;
+  } catch (error) {
+    console.error('[DB] Error al leer seguimiento por id:', error);
+    return null;
+  }
+};
+
+/** Eliminar un borrador de seguimiento (descartarlo desde "Seguimientos Incompletos"). */
+export const eliminarSeguimientoLocal = async (id: string): Promise<void> => {
+  const database = await ensureDb();
+  if (!database) return;
+  try {
+    await database.runAsync('DELETE FROM seguimientos_locales WHERE id = ?', [id]);
+  } catch (error) {
+    console.error('[DB] Error al eliminar seguimiento local:', error);
+  }
+};
+
+/** Seguimientos TERMINADOS y pendientes de sincronizar (para el ciclo de sync) — los borradores incompletos nunca se suben. */
+export const getSeguimientosNoSincronizados = async (): Promise<SeguimientoLocal[]> => {
+  const database = await ensureDb();
+  if (!database) throw new Error('La base local no está disponible; no se pudieron consultar seguimientos pendientes');
+  try {
+    // Se traen todos los terminados y el filtro fino se hace en JS (ver abajo).
+    const rows = await database.getAllAsync<Record<string, any>>(
+      'SELECT * FROM seguimientos_locales WHERE completado = 1 ORDER BY created_at ASC'
+    );
+    return rows.map(deserializeSeguimiento).filter((s) => {
+      if (!s.sincronizado) return true;
+      // Rescate: un seguimiento puede quedar marcado como sincronizado y aun
+      // así conservar evidencia que NUNCA llegó a MinIO (sin `archivo_id`).
+      // Ocurre cuando el PATCH de una edición de texto/geo/fecha respondía OK
+      // y marcaba el registro como sincronizado aunque hubiera fotos/videos
+      // pendientes: como el sync solo mirara `sincronizado = 0`, esa evidencia
+      // quedaba huérfana para siempre y los demás roles (admin/gerente) solo
+      // veían las fotos que sí habían subido. Aquí se vuelven a tomar esos
+      // registros para terminar de subir lo que falta.
+      return [...(s.fotos || []), ...(s.videos || [])].some((e) => !e.archivo_id);
+    });
+  } catch (error) {
+    console.error('[DB] Error al leer seguimientos pendientes:', error);
+    throw error;
+  }
+};
+
+/**
+ * Fusionar seguimientos del servidor (de otros dispositivos/usuarios del
+ * mismo rol) con los locales.
+ *
+ * - Si NO existe la fila local, se inserta (es de otro dispositivo).
+ * - Si existe y es nuestro registro pendiente (`sincronizado = 0`) o todavía
+ *   tiene evidencia sin subir (fotos/videos sin `archivo_id`), se deja
+ *   intacta: nunca se pisa trabajo local que aún no llegó al servidor.
+ * - Si existe y ya está sincronizada y sin evidencias pendientes, se
+ *   ACTUALIZA con la copia remota. Antes se dejaba intacta siempre, así que
+ *   el dispositivo del admin se quedaba con la primera versión que bajó y
+ *   nunca veía lo que el autor agregara después (p. ej. un video grabado en
+ *   una edición posterior) — desde el rol admin se veían las fotos pero no
+ *   el video aunque el servidor ya lo tuviera.
+ */
+export const mergeSeguimientosDelServidor = async (
+  remotos: SeguimientoLocal[]
+): Promise<number> => {
+  const database = await ensureDb();
+  if (!database || !remotos || remotos.length === 0) return 0;
+  let aplicados = 0;
+  for (const r of remotos) {
+    if (!r?.id) continue;
+    try {
+      const localRow = await database.getFirstAsync<Record<string, any>>(
+        'SELECT * FROM seguimientos_locales WHERE id = ?',
+        [r.id]
+      );
+
+      if (localRow) {
+        const local = deserializeSeguimiento(localRow);
+        // Trabajo local aún no confirmado por el servidor: manda lo local.
+        if (!local.sincronizado) continue;
+        // Evidencia capturada que nunca llegó a MinIO (sin archivo_id): si se
+        // pisara con la copia remota se perdería el archivo del teléfono.
+        const evidenciaPendiente = [...(local.fotos || []), ...(local.videos || [])].some(
+          (e) => !e.archivo_id
+        );
+        if (evidenciaPendiente) continue;
+        // Nada nuevo en el servidor para este registro.
+        if ((local.updated_at || '') === (r.updated_at || '')) continue;
+        // Gana la marca de tiempo más reciente (mismo criterio que
+        // mergeFormulariosDelServidor). Si la copia local es MÁS NUEVA que la
+        // remota, se conserva local en vez de pisarla: así una corrección
+        // recién hecha (actividad, fecha…) nunca se revierte por una copia
+        // del servidor que todavía no la refleja. Cuando el servidor tenga
+        // algo genuinamente más reciente, su `updated_at` mayor hará que el
+        // remoto gane, igual que antes.
+        {
+          const tLocal = Date.parse(local.updated_at || '');
+          const tRemoto = Date.parse(r.updated_at || '');
+          if (Number.isFinite(tLocal) && Number.isFinite(tRemoto) && tLocal >= tRemoto) {
+            continue;
+          }
+        }
+
+        await database.runAsync(
+          `UPDATE seguimientos_locales SET
+             autor_id = ?, autor_nombre = ?, autor_rol = ?, beneficiario_cedula = ?, beneficiario_nombre = ?,
+             actividad = ?, objetivo_visita = ?, descripcion_actividad = ?, observaciones = ?,
+             fotos_json = ?, videos_json = ?, firma_beneficiario = ?, firma_autor = ?,
+             geo_latitud = ?, geo_longitud = ?, geo_altitud = ?, geo_precision = ?,
+             huella_beneficiario = ?, pdf_url = COALESCE(?, pdf_url), sincronizado = 1, completado = 1,
+             created_at = ?, updated_at = ?
+           WHERE id = ?`,
+          [
+            r.autor_id,
+            r.autor_nombre,
+            r.autor_rol,
+            r.beneficiario_cedula || null,
+            r.beneficiario_nombre || null,
+            r.actividad,
+            r.objetivo_visita || null,
+            r.descripcion_actividad || null,
+            r.observaciones || null,
+            JSON.stringify(r.fotos || []),
+            JSON.stringify(r.videos || []),
+            r.firma_beneficiario || null,
+            r.firma_autor || null,
+            r.geo_latitud ?? null,
+            r.geo_longitud ?? null,
+            r.geo_altitud ?? null,
+            r.geo_precision ?? null,
+            r.huella_beneficiario ? 1 : 0,
+            r.pdf_url || null,
+            r.created_at,
+            r.updated_at,
+            r.id,
+          ]
+        );
+        aplicados++;
+        continue;
+      }
+
+      await database.runAsync(
+        `INSERT OR IGNORE INTO seguimientos_locales
+           (id, autor_id, autor_nombre, autor_rol, beneficiario_cedula, beneficiario_nombre,
+            actividad, objetivo_visita, descripcion_actividad, observaciones, fotos_json,
+            videos_json, firma_beneficiario, firma_autor, geo_latitud, geo_longitud, geo_altitud, geo_precision,
+            huella_beneficiario, pdf_url, sincronizado, completado, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, ?, ?)`,
+        [
+          r.id,
+          r.autor_id,
+          r.autor_nombre,
+          r.autor_rol,
+          r.beneficiario_cedula || null,
+          r.beneficiario_nombre || null,
+          r.actividad,
+          r.objetivo_visita || null,
+          r.descripcion_actividad || null,
+          r.observaciones || null,
+          JSON.stringify(r.fotos || []),
+          JSON.stringify(r.videos || []),
+          r.firma_beneficiario || null,
+          r.firma_autor || null,
+          r.geo_latitud ?? null,
+          r.geo_longitud ?? null,
+          r.geo_altitud ?? null,
+          r.geo_precision ?? null,
+          r.huella_beneficiario ? 1 : 0,
+          r.pdf_url || null,
+          r.created_at,
+          r.updated_at,
+        ]
+      );
+      aplicados++;
+    } catch (e) {
+      console.warn('[DB] No se pudo fusionar seguimiento del servidor:', r.id, e);
+    }
+  }
+  return aplicados;
+};
+
+/**
+ * Purga local los seguimientos que YA NO existen en el servidor.
+ *
+ * El merge de arriba solo AGREGA; nunca borra. Por eso, si otro dispositivo
+ * elimina un seguimiento, la copia local se queda "fantasma" para siempre
+ * (y al intentar borrarla el servidor responde 404).
+ *
+ * Esta función elimina las filas locales que:
+ *   - están sincronizadas (`sincronizado = 1`) — es decir, ya existen en el
+ *     servidor y por tanto su ausencia en la respuesta significa que fueron
+ *     borradas por alguien; y
+ *   - su `id` NO aparece en la lista de ids remotos.
+ *
+ * SEGURIDAD: solo debe llamarse cuando la consulta al servidor fue EXITOSA
+ * (`ok === true`). Nunca borra filas `sincronizado = 0` (creadas offline y
+ * aún no subidas) para no perder trabajo local.
+ *
+ * @param idsRemotos ids presentes en el servidor (respuesta exitosa).
+ * @returns número de filas locales eliminadas.
+ */
+export const purgarSeguimientosAusentes = async (idsRemotos: string[]): Promise<number> => {
+  const database = await ensureDb();
+  if (!database) return 0;
+  try {
+    const ids = (idsRemotos || []).filter((id) => !!id);
+    if (ids.length === 0) {
+      // El servidor respondió OK pero sin seguimientos: borrar todos los
+      // locales ya sincronizados (los pendientes de subir se conservan).
+      const res = await database.runAsync(
+        'DELETE FROM seguimientos_locales WHERE sincronizado = 1'
+      );
+      return res.changes ?? 0;
+    }
+    const placeholders = ids.map(() => '?').join(', ');
+    const res = await database.runAsync(
+      `DELETE FROM seguimientos_locales
+         WHERE sincronizado = 1 AND id NOT IN (${placeholders})`,
+      ids
+    );
+    return res.changes ?? 0;
+  } catch (e) {
+    console.warn('[DB] No se pudo purgar seguimientos ausentes:', e);
+    return 0;
   }
 };

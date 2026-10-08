@@ -7,7 +7,7 @@ import { API_CONFIG } from '../theme';
 
 /**
  * Subir una firma (base64) al servidor
- * @param tipo 'beneficiario' | 'tecnico' | 'revisor' (revisor = supervisor/interventor/gerente/admin en su sección de evidencia)
+ * @param tipo 'beneficiario' | 'tecnico' | 'revisor' (revisor = coordinador/interventor/gerente/admin en su sección de evidencia)
  * @param dataBase64 data:image/png;base64,...
  */
 export const subirFirma = async (
@@ -15,12 +15,13 @@ export const subirFirma = async (
   dataBase64: string,
   beneficiarioCedula?: string,
   beneficiarioNombre?: string,
-  tipoFormulario?: string
+  tipoFormulario?: string,
+  evidenciaId?: string
 ): Promise<{ id: string; ruta: string; estado: string } | null> => {
   try {
     const response = await apiClient.post(
       API_CONFIG.ENDPOINTS.FIRMAS + '/subir',
-      { tipo, data: dataBase64, beneficiario_cedula: beneficiarioCedula, beneficiario_nombre: beneficiarioNombre, tipo_formulario: tipoFormulario },
+      { tipo, data: dataBase64, beneficiario_cedula: beneficiarioCedula, beneficiario_nombre: beneficiarioNombre, tipo_formulario: tipoFormulario, evidencia_id: evidenciaId },
       { timeout: 15000 }
     );
     return response.data;

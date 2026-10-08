@@ -156,4 +156,85 @@ router.post('/analizar-grafico', authenticateToken, async (req, res) => {
   }
 });
 
+const PROMPT_SISTEMA_TECNICO = `Eres un analista que redacta las conclusiones del informe de seguimiento de un técnico de campo de un proyecto de extensión rural agroambiental. Se te da el progreso de una ronda de visitas (o de varias) a los beneficiarios asignados: cuántos ya fueron visitados, fechas, tipos de visita y si hay patrones (zonas con más rezago, ritmo de avance, etc.).
+
+Escribe conclusiones breves y profesionales en español, de MÍNIMO 1 párrafo y MÁXIMO 3 párrafos cortos: resalta el avance general, algo llamativo del ritmo o la distribución de las visitas, y qué falta por cubrir. No inventes datos que no estén en la entrada, no repitas la tabla de números tal cual, no uses markdown ni encabezados ni viñetas — solo texto plano en párrafos separados por un salto de línea en blanco.`;
+
+function construirPromptTecnico({ tecnico, rondas }) {
+  const bloqueRondas = (rondas || [])
+    .map((r) => {
+      const lineasVisitas = (r.visitas || [])
+        .map((v) => `  - ${v.beneficiario} (${v.vereda || 'vereda sin dato'}): ${v.fecha}, ${v.tipo}`)
+        .join('\n');
+      return `Visita número ${r.numero}: ${r.completados}/${r.total} beneficiarios visitados.\n${lineasVisitas || '  (sin visitas registradas aún)'}`;
+    })
+    .join('\n\n');
+
+  return `Técnico: ${tecnico}
+
+${bloqueRondas}`;
+}
+
+// POST /api/ia/analizar-tecnico — cualquier usuario autenticado.
+// body: { tecnico: string, rondas: [{ numero, completados, total, visitas: [{ beneficiario, vereda, fecha, tipo }] }] }
+router.post('/analizar-tecnico', authenticateToken, async (req, res) => {
+  const { tecnico, rondas } = req.body;
+
+  if (!tecnico || !Array.isArray(rondas) || rondas.length === 0) {
+    return res.status(400).json({ success: false, error: 'Datos del técnico incompletos' });
+  }
+
+  const apiKey = await obtenerApiKey().catch(() => null);
+  if (!apiKey) {
+    return res.status(400).json({ success: false, error: 'IA no configurada' });
+  }
+
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), TIMEOUT_DEEPSEEK_MS);
+
+  try {
+    const respuesta = await fetch(DEEPSEEK_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        model: 'deepseek-chat',
+        messages: [
+          { role: 'system', content: PROMPT_SISTEMA_TECNICO },
+          { role: 'user', content: construirPromptTecnico({ tecnico, rondas }) },
+        ],
+        temperature: 0.5,
+        max_tokens: 500,
+        stream: false,
+      }),
+      signal: controller.signal,
+    });
+
+    if (!respuesta.ok) {
+      const texto = await respuesta.text().catch(() => '');
+      console.warn(`[IA] DeepSeek respondió ${respuesta.status}:`, texto.slice(0, 300));
+      return res.status(502).json({ success: false, error: 'DeepSeek no respondió correctamente' });
+    }
+
+    const json = await respuesta.json();
+    const analisis = json?.choices?.[0]?.message?.content?.trim();
+    if (!analisis) {
+      return res.status(502).json({ success: false, error: 'DeepSeek no devolvió texto' });
+    }
+
+    res.json({ success: true, analisis });
+  } catch (error) {
+    if (error.name === 'AbortError') {
+      console.warn(`[IA] Timeout esperando a DeepSeek (informe técnico: ${tecnico})`);
+      return res.status(504).json({ success: false, error: 'Tiempo de espera agotado' });
+    }
+    console.error('[IA] Error llamando a DeepSeek:', error.message);
+    res.status(502).json({ success: false, error: 'Error llamando a DeepSeek' });
+  } finally {
+    clearTimeout(timeoutId);
+  }
+});
+
 module.exports = router;

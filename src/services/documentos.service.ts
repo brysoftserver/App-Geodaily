@@ -23,9 +23,10 @@ export const subirDocumento = async (
   mimeType?: string,
   /** Vincula el documento al formulario para poder recuperarlo desde otro
    *  dispositivo. Antes se omitía y el servidor no tenía forma de saber a
-   *  qué visita pertenecía cada documento — un supervisor jamás podía
+   *  qué visita pertenecía cada documento — un coordinador jamás podía
    *  verlos, aunque estuvieran correctamente subidos a MinIO. */
-  formularioId?: string
+  formularioId?: string,
+  evidenciaId?: string
 ): Promise<{ id: string; ruta: string; estado: string } | null> => {
   try {
     const formData = new FormData();
@@ -43,6 +44,7 @@ export const subirDocumento = async (
     if (beneficiarioNombre) formData.append('beneficiario_nombre', beneficiarioNombre);
     if (tipoFormulario) formData.append('tipo_formulario', tipoFormulario);
     if (formularioId) formData.append('formulario_id', formularioId);
+    if (evidenciaId) formData.append('evidencia_id', evidenciaId);
 
     const response = await apiClient.post(
       API_CONFIG.ENDPOINTS.DOCUMENTOS + '/subir',

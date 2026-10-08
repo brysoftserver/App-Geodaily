@@ -17,6 +17,8 @@ import React, {
   useMemo,
 } from 'react';
 import NetInfo from '@react-native-community/netinfo';
+import { useAuth } from './AuthContext';
+import { cargarBorradores, sincronizarBorradoresConServidor } from './FormDraftStore';
 import { SyncStatus, Formulario } from '../types';
 import {
   getPendingSyncForms,
@@ -39,10 +41,16 @@ import {
   marcarSincronizado,
   getFormulariosLocales,
   saveFormularioLocal,
+  deleteFormularioLocal,
+  getSeguimientosNoSincronizados,
+  saveSeguimientoLocal,
+  deleteEvidenciaLocal,
 } from '../services/database';
 import { uploadPhoto } from '../services/photos.service';
 import { uploadVideo } from '../services/videos.service';
 import { subirDocumento } from '../services/documentos.service';
+import { subirFirma } from '../services/firmas.service';
+import { registrarSeguimiento } from '../services/seguimientos.service';
 import { generarPDF } from '../services/pdf.service';
 import { limpiarEvidenciasAntiguas } from '../services/mediaStorage.service';
 import { resolverClimaYUbicacion } from '../services/climate.service';
@@ -53,15 +61,7 @@ import { API_CONFIG } from '../theme';
 // Constantes
 // ==================================================================
 
-/**
- * Máximo de reintentos por formulario antes de abandonar.
- *
- * Era 3 con backoff lineal de 5/10/15 s: con señal intermitente los tres
- * intentos se consumían en menos de un minuto y el formulario quedaba
- * abandonado hasta que el técnico encontrara el botón de reintento manual.
- * En campo eso es trabajo de un día en riesgo, así que se amplía el margen.
- */
-const MAX_RETRIES = 10;
+const MAX_RETRY_DELAY_MS = 5 * 60 * 1000;
 
 // ==================================================================
 // Estado
@@ -72,12 +72,14 @@ interface SyncState {
   pendingCount: number;
   lastSync: string | null;
   error: string | null;
+  stage: string | null;
   /** IDs de formularios que fallaron en el último ciclo */
   failedForms: string[];
 }
 
 type SyncAction =
   | { type: 'SET_SYNCING' }
+  | { type: 'SET_STAGE'; stage: string }
   | { type: 'SYNC_SUCCESS'; timestamp: string }
   | { type: 'SYNC_ERROR'; error: string }
   | { type: 'SET_PENDING'; count: number }
@@ -89,6 +91,7 @@ const initialState: SyncState = {
   pendingCount: 0,
   lastSync: null,
   error: null,
+  stage: null,
   failedForms: [],
 };
 
@@ -99,7 +102,9 @@ const initialState: SyncState = {
 function syncReducer(state: SyncState, action: SyncAction): SyncState {
   switch (action.type) {
     case 'SET_SYNCING':
-      return { ...state, status: 'syncing', error: null };
+      return { ...state, status: 'syncing', error: null, stage: 'Preparando pendientes...' };
+    case 'SET_STAGE':
+      return { ...state, stage: action.stage };
     case 'SYNC_SUCCESS':
       return {
         ...state,
@@ -107,9 +112,10 @@ function syncReducer(state: SyncState, action: SyncAction): SyncState {
         lastSync: action.timestamp,
         pendingCount: 0,
         error: null,
+        stage: null,
       };
     case 'SYNC_ERROR':
-      return { ...state, status: 'error', error: action.error };
+      return { ...state, status: 'error', error: action.error, stage: null };
     case 'SET_PENDING':
       return { ...state, pendingCount: action.count };
     case 'SET_IDLE':
@@ -143,9 +149,17 @@ const SyncContext = createContext<SyncContextType | undefined>(undefined);
 export const SyncProvider: React.FC<{ children: React.ReactNode }> = ({
   children,
 }) => {
+  const { user } = useAuth();
   const [state, dispatch] = useReducer(syncReducer, initialState);
   const isSyncing = useRef(false);
   const abortController = useRef<AbortController | null>(null);
+  const retryCount = useRef(0);
+  const retryTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const retryDraftCount = useRef(0);
+  const retryDraftTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const syncNowRef = useRef<(() => Promise<void>) | null>(null);
+  const syncBorradoresRef = useRef<(() => Promise<void>) | null>(null);
+  const isSyncingBorradores = useRef(false);
   /** Último estado de conectividad conocido — para detectar offline→online */
   const wasConnected = useRef<boolean | null>(null);
 
@@ -165,6 +179,51 @@ export const SyncProvider: React.FC<{ children: React.ReactNode }> = ({
       return 0;
     }
   }, []);
+
+  const scheduleSyncRetry = useCallback((): void => {
+    if (retryTimer.current) clearTimeout(retryTimer.current);
+    retryCount.current += 1;
+    const delay = Math.min(5000 * 2 ** (retryCount.current - 1), MAX_RETRY_DELAY_MS);
+    retryTimer.current = setTimeout(() => {
+      retryTimer.current = null;
+      syncNowRef.current?.().catch((err) => {
+        console.warn('[Sync] Reintento automático falló:', err);
+      });
+    }, delay);
+  }, []);
+
+  const scheduleDraftRetry = useCallback((): void => {
+    if (retryDraftTimer.current) clearTimeout(retryDraftTimer.current);
+    retryDraftCount.current += 1;
+    const delay = Math.min(5000 * 2 ** (retryDraftCount.current - 1), MAX_RETRY_DELAY_MS);
+    retryDraftTimer.current = setTimeout(() => {
+      retryDraftTimer.current = null;
+      syncBorradoresRef.current?.().catch((err) => {
+        console.warn('[Sync] Reintento de borradores falló:', err);
+      });
+    }, delay);
+  }, []);
+
+  const sincronizarBorradoresLocales = useCallback(async (): Promise<void> => {
+    if (!user?.id || isSyncingBorradores.current) return;
+    isSyncingBorradores.current = true;
+    if (retryDraftTimer.current) {
+      clearTimeout(retryDraftTimer.current);
+      retryDraftTimer.current = null;
+    }
+    try {
+      const conexion = await NetInfo.fetch();
+      if (!conexion.isConnected || conexion.isInternetReachable === false) return;
+      const locales = await cargarBorradores();
+      await sincronizarBorradoresConServidor(user.id, user.cedula, locales);
+      retryDraftCount.current = 0;
+    } catch (err) {
+      console.warn('[Sync] No se pudieron sincronizar borradores:', err);
+      scheduleDraftRetry();
+    } finally {
+      isSyncingBorradores.current = false;
+    }
+  }, [user?.id, user?.cedula, scheduleDraftRetry]);
 
   // ------------------------------------------------------------------
   // Subir fotos pendientes de un formulario
@@ -192,7 +251,17 @@ export const SyncProvider: React.FC<{ children: React.ReactNode }> = ({
               foto.timestamp,
               form.tipo,
               form.id,
+              foto.id,
             );
+
+            // 410 → un admin/coordinador eliminó esta evidencia desde el
+            // detalle del formulario. La copia local ya no sirve: se
+            // descarta en vez de reintentar la subida en cada ciclo.
+            if (resultado?.estado === 'eliminado') {
+              await deleteEvidenciaLocal(foto.id);
+              console.log('[Sync] Foto descartada (eliminada en el servidor):', foto.id);
+              continue;
+            }
 
             if (resultado) {
               await markFotoAsSynced(foto.id, {
@@ -243,7 +312,15 @@ export const SyncProvider: React.FC<{ children: React.ReactNode }> = ({
               form.beneficiario?.nombre || undefined,
               form.tipo,
               form.id,
+              video.id,
             );
+
+            // 410 → evidencia eliminada en el servidor (ver fotos arriba).
+            if (resultado?.estado === 'eliminado') {
+              await deleteEvidenciaLocal(video.id);
+              console.log('[Sync] Video descartado (eliminado en el servidor):', video.id);
+              continue;
+            }
 
             if (resultado) {
               await markVideoAsSynced(video.id, {
@@ -277,10 +354,11 @@ export const SyncProvider: React.FC<{ children: React.ReactNode }> = ({
   // aunque su formulario ya esté marcado como sincronizado. Sin esto, una
   // sola foto que fallara quedaba fuera del ciclo para siempre.
 
-  const subirEvidenciasHuerfanas = useCallback(async (): Promise<void> => {
+  const subirEvidenciasHuerfanas = useCallback(async (): Promise<string[]> => {
+    const fallidas: string[] = [];
     try {
       const { fotos, videos } = await getEvidenciasPendientes();
-      if (fotos.length === 0 && videos.length === 0) return;
+      if (fotos.length === 0 && videos.length === 0) return fallidas;
 
       console.log(
         `[Sync] Barrido de evidencias: ${fotos.length} foto(s), ${videos.length} video(s)`,
@@ -288,53 +366,78 @@ export const SyncProvider: React.FC<{ children: React.ReactNode }> = ({
 
       for (const foto of fotos) {
         try {
-          // beneficiario_cedula/nombre/tipo_formulario se guardan en
-          // fotos_locales desde la captura (ver saveFotoLocal). Sin esto,
-          // esta subida caía en la carpeta genérica del técnico en MinIO en
-          // vez de la carpeta del beneficiario correspondiente.
+          // Evidencias capturadas antes de que existiera el formulario en
+          // curso llegan aquí con formulario_id = '' (captura en campo con
+          // la app recién abierta). Se sube igual —a la carpeta del
+          // beneficiario si tiene cédula, o a la del técnico— en vez de
+          // dejarla sin subir para siempre.
+          const formIdEvidencia = foto.formulario_id || undefined;
           const r = await uploadPhoto(
             foto.uri,
             foto.latitud ?? undefined,
             foto.longitud ?? undefined,
             foto.altitud ?? undefined,
-            `Formulario ${foto.formulario_id}`,
+            formIdEvidencia ? `Formulario ${formIdEvidencia}` : 'Evidencia sin formulario asignado',
             undefined,
             foto.beneficiario_cedula ?? undefined,
             foto.beneficiario_nombre ?? undefined,
             foto.timestamp,
             foto.tipo_formulario ?? undefined,
-            foto.formulario_id,
+            formIdEvidencia,
+            foto.id,
           );
+          // 410 → eliminada en el servidor: se borra la copia local.
+          if (r?.estado === 'eliminado') {
+            await deleteEvidenciaLocal(foto.id);
+            console.log('[Sync] Evidencia huérfana descartada (eliminada en el servidor):', foto.id);
+            continue;
+          }
           if (r) {
             await markFotoAsSynced(foto.id, { archivoId: r.id, ruta: r.ruta });
+          } else {
+            fallidas.push(`foto-${foto.id}`);
           }
         } catch {
           // se reintenta en el próximo ciclo
+          fallidas.push(`foto-${foto.id}`);
         }
       }
 
       for (const video of videos) {
         try {
+          const formIdEvidencia = video.formulario_id || undefined;
           const r = await uploadVideo(
             video.uri,
             video.latitud ?? undefined,
             video.longitud ?? undefined,
-            `Formulario ${video.formulario_id}`,
+            formIdEvidencia ? `Formulario ${formIdEvidencia}` : 'Evidencia sin formulario asignado',
             video.beneficiario_cedula ?? undefined,
             video.beneficiario_nombre ?? undefined,
             video.tipo_formulario ?? undefined,
-            video.formulario_id,
+            formIdEvidencia,
+            video.id,
           );
+          // 410 → eliminado en el servidor: se borra la copia local.
+          if (r?.estado === 'eliminado') {
+            await deleteEvidenciaLocal(video.id);
+            console.log('[Sync] Evidencia huérfana descartada (eliminada en el servidor):', video.id);
+            continue;
+          }
           if (r) {
             await markVideoAsSynced(video.id, { archivoId: r.id, ruta: r.ruta });
+          } else {
+            fallidas.push(`video-${video.id}`);
           }
         } catch {
           // se reintenta en el próximo ciclo
+          fallidas.push(`video-${video.id}`);
         }
       }
     } catch (err) {
       console.warn('[Sync] Error en el barrido de evidencias:', err);
+      fallidas.push('evidencias');
     }
+    return fallidas;
   }, []);
 
   // ------------------------------------------------------------------
@@ -374,7 +477,8 @@ export const SyncProvider: React.FC<{ children: React.ReactNode }> = ({
             // Sin esto el servidor guardaba el documento sin saber a qué
             // formulario pertenecía — invisible para cualquier rol de
             // supervisión que quisiera revisarlo desde otro dispositivo.
-            doc.formulario_id || undefined
+            doc.formulario_id || undefined,
+            doc.id
           );
 
           if (resultado) {
@@ -390,6 +494,214 @@ export const SyncProvider: React.FC<{ children: React.ReactNode }> = ({
       }
     } catch (err) {
       console.warn('[Sync] Error obteniendo documentos pendientes:', err);
+    }
+    return fallidos;
+  }, []);
+
+  // ------------------------------------------------------------------
+  // Subir seguimientos de Coordinación/Interventoría pendientes
+  // ------------------------------------------------------------------
+  // Cada seguimiento guarda sus evidencias embebidas (fotos/videos con uri
+  // local + archivo_id una vez subidas; firmas en base64 hasta que se suben,
+  // luego se reemplazan por su archivo_id). Se sube todo pendiente primero y
+  // solo si TODO queda resuelto se crea/actualiza el seguimiento en el
+  // servidor — si algo falla (sigue sin señal), se reintenta completo en el
+  // próximo ciclo.
+
+  const sincronizarSeguimientos = useCallback(async (): Promise<string[]> => {
+    const fallidos: string[] = [];
+    try {
+      const pendientes = await getSeguimientosNoSincronizados();
+      if (pendientes.length === 0) return fallidos;
+
+      console.log(`[Sync] ${pendientes.length} seguimiento(s) pendientes`);
+
+      for (const s of pendientes) {
+        try {
+          let algunaFallo = false;
+
+          const fotosFinales: { id: string; uri: string; archivo_id?: string }[] = [];
+          for (const foto of s.fotos || []) {
+            if (foto.archivo_id) {
+              fotosFinales.push(foto);
+              continue;
+            }
+            // Evidencia sin archivo local utilizable (p. ej. el `uri` de otro
+            // teléfono): no hay nada que subir desde aquí, así que se descarta
+            // en vez de bloquear el seguimiento reintentando para siempre.
+            if (!foto.uri?.startsWith('file://')) {
+              console.warn('[Sync] Foto de seguimiento sin archivo local, se descarta:', foto.id);
+              continue;
+            }
+            const subida = await uploadPhoto(
+              foto.uri,
+              undefined,
+              undefined,
+              undefined,
+              `Seguimiento ${s.autor_rol} — ${s.autor_nombre || ''}`,
+              undefined,
+              s.beneficiario_cedula || undefined,
+              s.beneficiario_nombre || undefined,
+              s.created_at,
+              'seguimiento',
+              undefined,
+              foto.id
+            );
+            // 410 → eliminada en el servidor: se omite del seguimiento en
+            // vez de dejar el envío bloqueado reintentando para siempre.
+            if (subida?.estado === 'eliminado') {
+              console.log('[Sync] Foto de seguimiento descartada (eliminada en el servidor):', foto.id);
+              continue;
+            }
+            if (subida) {
+              fotosFinales.push({ ...foto, archivo_id: subida.id });
+            } else {
+              fotosFinales.push(foto);
+              algunaFallo = true;
+            }
+          }
+
+          const videosFinales: { id: string; uri: string; archivo_id?: string }[] = [];
+          for (const video of s.videos || []) {
+            if (video.archivo_id) {
+              videosFinales.push(video);
+              continue;
+            }
+            // Ver nota en las fotos de seguimiento: sin archivo local válido
+            // no hay nada que subir desde este dispositivo.
+            if (!video.uri?.startsWith('file://')) {
+              console.warn('[Sync] Video de seguimiento sin archivo local, se descarta:', video.id);
+              continue;
+            }
+            const subida = await uploadVideo(
+              video.uri,
+              undefined,
+              undefined,
+              `Seguimiento ${s.autor_rol} — ${s.autor_nombre || ''}`,
+              s.beneficiario_cedula || undefined,
+              s.beneficiario_nombre || undefined,
+              'seguimiento',
+              undefined,
+              video.id
+            );
+            // 410 → eliminado en el servidor (ver fotos de seguimiento arriba).
+            if (subida?.estado === 'eliminado') {
+              console.log('[Sync] Video de seguimiento descartado (eliminado en el servidor):', video.id);
+              continue;
+            }
+            if (subida) {
+              videosFinales.push({ ...video, archivo_id: subida.id });
+            } else {
+              videosFinales.push(video);
+              algunaFallo = true;
+            }
+          }
+
+          // Firmas: mientras no se hayan subido guardan el base64 ('data:...');
+          // una vez subidas se reemplazan por su archivo_id de MinIO.
+          let firmaBeneficiarioFinal = s.firma_beneficiario;
+          if (firmaBeneficiarioFinal?.startsWith('data:')) {
+            const subida = await subirFirma('beneficiario', firmaBeneficiarioFinal, s.beneficiario_cedula, s.beneficiario_nombre, 'seguimiento', `${s.id}:firma-beneficiario`);
+            if (subida) firmaBeneficiarioFinal = subida.id;
+            else algunaFallo = true;
+          }
+
+          let firmaAutorFinal = s.firma_autor;
+          if (firmaAutorFinal?.startsWith('data:')) {
+            const subida = await subirFirma('revisor', firmaAutorFinal, s.beneficiario_cedula, s.beneficiario_nombre, 'seguimiento', `${s.id}:firma-autor`);
+            if (subida) firmaAutorFinal = subida.id;
+            else algunaFallo = true;
+          }
+
+          if (algunaFallo) {
+            // Persistir lo que sí se resolvió para no repetirlo en el próximo ciclo.
+            await saveSeguimientoLocal({
+              ...s,
+              fotos: fotosFinales,
+              videos: videosFinales,
+              firma_beneficiario: firmaBeneficiarioFinal,
+              firma_autor: firmaAutorFinal,
+            });
+            console.warn(`[Sync] Seguimiento ${s.id}: faltan evidencias por subir, se envía el registro y se reintentan las evidencias`);
+          }
+
+          // IMPORTANTE: se envía el seguimiento al servidor AUNQUE falten
+          // evidencias. Antes, si una sola foto/video/firma no subía, el
+          // registro completo quedaba atrapado en el teléfono y nunca llegaba
+          // al servidor (el admin no lo veía). Ahora el registro (actividad,
+          // objetivo, descripción, observaciones, geo, beneficiario) se sube
+          // siempre; las evidencias que falten se reintentan en el próximo
+          // ciclo sin bloquear el registro.
+          const guardadoEnServidor = await registrarSeguimiento({
+            id: s.id,
+            actividad: s.actividad,
+            objetivo_visita: s.objetivo_visita,
+            descripcion_actividad: s.descripcion_actividad,
+            observaciones: s.observaciones,
+            fotos: fotosFinales.filter((f) => f.archivo_id).map((f) => ({ archivo_id: f.archivo_id as string, uri: f.uri })),
+            videos: videosFinales.filter((v) => v.archivo_id).map((v) => ({ archivo_id: v.archivo_id as string, uri: v.uri })),
+            firma_beneficiario: firmaBeneficiarioFinal,
+            firma_autor: firmaAutorFinal,
+            geo_latitud: s.geo_latitud,
+            geo_longitud: s.geo_longitud,
+            geo_altitud: s.geo_altitud,
+            geo_precision: s.geo_precision,
+            huella_beneficiario: s.huella_beneficiario,
+            beneficiario_cedula: s.beneficiario_cedula,
+            beneficiario_nombre: s.beneficiario_nombre,
+            formulario_id: s.formulario_id,
+            // Respetar la fecha corregida (o la de creación offline) en vez de
+            // dejar que el servidor use NOW() al re-sincronizar.
+            created_at: s.created_at,
+          });
+
+          if (algunaFallo) {
+            // El registro ya está en el servidor, pero quedan evidencias
+            // pendientes: se conserva localmente como NO sincronizado para
+            // reintentar solo las evidencias en el próximo ciclo.
+            await saveSeguimientoLocal({
+              ...s,
+              fotos: fotosFinales,
+              videos: videosFinales,
+              firma_beneficiario: firmaBeneficiarioFinal,
+              firma_autor: firmaAutorFinal,
+              sincronizado: false,
+              updated_at: guardadoEnServidor?.updated_at || s.updated_at,
+            });
+            fallidos.push(s.id);
+          } else {
+            // Persistir la evidencia YA resuelta (con archivo_id) y el
+            // `updated_at` que devolvió el servidor. Antes esta rama solo hacía
+            // `marcarSincronizado` (sincronizado = 1) y NO guardaba los
+            // archivo_id de las fotos/videos ya subidos: la copia local
+            // conservaba eternamente `fotos: [{id, uri}]` SIN archivo_id, así
+            // que `getSeguimientosNoSincronizados` la consideraba "pendiente"
+            // para siempre (por el rescate de evidencia sin archivo_id) y el
+            // teléfono re-subía el seguimiento en CADA ciclo de sync. Ese
+            // re-POST es un upsert que reemplaza la fila completa y borraba las
+            // correcciones (y la fecha) hechas desde otro dispositivo, como el
+            // caso de la laptop de Kelly. Guardar aquí la evidencia resuelta y
+            // el updated_at del servidor corta ese bucle y hace que el merge
+            // por marca de tiempo funcione (ya no hay "evidencia pendiente"
+            // espuria que lo bloquee).
+            await saveSeguimientoLocal({
+              ...s,
+              fotos: fotosFinales,
+              videos: videosFinales,
+              firma_beneficiario: firmaBeneficiarioFinal,
+              firma_autor: firmaAutorFinal,
+              sincronizado: true,
+              updated_at: guardadoEnServidor?.updated_at || s.updated_at,
+            });
+            console.log('[Sync] Seguimiento sincronizado:', s.id);
+          }
+        } catch (err) {
+          console.warn('[Sync] Error sincronizando seguimiento:', s.id, err);
+          fallidos.push(s.id);
+        }
+      }
+    } catch (err) {
+      console.warn('[Sync] Error obteniendo seguimientos pendientes:', err);
     }
     return fallidos;
   }, []);
@@ -449,6 +761,18 @@ export const SyncProvider: React.FC<{ children: React.ReactNode }> = ({
         console.log('[Sync] Formulario guardado en servidor:', form.id);
         return true;
       } catch (err: any) {
+        // 410 = el admin borró este formulario a propósito (ver
+        // formularios_eliminados en el backend). Este dispositivo todavía
+        // tenía una copia local pendiente de subir — en vez de reintentarla
+        // para siempre (o peor, resucitar la visita en el servidor), se
+        // borra la copia local y se da por resuelto: no hay nada más que
+        // sincronizar.
+        if (err?.response?.status === 410) {
+          console.warn('[Sync] Formulario eliminado por un admin, se descarta la copia local:', form.id);
+          await deleteFormularioLocal(form.id);
+          await clearSyncQueueByFormId(form.id);
+          return true;
+        }
         console.warn('[Sync] Error guardando formulario:', form.id, err?.message);
         return false;
       }
@@ -537,7 +861,8 @@ export const SyncProvider: React.FC<{ children: React.ReactNode }> = ({
   }, []);
 
   const resolverClimaPendiente = useCallback(
-    async (pendientes: Formulario[]): Promise<void> => {
+    async (pendientes: Formulario[]): Promise<string[]> => {
+      const fallidos: string[] = [];
       for (const form of pendientes) {
         try {
           const { lugar, resumen } = await resolverClimaYUbicacion(
@@ -547,7 +872,10 @@ export const SyncProvider: React.FC<{ children: React.ReactNode }> = ({
           );
           // Sigue sin señal o Nominatim/Open-Meteo fallaron — se reintenta
           // en el próximo ciclo de sync, no es un error permanente.
-          if (!lugar && !resumen) continue;
+          if (!lugar && !resumen) {
+            fallidos.push(form.id);
+            continue;
+          }
 
           const actualizado: Formulario = {
             ...form,
@@ -562,14 +890,17 @@ export const SyncProvider: React.FC<{ children: React.ReactNode }> = ({
           // fotos/videos ya subidos se saltan (getUnsyncedPhotos/Videos
           // solo devuelve lo pendiente).
           if (form.sincronizado) {
-            await sincronizarFormulario(actualizado);
+            const resultado = await sincronizarFormulario(actualizado);
+            if (!resultado.success) fallidos.push(form.id);
           }
 
           console.log('[Sync] Clima/ubicación resuelto para formulario:', form.id);
         } catch (err) {
           console.warn('[Sync] No se pudo resolver clima pendiente para', form.id, err);
+          fallidos.push(form.id);
         }
       }
+      return fallidos;
     },
     [sincronizarFormulario]
   );
@@ -580,8 +911,9 @@ export const SyncProvider: React.FC<{ children: React.ReactNode }> = ({
 
   const sincronizarPlantaciones = useCallback(async (): Promise<string[]> => {
     const fallaron: string[] = [];
+    let pendientes: Record<string, any>[] = [];
     try {
-      const pendientes = await getPlantacionesNoSincronizadas();
+      pendientes = await getPlantacionesNoSincronizadas();
       if (pendientes.length === 0) return fallaron;
 
       console.log(`[Sync] Subiendo ${pendientes.length} plantaciones...`);
@@ -601,6 +933,7 @@ export const SyncProvider: React.FC<{ children: React.ReactNode }> = ({
       }
     } catch (err: any) {
       console.warn('[Sync] Error sincronizando plantaciones:', err?.message);
+      fallaron.push(...(pendientes.length ? pendientes.map(p => p.id) : ['error']));
     }
     return fallaron;
   }, []);
@@ -611,8 +944,9 @@ export const SyncProvider: React.FC<{ children: React.ReactNode }> = ({
 
   const sincronizarVisitasProgramadas = useCallback(async (): Promise<string[]> => {
     const fallaron: string[] = [];
+    let pendientes: Record<string, any>[] = [];
     try {
-      const pendientes = await getVisitasProgramadasNoSincronizadas();
+      pendientes = await getVisitasProgramadasNoSincronizadas();
       if (pendientes.length === 0) return fallaron;
 
       console.log(`[Sync] Subiendo ${pendientes.length} visita(s) programada(s)...`);
@@ -632,6 +966,7 @@ export const SyncProvider: React.FC<{ children: React.ReactNode }> = ({
       }
     } catch (err: any) {
       console.warn('[Sync] Error sincronizando visitas programadas:', err?.message);
+      fallaron.push(...(pendientes.length ? pendientes.map(v => v.id) : ['error']));
     }
     return fallaron;
   }, []);
@@ -642,8 +977,9 @@ export const SyncProvider: React.FC<{ children: React.ReactNode }> = ({
 
   const sincronizarMediciones = useCallback(async (): Promise<string[]> => {
     const fallaron: string[] = [];
+    let pendientes: Record<string, any>[] = [];
     try {
-      const pendientes = await getMedicionesNoSincronizadas();
+      pendientes = await getMedicionesNoSincronizadas();
       if (pendientes.length === 0) return fallaron;
 
       console.log(`[Sync] Subiendo ${pendientes.length} mediciones...`);
@@ -663,6 +999,7 @@ export const SyncProvider: React.FC<{ children: React.ReactNode }> = ({
       }
     } catch (err: any) {
       console.warn('[Sync] Error sincronizando mediciones:', err?.message);
+      fallaron.push(...(pendientes.length ? pendientes.map(m => m.id) : ['error']));
     }
     return fallaron;
   }, []);
@@ -673,8 +1010,9 @@ export const SyncProvider: React.FC<{ children: React.ReactNode }> = ({
 
   const sincronizarTracking = useCallback(async (): Promise<string[]> => {
     const fallaron: string[] = [];
+    let pendientes: Record<string, any>[] = [];
     try {
-      const pendientes = await getTrackingNoSincronizado();
+      pendientes = await getTrackingNoSincronizado();
       if (pendientes.length === 0) return fallaron;
 
       console.log(`[Sync] Subiendo ${pendientes.length} posiciones de tracking...`);
@@ -694,6 +1032,7 @@ export const SyncProvider: React.FC<{ children: React.ReactNode }> = ({
       }
     } catch (err: any) {
       console.warn('[Sync] Error sincronizando tracking:', err?.message);
+      fallaron.push(...(pendientes.length ? pendientes.map(pos => pos.id) : ['error']));
     }
     return fallaron;
   }, []);
@@ -704,14 +1043,17 @@ export const SyncProvider: React.FC<{ children: React.ReactNode }> = ({
 
   const checkPending = useCallback(async () => {
     try {
-      const [forms, plantas, mediciones, tracking, visitas] = await Promise.all([
+      const [forms, plantas, mediciones, tracking, visitas, documentos, evidencias, seguimientos] = await Promise.all([
         getPendingSyncForms(),
         getPlantacionesNoSincronizadas(),
         getMedicionesNoSincronizadas(),
         getTrackingNoSincronizado(),
         getVisitasProgramadasNoSincronizadas(),
+        getDocumentosNoSincronizados(),
+        getEvidenciasPendientes(),
+        getSeguimientosNoSincronizados(),
       ]);
-      const total = forms.length + plantas.length + mediciones.length + tracking.length + visitas.length;
+      const total = forms.length + plantas.length + mediciones.length + tracking.length + visitas.length + documentos.length + evidencias.fotos.length + evidencias.videos.length + seguimientos.length;
       dispatch({ type: 'SET_PENDING', count: total });
     } catch {
       // Ignorar errores al verificar pendientes
@@ -724,20 +1066,26 @@ export const SyncProvider: React.FC<{ children: React.ReactNode }> = ({
 
   const syncNow = useCallback(async () => {
     if (isSyncing.current) return;
+    if (retryTimer.current) {
+      clearTimeout(retryTimer.current);
+      retryTimer.current = null;
+    }
     isSyncing.current = true;
 
     dispatch({ type: 'SET_SYNCING' });
     const failedIds: string[] = [];
 
     try {
-      const [pendingForms, pendingPlantaciones, pendingMediciones, pendingTracking, pendingVisitas, pendingDocumentos, climaPendientes] = await Promise.all([
+      const [pendingForms, pendingPlantaciones, pendingMediciones, pendingTracking, pendingVisitas, pendingDocumentos, pendingEvidencias, climaPendientes, pendingSeguimientos] = await Promise.all([
         getPendingSyncForms(),
         getPlantacionesNoSincronizadas(),
         getMedicionesNoSincronizadas(),
         getTrackingNoSincronizado(),
         getVisitasProgramadasNoSincronizadas(),
         getDocumentosNoSincronizados(),
+        getEvidenciasPendientes(),
         buscarFormulariosConClimaPendiente(),
+        getSeguimientosNoSincronizados(),
       ]);
 
       if (
@@ -747,12 +1095,16 @@ export const SyncProvider: React.FC<{ children: React.ReactNode }> = ({
         pendingTracking.length === 0 &&
         pendingVisitas.length === 0 &&
         pendingDocumentos.length === 0 &&
-        climaPendientes.length === 0
+        pendingEvidencias.fotos.length === 0 &&
+        pendingEvidencias.videos.length === 0 &&
+        climaPendientes.length === 0 &&
+        pendingSeguimientos.length === 0
       ) {
         dispatch({
           type: 'SYNC_SUCCESS',
           timestamp: new Date().toISOString(),
         });
+        retryCount.current = 0;
         isSyncing.current = false;
         return;
       }
@@ -760,53 +1112,58 @@ export const SyncProvider: React.FC<{ children: React.ReactNode }> = ({
       console.log(`[Sync] Iniciando sync: ${pendingForms.length} formulario(s), ${pendingPlantaciones.length} plantación(es), ${pendingMediciones.length} medición(es), ${pendingTracking.length} posición(es), ${pendingVisitas.length} visita(s) programada(s)`);
 
       // 1. Sincronizar plantaciones
+      dispatch({ type: 'SET_STAGE', stage: 'Sincronizando plantaciones...' });
       const plantacionesFallidas = await sincronizarPlantaciones();
       failedIds.push(...plantacionesFallidas.map(id => `plant-${id}`));
 
       // 2. Sincronizar mediciones de terreno
+      dispatch({ type: 'SET_STAGE', stage: 'Sincronizando mediciones...' });
       const medicionesFallidas = await sincronizarMediciones();
       failedIds.push(...medicionesFallidas.map(id => `med-${id}`));
 
       // 3. Sincronizar tracking
+      dispatch({ type: 'SET_STAGE', stage: 'Sincronizando ubicaciones GPS...' });
       const trackingFallido = await sincronizarTracking();
       failedIds.push(...trackingFallido.map(id => `track-${id}`));
 
       // 3b. Sincronizar visitas programadas
+      dispatch({ type: 'SET_STAGE', stage: 'Sincronizando visitas programadas...' });
       const visitasFallidas = await sincronizarVisitasProgramadas();
       failedIds.push(...visitasFallidas.map(id => `visita-${id}`));
 
       // 3c. Documentos de la finca (títulos de predio, cédulas escaneadas)
+      dispatch({ type: 'SET_STAGE', stage: 'Sincronizando documentos...' });
       const documentosFallidos = await sincronizarDocumentos();
       failedIds.push(...documentosFallidos.map(id => `doc-${id}`));
+
+      // 3e. Seguimientos de Coordinación/Interventoría registrados en campo
+      dispatch({ type: 'SET_STAGE', stage: 'Sincronizando seguimientos...' });
+      const seguimientosFallidos = await sincronizarSeguimientos();
+      failedIds.push(...seguimientosFallidos.map(id => `seg-${id}`));
 
       // 3d. Clima/ubicación pendiente de formularios guardados sin señal
       if (climaPendientes.length > 0) {
         console.log(`[Sync] Resolviendo clima/ubicación de ${climaPendientes.length} formulario(s)`);
-        await resolverClimaPendiente(climaPendientes);
+        dispatch({ type: 'SET_STAGE', stage: 'Resolviendo ubicación y clima...' });
+        const climaFallidos = await resolverClimaPendiente(climaPendientes);
+        failedIds.push(...climaFallidos.map(id => `clima-${id}`));
       }
 
       // 4. Sincronizar formularios (uno por uno con backoff)
+      let formularioIndex = 0;
       for (const form of pendingForms) {
+        formularioIndex += 1;
+        dispatch({
+          type: 'SET_STAGE',
+          stage: `Sincronizando formulario ${formularioIndex} de ${pendingForms.length}...`,
+        });
         // Verificar reintentos
         const queueItem = await getSyncQueueItemByFormId(form.id);
         const intentosActuales = queueItem?.intentos || 0;
 
-        if (intentosActuales >= MAX_RETRIES) {
-          console.error(
-            `[Sync] Formulario ${form.id} alcanzó máximo de ${MAX_RETRIES} reintentos. Abandonando.`,
-          );
-          failedIds.push(form.id);
-          continue;
-        }
-
-        // Antes había aquí un `await setTimeout(intentos * 5s)` DENTRO del
-        // bucle: con 10 formularios en reintento 2 el ciclo se bloqueaba 100
-        // segundos y los últimos de la cola no llegaban a intentarse si la
-        // ventana de señal era corta. La espera entre reintentos la marca
-        // ahora el tiempo entre ciclos de sync, no una pausa bloqueante.
         if (intentosActuales > 0) {
           console.log(
-            `[Sync] Reintento ${intentosActuales}/${MAX_RETRIES} para ${form.id}`,
+            `[Sync] Reintento ${intentosActuales} para ${form.id}`,
           );
         }
 
@@ -833,33 +1190,31 @@ export const SyncProvider: React.FC<{ children: React.ReactNode }> = ({
           await updateSyncAttempts(form.id, nuevosIntentos);
           failedIds.push(form.id);
           console.warn(
-            `[Sync] Formulario ${form.id} falló. Intento ${nuevosIntentos}/${MAX_RETRIES}`,
+            `[Sync] Formulario ${form.id} falló. Intento ${nuevosIntentos}`,
           );
         }
       }
 
       // 5. Barrido final de evidencias pendientes (de formularios ya
       //    sincronizados cuyas fotos no llegaron a subir en su momento)
-      await subirEvidenciasHuerfanas();
+      dispatch({ type: 'SET_STAGE', stage: 'Subiendo fotos y videos pendientes...' });
+      const evidenciasFallidas = await subirEvidenciasHuerfanas();
+      failedIds.push(...evidenciasFallidas);
 
       // Resultado final
       if (failedIds.length === 0) {
+        retryCount.current = 0;
         dispatch({
           type: 'SYNC_SUCCESS',
           timestamp: new Date().toISOString(),
         });
-      } else if (failedIds.length < pendingForms.length) {
-        dispatch({
-          type: 'SYNC_ERROR',
-          error: `${failedIds.length} de ${pendingForms.length} formularios fallaron`,
-        });
-        dispatch({ type: 'SET_FAILED', ids: failedIds });
       } else {
         dispatch({
           type: 'SYNC_ERROR',
-          error: 'Todos los formularios fallaron al sincronizar',
+          error: `${failedIds.length} elemento(s) no se sincronizaron. Se conservaron en el dispositivo; se reintentará automáticamente.`,
         });
         dispatch({ type: 'SET_FAILED', ids: failedIds });
+        scheduleSyncRetry();
       }
 
       await checkPending();
@@ -873,11 +1228,12 @@ export const SyncProvider: React.FC<{ children: React.ReactNode }> = ({
         type: 'SYNC_ERROR',
         error: err?.message || 'Error de conexión durante la sincronización',
       });
+      scheduleSyncRetry();
     } finally {
       isSyncing.current = false;
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [checkPending, sincronizarFormulario, sincronizarDocumentos, subirEvidenciasHuerfanas, buscarFormulariosConClimaPendiente, resolverClimaPendiente]);
+  }, [checkPending, sincronizarFormulario, sincronizarDocumentos, sincronizarSeguimientos, subirEvidenciasHuerfanas, buscarFormulariosConClimaPendiente, resolverClimaPendiente, scheduleSyncRetry]);
 
   // ------------------------------------------------------------------
   // reintentarFormulario — reintento manual desde la UI
@@ -891,6 +1247,24 @@ export const SyncProvider: React.FC<{ children: React.ReactNode }> = ({
   // ------------------------------------------------------------------
   // Efecto: verificar pendientes al montar el provider
   // ------------------------------------------------------------------
+
+  useEffect(() => {
+    syncNowRef.current = syncNow;
+    return () => {
+      syncNowRef.current = null;
+    };
+  }, [syncNow]);
+
+  useEffect(() => {
+    syncBorradoresRef.current = sincronizarBorradoresLocales;
+    return () => {
+      syncBorradoresRef.current = null;
+    };
+  }, [sincronizarBorradoresLocales]);
+
+  useEffect(() => {
+    if (user?.id) void sincronizarBorradoresLocales();
+  }, [user?.id, sincronizarBorradoresLocales]);
 
   useEffect(() => {
     checkPending();
@@ -913,17 +1287,20 @@ export const SyncProvider: React.FC<{ children: React.ReactNode }> = ({
       if (cameOnline) {
         console.log('[Sync] Conexión recuperada — sincronizando pendientes...');
         syncNow().catch(() => { /* la cola reintenta */ });
+        void sincronizarBorradoresLocales();
       }
     });
 
     return () => unsubscribe();
-  }, [syncNow]);
+  }, [syncNow, sincronizarBorradoresLocales]);
 
   // Limpiar al desmontar
   useEffect(() => {
     return () => {
       // eslint-disable-next-line react-hooks/exhaustive-deps
       abortController.current?.abort();
+      if (retryTimer.current) clearTimeout(retryTimer.current);
+      if (retryDraftTimer.current) clearTimeout(retryDraftTimer.current);
     };
   }, []);
 

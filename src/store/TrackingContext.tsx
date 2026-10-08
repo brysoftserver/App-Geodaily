@@ -14,6 +14,7 @@
 // ============================================================
 
 import React, { createContext, useContext, useState, useRef, useCallback, useEffect, useMemo } from 'react';
+import { Alert } from 'react-native';
 import * as Location from 'expo-location';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useAuth } from './AuthContext';
@@ -24,6 +25,7 @@ import { getDbSafe } from '../services/database';
 const STORAGE_KEY_ACTIVO = '@geodaily/tracking_active';
 const STORAGE_KEY_PAUSADO = '@geodaily/tracking_pausado';
 const STORAGE_KEY_SESION = '@geodaily/tracking_sesion_id';
+const STORAGE_KEY_USUARIO = '@geodaily/tracking_usuario_id';
 const TRACKING_INTERVAL_MS = 15000; // 15 segundos
 
 interface TrackingState {
@@ -70,6 +72,7 @@ export const TrackingProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   const usuarioIdRef = useRef(usuarioId);
   const gpsPositionRef = useRef<Coordenadas | undefined>(undefined);
   const sesionIdRef = useRef<string | null>(null);
+  const restaurandoRef = useRef(false);
 
   // Sincronizar GPSContext → ref para usar en el intervalo sin llamar GPS cada vez
   useEffect(() => {
@@ -82,7 +85,7 @@ export const TrackingProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   }, [usuarioId]);
 
   /** Inserta una posición en SQLite, siempre con el sesion_id de la ruta activa. */
-  const persistirPosicion = useCallback(async (pos: PosicionTracking, reemplazar: boolean) => {
+  const persistirPosicion = useCallback(async (pos: PosicionTracking, reemplazar: boolean): Promise<boolean> => {
     try {
       const database = await initDb();
       await database.runAsync(
@@ -96,8 +99,10 @@ export const TrackingProvider: React.FC<{ children: React.ReactNode }> = ({ chil
           pos.timestamp, pos.sincronizado ? 1 : 0, sesionIdRef.current,
         ]
       );
+      return true;
     } catch (e) {
       console.warn('[TrackingContext] Error al persistir:', e);
+      return false;
     }
   }, []);
 
@@ -133,6 +138,19 @@ export const TrackingProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
         const dist = 6371 * c;
 
+        const persistida = await persistirPosicion(posicion, false);
+        if (!persistida) {
+          if (intervalRef.current) clearInterval(intervalRef.current);
+          intervalRef.current = null;
+          setState((prev) => ({ ...prev, pausado: true }));
+          AsyncStorage.setItem(STORAGE_KEY_PAUSADO, 'true').catch(() => {});
+          Alert.alert(
+            'Seguimiento pausado',
+            'No se pudo guardar una posición en el dispositivo. La ruta se conserva para reanudar cuando el almacenamiento esté disponible.'
+          );
+          return;
+        }
+
         posicionesRef.current = [...posicionesRef.current, posicion];
         lastPosRef.current = { lat: posicion.latitud, lon: posicion.longitud };
 
@@ -141,8 +159,6 @@ export const TrackingProvider: React.FC<{ children: React.ReactNode }> = ({ chil
           posiciones: posicionesRef.current,
           distanceKm: prev.distanceKm + dist,
         }));
-
-        await persistirPosicion(posicion, false);
       }
     }, TRACKING_INTERVAL_MS);
   }, [persistirPosicion]);
@@ -161,6 +177,7 @@ export const TrackingProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
     sesionIdRef.current = sesionIdExistente || generarSesionId();
     await AsyncStorage.setItem(STORAGE_KEY_SESION, sesionIdRef.current);
+    await AsyncStorage.setItem(STORAGE_KEY_USUARIO, usuarioIdRef.current);
 
     let latitud: number, longitud: number, altitud: number | undefined, precision: number | undefined, heading: number | undefined;
     if (gpsPositionRef.current) {
@@ -196,10 +213,21 @@ export const TrackingProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       sincronizado: false,
     };
 
+    const primeraPersistida = await persistirPosicion(primeraPos, true);
+    if (!primeraPersistida) {
+      posicionesRef.current = [];
+      lastPosRef.current = null;
+      if (!sesionIdExistente) {
+        sesionIdRef.current = null;
+        await AsyncStorage.removeItem(STORAGE_KEY_SESION);
+        await AsyncStorage.removeItem(STORAGE_KEY_USUARIO);
+      }
+      Alert.alert('No se pudo iniciar el seguimiento', 'La primera posición no quedó guardada en este dispositivo. Revisa el almacenamiento e inténtalo de nuevo.');
+      return;
+    }
+
     posicionesRef.current = [primeraPos];
     lastPosRef.current = { lat: primeraPos.latitud, lon: primeraPos.longitud };
-
-    await persistirPosicion(primeraPos, true);
 
     setState(prev => ({
       ...prev,
@@ -215,29 +243,58 @@ export const TrackingProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     await AsyncStorage.setItem(STORAGE_KEY_PAUSADO, 'false');
   }, [persistirPosicion, iniciarIntervalo]);
 
-  // Restaurar tracking activo al arrancar la app
+  // Restaurar tracking cuando Auth haya recuperado el usuario.
   useEffect(() => {
+    if (!usuarioId) return;
+    let cancelado = false;
     const checkSavedState = async () => {
+      if (restaurandoRef.current) return;
+      restaurandoRef.current = true;
       try {
         const saved = await AsyncStorage.getItem(STORAGE_KEY_ACTIVO);
-        if (saved === 'true' && usuarioIdRef.current) {
-          console.log('[TrackingContext] Restaurando tracking persistido...');
-          const sesionPrevia = await AsyncStorage.getItem(STORAGE_KEY_SESION);
-          const pausadoPrevio = await AsyncStorage.getItem(STORAGE_KEY_PAUSADO);
-          await iniciarTrackingInterno(sesionPrevia || undefined);
-          if (pausadoPrevio === 'true' && intervalRef.current) {
-            clearInterval(intervalRef.current);
-            intervalRef.current = null;
-            setState(prev => ({ ...prev, pausado: true }));
+        if (cancelado || saved !== 'true') return;
+
+        const sesionPrevia = await AsyncStorage.getItem(STORAGE_KEY_SESION);
+        if (!sesionPrevia) return;
+
+        const usuarioGuardado = await AsyncStorage.getItem(STORAGE_KEY_USUARIO);
+        if (usuarioGuardado && usuarioGuardado !== usuarioId) {
+          console.warn('[TrackingContext] No se restaura una ruta de otra cuenta');
+          return;
+        }
+        if (!usuarioGuardado) {
+          const database = await getDbSafe();
+          if (!database) return;
+          const propietarios = await database.getAllAsync<{ usuario_id: string }>(
+            'SELECT DISTINCT usuario_id FROM tracking_posiciones WHERE sesion_id = ?',
+            [sesionPrevia]
+          );
+          if (propietarios.length === 0 || propietarios.some((p) => p.usuario_id !== usuarioId)) {
+            console.warn('[TrackingContext] La ruta antigua no coincide con el usuario actual');
+            return;
           }
+          await AsyncStorage.setItem(STORAGE_KEY_USUARIO, usuarioId);
+        }
+
+        if (cancelado) return;
+        console.log('[TrackingContext] Restaurando tracking persistido...');
+        const pausadoPrevio = await AsyncStorage.getItem(STORAGE_KEY_PAUSADO);
+        await iniciarTrackingInterno(sesionPrevia);
+        if (cancelado) return;
+        if (pausadoPrevio === 'true' && intervalRef.current) {
+          clearInterval(intervalRef.current);
+          intervalRef.current = null;
+          setState((prev) => ({ ...prev, pausado: true }));
         }
       } catch {
-          // Ignorar errores al restaurar estado persistido
+        console.warn('[TrackingContext] No se pudo restaurar el seguimiento');
+      } finally {
+        restaurandoRef.current = false;
         }
     };
-    checkSavedState();
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []); // Solo al montar
+    void checkSavedState();
+    return () => { cancelado = true; };
+  }, [usuarioId, iniciarTrackingInterno]);
 
   // Limpiar al desmontar el provider (cierre de app)
   useEffect(() => {
@@ -280,6 +337,7 @@ export const TrackingProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     await AsyncStorage.setItem(STORAGE_KEY_ACTIVO, 'false');
     await AsyncStorage.setItem(STORAGE_KEY_PAUSADO, 'false');
     await AsyncStorage.removeItem(STORAGE_KEY_SESION);
+    await AsyncStorage.removeItem(STORAGE_KEY_USUARIO);
     sesionIdRef.current = null;
 
     setState(prev => ({

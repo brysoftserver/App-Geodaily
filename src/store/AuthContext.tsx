@@ -3,7 +3,7 @@
 // ============================================================
 
 import React, { createContext, useContext, useReducer, useCallback, useEffect, useMemo } from 'react';
-import * as SecureStore from 'expo-secure-store';
+import * as SecureStore from '../services/secureStorage';
 import { Usuario, UserRole } from '../types';
 import {
   loginUser,
@@ -89,10 +89,16 @@ interface AuthContextType extends AuthState {
   /** Refleja en memoria + SecureStore un cambio de avatar (subida/quitada) sin necesitar re-login. */
   actualizarAvatarLocal: (avatarArchivoId: string | null) => Promise<void>;
   isTecnico: boolean;
-  isSupervisor: boolean;
+  isCoordinador: boolean;
   isInterventor: boolean;
   isGerente: boolean;
   isAdmin: boolean;
+  /** Admin, coordinador e interventor pueden eliminar formularios; gerente y técnico no. */
+  puedeEliminarFormulario: boolean;
+  /** Admin, coordinador e interventor pueden eliminar seguimientos; gerente y técnico no. */
+  puedeEliminarSeguimiento: boolean;
+  /** Admin, coordinador e interventor pueden corregir/completar seguimientos ya guardados. */
+  puedeEditarSeguimiento: boolean;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -293,10 +299,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     getRole,
     actualizarAvatarLocal,
     isTecnico: state.user?.rol === 'tecnico',
-    isSupervisor: state.user?.rol === 'supervisor',
+    isCoordinador: state.user?.rol === 'coordinador',
     isInterventor: state.user?.rol === 'interventor',
     isGerente: state.user?.rol === 'gerente',
     isAdmin: state.user?.rol === 'admin',
+    puedeEliminarFormulario: ['admin', 'coordinador', 'interventor'].includes(state.user?.rol ?? ''),
+    puedeEliminarSeguimiento: ['admin', 'coordinador', 'interventor'].includes(state.user?.rol ?? ''),
+    puedeEditarSeguimiento: ['admin', 'coordinador', 'interventor'].includes(state.user?.rol ?? ''),
   }), [state, login, logout, changePassword, getRole, actualizarAvatarLocal]);
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

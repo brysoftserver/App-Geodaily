@@ -11,7 +11,7 @@ export interface UsuarioBackend {
   nombre: string;
   cedula?: string;
   email?: string;
-  rol: 'tecnico' | 'supervisor' | 'interventor' | 'gerente' | 'admin';
+  rol: 'tecnico' | 'coordinador' | 'interventor' | 'gerente' | 'admin';
   telefono?: string;
   activo: boolean;
   contrasena_visible?: string;
@@ -42,6 +42,13 @@ export interface ActualizarUsuarioPayload {
 
 const USUARIOS_ENDPOINT = API_CONFIG.ENDPOINTS.AUTH + '/usuarios';
 const TECNICOS_ENDPOINT = API_CONFIG.ENDPOINTS.AUTH + '/tecnicos';
+const PERSONAL_ENDPOINT = API_CONFIG.ENDPOINTS.AUTH + '/personal';
+
+export interface PersonalCronograma {
+  id: string;
+  nombre: string;
+  rol: 'tecnico' | 'coordinador' | 'interventor';
+}
 
 /**
  * Listar todos los usuarios reales (admin-only en backend).
@@ -57,6 +64,15 @@ export const getUsuarios = async (): Promise<UsuarioBackend[]> => {
 export const getTecnicos = async (): Promise<UsuarioBackend[]> => {
   const response = await apiClient.get(TECNICOS_ENDPOINT);
   return response.data?.tecnicos || [];
+};
+
+/**
+ * Listar técnicos, coordinadores e interventores activos — para elegir de
+ * quién descargar el cronograma (accesible por cualquier rol autenticado).
+ */
+export const getPersonalCronograma = async (): Promise<PersonalCronograma[]> => {
+  const response = await apiClient.get(PERSONAL_ENDPOINT);
+  return response.data?.personal || [];
 };
 
 /**
@@ -86,4 +102,23 @@ export const actualizarUsuario = async (
  */
 export const eliminarUsuario = async (id: string): Promise<void> => {
   await apiClient.delete(`${USUARIOS_ENDPOINT}/${id}`);
+};
+
+export interface EliminarUsuarioPermanenteResultado {
+  formularios_borrados: number;
+  archivos_fisicos_eliminados: number;
+}
+
+/**
+ * Eliminar un usuario PERMANENTEMENTE (hard-delete en cascada): borra la
+ * cuenta y todo lo que generó (formularios, revisiones, notificaciones,
+ * mediciones, plantaciones, tracking, log de actividad, archivos y PDFs en
+ * MinIO). A los beneficiarios que tenía asignados solo se les quita la
+ * asignación. Irreversible — solo admin.
+ */
+export const eliminarUsuarioPermanente = async (
+  id: string
+): Promise<EliminarUsuarioPermanenteResultado> => {
+  const response = await apiClient.delete(`${USUARIOS_ENDPOINT}/${id}/permanente`);
+  return response.data;
 };

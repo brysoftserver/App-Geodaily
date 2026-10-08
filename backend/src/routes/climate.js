@@ -262,22 +262,33 @@ router.get('/actual', authenticateToken, async (req, res) => {
     return res.status(400).json({ estado: 'error', mensaje: 'lat y lon requeridos' });
   }
 
-  try {
-    const [ubicacion, climaReal] = await Promise.all([
-      resolverUbicacion(lat, lon),
-      obtenerClimaReal(lat, lon),
-    ]);
+  // Promise.allSettled (igual que /en-momento): el clima es información
+  // best-effort. Si Open-Meteo o Nominatim fallan, NO se rompe la petición
+  // con un 502 — se devuelve 200 con lo que sí se obtuvo (o null). Antes un
+  // 502 aquí se mostraba crudo al técnico en campo como "HTTP status code 502"
+  // aunque sus coordenadas se hubieran capturado perfectamente sin internet.
+  const [ubicacionResult, climaResult] = await Promise.allSettled([
+    resolverUbicacion(lat, lon),
+    obtenerClimaReal(lat, lon),
+  ]);
 
-    res.json({
-      fuente: 'Open-Meteo',
-      ubicacion,
-      pais: 'Colombia',
-      ...climaReal,
-    });
-  } catch (error) {
-    console.error('[Climate] Error obteniendo clima real:', error.message);
-    res.status(502).json({ estado: 'error', mensaje: 'No se pudo obtener el clima real en este momento. Verifica la conexión a internet del servidor.' });
+  const ubicacion =
+    ubicacionResult.status === 'fulfilled'
+      ? ubicacionResult.value
+      : { latitud: parseFloat(lat), longitud: parseFloat(lon), nombre: 'Ubicación actual' };
+
+  if (climaResult.status === 'rejected') {
+    console.warn('[Climate] No se pudo obtener el clima real:', climaResult.reason?.message);
   }
+
+  res.json({
+    estado: 'ok',
+    fuente: 'Open-Meteo',
+    ubicacion,
+    pais: 'Colombia',
+    // null si Open-Meteo falló — el nombre del lugar llega de todas formas
+    ...(climaResult.status === 'fulfilled' ? climaResult.value : { clima: null }),
+  });
 });
 
 // GET /api/climate/historico?lat=X&lon=Y
@@ -319,23 +330,36 @@ router.get('/resumen', authenticateToken, async (req, res) => {
   const latNum = parseFloat(lat);
   const lonNum = parseFloat(lon);
 
-  try {
-    const [ubicacion, climaReal] = await Promise.all([
-      resolverUbicacion(lat, lon),
-      obtenerClimaReal(lat, lon),
-    ]);
+  // Promise.allSettled (igual que /en-momento): best-effort. Nunca 502.
+  const [ubicacionResult, climaResult] = await Promise.allSettled([
+    resolverUbicacion(lat, lon),
+    obtenerClimaReal(lat, lon),
+  ]);
 
-    const actual = {
-      fuente: 'Open-Meteo',
-      ubicacion,
-      pais: 'Colombia',
-      ...climaReal,
-    };
+  const ubicacion =
+    ubicacionResult.status === 'fulfilled'
+      ? ubicacionResult.value
+      : { latitud: latNum, longitud: lonNum, nombre: 'Ubicación actual' };
 
-    res.json({
-      ubicacion: { latitud: latNum, longitud: lonNum },
-      actual,
-      historico: [
+  if (climaResult.status === 'rejected') {
+    console.warn('[Climate] No se pudo obtener el resumen climático real:', climaResult.reason?.message);
+  }
+
+  const actual =
+    climaResult.status === 'fulfilled'
+      ? {
+          fuente: 'Open-Meteo',
+          ubicacion,
+          pais: 'Colombia',
+          ...climaResult.value,
+        }
+      : null;
+
+  res.json({
+    estado: 'ok',
+    ubicacion: { latitud: latNum, longitud: lonNum },
+    actual,
+    historico: [
         { variable: 'precipitacion', mes: 1, valor: 180, unidad: 'mm', periodo: '1991-2020' },
         { variable: 'precipitacion', mes: 2, valor: 165, unidad: 'mm', periodo: '1991-2020' },
         { variable: 'precipitacion', mes: 3, valor: 210, unidad: 'mm', periodo: '1991-2020' },
@@ -347,11 +371,7 @@ router.get('/resumen', authenticateToken, async (req, res) => {
         { variable: 'humedad', mes: 1, valor: 78, unidad: '%', periodo: '1991-2020' },
         { variable: 'humedad', mes: 6, valor: 85, unidad: '%', periodo: '1991-2020' },
       ],
-    });
-  } catch (error) {
-    console.error('[Climate] Error obteniendo resumen climático real:', error.message);
-    res.status(502).json({ estado: 'error', mensaje: 'No se pudo obtener el clima real en este momento. Verifica la conexión a internet del servidor.' });
-  }
+  });
 });
 
 module.exports = router;

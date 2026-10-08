@@ -90,6 +90,25 @@ export const sincronizarBeneficiariosDesdeServidor = async (): Promise<boolean> 
   }
 };
 
+/**
+ * Traer el padrón de beneficiarios directamente del servidor, sin pasar
+ * por el espejo SQLite. A diferencia de `sincronizarBeneficiariosDesdeServidor`
+ * + `getBeneficiarios()`, esto funciona también en web (expo-sqlite no
+ * corre ahí — ver database.ts) porque no toca la base local en ningún punto.
+ * Se usa para estadísticas que necesitan la asignación técnico↔beneficiario
+ * VIGENTE (tecnico_asignado_id), no el espejo offline.
+ */
+export const fetchBeneficiariosDelServidor = async (): Promise<BeneficiarioDB[]> => {
+  try {
+    const response = await apiClient.get(API_CONFIG.ENDPOINTS.BENEFICIARIOS);
+    const beneficiarios = response.data?.beneficiarios;
+    return Array.isArray(beneficiarios) ? beneficiarios : [];
+  } catch (error: any) {
+    console.warn('[BeneficiariosDB] No se pudo obtener el padrón del servidor:', error?.message);
+    return [];
+  }
+};
+
 // ============================================================
 // SEED — exactamente los 300 beneficiarios de
 // Base_de_datos_beneficiarios/300 beneficiarios final.csv (los 31 que no

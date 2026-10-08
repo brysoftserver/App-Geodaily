@@ -2,7 +2,7 @@
 // GEODAILY — Resultados de la Encuesta Social AgroAmbiental
 // ============================================================
 // Bloque de estadísticas del Formulario 1, para los dashboards de
-// Supervisor, Interventor y Gerente. Una sección por bloque del
+// Coordinador, Interventor y Gerente. Una sección por bloque del
 // formulario (Datos Generales → Componente Agroambiental), cada una
 // como un carrusel horizontal de gráficas (torta o barras).
 // ============================================================

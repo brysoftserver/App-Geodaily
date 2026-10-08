@@ -27,12 +27,17 @@ export const useClimate = () => {
     try {
       const resumen = await getResumenClimatico(lat, lon);
 
+      // El clima es información best-effort: si no se pudo obtener (sin señal,
+      // servidor sin salida a internet, etc.) NO se muestra un error crudo al
+      // técnico. Antes un 502 del backend aparecía como "HTTP status code 502"
+      // en la pantalla de cámara, alarmando sin motivo — las coordenadas y la
+      // evidencia ya se capturaron bien. Simplemente no se muestra la tarjeta.
       if (!resumen) {
         setState({
           climaActual: null,
           resumen: null,
           isLoading: false,
-          error: 'No se pudieron obtener datos climáticos — verifica conexión y autenticación',
+          error: null,
         });
         return;
       }
@@ -44,14 +49,16 @@ export const useClimate = () => {
         error: null,
       });
     } catch (err) {
+      // Igual que arriba: nunca propagar el mensaje crudo (p. ej. "HTTP status
+      // code 502") a la UI. Solo se registra en consola para diagnóstico.
       const msg =
         err instanceof Error ? err.message : 'Error desconocido al obtener datos climáticos';
-      console.error('[useClimate] Error inesperado:', msg);
+      console.warn('[useClimate] Clima no disponible (best-effort):', msg);
       setState({
         climaActual: null,
         resumen: null,
         isLoading: false,
-        error: `Error climático: ${msg}`,
+        error: null,
       });
     }
   }, []);

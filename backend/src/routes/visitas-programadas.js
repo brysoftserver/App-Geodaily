@@ -19,15 +19,55 @@ router.post('/sync', authenticateToken, async (req, res) => {
 
     let sincronizadas = 0;
     for (const v of visitas) {
+      const numero = Number(v.actividad_numero);
+      const cedula = (v.beneficiario_cedula || '').trim();
+
+      if (cedula && Number.isInteger(numero) && numero >= 1 && numero <= 12) {
+        const existente = await db.queryOne(
+          `SELECT id FROM visitas_programadas
+            WHERE beneficiario_cedula = $1 AND actividad_numero = $2 AND id <> $3 AND estado = 'pendiente'`,
+          [cedula, numero, v.id || '']
+        );
+
+        if (existente) {
+          return res.status(409).json({
+            estado: 'error',
+            mensaje: `Ya existe una programación pendiente para la Visita ${numero} del beneficiario ${cedula}`,
+          });
+        }
+
+        const formularioExistente = await db.queryOne(
+          `SELECT id FROM formularios
+            WHERE beneficiario_json->>'cedula' = $1
+              AND actividad_json->>'visita_numero' = $2`,
+          [cedula, String(numero)]
+        );
+
+        if (formularioExistente) {
+          return res.status(409).json({
+            estado: 'error',
+            mensaje: `La Visita ${numero} del beneficiario ${cedula} ya fue realizada y no puede programarse otra vez`,
+          });
+        }
+      }
+
       const id = v.id || `visita-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
       await db.query(
-        `INSERT INTO visitas_programadas (id, usuario_id, titulo, ubicacion, fecha, estado, timestamp_dispositivo)
-         VALUES ($1, $2, $3, $4, $5, $6, $7)
+        `INSERT INTO visitas_programadas (
+          id, usuario_id, titulo, ubicacion, fecha, estado,
+          beneficiario_cedula, beneficiario_nombre, actividad_numero, vereda, corregimiento,
+          timestamp_dispositivo
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
          ON CONFLICT (id) DO UPDATE SET
            titulo = EXCLUDED.titulo,
            ubicacion = EXCLUDED.ubicacion,
            fecha = EXCLUDED.fecha,
-           estado = EXCLUDED.estado`,
+           estado = EXCLUDED.estado,
+           beneficiario_cedula = EXCLUDED.beneficiario_cedula,
+           beneficiario_nombre = EXCLUDED.beneficiario_nombre,
+           actividad_numero = EXCLUDED.actividad_numero,
+           vereda = EXCLUDED.vereda,
+           corregimiento = EXCLUDED.corregimiento`,
         [
           id,
           v.usuario_id || req.user.id,
@@ -35,6 +75,11 @@ router.post('/sync', authenticateToken, async (req, res) => {
           v.ubicacion || '',
           v.fecha,
           v.estado || 'pendiente',
+          v.beneficiario_cedula || null,
+          v.beneficiario_nombre || null,
+          v.actividad_numero ?? null,
+          v.vereda || null,
+          v.corregimiento || null,
           v.timestamp_dispositivo || new Date().toISOString(),
         ]
       );
@@ -59,8 +104,9 @@ router.post('/sync', authenticateToken, async (req, res) => {
 router.get('/', authenticateToken, async (req, res) => {
   try {
     const sql = `
-      SELECT vp.id, vp.usuario_id, vp.titulo, vp.ubicacion, vp.fecha, vp.estado, vp.created_at,
-        u.nombre AS usuario_nombre
+      SELECT vp.id, vp.usuario_id, vp.titulo, vp.ubicacion, vp.fecha, vp.estado,
+        vp.beneficiario_cedula, vp.beneficiario_nombre, vp.actividad_numero, vp.vereda, vp.corregimiento,
+        vp.created_at, u.nombre AS usuario_nombre
       FROM visitas_programadas vp
       JOIN usuarios u ON u.id = vp.usuario_id
       ORDER BY vp.fecha ASC

@@ -243,6 +243,20 @@ router.get('/tecnicos', authenticateToken, async (req, res) => {
   }
 });
 
+// GET /api/auth/personal — Técnicos, coordinadores e interventores activos
+// (para elegir de quién descargar el cronograma). Cualquier rol autenticado.
+router.get('/personal', authenticateToken, async (req, res) => {
+  try {
+    const personal = await db.queryAll(
+      "SELECT id, nombre, rol FROM usuarios WHERE rol IN ('tecnico', 'coordinador', 'interventor') AND activo = TRUE ORDER BY rol, nombre"
+    );
+    res.json({ success: true, total: personal.length, personal });
+  } catch (error) {
+    console.error('[Auth] Listar personal error:', error);
+    res.status(500).json({ success: false, error: 'Error al listar personal' });
+  }
+});
+
 // POST /api/auth/usuarios — Crear usuario (admin) + carpetas en MinIO
 router.post('/usuarios', authenticateToken, async (req, res) => {
   try {
@@ -259,7 +273,7 @@ router.post('/usuarios', authenticateToken, async (req, res) => {
       });
     }
 
-    const rolesValidos = ['tecnico', 'supervisor', 'interventor', 'gerente', 'admin'];
+    const rolesValidos = ['tecnico', 'coordinador', 'interventor', 'gerente', 'admin'];
     if (!rolesValidos.includes(rol)) {
       return res.status(400).json({ success: false, error: `Rol inválido. Debe ser: ${rolesValidos.join(', ')}` });
     }
@@ -269,7 +283,7 @@ router.post('/usuarios', authenticateToken, async (req, res) => {
       return res.status(409).json({ success: false, error: 'El nombre de usuario ya existe' });
     }
 
-    const prefixMap = { tecnico: 'tec', supervisor: 'sup', interventor: 'int', gerente: 'ger', admin: 'adm' };
+    const prefixMap = { tecnico: 'tec', coordinador: 'coo', interventor: 'int', gerente: 'ger', admin: 'adm' };
     const prefix = prefixMap[rol];
     const count = await db.queryOne('SELECT COUNT(*) as total FROM usuarios WHERE id LIKE $1', [`${prefix}-%`]);
     const nextNum = String((parseInt(count?.total || '0') + 1)).padStart(3, '0');
@@ -445,6 +459,136 @@ router.delete('/usuarios/:id', authenticateToken, async (req, res) => {
     console.error('[Auth] Eliminar usuario error:', error);
     res.status(500).json({ success: false, error: 'Error al eliminar usuario' });
   }
+});
+
+// DELETE /api/auth/usuarios/:id/permanente — Eliminar usuario en cascada (admin)
+// Borra la cuenta y TODO lo que generó: formularios (con sus revisiones,
+// notificaciones, mediciones, plantaciones, archivos y PDFs en MinIO),
+// tracking, visitas programadas, log de actividad y revisiones que haya
+// hecho sobre formularios de otros. A los beneficiarios que tenía
+// asignados se les quita la asignación, pero no se borran.
+router.delete('/usuarios/:id/permanente', authenticateToken, async (req, res) => {
+  if (req.user.rol !== 'admin') {
+    return res.status(403).json({ success: false, error: 'Solo administradores' });
+  }
+
+  const usuarioId = req.params.id;
+  if (usuarioId === req.user.id) {
+    return res.status(400).json({ success: false, error: 'No puedes eliminar tu propia cuenta' });
+  }
+
+  const client = await db.pool.connect();
+  let archivosParaBorrar = [];
+  let usuario = null;
+  let deleted = false;
+  let formulariosBorrados = 0;
+
+  try {
+    await client.query('BEGIN');
+
+    const usuarioResult = await client.query('SELECT id, usuario, nombre, rol FROM usuarios WHERE id = $1', [usuarioId]);
+    usuario = usuarioResult.rows[0];
+    if (!usuario) {
+      await client.query('ROLLBACK');
+      client.release();
+      return res.status(404).json({ success: false, error: 'Usuario no encontrado' });
+    }
+
+    const formulariosResult = await client.query('SELECT id FROM formularios WHERE usuario_id = $1', [usuarioId]);
+    const formularioIds = formulariosResult.rows.map((f) => f.id);
+    formulariosBorrados = formularioIds.length;
+
+    const archivosResult = await client.query(
+      `SELECT id, minio_path FROM archivos
+       WHERE usuario_id = $1 OR formulario_id = ANY($2::text[]) OR metadata_json->>'formulario_id' = ANY($2::text[])`,
+      [usuarioId, formularioIds]
+    );
+    archivosParaBorrar = archivosResult.rows;
+
+    if (formularioIds.length > 0) {
+      await client.query('DELETE FROM revisiones_formulario WHERE formulario_id = ANY($1::text[])', [formularioIds]);
+      await client.query('DELETE FROM notificaciones WHERE formulario_id = ANY($1::text[])', [formularioIds]);
+      await client.query('DELETE FROM revision_evidencia_formulario WHERE formulario_id = ANY($1::text[])', [formularioIds]);
+      await client.query('DELETE FROM mediciones WHERE formulario_id = ANY($1::text[])', [formularioIds]);
+      await client.query('DELETE FROM plantaciones WHERE formulario_id = ANY($1::text[])', [formularioIds]);
+    }
+
+    await client.query(
+      `DELETE FROM archivos WHERE usuario_id = $1 OR formulario_id = ANY($2::text[]) OR metadata_json->>'formulario_id' = ANY($2::text[])`,
+      [usuarioId, formularioIds]
+    );
+    // mediciones y plantaciones también tienen FK directa a usuario_id
+    // (además de formulario_id), así que se limpian aparte por si alguna
+    // fila no quedó cubierta por el borrado ligado a formularioIds.
+    await client.query('DELETE FROM mediciones WHERE usuario_id = $1', [usuarioId]);
+    await client.query('DELETE FROM plantaciones WHERE usuario_id = $1', [usuarioId]);
+    await client.query('DELETE FROM formularios WHERE usuario_id = $1', [usuarioId]);
+    await client.query('DELETE FROM revisiones_formulario WHERE revisor_id = $1', [usuarioId]);
+    await client.query('DELETE FROM revision_evidencia_formulario WHERE revisor_id = $1', [usuarioId]);
+    await client.query('DELETE FROM notificaciones WHERE usuario_id = $1', [usuarioId]);
+    await client.query('DELETE FROM tracking WHERE usuario_id = $1', [usuarioId]);
+    await client.query('DELETE FROM visitas_programadas WHERE usuario_id = $1', [usuarioId]);
+    await client.query('DELETE FROM actividad_log WHERE usuario_id = $1', [usuarioId]);
+    await client.query(
+      'UPDATE beneficiarios SET tecnico_asignado_id = NULL, tecnico_asignado_nombre = NULL WHERE tecnico_asignado_id = $1',
+      [usuarioId]
+    );
+    await client.query('UPDATE usuarios SET avatar_archivo_id = NULL WHERE id = $1', [usuarioId]);
+
+    const deleteResult = await client.query('DELETE FROM usuarios WHERE id = $1 RETURNING id', [usuarioId]);
+    deleted = deleteResult.rowCount > 0;
+
+    if (deleted) {
+      await client.query(
+        'INSERT INTO actividad_log (usuario_id, accion, detalle_json) VALUES ($1, $2, $3)',
+        [req.user.id, 'eliminar_usuario_permanente', JSON.stringify({
+          usuario_id: usuarioId,
+          usuario: usuario.usuario,
+          rol: usuario.rol,
+          formularios_borrados: formularioIds.length,
+          archivos_borrados: archivosParaBorrar.length,
+        })]
+      );
+    }
+
+    await client.query('COMMIT');
+  } catch (error) {
+    await client.query('ROLLBACK');
+    client.release();
+    console.error('[Auth] Eliminar usuario permanente error:', error);
+    return res.status(500).json({ success: false, error: 'Error al eliminar usuario permanentemente' });
+  }
+  client.release();
+
+  if (!deleted) {
+    return res.status(404).json({ success: false, error: 'Usuario no encontrado' });
+  }
+
+  let archivosFisicosBorrados = 0;
+  for (const archivo of archivosParaBorrar) {
+    const ok = await storage.deleteFile(archivo.minio_path);
+    if (ok) archivosFisicosBorrados++;
+  }
+
+  try {
+    const basePath = storage.getUserBasePath(usuario.rol, usuario.usuario);
+    const restantes = await storage.listFiles(`${basePath}/`, true);
+    for (const obj of restantes) {
+      await storage.deleteFile(obj.name);
+      archivosFisicosBorrados++;
+    }
+  } catch (err) {
+    console.error('[Auth] Error limpiando carpeta MinIO del usuario:', err.message);
+  }
+
+  console.log(`[Auth] 🗑️ Usuario ${usuario.usuario} (${usuarioId}) eliminado permanentemente por ${req.user.usuario}`);
+
+  res.json({
+    success: true,
+    mensaje: 'Usuario eliminado permanentemente junto con sus formularios, archivos y datos asociados',
+    formularios_borrados: formulariosBorrados,
+    archivos_fisicos_eliminados: archivosFisicosBorrados,
+  });
 });
 
 module.exports = router;

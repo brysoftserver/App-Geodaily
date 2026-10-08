@@ -17,6 +17,7 @@ import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { COLORS, FONTS, SPACING, BORDER_RADIUS, SHADOWS } from '../../theme';
 import { Formulario, DatosBeneficiario } from '../../types';
+import { tituloVisitaTecnica } from '../../utils/visitaTecnica';
 
 type BeneficiarioDetailScreenProps = {
   navigation: NativeStackNavigationProp<Record<string, any>>;
@@ -167,7 +168,7 @@ const BeneficiarioDetailScreen: React.FC<BeneficiarioDetailScreenProps> = ({ nav
           <Text style={styles.sectionTitle}>
             📅 Últimas visitas
           </Text>
-          {visitasRecientes.map((visita, index) => (
+          {visitasRecientes.map((visita) => (
             <TouchableOpacity
               key={visita.id}
               style={styles.visitaItem}
@@ -180,7 +181,8 @@ const BeneficiarioDetailScreen: React.FC<BeneficiarioDetailScreenProps> = ({ nav
               <View style={styles.visitaInfo}>
                 <Text style={styles.visitaTipo}>
                   {visita.tipo === 'caracterizacion' ? 'Caracterización'
-                    : visita.tipo === 'visita_tecnica' ? 'Visita Técnica'
+                    : visita.tipo === 'visita_tecnica'
+                    ? tituloVisitaTecnica(visita.actividad?.visita_numero)
                     : 'Plantación'}
                 </Text>
                 <Text style={styles.visitaFecha}>

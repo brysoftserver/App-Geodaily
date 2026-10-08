@@ -29,6 +29,14 @@ type InterventorMenuScreenProps = {
 
 const MENU_ITEMS = [
   {
+    id: 'seguimiento',
+    title: 'Seguimiento Interventoría',
+    subtitle: 'Registrar y consultar seguimientos en campo',
+    icon: '📝',
+    color: COLORS.roleInterventor,
+    screen: 'SeguimientoMenu',
+  },
+  {
     id: 'dashboard',
     title: 'Dashboard',
     subtitle: 'Métricas y estadísticas generales',

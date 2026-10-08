@@ -26,7 +26,7 @@ export const LOGO_ASEMP_BASE64 =
 /**
  * Hay dos membretes oficiales, uno por entidad:
  *  - `ejecucion`      → AGROINDUSTRIAL CACAOTERA (ACPR). Lo usan técnico,
- *                       supervisor, gerente y admin (la entidad ejecutora).
+ *                       coordinador, gerente y admin (la entidad ejecutora).
  *  - `interventoria`  → ASEMP GRUPO EMPRESARIAL ZOMAC S.A.S. Lo usa el rol
  *                       interventor (la firma de interventoría).
  * El rol del usuario que genera el PDF decide cuál aplicar.

@@ -15,7 +15,7 @@ interface SincronizacionModalProps {
 }
 
 const SincronizacionModal: React.FC<SincronizacionModalProps> = ({ visible, onClose }) => {
-  const { syncNow, status, pendingCount, lastSync } = useOfflineSync();
+  const { syncNow, status, pendingCount, lastSync, error, stage } = useOfflineSync();
   const isSyncing = status === 'syncing';
 
   return (
@@ -31,12 +31,20 @@ const SincronizacionModal: React.FC<SincronizacionModalProps> = ({ visible, onCl
             )}
           </View>
           <Text style={styles.subtitle}>
-            {pendingCount === 0 ? '✅ Todo sincronizado' : `⏳ ${pendingCount} registro(s) pendiente(s)`}
+            {isSyncing
+              ? stage || 'Sincronizando datos pendientes...'
+              : status === 'error'
+                ? `${pendingCount} registro(s) pendiente(s)`
+                : pendingCount === 0
+                  ? '✅ Todo sincronizado'
+                  : `⏳ ${pendingCount} registro(s) pendiente(s)`}
           </Text>
           {lastSync && (
             <Text style={styles.last}>Última sincronización: {new Date(lastSync).toLocaleString('es-CO')}</Text>
           )}
-          {status === 'error' && <Text style={styles.error}>Error al sincronizar. Reintentando...</Text>}
+          {status === 'error' && (
+            <Text style={styles.error}>{error || 'No se pudo completar la sincronización.'}</Text>
+          )}
 
           <TouchableOpacity
             style={[styles.button, isSyncing && styles.buttonDisabled]}
@@ -47,7 +55,9 @@ const SincronizacionModal: React.FC<SincronizacionModalProps> = ({ visible, onCl
             {isSyncing ? (
               <ActivityIndicator color={COLORS.textOnPrimary} size="small" />
             ) : (
-              <Text style={styles.buttonText}>{pendingCount > 0 ? 'Sincronizar ahora' : 'Verificar'}</Text>
+              <Text style={styles.buttonText}>
+                {status === 'error' ? 'Reintentar ahora' : pendingCount > 0 ? 'Sincronizar ahora' : 'Verificar'}
+              </Text>
             )}
           </TouchableOpacity>
 
@@ -113,6 +123,7 @@ const styles = StyleSheet.create({
     fontSize: FONTS.sizes.xs,
     color: COLORS.error,
     marginTop: 4,
+    flexShrink: 1,
   },
   button: {
     backgroundColor: COLORS.info,

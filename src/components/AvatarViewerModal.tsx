@@ -3,7 +3,7 @@
 // ============================================================
 // Estilo WhatsApp: tocar el avatar del menú abre este modal con la foto
 // grande, y desde aquí se puede cambiar o quitar. Compartido por las 5
-// pantallas de menú (técnico, supervisor, interventor, gerente, admin).
+// pantallas de menú (técnico, coordinador, interventor, gerente, admin).
 // ============================================================
 
 import React from 'react';

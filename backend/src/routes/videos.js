@@ -30,9 +30,46 @@ router.post('/subir', authenticateToken, upload.single('archivo'), async (req, r
       return res.status(400).json({ estado: 'error', mensaje: 'Archivo de video requerido' });
     }
 
-    const { descripcion, latitud, longitud, beneficiario_cedula, beneficiario_nombre, tipo_formulario, formulario_id } = req.body;
+    const { descripcion, latitud, longitud, beneficiario_cedula, beneficiario_nombre, tipo_formulario, formulario_id, evidencia_id } = req.body;
     const ext = path.extname(req.file.originalname) || '.mp4';
     const filename = `video_${Date.now()}_${Math.random().toString(36).slice(2, 6)}${ext}`;
+
+    // ─── Anti-resurrección: si un admin/coordinador borró este video desde
+    // el detalle del formulario (DELETE /api/archivos/:id), se rechaza la
+    // re-subida — el teléfono que lo capturó lo conserva en local y lo
+    // reintentaría en cada sync. Ver nota en photos.js.
+    if (evidencia_id) {
+      const tumbaEvidencia = await db.queryOne(
+        'SELECT id FROM evidencias_eliminadas WHERE evidencia_local_id = $1 LIMIT 1',
+        [evidencia_id]
+      );
+      if (tumbaEvidencia) {
+        console.log(`[Videos] Evidencia ${evidencia_id} fue eliminada — se rechaza la re-subida`);
+        return res.status(410).json({
+          estado: 'eliminado',
+          mensaje: 'Esta evidencia fue eliminada por un administrador y no puede volver a subirse',
+        });
+      }
+    }
+
+    // Ver nota en photos.js: idempotencia por evidencia_id — evita volver a
+    // subir a MinIO (200MB máx.) un video que ya llegó en un intento previo.
+    if (evidencia_id) {
+      const yaSubido = await db.queryOne(
+        `SELECT id, minio_path, filename, size_bytes FROM archivos WHERE usuario_id = $1 AND evidencia_local_id = $2`,
+        [req.user.id, evidencia_id]
+      );
+      if (yaSubido) {
+        console.log(`[Videos] Evidencia ${evidencia_id} ya existía (id ${yaSubido.id}) — se omite duplicado`);
+        return res.json({
+          estado: 'ok',
+          id: yaSubido.id,
+          ruta: yaSubido.minio_path,
+          filename: yaSubido.filename,
+          size: yaSubido.size_bytes,
+        });
+      }
+    }
 
     // ─── Resolver datos del beneficiario para carpeta en MinIO ───
     let benefItem = null;
@@ -92,12 +129,12 @@ router.post('/subir', authenticateToken, upload.single('archivo'), async (req, r
     const bucket = process.env.MINIO_BUCKET || 'geodaily-archivos';
     const basePath = storage.getUserBasePath(req.user.rol, req.user.usuario);
     let minioPath;
+    const formFolder = storage.getFormTypeFolder(tipoFormularioResuelto);
     if (benefItem && benefNombre) {
       const subpath = storage.getBeneficiarySubpath(benefItem, benefNombre);
-      const formFolder = storage.getFormTypeFolder(tipoFormularioResuelto);
       minioPath = formFolder ? `${basePath}/${subpath}/${formFolder}/videos/${filename}` : `${basePath}/${subpath}/videos/${filename}`;
     } else {
-      minioPath = `${basePath}/videos/${filename}`;
+      minioPath = formFolder ? `${basePath}/${formFolder}/videos/${filename}` : `${basePath}/videos/${filename}`;
     }
 
     const metadataExtra = {
@@ -111,24 +148,46 @@ router.post('/subir', authenticateToken, upload.single('archivo'), async (req, r
 
     // Ver nota en photos.js: el SELECT evita violar la FK cuando el video
     // llega antes que el formulario.
-    await db.query(
-      `INSERT INTO archivos (usuario_id, formulario_id, tipo, filename, originalname, mimetype, size_bytes, minio_path, minio_bucket, latitud, longitud, metadata_json)
-       VALUES ($1, (SELECT id FROM formularios WHERE id = $2), $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
-      [
-        req.user.id,
-        formulario_id || null,
-        'video',
-        filename,
-        req.file.originalname,
-        req.file.mimetype,
-        req.file.size,
-        minioPath,
-        bucket,
-        latitud ? parseFloat(latitud) : null,
-        longitud ? parseFloat(longitud) : null,
-        JSON.stringify(metadataExtra),
-      ]
-    );
+    try {
+      await db.query(
+        `INSERT INTO archivos (usuario_id, formulario_id, tipo, filename, originalname, mimetype, size_bytes, minio_path, minio_bucket, latitud, longitud, metadata_json, evidencia_local_id)
+         VALUES ($1, (SELECT id FROM formularios WHERE id = $2), $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
+        [
+          req.user.id,
+          formulario_id || null,
+          'video',
+          filename,
+          req.file.originalname,
+          req.file.mimetype,
+          req.file.size,
+          minioPath,
+          bucket,
+          latitud ? parseFloat(latitud) : null,
+          longitud ? parseFloat(longitud) : null,
+          JSON.stringify(metadataExtra),
+          evidencia_id || null,
+        ]
+      );
+    } catch (insertErr) {
+      // Ver nota en photos.js: carrera entre dos subidas casi simultáneas.
+      if (insertErr.code === '23505' && evidencia_id) {
+        const existente = await db.queryOne(
+          `SELECT id, minio_path, filename, size_bytes FROM archivos WHERE usuario_id = $1 AND evidencia_local_id = $2`,
+          [req.user.id, evidencia_id]
+        );
+        if (existente) {
+          console.log(`[Videos] Carrera detectada para evidencia ${evidencia_id} — se omite duplicado`);
+          return res.json({
+            estado: 'ok',
+            id: existente.id,
+            ruta: existente.minio_path,
+            filename: existente.filename,
+            size: existente.size_bytes,
+          });
+        }
+      }
+      throw insertErr;
+    }
 
     // Obtener el ID generado
     const archivo = await db.queryOne(
@@ -206,12 +265,12 @@ router.post('/subir-multiple', authenticateToken, upload.array('archivos', 10), 
       const bucket = process.env.MINIO_BUCKET || 'geodaily-archivos';
       const basePath = storage.getUserBasePath(req.user.rol, req.user.usuario);
       let minioPath;
+      const formFolder = storage.getFormTypeFolder(tipo_formulario);
       if (benefItem && benefNombre) {
         const subpath = storage.getBeneficiarySubpath(benefItem, benefNombre);
-        const formFolder = storage.getFormTypeFolder(tipo_formulario);
         minioPath = formFolder ? `${basePath}/${subpath}/${formFolder}/videos/${filename}` : `${basePath}/${subpath}/videos/${filename}`;
       } else {
-        minioPath = `${basePath}/videos/${filename}`;
+        minioPath = formFolder ? `${basePath}/${formFolder}/videos/${filename}` : `${basePath}/videos/${filename}`;
       }
 
       await db.query(
@@ -279,10 +338,10 @@ router.get('/:id', authenticateToken, async (req, res) => {
       return res.status(404).json({ estado: 'error', mensaje: 'Video no encontrado' });
     }
     // Roles de supervisión ven la evidencia de cualquier técnico. Antes solo
-    // 'admin' era excepción, así que un supervisor listaba los archivos y
+    // 'admin' era excepción, así que un coordinador listaba los archivos y
     // recibía 403 al abrir cualquiera de ellos.
-    const ROLES_SUPERVISION = ['supervisor', 'interventor', 'gerente', 'admin'];
-    if (!ROLES_SUPERVISION.includes(req.user.rol) && video.usuario_id !== req.user.id) {
+    const ROLES_COORDINACION = ['coordinador', 'interventor', 'gerente', 'admin'];
+    if (!ROLES_COORDINACION.includes(req.user.rol) && video.usuario_id !== req.user.id) {
       return res.status(403).json({ estado: 'error', mensaje: 'No autorizado' });
     }
     res.json({ estado: 'ok', video });

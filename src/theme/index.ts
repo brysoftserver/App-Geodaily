@@ -33,7 +33,7 @@ export const COLORS = {
 
   // Roles
   roleTecnico: '#1565C0',
-  roleSupervisor: '#6A1B9A',
+  roleCoordinador: '#6A1B9A',
   roleInterventor: '#00695C',
   roleGerente: '#E65100',
   roleAdmin: '#C62828',

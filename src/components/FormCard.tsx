@@ -13,9 +13,10 @@ import {
 import { COLORS, FONTS, SPACING, BORDER_RADIUS, SHADOWS } from '../theme';
 import { Formulario } from '../types';
 import { formatFecha, formatCoordenadas, truncarTexto } from '../utils/formatters';
+import { tituloVisitaTecnica } from '../utils/visitaTecnica';
 
 export interface EstadoRevisionCard {
-  supervisor: 'ok' | 'novedades' | null;
+  coordinador: 'ok' | 'novedades' | null;
   interventor: 'ok' | 'novedades' | null;
   novedades_total: number;
 }
@@ -58,7 +59,9 @@ const FormCard: React.FC<FormCardProps> = ({
     >
       <View style={[styles.tipoBadge, { backgroundColor: getTipoColor() }]}>
         <Text style={styles.tipoText}>
-          {formulario.tipo === 'caracterizacion' ? 'Caracterización' : 'Visita Técnica'}
+          {formulario.tipo === 'caracterizacion'
+            ? 'Caracterización'
+            : tituloVisitaTecnica(formulario.actividad?.visita_numero)}
         </Text>
       </View>
 
@@ -97,22 +100,22 @@ const FormCard: React.FC<FormCardProps> = ({
           <View
             style={[
               styles.revisionBadge,
-              estadoRevision.supervisor === 'ok' && estadoRevision.interventor === 'ok'
+              estadoRevision.coordinador === 'ok' && estadoRevision.interventor === 'ok'
                 ? styles.revisionAprobada
-                : estadoRevision.novedades_total > 0 && estadoRevision.supervisor !== 'ok'
+                : estadoRevision.novedades_total > 0 && estadoRevision.coordinador !== 'ok'
                   ? styles.revisionNovedades
-                  : estadoRevision.supervisor === 'ok'
+                  : estadoRevision.coordinador === 'ok'
                     ? styles.revisionAprobada
                     : styles.revisionPendiente,
             ]}
           >
             <Text style={styles.revisionText}>
-              {estadoRevision.supervisor === 'ok' && estadoRevision.interventor === 'ok'
-                ? '✅ Aprobado por supervisor e interventoría'
-                : estadoRevision.novedades_total > 0 && estadoRevision.supervisor !== 'ok'
+              {estadoRevision.coordinador === 'ok' && estadoRevision.interventor === 'ok'
+                ? '✅ Aprobado por Coordinador/a e interventoría'
+                : estadoRevision.novedades_total > 0 && estadoRevision.coordinador !== 'ok'
                   ? `⚠️ ${estadoRevision.novedades_total} novedad(es) por corregir`
-                  : estadoRevision.supervisor === 'ok'
-                    ? '✅ Todo OK del supervisor — en interventoría'
+                  : estadoRevision.coordinador === 'ok'
+                    ? '✅ Todo OK del Coordinador/a — en interventoría'
                     : '🕓 En revisión'}
             </Text>
           </View>

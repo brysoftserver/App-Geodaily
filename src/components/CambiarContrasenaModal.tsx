@@ -1,6 +1,6 @@
 // ============================================================
 // GEODAILY — Modal para Cambio de Contraseña
-// Reutilizable por cualquier rol (técnico, supervisor, etc.)
+// Reutilizable por cualquier rol (técnico, coordinador, etc.)
 // ============================================================
 
 import React, { useState } from 'react';

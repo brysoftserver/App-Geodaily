@@ -162,7 +162,7 @@ Las actualizaciones de código JS siguen llegando igual que con Expo Go (recarga
 | Rol | Acceso |
 |-----|--------|
 | `tecnico` | Módulo Terreno — formularios, cámaras, firmas, mapas offline |
-| `supervisor` | Módulo Supervisión — dashboard, listados, calendario general |
+| `coordinador` | Módulo Coordinación — dashboard, listados, calendario general |
 | `admin` | Terreno + permisos totales |
 
 ---

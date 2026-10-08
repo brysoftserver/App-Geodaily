@@ -10,7 +10,8 @@ import * as Print from 'expo-print';
 import * as FileSystem from 'expo-file-system/legacy';
 import { manipulateAsync, SaveFormat } from 'expo-image-manipulator';
 import { Formulario, FotoGeotag } from '../types';
-import { formatFecha, formatCoordenadas } from '../utils/formatters';
+import { API_CONFIG } from '../theme';
+import { formatFecha, formatFechaHora, formatCoordenadas } from '../utils/formatters';
 import {
   construirSeccionesEncuesta,
   SeccionResuelta,
@@ -54,6 +55,112 @@ async function resolverFirmaComoDataUri(firma: FirmaResuelta | null): Promise<st
     console.warn('[PDF Local] No se pudo descargar la firma remota:', e);
     return null;
   }
+}
+
+/**
+ * Descarga una tesela de mapa pública (sin autenticación) y la convierte a
+ * data URI. Si no hay señal en el momento de generar el PDF, retorna null
+ * y el mapa se omite — nunca debe impedir que el resto del PDF se genere.
+ */
+async function descargarImagenPublicaComoDataUri(url: string): Promise<string | null> {
+  try {
+    if (Platform.OS === 'web') {
+      const respuesta = await fetch(url);
+      if (!respuesta.ok) throw new Error(`HTTP ${respuesta.status}`);
+      const blob = await respuesta.blob();
+      return await new Promise<string>((resolve, reject) => {
+        const lector = new FileReader();
+        lector.onload = () => resolve(lector.result as string);
+        lector.onerror = () => reject(lector.error);
+        lector.readAsDataURL(blob);
+      });
+    }
+    const destino = `${FileSystem.cacheDirectory}pdf_tile_${Date.now()}_${Math.round(Math.random() * 1e6)}.png`;
+    const descarga = await FileSystem.downloadAsync(url, destino);
+    const base64 = await FileSystem.readAsStringAsync(descarga.uri, { encoding: FileSystem.EncodingType.Base64 });
+    return `data:image/png;base64,${base64}`;
+  } catch (e) {
+    console.warn('[PDF Local] No se pudo descargar la tesela de mapa:', e);
+    return null;
+  }
+}
+
+// Mismo servidor de teselas raster satélite que usa MapViewOffline.tsx
+// (estilo "satelite"). Se eligió satélite y no el estilo "relieve" (Canvas/
+// World_Light_Gray_Base) porque ese último no tiene datos vectoriales para
+// zonas rurales como el Caquetá: a partir de zoom ~12 devuelve una tesela
+// placeholder ("Map data not yet available") en vez de mapa real, incluso
+// con conexión. El satélite (World_Imagery) sí tiene cobertura fotográfica
+// real en todo el planeta.
+const MAPA_TILE_URL_BASE = 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile';
+// Zoom más alejado que el original (17) para dar contexto de vereda/finca
+// en vez de quedar tan cerca que solo se ve el punto exacto sin referencia.
+const MAPA_ZOOM = 14;
+const MAPA_TILE_PX = 140;
+
+/**
+ * Construye el HTML de un mapa pequeño (2×2 teselas + pin) centrado en el
+ * punto capturado, para incrustar en el PDF donde no se puede embeber el
+ * mapa interactivo de la app (preguntas 20 y 32). Usa una cuadrícula 2×2
+ * en vez de una sola tesela para que el punto nunca quede pegado al borde
+ * de la imagen, sin importar en qué parte de su tesela caiga.
+ * Retorna '' si no hay coordenadas o si falla la descarga (sin señal).
+ */
+async function construirMapaEstaticoHtml(lat?: number, lon?: number, ubicacionTexto?: string): Promise<string> {
+  if (lat == null || lon == null || Number.isNaN(lat) || Number.isNaN(lon)) return '';
+
+  const n = Math.pow(2, MAPA_ZOOM);
+  const x = ((lon + 180) / 360) * n;
+  const latRad = (lat * Math.PI) / 180;
+  const y = ((1 - Math.log(Math.tan(latRad) + 1 / Math.cos(latRad)) / Math.PI) / 2) * n;
+
+  const tileX = Math.floor(x);
+  const tileY = Math.floor(y);
+  const pxFrac = x - tileX;
+  const pyFrac = y - tileY;
+
+  // Tesela vecina al lado donde cae el punto dentro de su propia tesela,
+  // para que quede dentro del cuarto central de la cuadrícula 2×2.
+  const otherTileX = pxFrac < 0.5 ? tileX - 1 : tileX + 1;
+  const otherTileY = pyFrac < 0.5 ? tileY - 1 : tileY + 1;
+  const leftTileX = Math.min(tileX, otherTileX);
+  const topTileY = Math.min(tileY, otherTileY);
+
+  const puntoXFrac = (tileX - leftTileX + pxFrac) / 2;
+  const puntoYFrac = (tileY - topTileY + pyFrac) / 2;
+
+  const [tl, tr, bl, br] = await Promise.all([
+    descargarImagenPublicaComoDataUri(`${MAPA_TILE_URL_BASE}/${MAPA_ZOOM}/${topTileY}/${leftTileX}`),
+    descargarImagenPublicaComoDataUri(`${MAPA_TILE_URL_BASE}/${MAPA_ZOOM}/${topTileY}/${leftTileX + 1}`),
+    descargarImagenPublicaComoDataUri(`${MAPA_TILE_URL_BASE}/${MAPA_ZOOM}/${topTileY + 1}/${leftTileX}`),
+    descargarImagenPublicaComoDataUri(`${MAPA_TILE_URL_BASE}/${MAPA_ZOOM}/${topTileY + 1}/${leftTileX + 1}`),
+  ]);
+  if (!tl || !tr || !bl || !br) return '';
+
+  const size = MAPA_TILE_PX * 2;
+  const pinLeft = puntoXFrac * size;
+  const pinTop = puntoYFrac * size;
+
+  // El mapa satelital no trae nombres de lugar (y el estilo con etiquetas
+  // no tiene cobertura en veredas rurales — ver nota de MAPA_TILE_URL_BASE
+  // arriba), así que el municipio/vereda se imprime como texto, tomado del
+  // dato que el formulario ya conoce, en vez de depender de la cartografía.
+  const etiquetaHtml = ubicacionTexto
+    ? `<div style="width:${size}px;font-size:11px;color:#2d3436;background:#f1f2f6;padding:3px 6px;border:1px solid #dfe6e9;border-bottom:none;border-radius:6px 6px 0 0;margin-top:6px;">📍 ${escapeHtml(ubicacionTexto)}</div>`
+    : '';
+
+  return `
+      ${etiquetaHtml}
+      <div style="position:relative;width:${size}px;height:${size}px;overflow:hidden;border:1px solid #dfe6e9;border-radius:${ubicacionTexto ? '0 0 6px 6px' : '6px'};${ubicacionTexto ? '' : 'margin-top:6px;'}">
+        <img src="${tl}" style="position:absolute;left:0;top:0;width:${MAPA_TILE_PX}px;height:${MAPA_TILE_PX}px;" />
+        <img src="${tr}" style="position:absolute;left:${MAPA_TILE_PX}px;top:0;width:${MAPA_TILE_PX}px;height:${MAPA_TILE_PX}px;" />
+        <img src="${bl}" style="position:absolute;left:0;top:${MAPA_TILE_PX}px;width:${MAPA_TILE_PX}px;height:${MAPA_TILE_PX}px;" />
+        <img src="${br}" style="position:absolute;left:${MAPA_TILE_PX}px;top:${MAPA_TILE_PX}px;width:${MAPA_TILE_PX}px;height:${MAPA_TILE_PX}px;" />
+        <svg width="24" height="30" viewBox="0 0 28 36" style="position:absolute;left:${pinLeft}px;top:${pinTop}px;transform:translate(-50%,-100%);">
+          <path d="M14 0C6.268 0 0 6.268 0 14c0 10.5 14 22 14 22s14-11.5 14-22C28 6.268 21.732 0 14 0z" fill="#d63031" />
+          <circle cx="14" cy="14" r="6" fill="#ffffff" />
+        </svg>
+      </div>`;
 }
 
 /**
@@ -122,7 +229,7 @@ export const construirHtmlFormulario = async (
 
   // 4. Construir HTML completo según el tipo de formulario
   if (formulario.tipo === 'caracterizacion' && (formulario as any).caracterizacion_nueva) {
-    return construirHTMLCaracterizacion(formulario, fotosHtml, firmaBenefHtml, firmaTecHtml, selloBiometricoHtml);
+    return await construirHTMLCaracterizacion(formulario, fotosHtml, firmaBenefHtml, firmaTecHtml, selloBiometricoHtml);
   }
   return construirHTML(formulario, fotosHtml, firmaBenefHtml, firmaTecHtml, selloBiometricoHtml);
 };
@@ -173,7 +280,7 @@ export interface ItemChecklistRevision {
 }
 
 export interface DatosRevisionChecklist {
-  rol: 'supervisor' | 'interventor';
+  rol: 'coordinador' | 'interventor';
   revisorNombre: string;
   /** 'linea' = revisión documental/remota; 'campo' = verificación en sitio */
   tipoChecklist: 'linea' | 'campo';
@@ -191,10 +298,10 @@ const INTRO_CHECKLIST: Record<'linea' | 'campo', string> = {
 
 /**
  * Generar el PDF de una de las dos listas de verificación del revisor
- * (supervisor o interventor): "Formulario en línea" (revisión documental
+ * (coordinador o interventor): "Formulario en línea" (revisión documental
  * de lo que el técnico registró) o "Formulario en campo" (verificación
  * presencial). Lleva el membrete de la entidad de ESE rol — Ejecución
- * (ACPR) para supervisor, Interventoría (ASEMP) para interventor — a
+ * (ACPR) para coordinador, Interventoría (ASEMP) para interventor — a
  * diferencia del PDF del formulario del técnico, que siempre usa Ejecución
  * sin importar quién lo descargue.
  */
@@ -212,7 +319,7 @@ export const generarPDFRevisionChecklist = async (
       height: 792,
     });
 
-    const rolPrefijo = datos.rol === 'interventor' ? 'INTERVENTORIA' : 'SUPERVISION';
+    const rolPrefijo = datos.rol === 'interventor' ? 'INTERVENTORIA' : 'COORDINACION';
     const tipoPrefijo = datos.tipoChecklist === 'linea' ? 'EN-LINEA' : 'EN-CAMPO';
     const nombreBenef = (formulario.beneficiario?.nombre || 'beneficiario').replace(/[^a-zA-Z0-9áéíóúÁÉÍÓÚñÑ ]/g, '').trim().replace(/\s+/g, '_');
     const fechaStr = new Date().toISOString().split('T')[0];
@@ -231,6 +338,74 @@ export const generarPDFRevisionChecklist = async (
     console.error('[PDF Revisión] Error al generar PDF:', error);
     return null;
   }
+};
+
+export interface DatosPDFSeguimiento {
+  autorRol: 'coordinador' | 'interventor';
+  autorNombre: string;
+  actividad: string;
+  objetivoVisita?: string | null;
+  descripcionActividad?: string | null;
+  observaciones?: string | null;
+  beneficiarioNombre?: string | null;
+  /** created_at del seguimiento */
+  fecha: string;
+  /** Cada foto trae archivo_id (ya subida) y/o uri local — se prefiere la uri local si existe, para poder generar el PDF sin conexión. */
+  fotos: { archivo_id?: string; uri?: string }[];
+  /** Si se grabó algún video — no se embebe en el PDF, solo se menciona (igual que el formulario del técnico). */
+  tieneVideo?: boolean;
+  /** 'data:...' (base64 local, aún no subida) o archivo_id de MinIO */
+  firmaBeneficiario?: string;
+  /** 'data:...' (base64 local, aún no subida) o archivo_id de MinIO */
+  firmaAutor?: string;
+  /** Georeferencia puntual (captura única de 8s de alta precisión — CapturaGPSPrecisa) */
+  geoLatitud?: number;
+  geoLongitud?: number;
+  geoAltitud?: number;
+  geoPrecision?: number;
+}
+
+/**
+ * Generar el PDF de un seguimiento de Coordinación o Interventoría — lleva
+ * el membrete de la entidad de ESE rol (Ejecución/ACPR para coordinador,
+ * Interventoría/ASEMP para interventor), igual criterio que
+ * `generarPDFRevisionChecklist`.
+ */
+export const generarPDFSeguimiento = async (datos: DatosPDFSeguimiento): Promise<string | null> => {
+  try {
+    const variante: MembreteVariante = datos.autorRol === 'interventor' ? 'interventoria' : 'ejecucion';
+    const html = await construirHTMLSeguimiento(datos, variante);
+
+    const { uri } = await Print.printToFileAsync({ html, width: 612, height: 792 });
+
+    const rolPrefijo = datos.autorRol === 'interventor' ? 'INTERVENTORIA' : 'COORDINACION';
+    const fechaStr = new Date().toISOString().split('T')[0];
+    const pdfName = `SEGUIMIENTO-${rolPrefijo}-${fechaStr}-${Date.now()}.pdf`;
+    const pdfDir = uri.substring(0, uri.lastIndexOf('/'));
+    const pdfPath = `${pdfDir}/${pdfName}`;
+
+    try {
+      await FileSystem.moveAsync({ from: uri, to: pdfPath });
+      return pdfPath;
+    } catch (moveErr) {
+      console.warn('[PDF Seguimiento] No se pudo renombrar, retornando original:', moveErr);
+      return uri;
+    }
+  } catch (error) {
+    console.error('[PDF Seguimiento] Error al generar PDF:', error);
+    return null;
+  }
+};
+
+/**
+ * Igual que `generarPDFSeguimiento` pero devuelve SOLO el HTML institucional,
+ * sin generar archivo. Lo usa el flujo web (ver `imprimirHtmlEnVentana` en
+ * `utils/printWeb.ts`): en el navegador expo-print no produce un PDF real, así
+ * que este mismo HTML se abre en una pestaña y se imprime desde ahí.
+ */
+export const construirHtmlSeguimiento = async (datos: DatosPDFSeguimiento): Promise<string> => {
+  const variante: MembreteVariante = datos.autorRol === 'interventor' ? 'interventoria' : 'ejecucion';
+  return construirHTMLSeguimiento(datos, variante);
 };
 
 export interface FilaIngresoBeneficiario {
@@ -1444,7 +1619,7 @@ function grid2(izq: string, der: string): string {
 
 // ============================================================
 // construirHTMLRevision — Formulario propio del revisor
-// (supervisor o interventor): concepto, observaciones y
+// (coordinador o interventor): concepto, observaciones y
 // recomendaciones sobre la visita del técnico.
 // ============================================================
 function construirHTMLRevisionChecklist(
@@ -1453,7 +1628,7 @@ function construirHTMLRevisionChecklist(
   variante: MembreteVariante
 ): string {
   const esInterventor = datos.rol === 'interventor';
-  const rolLabel = esInterventor ? 'Interventoría' : 'Supervisión';
+  const rolLabel = esInterventor ? 'Interventoría' : 'Coordinación';
   const tituloDoc = TITULO_CHECKLIST[datos.tipoChecklist];
   const intro = INTRO_CHECKLIST[datos.tipoChecklist];
 
@@ -1543,6 +1718,296 @@ function construirHTMLRevisionChecklist(
   <div class="footer">
     <p>Documento generado por GEODAILY — ${new Date().toISOString()}</p>
     <p>Este es un documento digital de revisión, complementario al formulario original del técnico.</p>
+  </div>
+  ${membreteCierreHtml()}
+</body>
+</html>`;
+}
+
+/** Convierte un Blob a data URI (web, donde no existe FileSystem). */
+function blobADataUri(blob: Blob): Promise<string> {
+  return new Promise<string>((resolve, reject) => {
+    const lector = new FileReader();
+    lector.onload = () => resolve(lector.result as string);
+    lector.onerror = () => reject(lector.error);
+    lector.readAsDataURL(blob);
+  });
+}
+
+/**
+ * Resuelve una evidencia de seguimiento a una URI que `expo-image-manipulator`
+ * pueda leer, usando la red solo cuando de verdad haga falta.
+ *
+ * Por qué no basta con «uri local si no empieza por http»: el `uri` que guarda
+ * el seguimiento es la ruta local del dispositivo que capturó la visita
+ * (file:///.../documents/evidencias/xxx.jpg) y viaja tal cual al servidor. Al
+ * abrir el seguimiento en OTRO teléfono —o en el navegador— ese archivo no
+ * existe, pero la heurística anterior lo daba por válido: `manipulateAsync`
+ * fallaba y el PDF salía con «No se pudo cargar esta evidencia». Es el mismo
+ * criterio que ya usa `fuenteDe` en SeguimientoDetailScreen: el `archivo_id`
+ * remoto manda; la ruta local solo se usa si está de verdad en este equipo.
+ *
+ * En web no existe FileSystem (ni cacheDirectory ni downloadAsync): la
+ * descarga remota se hace con `fetch` y se entrega como blob: URL — el mismo
+ * patrón que `convertirFotosAHTML`.
+ */
+async function resolverEvidenciaSeguimiento(
+  foto: { archivo_id?: string; uri?: string }
+): Promise<{ uri: string; blobWeb: Blob | null }> {
+  const uri = foto.uri;
+
+  // 1. Ya es legible sin red: base64 en memoria o blob de esta sesión.
+  if (uri && (uri.startsWith('data:') || uri.startsWith('blob:'))) {
+    return { uri, blobWeb: null };
+  }
+
+  // 2. Ruta local de ESTE dispositivo — permite generar el PDF sin conexión.
+  if (uri && !uri.startsWith('http') && Platform.OS !== 'web') {
+    try {
+      const info = await FileSystem.getInfoAsync(uri);
+      if (info.exists) return { uri, blobWeb: null };
+    } catch {
+      // la ruta no es accesible: se intenta por archivo_id
+    }
+  }
+
+  // 3. Ya sincronizada (o URL suelta): se descarga del servidor.
+  const remota = foto.archivo_id
+    ? `${API_CONFIG.BASE_URL}/api/archivos/${foto.archivo_id}/contenido`
+    : uri && uri.startsWith('http')
+      ? uri
+      : null;
+
+  if (remota) {
+    const headers = await cabecerasDeArchivo();
+    if (Platform.OS === 'web') {
+      const respuesta = await fetch(remota, { headers });
+      if (!respuesta.ok) throw new Error(`HTTP ${respuesta.status}`);
+      const blob = await respuesta.blob();
+      return { uri: URL.createObjectURL(blob), blobWeb: blob };
+    }
+    const sufijo = foto.archivo_id || String(Date.now());
+    const destino = `${FileSystem.cacheDirectory}pdf_seguimiento_${sufijo}.jpg`;
+    const descarga = await FileSystem.downloadAsync(remota, destino, { headers });
+    return { uri: descarga.uri, blobWeb: null };
+  }
+
+  throw new Error('La evidencia no está disponible en este dispositivo');
+}
+
+/**
+ * Embebe como data URI TODAS las evidencias fotográficas del seguimiento — sin
+ * límite de cantidad. Si una falla, esa casilla muestra el aviso pero las demás
+ * se siguen incluyendo, así que un problema puntual nunca vacía el cuadro.
+ */
+async function construirFotosSeguimientoHTML(
+  fotos: { archivo_id?: string; uri?: string }[],
+  fecha?: string
+): Promise<string> {
+  if (!fotos || fotos.length === 0) {
+    return '<p class="no-data">No se registraron evidencias fotográficas</p>';
+  }
+  // Fecha del seguimiento (created_at, ajustable). Sustituye la marca de agua
+  // que antes venía quemada en la foto: ahora la evidencia va limpia y la
+  // fecha se imprime aquí, en el PDF.
+  const fechaTexto = fecha ? escapeHtml(formatFechaHora(fecha)) : '';
+  const etiqueta = (n: number) => `📸 Evidencia ${n}${fechaTexto ? ` · ${fechaTexto}` : ''}`;
+  const bloques: string[] = [];
+  for (let i = 0; i < fotos.length; i++) {
+    const foto = fotos[i];
+    try {
+      const { uri, blobWeb } = await resolverEvidenciaSeguimiento(foto);
+
+      let dataUri: string | null = null;
+      try {
+        // Se redimensiona a 1200px (calidad 0.9) para que el PDF no pese
+        // cientos de MB cuando hay muchas fotos, sin perder nitidez visible.
+        const resultado = await manipulateAsync(
+          uri,
+          [{ resize: { width: 1200 } }],
+          { compress: 0.9, format: SaveFormat.JPEG, base64: true }
+        );
+        if (resultado.base64) dataUri = `data:image/jpeg;base64,${resultado.base64}`;
+      } catch (manipularErr) {
+        console.warn('[PDF Seguimiento] No se pudo redimensionar, se usa la original:', manipularErr);
+      }
+
+      // Respaldo sin redimensionar: base64 directo (nativo) o el blob ya
+      // descargado (web). Antes, un fallo de resize dejaba la evidencia fuera.
+      if (!dataUri) {
+        if (uri.startsWith('data:')) {
+          dataUri = uri;
+        } else if (Platform.OS === 'web') {
+          const blob = blobWeb ?? (await (await fetch(uri)).blob());
+          dataUri = await blobADataUri(blob);
+        } else {
+          const base64 = await FileSystem.readAsStringAsync(uri, {
+            encoding: FileSystem.EncodingType.Base64,
+          });
+          dataUri = `data:image/jpeg;base64,${base64}`;
+        }
+      }
+      if (!dataUri) throw new Error('Sin datos de imagen');
+
+      bloques.push(`
+        <div class="foto-item">
+          <p class="evidencia-label">${etiqueta(i + 1)}</p>
+          <img src="${dataUri}" alt="Evidencia ${i + 1}" class="foto-img" />
+        </div>
+      `);
+    } catch (err) {
+      console.warn('[PDF Seguimiento] No se pudo incluir evidencia', foto.archivo_id || foto.uri, err);
+      bloques.push(`
+        <div class="foto-item">
+          <p class="evidencia-label">${etiqueta(i + 1)}</p>
+          <p class="no-data">No se pudo cargar esta evidencia</p>
+        </div>
+      `);
+    }
+  }
+  return `<div class="fotos-grid">${bloques.join('')}</div>`;
+}
+
+/**
+ * Resuelve una firma de seguimiento a data URI para embeberla en el PDF.
+ * `valor` es 'data:...' (base64 local, aún no subida — offline) o el
+ * archivo_id de MinIO (ya sincronizada, hay que descargarla).
+ */
+async function resolverFirmaSeguimientoDataUri(valor?: string): Promise<string | null> {
+  if (!valor) return null;
+  if (valor.startsWith('data:')) return valor;
+  try {
+    const headers = await cabecerasDeArchivo();
+    const url = `${API_CONFIG.BASE_URL}/api/archivos/${valor}/contenido`;
+    // En web no existe FileSystem: la firma remota se descarga con fetch y se
+    // lee como blob — mismo patrón que `resolverFirmaComoDataUri`. Sin esto,
+    // las firmas ya sincronizadas nunca aparecían en el PDF web.
+    if (Platform.OS === 'web') {
+      const respuesta = await fetch(url, { headers });
+      if (!respuesta.ok) throw new Error(`HTTP ${respuesta.status}`);
+      return await blobADataUri(await respuesta.blob());
+    }
+    const destino = `${FileSystem.cacheDirectory}pdf_firma_seguimiento_${valor}.png`;
+    const descarga = await FileSystem.downloadAsync(url, destino, { headers });
+    const base64 = await FileSystem.readAsStringAsync(descarga.uri, { encoding: FileSystem.EncodingType.Base64 });
+    return `data:image/png;base64,${base64}`;
+  } catch (err) {
+    console.warn('[PDF Seguimiento] No se pudo cargar la firma', valor, err);
+    return null;
+  }
+}
+
+function bloqueFirmaSeguimiento(titulo: string, dataUri: string | null): string {
+  return `
+    <div class="firma-item">
+      <p class="evidencia-label">✍️ ${titulo}</p>
+      ${dataUri
+        ? `<img src="${dataUri}" alt="${titulo}" class="firma-img" />`
+        : '<p class="no-data">Sin firma registrada</p>'}
+    </div>
+  `;
+}
+
+async function construirHTMLSeguimiento(datos: DatosPDFSeguimiento, variante: MembreteVariante): Promise<string> {
+  const rolLabel = datos.autorRol === 'interventor' ? 'Interventoría' : 'Coordinación';
+  const tipoFormato = datos.autorRol === 'interventor' ? 'interventoria' : 'supervision';
+  const fotosHtml = await construirFotosSeguimientoHTML(datos.fotos, datos.fecha);
+  const [firmaBeneficiarioUri, firmaAutorUri, mapaUbicacionHtml] = await Promise.all([
+    resolverFirmaSeguimientoDataUri(datos.firmaBeneficiario),
+    resolverFirmaSeguimientoDataUri(datos.firmaAutor),
+    // Mapa pequeño (mosaico 2×2 de teselas satelitales + pin) debajo de las
+    // coordenadas — mismo helper que el PDF del técnico usa en las preguntas
+    // 20 y 32. El nombre del beneficiario va como etiqueta porque el mapa
+    // satelital no trae nombres de lugar. Si no hay señal en el momento de
+    // generar el PDF, devuelve '' y la sección se ve igual que antes.
+    construirMapaEstaticoHtml(datos.geoLatitud, datos.geoLongitud, datos.beneficiarioNombre || undefined),
+  ]);
+
+  return `<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <title>Seguimiento de ${rolLabel}</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    ${membreteCss()}
+    body { font-family: 'Arial Narrow', Arial, sans-serif; margin: 0; color: #2d3436; line-height: 1.4; }
+    .doc-titulo { text-align: center; border-bottom: 2px solid #1B5E20; padding-bottom: 6px; margin-bottom: 12px; }
+    .doc-titulo h1 { color: #1B5E20; font-size: 13pt; letter-spacing: 0.3px; margin-bottom: 3px; }
+    .doc-titulo p { color: #444; font-size: 8.5pt; }
+    .section { margin: 16px 0; padding: 14px 16px; background: #f8f9fa; border-radius: 8px; border-left: 4px solid #1B5E20; break-inside: avoid; }
+    .section h2 { color: #1B5E20; font-size: 14px; margin-bottom: 10px; border-bottom: 1px solid #e0e0e0; padding-bottom: 5px; }
+    .row { display: flex; font-size: 11.5px; margin: 2px 0; }
+    .label { font-weight: bold; color: #555; min-width: 140px; flex-shrink: 0; }
+    .value { flex: 1; color: #2d3436; }
+    .desc-detallada { font-size: 12px; color: #2d3436; background: #fff; padding: 8px 10px; border-radius: 4px; border: 1px solid #e0e0e0; margin-top: 4px; line-height: 1.5; white-space: pre-wrap; }
+    .no-data { font-size: 11px; color: #b2bec3; font-style: italic; padding: 6px 0; }
+    .fotos-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    .foto-item { break-inside: avoid; }
+    .foto-img { width: 100%; border-radius: 6px; border: 1px solid #e0e0e0; }
+    .evidencia-label { font-size: 10.5px; color: #636e72; margin-bottom: 4px; }
+    .firmas-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 10px; }
+    .firma-item { text-align: center; break-inside: avoid; }
+    .firma-img { width: 100%; max-height: 100px; object-fit: contain; background: #fff; border: 1px solid #e0e0e0; border-radius: 6px; }
+    .footer { margin-top: 32px; padding-top: 12px; border-top: 1px solid #e0e0e0; text-align: center; font-size: 10px; color: #b2bec3; }
+  </style>
+</head>
+<body>
+  ${membreteAperturaHtml(variante, tipoFormato)}
+
+  <div class="doc-titulo">
+    <h1>SEGUIMIENTO DE ${rolLabel.toUpperCase()}</h1>
+    <p>Registro de acompañamiento en campo — GEODAILY</p>
+  </div>
+
+  <div class="section">
+    <h2>📋 Datos de la Visita</h2>
+    <div class="row"><span class="label">Fecha</span><span class="value">${escapeHtml(formatFecha(datos.fecha))}</span></div>
+    <div class="row"><span class="label">${rolLabel}</span><span class="value">${escapeHtml(datos.autorNombre)}</span></div>
+    ${datos.beneficiarioNombre ? `<div class="row"><span class="label">Beneficiario</span><span class="value">${escapeHtml(datos.beneficiarioNombre)}</span></div>` : ''}
+    <div class="row"><span class="label">Actividad</span><span class="value">${escapeHtml(datos.actividad)}</span></div>
+  </div>
+
+  <div class="section">
+    <h2>🎯 Objetivo de la Visita</h2>
+    ${datos.objetivoVisita?.trim()
+      ? `<div class="desc-detallada">${escapeHtml(datos.objetivoVisita)}</div>`
+      : '<p class="no-data">Sin objetivo registrado</p>'}
+  </div>
+
+  <div class="section">
+    <h2>📝 Descripción de la Actividad</h2>
+    ${datos.descripcionActividad?.trim()
+      ? `<div class="desc-detallada">${escapeHtml(datos.descripcionActividad)}</div>`
+      : '<p class="no-data">Sin descripción registrada</p>'}
+  </div>
+
+  <div class="section">
+    <h2>💬 Observaciones</h2>
+    ${datos.observaciones?.trim()
+      ? `<div class="desc-detallada">${escapeHtml(datos.observaciones)}</div>`
+      : '<p class="no-data">Sin observaciones</p>'}
+  </div>
+
+  <div class="section">
+    <h2>📷 Cuadro de Evidencias</h2>
+    ${fotosHtml}
+    ${datos.tieneVideo ? '<p class="no-data" style="margin-top:8px;">🎥 Se grabó video de la visita — no disponible en el PDF, consulte la aplicación para reproducirlo.</p>' : ''}
+    <div class="firmas-grid">
+      ${bloqueFirmaSeguimiento('Firma del Beneficiario', firmaBeneficiarioUri)}
+      ${bloqueFirmaSeguimiento(`Firma de ${rolLabel}`, firmaAutorUri)}
+    </div>
+  </div>
+
+  <div class="section">
+    <h2>📍 Ubicación Capturada</h2>
+    ${datos.geoLatitud != null && datos.geoLongitud != null
+      ? `<div class="row"><span class="label">Coordenadas</span><span class="value">Lat: ${datos.geoLatitud.toFixed(6)}  Lon: ${datos.geoLongitud.toFixed(6)}${datos.geoAltitud != null ? `  Alt: ${datos.geoAltitud} m` : ''}${datos.geoPrecision != null ? `  (±${datos.geoPrecision} m)` : ''}</span></div>${mapaUbicacionHtml}`
+      : '<p class="no-data">Sin ubicación registrada</p>'}
+  </div>
+
+  <div class="footer">
+    <p>Documento generado por GEODAILY — ${new Date().toISOString()}</p>
   </div>
   ${membreteCierreHtml()}
 </body>
@@ -1936,19 +2401,36 @@ function construirHTML(
 /**
  * Construir HTML del PDF para el formulario de Caracterización Sociodemográfica (Nuevo)
  */
-function construirHTMLCaracterizacion(
+async function construirHTMLCaracterizacion(
   form: Formulario,
   fotosHtml: string,
   firmaBenefHtml: string,
   firmaTecHtml: string,
   huellaHtml: string
-): string {
+): Promise<string> {
   const c = (form as any).caracterizacion_nueva || {};
 
   // Las 52 preguntas oficiales vienen del esquema canónico compartido
   // (src/utils/encuestaSchema.ts), el mismo que usa la pantalla de
   // "Detalle del Formulario". Así el PDF y la app nunca divergen.
   const seccionesEncuesta = construirSeccionesEncuesta(c, form);
+
+  // Mapa pequeño (teselas + pin) para las preguntas de coordenadas 20 y 32.
+  // Si no hay señal para descargar las teselas, quedan como '' y esas
+  // preguntas se ven igual que antes (solo el texto de lat/lon).
+  const ubicacionTexto = [c.municipio, c.vereda || c.corregimiento].filter(Boolean).join(' · ');
+  const [mapaFincaHtml, mapaSueloHtml] = await Promise.all([
+    construirMapaEstaticoHtml(
+      Number(c.caracterizacion_finca?.latitud),
+      Number(c.caracterizacion_finca?.longitud),
+      ubicacionTexto
+    ),
+    construirMapaEstaticoHtml(
+      Number(c.analisis_suelo?.intervencion_latitud),
+      Number(c.analisis_suelo?.intervencion_longitud),
+      ubicacionTexto
+    ),
+  ]);
 
   // Bloque pregunta+respuesta (siempre se imprime — la encuesta completa)
   const q = (num: string, texto: string, respuesta?: string | null) => `
@@ -1958,7 +2440,7 @@ function construirHTMLCaracterizacion(
     </div>`;
 
   /** Renderiza una sección resuelta del esquema compartido */
-  const renderSeccion = (sec: SeccionResuelta): string => {
+  const renderSeccion = (sec: SeccionResuelta, mapaPorNumero?: Record<string, string>): string => {
     if (sec.textoLargo) {
       return `
     <div class="section">
@@ -1975,6 +2457,7 @@ function construirHTMLCaracterizacion(
       <div class="q-a">${pr.valor ? escapeHtml(pr.valor) : '—'}${
         pr.observacion ? `<br/><em>Obs: ${escapeHtml(pr.observacion)}</em>` : ''
       }</div>
+      ${mapaPorNumero?.[pr.numero] || ''}
     </div>`)
       .join('');
     return `
@@ -1985,7 +2468,11 @@ function construirHTMLCaracterizacion(
   };
 
   /** HTML de todas las secciones de la encuesta, en orden oficial */
-  const encuestaHtml = seccionesEncuesta.map(renderSeccion).join('');
+  const encuestaHtml = seccionesEncuesta.map((sec) => {
+    if (sec.titulo === 'CARACTERIZACIÓN DE LA FINCA') return renderSeccion(sec, { '20': mapaFincaHtml });
+    if (sec.titulo === 'SECCIÓN DE SUELO') return renderSeccion(sec, { '32': mapaSueloHtml });
+    return renderSeccion(sec);
+  }).join('');
 
   // ---- Ubicación GPS del formulario + Clima en el momento de la visita ----
   const clima = (form.clima as any)?.actual;

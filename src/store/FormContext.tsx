@@ -56,13 +56,31 @@ const initialState: FormState = {
 function formReducer(state: FormState, action: FormAction): FormState {
   switch (action.type) {
     case 'INICIAR_FORMULARIO':
+      // Si se vuelve a iniciar el MISMO formulario (la pantalla se remonta
+      // tras volver de la cámara, o el borrador se recupera al reabrir la
+      // app), NO se debe vaciar `fotos`/firmas/huella: hacerlo borraba del
+      // contexto toda la evidencia ya capturada, que es justo el reporte
+      // "se me eliminaron las fotos". Solo se reinicia cuando de verdad
+      // empieza un formulario distinto.
+      if (action.id && state.formularioActual?.id === action.id) {
+        return {
+          ...state,
+          formularioActual: { ...state.formularioActual, tipo: action.tipo },
+          error: null,
+        };
+      }
       return {
         ...state,
         formularioActual: {
           id: action.id || generarId(),
           tipo: action.tipo,
-          // Preservar beneficiario si ya estaba precargado (ej. desde SeleccionarTipoFormulario)
-          ...(state.formularioActual?.beneficiario?.cedula ? { beneficiario: state.formularioActual.beneficiario } : {}),
+          // Preservar beneficiario si ya estaba precargado (ej. desde
+          // SeleccionarTipoFormulario). Se conserva si tiene nombre O cédula:
+          // antes solo se conservaba con cédula, y un beneficiario sin cédula
+          // se perdía al iniciar el formulario (bug "Beneficiario (ítem 1)").
+          ...(state.formularioActual?.beneficiario?.nombre || state.formularioActual?.beneficiario?.cedula
+            ? { beneficiario: state.formularioActual.beneficiario }
+            : {}),
           fotos: [],
           firma_beneficiario: '',
           firma_tecnico: '',
@@ -121,6 +139,13 @@ function formReducer(state: FormState, action: FormAction): FormState {
       };
 
     case 'ADD_FOTO':
+      // Idempotente por id: al restaurar un borrador se re-agregan sus fotos,
+      // y si alguna ya estaba en el contexto hay que quedarse con una sola
+      // copia (antes se duplicaban y la evidencia salía repetida en el PDF y
+      // en MinIO).
+      if (state.formularioActual?.fotos?.some((f) => f.id === action.foto.id)) {
+        return state;
+      }
       return {
         ...state,
         formularioActual: {

@@ -5,13 +5,14 @@
 // para pre-cargar los datos en el formulario.
 // ============================================================
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { View, Text, TouchableOpacity, StyleSheet, ScrollView } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { COLORS, FONTS, SPACING, BORDER_RADIUS, SHADOWS } from '../../theme';
-import { contarBorradores } from '../../store/FormDraftStore';
+import { cargarBorradores, sincronizarBorradoresConServidor } from '../../store/FormDraftStore';
 import { useForm } from '../../store/FormContext';
+import { useAuth } from '../../store/AuthContext';
 import { DatosBeneficiario } from '../../types';
 
 type SeleccionarTipoProps = {
@@ -25,6 +26,7 @@ type SeleccionarTipoProps = {
 
 const SeleccionarTipoFormulario: React.FC<SeleccionarTipoProps> = ({ navigation, route }) => {
   const { setBeneficiario } = useForm();
+  const { user } = useAuth();
   const insets = useSafeAreaInsets();
   const [borradorCount, setBorradorCount] = useState(0);
 
@@ -37,20 +39,35 @@ const SeleccionarTipoFormulario: React.FC<SeleccionarTipoProps> = ({ navigation,
     }
   }, [beneficiario, setBeneficiario]);
 
+  const loadCount = useCallback(async () => {
+    let borradores = await cargarBorradores();
+    if (user?.id) {
+      try {
+        borradores = await sincronizarBorradoresConServidor(user.id, user.cedula, borradores);
+      } catch {
+        // La lista local permanece disponible si no hay conexión.
+      }
+    }
+    const propios = user?.id
+      ? borradores.filter((draft) =>
+          draft.tecnico?.usuario_id === user.id ||
+          (!draft.tecnico?.usuario_id && !!user.cedula && draft.tecnico?.cedula === user.cedula) ||
+          (!draft.tecnico?.usuario_id && !draft.tecnico?.cedula)
+        )
+      : borradores;
+    setBorradorCount(propios.length);
+  }, [user?.id, user?.cedula]);
+
   useEffect(() => {
-    const loadCount = async () => {
-      const count = await contarBorradores();
-      setBorradorCount(count);
-    };
     loadCount();
-  }, []);
+  }, [loadCount]);
 
   useEffect(() => {
     const unsubscribe = navigation.addListener('focus', () => {
-      contarBorradores().then(setBorradorCount);
+      loadCount();
     });
     return unsubscribe;
-  }, [navigation]);
+  }, [navigation, loadCount]);
 
   return (
     <ScrollView
@@ -90,14 +107,14 @@ const SeleccionarTipoFormulario: React.FC<SeleccionarTipoProps> = ({ navigation,
 
       <TouchableOpacity
         style={[styles.card, { borderLeftColor: COLORS.roleTecnico }]}
-        onPress={() => navigation.navigate('Formulario', { tipo: 'visita_tecnica' })}
+        onPress={() => navigation.navigate('SeleccionarVisitaTecnica', { beneficiario })}
         activeOpacity={0.7}
       >
         <Text style={styles.cardIcon}>🔍</Text>
         <View style={styles.cardContent}>
           <Text style={styles.cardTitle}>Visita Técnica</Text>
           <Text style={styles.cardDesc}>
-            Seguimiento a beneficiarios, evaluación de cultivos y asistencia técnica
+            Visitas de seguimiento: selecciona la visita (1ª, 2ª, …) para diligenciar su formulario
           </Text>
         </View>
         <Text style={styles.arrow}>›</Text>

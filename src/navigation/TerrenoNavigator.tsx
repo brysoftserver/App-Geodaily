@@ -9,6 +9,8 @@ import TerrenoMenuScreen from '../screens/terreno/TerrenoMenuScreen';
 import BeneficiariosListScreen from '../screens/terreno/BeneficiariosListScreen';
 import BeneficiarioDetailScreen from '../screens/terreno/BeneficiarioDetailScreen';
 import SeleccionarTipoFormulario from '../screens/terreno/SeleccionarTipoFormulario';
+import SeleccionarVisitaTecnica from '../screens/terreno/SeleccionarVisitaTecnica';
+import VisitaTecnicaFormScreen from '../screens/terreno/VisitaTecnicaFormScreen';
 import FormularioScreen from '../screens/terreno/FormularioScreen';
 import FormularioCaracterizacionScreen from '../screens/terreno/FormularioCaracterizacionScreen';
 import CamaraScreen from '../screens/terreno/CamaraScreen';
@@ -41,9 +43,28 @@ export type TerrenoStackParamList = {
   SeleccionarTipoFormulario: {
     beneficiario?: DatosBeneficiario;
   } | undefined;
+  /** Menú de visitas técnicas: un botón por visita. */
+  SeleccionarVisitaTecnica: {
+    beneficiario?: DatosBeneficiario;
+  } | undefined;
+  /** Formulario de visita técnica (formato por ítems, v2). */
+  VisitaTecnicaForm: {
+    visitaNumero?: number;
+    draftId?: string;
+    beneficiario?: DatosBeneficiario;
+  } | undefined;
   Formulario: { tipo: TipoFormulario; draftId?: string };
   FormularioCaracterizacion: { draftId?: string };
-  Camara: { mode?: 'photo' | 'video' };
+  Camara: {
+    mode?: 'photo' | 'video';
+    requisito?: string;
+    // Modo "evidencia dirigida": agregar evidencia a un formulario ya
+    // completado desde su detalle, sin tocar el formulario en curso.
+    formularioId?: string;
+    beneficiarioCedula?: string;
+    beneficiarioNombre?: string;
+    tipoFormulario?: string;
+  };
   Documentos: { beneficiarioCedula?: string; beneficiarioNombre?: string } | undefined;
   FirmaDigital: undefined;
   FirmaBeneficiario: undefined;
@@ -105,6 +126,20 @@ const TerrenoNavigator: React.FC = () => {
         name="SeleccionarTipoFormulario"
         component={SeleccionarTipoFormulario as any}
         options={{ title: 'Nuevo Formulario' }}
+      />
+      <Stack.Screen
+        name="SeleccionarVisitaTecnica"
+        component={SeleccionarVisitaTecnica as any}
+        options={{ title: 'Visita Técnica' }}
+      />
+      <Stack.Screen
+        name="VisitaTecnicaForm"
+        component={VisitaTecnicaFormScreen as any}
+        options={({ route }: any) => ({
+          title: route?.params?.visitaNumero
+            ? `Visita Técnica ${route.params.visitaNumero}`
+            : 'Visita Técnica',
+        })}
       />
       <Stack.Screen
         name="Formulario"

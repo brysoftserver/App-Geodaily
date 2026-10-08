@@ -14,9 +14,19 @@ import MapaGeneralScreen from '../screens/MapaGeneralScreen';
 import FormularioDetailScreen from '../screens/terreno/FormularioDetailScreen';
 import BaseDatosBeneficiariosScreen from '../screens/supervision/BaseDatosBeneficiariosScreen';
 import PlantacionesPorTecnicoScreen from '../screens/supervision/PlantacionesPorTecnicoScreen';
+import SeguimientoMenuScreen from '../screens/supervision/SeguimientoMenuScreen';
+import SeguimientoFormScreen from '../screens/supervision/SeguimientoFormScreen';
+import SeguimientoListScreen from '../screens/supervision/SeguimientoListScreen';
+import SeguimientoIncompletosScreen from '../screens/supervision/SeguimientoIncompletosScreen';
+import SeguimientoDetailScreen from '../screens/supervision/SeguimientoDetailScreen';
 
 export type SupervisionStackParamList = {
   SupervisionMenu: undefined;
+  SeguimientoMenu: undefined;
+  SeguimientoForm: { seguimientoId?: string } | undefined;
+  SeguimientoList: undefined;
+  SeguimientoIncompletos: undefined;
+  SeguimientoDetail: { seguimientoId: string };
   Dashboard: undefined;
   SupervisionProyeccion: undefined;
   SupervisionVisitasJerarquicas: undefined;
@@ -50,6 +60,31 @@ const SupervisionNavigator: React.FC = () => {
         name="SupervisionMenu"
         component={SupervisionMenuScreen}
         options={{ title: 'GEODAILY - SUPERVISIÓN' }}
+      />
+      <Stack.Screen
+        name="SeguimientoMenu"
+        component={SeguimientoMenuScreen}
+        options={{ title: 'Seguimiento Coordinación' }}
+      />
+      <Stack.Screen
+        name="SeguimientoForm"
+        component={SeguimientoFormScreen}
+        options={{ title: 'Realizar Seguimiento' }}
+      />
+      <Stack.Screen
+        name="SeguimientoList"
+        component={SeguimientoListScreen}
+        options={{ title: 'Seguimientos Realizados' }}
+      />
+      <Stack.Screen
+        name="SeguimientoIncompletos"
+        component={SeguimientoIncompletosScreen}
+        options={{ title: 'Seguimientos Incompletos' }}
+      />
+      <Stack.Screen
+        name="SeguimientoDetail"
+        component={SeguimientoDetailScreen}
+        options={{ title: 'Detalle del Seguimiento' }}
       />
       <Stack.Screen
         name="Dashboard"

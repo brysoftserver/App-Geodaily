@@ -12,6 +12,7 @@ import {
   Alert,
   ActivityIndicator,
   Platform,
+  AppState,
 } from 'react-native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { RouteProp, useFocusEffect } from '@react-navigation/native';
@@ -26,7 +27,7 @@ import {
   getVeredasByMunicipio,
   TIPOS_ACTIVIDAD,
 } from '../../utils/constants';
-import { guardarBorrador, getBorrador, FormDraft } from '../../store/FormDraftStore';
+import { guardarBorrador, getBorrador, FormDraft, obtenerUltimoErrorBorrador } from '../../store/FormDraftStore';
 import { TipoFormulario, DatosTecnico, DatosBeneficiario, DatosSociodemograficos, ActividadRealizada } from '../../types';
 import {
   saveFormularioLocal,
@@ -35,13 +36,11 @@ import {
   saveFotoLocal,
   saveVideoLocal,
   vincularDocumentosHuerfanos,
+  getVisitasProgramadas,
 } from '../../services/database';
 import { buscarBeneficiarioPorCedula } from '../../services/beneficiarios.service';
 import { PADRON_BENEFICIARIOS } from '../../data/padronBeneficiarios';
 import { useSync } from '../../store/SyncContext';
-import { subirFirma } from '../../services/firmas.service';
-import { uploadPhoto } from '../../services/photos.service';
-import { uploadVideo } from '../../services/videos.service';
 import apiClient from '../../services/api';
 import FormField from '../../components/FormField';
 
@@ -259,8 +258,16 @@ const FormularioScreen: React.FC<FormularioScreenProps> = ({ navigation, route }
   const formularioRef = useRef(formularioActual);
   useEffect(() => { formularioRef.current = formularioActual; }, [formularioActual]);
 
-  // Guardar paso actual como borrador + subir evidencias a MinIO
-  const saveCurrentStep = useCallback(async () => {
+  /** Se activa al completar con éxito para que el autoguardado (interval,
+   *  AppState, cleanup al desmontar) deje de recrear el borrador que ya
+   *  se eliminó. */
+  const completadoRef = useRef(false);
+
+  // Guardar paso actual como borrador. `silent` lo usa el autoguardado
+  // automático (cada 20s y al pasar a segundo plano) para no interrumpir
+  // al técnico con la alerta "✅ Guardado" ni resubir evidencias que la
+  // cola de sincronización ya está subiendo por su cuenta.
+  const saveCurrentStep = useCallback(async (silent = false) => {
     // ---- 1. Capturar evidencias desde FormContext (usando ref como fallback) ----
     const currentForm = formularioRef.current || formularioActual;
     const fotosActuales = currentForm?.fotos || [];
@@ -305,7 +312,20 @@ const FormularioScreen: React.FC<FormularioScreenProps> = ({ navigation, route }
     };
 
     // ---- 4. Guardar borrador en AsyncStorage ----
-    await guardarBorrador(draft);
+    const borradorGuardado = await guardarBorrador(draft);
+    if (!borradorGuardado) {
+      setIsStepSaved(false);
+      if (!silent) {
+        const detalle = obtenerUltimoErrorBorrador();
+        Alert.alert(
+          'No se pudo guardar',
+          'El borrador no quedó guardado en este dispositivo.' +
+            (detalle ? `\n\nDetalle: ${detalle}` : '') +
+            '\n\nTus datos siguen en pantalla: no cierres la app e inténtalo de nuevo.'
+        );
+      }
+      return;
+    }
     setIsStepSaved(true);
 
     // ---- 5. VERIFICAR: leer de vuelta y confirmar que las evidencias se guardaron ----
@@ -332,59 +352,76 @@ const FormularioScreen: React.FC<FormularioScreenProps> = ({ navigation, route }
       console.warn('[Formulario] Error en verificación:', verifyErr);
     }
 
-    // ---- 6. Subir evidencias a MinIO (fire-and-forget — no bloquea al usuario) ----
+    // ---- 6. Encolar evidencias para sincronización ----
+    // NO se suben aquí directamente: antes se llamaba a uploadPhoto/
+    // uploadVideo sin marcar la evidencia como sincronizada, así que
+    // SyncContext la volvía a subir — y cada autoguardado (cada 60s o al
+    // pasar a segundo plano) repetía la subida de TODAS las fotos del
+    // formulario. Ya hubo duplicados reales en MinIO por esto (mismo fix
+    // ya aplicado en FormularioCaracterizacionScreen). Ahora la cola
+    // (fotos_locales/videos_locales, que SyncContext sube en segundo
+    // plano) es el único camino de subida.
+    let colaEvidenciasCompleta = true;
     try {
-      if (firmaBenefActual) {
-        subirFirma('beneficiario', firmaBenefActual, beneficiario.cedula, beneficiario.nombre, 'visita_tecnica').catch(() => {});
-      }
-      if (firmaTecActual) {
-        subirFirma('tecnico', firmaTecActual, beneficiario.cedula, beneficiario.nombre, 'visita_tecnica').catch(() => {});
-      }
       for (const foto of fotosActuales) {
+        if (foto.uri?.startsWith('http')) continue;
         // Los videos van por su propio camino: tabla videos_locales y
         // /api/videos (carpeta videos/ en MinIO, extensión .mp4). Antes
         // todo pasaba por uploadPhoto y los videos quedaban como .jpg
         // en la carpeta de fotos.
         if (foto.tipo === 'video') {
-          saveVideoLocal(foto.id, formId, foto.uri, foto.coordenadas, beneficiario, 'visita_tecnica').catch(() => {});
-          uploadVideo(
-            foto.uri,
-            foto.coordenadas?.latitud,
-            foto.coordenadas?.longitud,
-            `Formulario ${formId}`,
-            beneficiario.cedula || undefined,
-            beneficiario.nombre || undefined,
-            'visita_tecnica',
-            formId,
-          ).catch(() => {});
+          await saveVideoLocal(foto.id, formId, foto.uri, foto.coordenadas, beneficiario, 'visita_tecnica');
         } else {
-          saveFotoLocal(foto.id, formId, foto.uri, foto.coordenadas, beneficiario, 'visita_tecnica').catch(() => {});
-          uploadPhoto(
-            foto.uri,
-            foto.coordenadas?.latitud,
-            foto.coordenadas?.longitud,
-            foto.coordenadas?.altitud,
-            `Formulario ${formId}`,
-            undefined,
-            beneficiario.cedula || undefined,
-            beneficiario.nombre || undefined,
-            foto.timestamp,
-            'visita_tecnica',
-            formId,
-          ).catch(() => {});
+          await saveFotoLocal(foto.id, formId, foto.uri, foto.coordenadas, beneficiario, 'visita_tecnica');
         }
       }
-    } catch {
-      // Ignorar errores de subida — el borrador ya está guardado
+    } catch (queueErr) {
+      colaEvidenciasCompleta = false;
+      console.warn('[Formulario] No se pudo completar la cola local de evidencias:', queueErr);
     }
 
-    Alert.alert(
-      '✅ Guardado',
-      verifyOk
-        ? `Evidencias guardadas en AsyncStorage:\n📸 ${fotosActuales.length} foto(s)\n✍️ ${firmaBenefActual ? 'Sí' : 'No'} firma beneficiario\n✍️ ${firmaTecActual ? 'Sí' : 'No'} firma técnico\n👆 ${huellaActual ? 'Sí' : 'No'} huella`
-        : `⚠️ Guardado (verificación falló)\nSe capturaron ${fotosActuales.length} foto(s). Revisa la consola.`
-  );
+    if (!colaEvidenciasCompleta && !silent) {
+      Alert.alert('Evidencias pendientes', 'El borrador quedó guardado, pero algunas evidencias no están en la cola local. Revisa el almacenamiento antes de continuar.');
+    }
+
+    if (!silent) {
+      Alert.alert(
+        '✅ Guardado',
+        verifyOk && colaEvidenciasCompleta
+          ? `Evidencias guardadas en AsyncStorage:\n📸 ${fotosActuales.length} foto(s)\n✍️ ${firmaBenefActual ? 'Sí' : 'No'} firma beneficiario\n✍️ ${firmaTecActual ? 'Sí' : 'No'} firma técnico\n👆 ${huellaActual ? 'Sí' : 'No'} huella`
+          : `⚠️ El borrador local se guardó, pero la verificación o la cola de evidencias falló. Revisa el almacenamiento antes de continuar.`
+      );
+    }
   }, [formularioActual, tipo, step, tecnico, beneficiario, actividad, socioData, coordenadas, selectedDepartamento, selectedActividad, otraActividadText, descripcionDetallada, user?.id]);
+
+  // ─── Autoguardado silencioso ─────────────────────────────
+  // Sin esto, un cierre inesperado de la app (batería, Android matando el
+  // proceso en segundo plano) a mitad de una visita perdía todo lo no
+  // guardado a mano — el formulario en curso solo vive en memoria hasta
+  // que se guarda el borrador. Guarda cada 20s y al pasar a segundo plano.
+  const autoguardarRef = useRef<(() => Promise<void>) | null>(null);
+  useEffect(() => {
+    autoguardarRef.current = () => saveCurrentStep(true);
+  }, [saveCurrentStep]);
+
+  useEffect(() => {
+    const intervalo = setInterval(() => {
+      if (!completadoRef.current) autoguardarRef.current?.();
+    }, 20000);
+
+    const sub = AppState.addEventListener('change', (estado) => {
+      // 'inactive' cubre iOS al deslizar hacia el multitarea
+      if ((estado === 'background' || estado === 'inactive') && !completadoRef.current) {
+        autoguardarRef.current?.();
+      }
+    });
+
+    return () => {
+      clearInterval(intervalo);
+      sub.remove();
+      if (!completadoRef.current) autoguardarRef.current?.();
+    };
+  }, []);
 
   // Avanzar paso
   const nextStep = useCallback(() => {
@@ -454,6 +491,21 @@ const FormularioScreen: React.FC<FormularioScreenProps> = ({ navigation, route }
     navigation.navigate(screen as any, params as any);
   };
 
+  // Confirmación antes de disparar el envío — evita que un toque accidental
+  // en "Completar" cierre la visita a mitad de llenado, sin forma de volver
+  // atrás una vez arrancó la subida.
+  const confirmarCompletar = () => {
+    if (isSubmitting) return;
+    Alert.alert(
+      '¿Has completado todos los pasos?',
+      'Revisa que toda la información y evidencias estén correctas antes de continuar.',
+      [
+        { text: 'No, revisar nuevamente', style: 'cancel' },
+        { text: 'Sí, completar', onPress: () => handleCompletar() },
+      ]
+    );
+  };
+
   // Completar formulario (desde paso de evidencias)
   const handleCompletar = async () => {
     if (isSubmitting) return; // Evita doble clic
@@ -464,27 +516,18 @@ const FormularioScreen: React.FC<FormularioScreenProps> = ({ navigation, route }
       setActividad(actividad);
       setSociodemografico(socioData);
 
-      // ---- PASO 0: Subir evidencias a MinIO (fire-and-forget) ----
+      // ---- PASO 0: Asegurar la cola local de evidencias antes de completar ----
       const currentForm = formularioRef.current || formularioActual;
       const fotosParaUpload = currentForm?.fotos || [];
-      const firmaBenefUpload = currentForm?.firma_beneficiario || '';
-      const firmaTecUpload = currentForm?.firma_tecnico || '';
       const formId = currentForm?.id || '';
 
-      try {
-        if (firmaBenefUpload) subirFirma('beneficiario', firmaBenefUpload, beneficiario.cedula, beneficiario.nombre, 'visita_tecnica').catch(() => {});
-        if (firmaTecUpload) subirFirma('tecnico', firmaTecUpload, beneficiario.cedula, beneficiario.nombre, 'visita_tecnica').catch(() => {});
-        for (const foto of fotosParaUpload) {
-          if (foto.tipo === 'video') {
-            saveVideoLocal(foto.id, formId, foto.uri, foto.coordenadas, beneficiario, 'visita_tecnica').catch(() => {});
-            uploadVideo(foto.uri, foto.coordenadas?.latitud, foto.coordenadas?.longitud, `Formulario ${formId}`, beneficiario.cedula || undefined, beneficiario.nombre || undefined, 'visita_tecnica', formId).catch(() => {});
-          } else {
-            saveFotoLocal(foto.id, formId, foto.uri, foto.coordenadas, beneficiario, 'visita_tecnica').catch(() => {});
-            uploadPhoto(foto.uri, foto.coordenadas?.latitud, foto.coordenadas?.longitud, foto.coordenadas?.altitud, `Formulario ${formId}`, undefined, beneficiario.cedula || undefined, beneficiario.nombre || undefined, foto.timestamp, 'visita_tecnica', formId).catch(() => {});
-          }
+      for (const foto of fotosParaUpload) {
+        if (foto.uri?.startsWith('http')) continue;
+        if (foto.tipo === 'video') {
+          await saveVideoLocal(foto.id, formId, foto.uri, foto.coordenadas, beneficiario, 'visita_tecnica');
+        } else {
+          await saveFotoLocal(foto.id, formId, foto.uri, foto.coordenadas, beneficiario, 'visita_tecnica');
         }
-      } catch {
-        // Ignorar errores de subida
       }
 
       // ---- PASO 1: Capturar datos del formulario ANTES de finalizar ----
@@ -520,7 +563,26 @@ const FormularioScreen: React.FC<FormularioScreenProps> = ({ navigation, route }
         return;
       }
 
-      // ---- PASO 3: Generar PDF (no crítico — si falla, se puede generar después) ----
+      // ---- PASO 3: asociar número de visita programada a la actividad si aplica ----
+      try {
+        const visitasPendientes = await getVisitasProgramadas();
+        const visitaProgramada = visitasPendientes.find((v) => {
+          if (!v.beneficiario_cedula || v.estado !== 'pendiente' || !v.actividad_numero) return false;
+          return v.beneficiario_cedula.trim() === (beneficiario.cedula || '').trim();
+        });
+
+        if (visitaProgramada?.actividad_numero) {
+          form.actividad = {
+            ...form.actividad,
+            visita_numero: visitaProgramada.actividad_numero,
+            descripcion: form.actividad.descripcion || `Visita ${visitaProgramada.actividad_numero}`,
+          } as ActividadRealizada;
+        }
+      } catch (e) {
+        console.warn('[Formulario] No se pudo resolver la visita programada asociada:', e);
+      }
+
+      // ---- PASO 4: Generar PDF (no crítico — si falla, se puede generar después) ----
       let pdfUrl: string | undefined;
       try {
         const { generarPDFLocal } = await import('../../services/pdfLocal.service');
@@ -544,7 +606,7 @@ const FormularioScreen: React.FC<FormularioScreenProps> = ({ navigation, route }
       // Asignar pdf_url
       form.pdf_url = pdfUrl || form.pdf_url;
 
-      // ---- PASO 4: Persistir a SQLite ----
+      // ---- PASO 5: Persistir a SQLite ----
       // Punto de no retorno: si falla se ABORTA y se conserva el borrador.
       try {
         await saveFormularioLocal(form);
@@ -565,7 +627,7 @@ const FormularioScreen: React.FC<FormularioScreenProps> = ({ navigation, route }
         return;
       }
 
-      // ---- PASO 5: Re-asignar documentos vinculados con ID temporal ----
+      // ---- PASO 6: Re-asignar documentos vinculados con ID temporal ----
       // Antes la condición hacía `SET formulario_id = X WHERE formulario_id = X`
       // (un no-op) cuando el id empezaba por 'draft-', y los documentos
       // capturados como 'sin-formulario' quedaban huérfanos para siempre.
@@ -591,10 +653,14 @@ const FormularioScreen: React.FC<FormularioScreenProps> = ({ navigation, route }
         console.warn('[Formulario] No se pudieron re-asignar documentos:', e);
       }
 
-      // ---- PASO 6: Eliminar borrador ----
+      // ---- PASO 7: Eliminar borrador ----
       // Se borran todos los ids posibles: con `draftId` solo (el parámetro de
       // ruta) los borradores creados al guardar progreso quedaban huérfanos y
       // reaparecían en "Formularios Incompletos", generando duplicados.
+      // completadoRef evita que el autoguardado (interval, AppState o el
+      // cleanup al desmontar) vuelva a crear el borrador que se acaba de
+      // eliminar.
+      completadoRef.current = true;
       try {
         const { eliminarBorrador } = await import('../../store/FormDraftStore');
         const idsBorrador = Array.from(
@@ -1436,7 +1502,7 @@ const FormularioScreen: React.FC<FormularioScreenProps> = ({ navigation, route }
         {step < totalSteps && (
           <TouchableOpacity
             style={styles.saveButton}
-            onPress={saveCurrentStep}
+            onPress={() => saveCurrentStep()}
           >
             <Text style={styles.primaryButtonText}>💾 Guardar</Text>
           </TouchableOpacity>
@@ -1446,13 +1512,13 @@ const FormularioScreen: React.FC<FormularioScreenProps> = ({ navigation, route }
           <>
             <TouchableOpacity
               style={[styles.saveButton]}
-              onPress={saveCurrentStep}
+              onPress={() => saveCurrentStep()}
             >
               <Text style={styles.primaryButtonText}>💾 Guardar</Text>
             </TouchableOpacity>
             <TouchableOpacity
               style={[styles.primaryButton, styles.submitButton, isSubmitting && styles.buttonDisabled]}
-              onPress={handleCompletar}
+              onPress={confirmarCompletar}
               disabled={isSubmitting}
             >
               <Text style={styles.primaryButtonText}>

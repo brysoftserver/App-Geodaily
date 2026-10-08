@@ -129,6 +129,37 @@ export const fetchFormularioDelServidor = async (id: string): Promise<Formulario
 };
 
 /**
+ * Actualiza una respuesta del Formulario 1 ("✎ Completar" / "✎ Corregir").
+ *
+ * El backend es el que autoriza (PATCH /api/formularios/:id/respuesta, admin
+ * o técnico dueño) y el que decide si la pregunta ya tenía respuesta (409).
+ * Se propaga el mensaje del servidor tal cual para que la pantalla explique el
+ * motivo real en vez de un "Request failed with status code 409".
+ *
+ * `modo`:
+ *   - 'completar' (por defecto): solo escribe si la pregunta estaba vacía.
+ *   - 'corregir': sobrescribe una respuesta existente.
+ */
+export const actualizarRespuestaFormulario = async (
+  id: string,
+  path: string,
+  value: string,
+  modo: 'completar' | 'corregir' = 'completar'
+): Promise<void> => {
+  try {
+    await apiClient.patch(`${API_CONFIG.ENDPOINTS.FORMS}/${id}/respuesta`, { path, value, modo });
+  } catch (error) {
+    const err = error as { response?: { status?: number; data?: { mensaje?: string } }; message?: string };
+    const mensajeServidor = err?.response?.data?.mensaje;
+    if (mensajeServidor) throw new Error(mensajeServidor);
+    if (err?.response?.status === 404) {
+      throw new Error('El formulario no existe todavía en el servidor (puede ser una visita sin sincronizar).');
+    }
+    throw error;
+  }
+};
+
+/**
  * Eliminar un formulario del servidor — SOLO admin (el backend lo valida
  * de nuevo, esto es solo la puerta de la UI). Borra en cascada revisiones,
  * notificaciones, mediciones, plantaciones y archivos (fotos/videos/firmas/

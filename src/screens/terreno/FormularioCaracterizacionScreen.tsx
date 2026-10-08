@@ -66,7 +66,7 @@ import {
   MANEJO_RESIDUOS_OPTS,
   INGRESOS_SALARIOS_OPTS,
 } from '../../utils/constants';
-import { guardarBorrador, getBorrador, FormDraft } from '../../store/FormDraftStore';
+import { guardarBorrador, getBorrador, cargarBorradores, FormDraft, obtenerUltimoErrorBorrador } from '../../store/FormDraftStore';
 import {
   saveFormularioLocal,
   getFormularioById,
@@ -85,15 +85,28 @@ import {
   ComponenteAgroambientalEncuesta,
   RecomendacionesEncuesta,
   AcompaniamientoTecnico,
-  Formulario,
   ResumenClimatico,
+  Coordenadas,
 } from '../../types';
 import DropdownPicker from '../../components/DropdownPicker';
+import CapturaGPSPrecisa from '../../components/CapturaGPSPrecisa';
 
 type Props = {
   navigation: NativeStackNavigationProp<Record<string, any>>;
   route: RouteProp<Record<string, any> & { params: { draftId?: string } }, 'params'>;
 };
+
+// Claves de las secciones del formulario (para el check verde y la validación)
+type SectionKey =
+  | 'datos'
+  | 'social'
+  | 'finca'
+  | 'productivo'
+  | 'suelo'
+  | 'agroambiental'
+  | 'recomendaciones'
+  | 'acompanamiento'
+  | 'evidencias';
 
 // ─── Estados iniciales vacíos ────────────────────────────────
 const EMPTY_SOCIAL: ComponenteSocialEncuesta = {
@@ -214,6 +227,7 @@ const EMPTY_ACOMPANAMIENTO: AcompaniamientoTecnico = {
   entresacado_si: false,
   entresacado_no: false,
   entresacado_obs: '',
+  observaciones_visita: '',
 };
 
 const EMPTY_ENCUESTA: EncuestaSocialAgroAmbiental = {
@@ -275,7 +289,11 @@ const EncuestaSocialAgroambientalScreen: React.FC<Props> = ({ navigation, route 
   const [isSaving, setIsSaving] = useState(false);
 
   // Evidencias
+  // `fotos` en el contexto guarda fotos Y videos (diferenciados por
+  // `tipo`), por eso se cuentan por separado: si no, un video marcaba en
+  // verde la tarjeta de "Tomar Fotos" y viceversa.
   const [fotosCount, setFotosCount] = useState(0);
+  const [videosCount, setVideosCount] = useState(0);
   const [firmaBeneficiarioOk, setFirmaBeneficiarioOk] = useState(false);
   const [firmaTecnicoOk, setFirmaTecnicoOk] = useState(false);
   const [huellaOk, setHuellaOk] = useState(false);
@@ -291,6 +309,70 @@ const EncuestaSocialAgroambientalScreen: React.FC<Props> = ({ navigation, route 
   /** Cédula del productor — leída en callbacks que no dependen de `data` */
   const documentoRef = useRef('');
   useEffect(() => { documentoRef.current = data.documento?.trim() || ''; }, [data.documento]);
+  /**
+   * Coordenada restaurada de un borrador. Se guarda aparte para que el GPS
+   * de apertura no la pise (ver "Capturar ubicación" en el efecto de init).
+   */
+  const coordsDeBorradorRef = useRef<Coordenadas | null>(null);
+
+  /**
+   * Aplica un borrador al estado del formulario: datos (fusionados contra los
+   * EMPTY_* para tolerar borradores de versiones anteriores), evidencias y el
+   * resto de campos de contexto.
+   */
+  const aplicarBorrador = useCallback(
+    (draft: FormDraft) => {
+      // ⚠️ ORDEN CRÍTICO — esto va PRIMERO, antes de restaurar evidencias.
+      // `iniciarFormulario` con un id DISTINTO al que tiene el contexto ahora
+      // hace que el reducer recree `formularioActual` con `fotos: []`,
+      // firmas vacías y `huella_beneficiario: false`. Despacharlo después de
+      // addFoto/setFirma*/setHuella borraba del contexto toda la evidencia
+      // recién restaurada: el formulario abría con los datos correctos pero
+      // con 0 fotos — exactamente el reporte "se me eliminó toda la
+      // información". Con el id ya fijado, el reducer conserva la evidencia
+      // (early return por mismo id) y las fotos que se añaden después se
+      // suman. No reordenar este bloque.
+      formIdRef.current = draft.id;
+      iniciarFormulario('caracterizacion', draft.id);
+
+      if (draft.caracterizacion_nueva) {
+        const d = draft.caracterizacion_nueva as unknown as Partial<EncuestaSocialAgroAmbiental>;
+        setData({
+          ...EMPTY_ENCUESTA,
+          ...d,
+          componente_social: { ...EMPTY_SOCIAL, ...(d.componente_social || {}) },
+          caracterizacion_finca: { ...EMPTY_FINCA, ...(d.caracterizacion_finca || {}) },
+          componente_productivo: { ...EMPTY_PRODUCTIVO, ...(d.componente_productivo || {}) },
+          analisis_suelo: { ...EMPTY_ANALISIS, ...(d.analisis_suelo || {}) },
+          componente_agroambiental: { ...EMPTY_AGROAMBIENTAL, ...(d.componente_agroambiental || {}) },
+          recomendaciones: { ...EMPTY_RECOMENDACIONES, ...(d.recomendaciones || {}) },
+          acompaniamiento: { ...EMPTY_ACOMPANAMIENTO, ...(d.acompaniamiento || {}) },
+        });
+        if ((draft.caracterizacion_nueva as any).municipio) {
+          setSelectedMunicipio((draft.caracterizacion_nueva as any).municipio);
+        }
+      }
+      // Restaurar evidencias guardadas en el borrador (ADD_FOTO es idempotente)
+      if (draft.fotos && draft.fotos.length > 0) {
+        for (const foto of draft.fotos) {
+          addFoto(foto);
+        }
+      }
+      if (draft.firma_beneficiario) setFirmaBeneficiario(draft.firma_beneficiario);
+      if (draft.firma_tecnico) setFirmaTecnico(draft.firma_tecnico);
+      if (draft.huella_beneficiario) setHuella(true);
+      if (draft.coordenadas) {
+        // Se recuerda aparte para que el GPS de apertura no la sobrescriba.
+        coordsDeBorradorRef.current = draft.coordenadas;
+        setCoordenadas(draft.coordenadas);
+      }
+      // El bloqueo de vereda/corregimiento (datos del padrón) se perdía al
+      // recuperar el borrador.
+      if (draft.datosBloqueados) setDatosBloqueados(true);
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [addFoto, setFirmaBeneficiario, setFirmaTecnico, setHuella, setCoordenadas, iniciarFormulario]
+  );
 
   // ─── Inicializar ──────────────────────────────────────────
   useEffect(() => {
@@ -309,6 +391,14 @@ const EncuestaSocialAgroambientalScreen: React.FC<Props> = ({ navigation, route 
       // Cargar borrador si existe
       if (draftId) {
         const draft = await getBorrador(draftId);
+        if (draft) {
+          // ⚠️ ORDEN CRÍTICO: fijar el id del borrador ANTES de restaurar
+          // evidencias. Si se hiciera al final, el reducer recrearía el
+          // formulario y borraría las fotos/firmas recién restauradas. Mismo
+          // motivo que en `aplicarBorrador`.
+          formIdRef.current = draft.id;
+          iniciarFormulario('caracterizacion', draft.id);
+        }
         if (draft?.caracterizacion_nueva) {
           // Fusión profunda con los EMPTY_*: los borradores creados con la
           // versión anterior de la encuesta no traen los campos nuevos y
@@ -338,6 +428,14 @@ const EncuestaSocialAgroambientalScreen: React.FC<Props> = ({ navigation, route 
         if (draft?.firma_beneficiario) setFirmaBeneficiario(draft.firma_beneficiario);
         if (draft?.firma_tecnico) setFirmaTecnico(draft.firma_tecnico);
         if (draft?.huella_beneficiario) setHuella(true);
+        // La ubicación capturada también se restauraba a medias: el borrador
+        // la guardaba, pero al reabrir se volvía a pedir GPS y se perdía la
+        // original si no había señal.
+        if (draft?.coordenadas) {
+          coordsDeBorradorRef.current = draft.coordenadas;
+          setCoordenadas(draft.coordenadas);
+        }
+        if (draft?.datosBloqueados) setDatosBloqueados(true);
       } else {
         // Si NO hay borrador pero viene beneficiario precargado desde
         // SeleccionarTipoFormulario, pre-llenar nombre y documento
@@ -353,27 +451,85 @@ const EncuestaSocialAgroambientalScreen: React.FC<Props> = ({ navigation, route 
           if (benefPrecargado.vereda || benefPrecargado.corregimiento) {
             setDatosBloqueados(true);
           }
+        } else {
+          // ─── Recuperación del trabajo en curso ──────────────────────────
+          // Antes, entrar a una encuesta NUEVA (sin `draftId` en la ruta)
+          // nunca buscaba un borrador existente: se creaba un formulario en
+          // blanco y el borrador anterior quedaba huérfano. El técnico veía
+          // un formulario vacío "como si lo hubiera abierto por primera vez"
+          // y su trabajo parecía borrado. Ahora, si existe un borrador
+          // propio reciente, se le ofrece continuarlo.
+          try {
+            const borradores = await cargarBorradores();
+            const propios = borradores
+              .filter((d) => d.tipo === 'caracterizacion')
+              .filter((d) => {
+                // Los borradores sin dueño asignado (creados mientras la
+                // sesión todavía se restauraba) también se ofrecen: es
+                // preferible recuperar de más que dejar trabajo perdido.
+                const t = d.tecnico || ({} as FormDraft['tecnico']);
+                if (user?.id && t.usuario_id) return t.usuario_id === user.id;
+                if (user?.cedula && t.cedula) return t.cedula === user.cedula;
+                return true;
+              })
+              .sort((a, b) => (b.updated_at || '').localeCompare(a.updated_at || ''));
+
+            const candidato = propios[0];
+            if (candidato) {
+              const nombre = candidato.beneficiario?.nombre || 'sin nombre';
+              const vereda = candidato.beneficiario?.vereda || '';
+              const cuando = candidato.updated_at
+                ? new Date(candidato.updated_at).toLocaleString()
+                : 'hace un momento';
+              Alert.alert(
+                '📝 Tienes un formulario sin terminar',
+                `Se encontró una encuesta guardada de "${nombre}"${vereda ? ` (${vereda})` : ''} del ${cuando}.\n\n¿Quieres continuar donde la dejaste?`,
+                [
+                  {
+                    // El borrador NO se borra: sigue disponible en
+                    // "Formularios Incompletos" por si se arrepiente.
+                    text: 'Empezar de cero',
+                    style: 'cancel',
+                  },
+                  { text: 'Continuar', onPress: () => aplicarBorrador(candidato) },
+                ],
+                { cancelable: false }
+              );
+            }
+          } catch (e) {
+            console.warn('[Encuesta] No se pudo buscar borradores pendientes:', e);
+          }
         }
       }
 
       // Capturar ubicación
       const coords = await getCurrentPosition();
-      if (coords) {
+      // Si el borrador recuperado ya traía la ubicación donde se levantó la
+      // encuesta, ESA manda: el GPS de ahora puede ser otro punto (el técnico
+      // reabre la encuesta al día siguiente desde otra vereda) y antes la
+      // pisaba siempre, perdiendo la coordenada original. Si no hay borrador,
+      // se usa la del GPS como antes.
+      const coordsBorrador = coordsDeBorradorRef.current;
+      if (coords && !coordsBorrador) {
         setCoordenadas(coords);
+      }
+      const coordsFinales = coordsBorrador || coords;
+      if (coordsFinales) {
         // Best-effort: sin señal, el formulario se guarda igual con las
         // coordenadas crudas; nombre de lugar y clima quedan pendientes y
         // se resuelven solos en el próximo sync.
-        resolverClimaYUbicacion(coords.latitud, coords.longitud, coords.timestamp)
+        resolverClimaYUbicacion(coordsFinales.latitud, coordsFinales.longitud, coordsFinales.timestamp)
           .then(({ lugar, resumen }) => {
             if (lugar) setLugarResuelto(lugar);
             if (resumen) setClimaResuelto(resumen);
           })
           .catch((e) => console.warn('[Encuesta] No se pudo resolver clima/ubicación:', e));
       } else {
-        Alert.alert(
-          'Ubicación no disponible',
-          'No se pudo obtener tu ubicación GPS. El formulario se guardará sin coordenadas — verifica el permiso de ubicación y la señal GPS.'
-        );
+        // Aviso NO bloqueante: en campo, sin señal, un modal al abrir la
+        // encuesta es puro estorbo (y el técnico termina cerrándolo de
+        // memoria). El formulario se llena igual y la coordenada real la
+        // toma la pregunta "Captura GPS precisa" al completar.
+        console.warn('[Encuesta] Sin ubicación GPS al abrir el formulario');
       }
     };
     init();
@@ -387,11 +543,31 @@ const EncuestaSocialAgroambientalScreen: React.FC<Props> = ({ navigation, route 
     }
   }, [formularioActual?.id]);
 
+  // Si la sesión del técnico se restaura DESPUÉS de montar la pantalla (lo
+  // normal al arrancar en frío sin internet), el usuario llegaba tarde y
+  // `tecnico_responsable` quedaba vacío — el formulario no se podía completar
+  // ni aparecía en "Formularios Incompletos". Aquí se rellena en cuanto
+  // aparece el usuario, sin pisar lo que el técnico ya haya escrito.
+  useEffect(() => {
+    if (!user) return;
+    setData((prev) => {
+      const nombre = prev.tecnico_responsable || user.nombre || '';
+      const cedula = prev.tecnico_cedula || user.cedula || '';
+      if (nombre === prev.tecnico_responsable && cedula === prev.tecnico_cedula) {
+        return prev;
+      }
+      return { ...prev, tecnico_responsable: nombre, tecnico_cedula: cedula };
+    });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user?.id, user?.nombre, user?.cedula]);
+
   // Refrescar evidencias al volver de pantallas
   useFocusEffect(
     useCallback(() => {
       if (formularioActual) {
-        setFotosCount(formularioActual.fotos?.length || 0);
+        const evidencias = formularioActual.fotos || [];
+        setFotosCount(evidencias.filter((f) => f.tipo !== 'video').length);
+        setVideosCount(evidencias.filter((f) => f.tipo === 'video').length);
         setFirmaBeneficiarioOk(!!formularioActual.firma_beneficiario);
         setFirmaTecnicoOk(!!formularioActual.firma_tecnico);
         setHuellaOk(!!formularioActual.huella_beneficiario);
@@ -471,6 +647,13 @@ const EncuestaSocialAgroambientalScreen: React.FC<Props> = ({ navigation, route 
     return getVeredasByMunicipio('Caquetá', selectedMunicipio);
   }, [selectedMunicipio]);
 
+  // Municipio/vereda para mostrar como referencia sobre el mapa de captura GPS
+  // (el mapa satelital no trae nombres de lugar — ver CapturaGPSPrecisa.tsx)
+  const ubicacionGPSTexto = React.useMemo(
+    () => [data.municipio, data.vereda || data.corregimiento].filter(Boolean).join(' · '),
+    [data.municipio, data.vereda, data.corregimiento]
+  );
+
   // ─── Toggle helper para checklist ─────────────────────────
   const toggleAcompaniamiento = useCallback((fieldSi: keyof AcompaniamientoTecnico, fieldNo: keyof AcompaniamientoTecnico, value: boolean) => {
     setData((prev) => ({
@@ -483,10 +666,175 @@ const EncuestaSocialAgroambientalScreen: React.FC<Props> = ({ navigation, route 
     }));
   }, []);
 
+  // ─── Validación de completitud ───────────────────────────
+  // Calcula, sección por sección, qué espacios quedan sin responder. Una
+  // pregunta se considera respondida cuando su valor no está vacío. Los
+  // subcampos condicionales («¿Cuál?», «¿Por qué?») solo cuentan cuando la
+  // opción que los muestra está activa. La huella y los documentos de la
+  // finca son OPCIONALES; las 5 fotos, el video y las 2 firmas son
+  // obligatorios.
+  const validacion = React.useMemo(() => {
+    const fill = (v?: string | null) => !!(v && String(v).trim());
+    const faltas: Record<SectionKey, string[]> = {
+      datos: [],
+      social: [],
+      finca: [],
+      productivo: [],
+      suelo: [],
+      agroambiental: [],
+      recomendaciones: [],
+      acompanamiento: [],
+      evidencias: [],
+    };
+    // `req` agrega la etiqueta a la sección cuando NO está respondida. Se
+    // deduplica al final, porque una misma pregunta puede tener varios
+    // subcampos (p. ej. la 22 tiene 4 áreas).
+    const req = (sec: SectionKey, label: string, ok: boolean) => {
+      if (!ok) faltas[sec].push(label);
+    };
+
+    const s = data.componente_social;
+    const f = data.caracterizacion_finca;
+    const p = data.componente_productivo;
+    const a = data.analisis_suelo;
+    const ag = data.componente_agroambiental;
+    const r = data.recomendaciones;
+    const ac = data.acompaniamiento;
+
+    // ── DATOS GENERALES ──
+    // Solo lo marcado con «*» en el formulario (Vereda, Nombre y Documento).
+    // Edad, Sexo, Teléfono y Corregimiento son opcionales.
+    req('datos', 'Vereda', fill(data.vereda));
+    req('datos', 'Nombre del productor', fill(data.productor_nombre));
+    req('datos', 'Documento (C.C.)', fill(data.documento));
+
+    // ── COMPONENTE SOCIAL (1-18) ──
+    req('social', '1', fill(s.reconocimiento));
+    if (s.reconocimiento === 'Otro') req('social', '1', fill(s.reconocimiento_otro));
+    req('social', '2', fill(s.nivel_educativo));
+    req('social', '3', fill(s.participo_eca));
+    req('social', '4', fill(s.personas_nucleo));
+    req('social', '5', fill(s.fuente_ingresos));
+    if (s.fuente_ingresos === 'Otra actividad') req('social', '5', fill(s.fuente_ingresos_otra));
+    req('social', '6', fill(s.ingresos_salarios));
+    req('social', '7', fill(s.ocupacion_secundaria));
+    if (s.ocupacion_secundaria === 'Otro') req('social', '7', fill(s.ocupacion_secundaria_otro));
+    req('social', '8', fill(s.participa_organizacion));
+    if (s.participa_organizacion === 'Sí') req('social', '8', fill(s.organizacion_cual));
+    // 9 y 10 quedan bloqueadas en «Ninguna» cuando la 8 es «No»
+    if (s.participa_organizacion !== 'No') {
+      req('social', '9', fill(s.tipo_asociacion));
+      if (s.tipo_asociacion === 'Otro') req('social', '9', fill(s.tipo_asociacion_otro));
+      req('social', '10', fill(s.rol_asociacion));
+    }
+    req('social', '11', fill(s.vivienda_ubicacion));
+    if (s.vivienda_ubicacion === 'Otra') req('social', '11', fill(s.vivienda_ubicacion_otra));
+    req('social', '12', fill(s.energia_electrica));
+    req('social', '13', fill(s.tipo_energia));
+    if (s.tipo_energia === 'Otro') req('social', '13', fill(s.tipo_energia_otro));
+    req('social', '14', fill(s.agua_consumo));
+    if (s.agua_consumo === 'Otro') req('social', '14', fill(s.agua_consumo_otro));
+    req('social', '15', fill(s.elementos_tecnologicos));
+    req('social', '16', fill(s.senal_celular));
+    req('social', '17', fill(s.quienes_trabajan));
+    if ((s.quienes_trabajan || '').split(', ').includes('Otro')) req('social', '17', fill(s.quienes_trabajan_otro));
+    req('social', '18', fill(s.medio_transporte));
+    if ((s.medio_transporte || '').split(', ').includes('Otro')) req('social', '18', fill(s.medio_transporte_otro));
+
+    // ── CARACTERIZACIÓN DE LA FINCA (19-27) ──
+    req('finca', '19', fill(f.nombre_finca));
+    req('finca', '20', fill(f.latitud) && fill(f.longitud));
+    req('finca', '21', fill(f.area_total));
+    req('finca', '22', fill(f.division_bosque));
+    req('finca', '22', fill(f.division_agricola));
+    req('finca', '22', fill(f.division_pecuaria));
+    req('finca', '22', fill(f.division_instalaciones));
+    req('finca', '23', fill(f.medio_salida));
+    req('finca', '24', fill(f.distancia_km));
+    req('finca', '25', fill(f.distancia_observaciones));
+    req('finca', '26', fill(f.aprovechamiento_directo));
+    if (f.aprovechamiento_directo === 'No') req('finca', '26', fill(f.aprovechamiento_porque));
+    req('finca', '27', fill(f.actividades_finca));
+    if ((f.actividades_finca || '').includes('Actividades agrícolas')) {
+      req('finca', '27', fill(f.actividades_agricolas));
+      if ((f.actividades_agricolas || '').includes('Otro')) req('finca', '27', fill(f.actividades_agricolas_otro));
+    }
+    if ((f.actividades_finca || '').includes('Actividades pecuarias')) {
+      req('finca', '27', fill(f.actividades_pecuarias));
+      if ((f.actividades_pecuarias || '').includes('Otro')) req('finca', '27', fill(f.actividades_pecuarias_otro));
+    }
+    if ((f.actividades_finca || '').split(', ').includes('Otro')) req('finca', '27', fill(f.actividades_finca_otro));
+
+    // ── COMPONENTE PRODUCTIVO (28-31) ──
+    req('productivo', '28', fill(p.actividad_principal));
+    req('productivo', '29', fill(p.acceso_agua));
+    req('productivo', '30', fill(p.sistemas_riego));
+    req('productivo', '31', fill(p.asistencia_tecnica));
+
+    // ── SECCIÓN DE SUELO (32-42) ──
+    req('suelo', '32', fill(a.intervencion_latitud) && fill(a.intervencion_longitud));
+    req('suelo', '33', fill(a.analisis_realizado));
+    req('suelo', '34', fill(a.textura));
+    req('suelo', '35', fill(a.color));
+    req('suelo', '36', fill(a.drenaje));
+    req('suelo', '37', fill(a.uso_tierra));
+    req('suelo', '38', fill(a.piedras));
+    req('suelo', '39', fill(a.compactacion));
+    req('suelo', '40', fill(a.cobertura));
+    req('suelo', '41', fill(a.erosion));
+    req('suelo', '42', fill(a.pendiente));
+
+    // ── COMPONENTE AGROAMBIENTAL (43-50) ──
+    req('agroambiental', '43', fill(ag.procesos_erosion));
+    req('agroambiental', '44', fill(ag.fuentes_hidricas));
+    req('agroambiental', '45', fill(ag.areas_conservacion));
+    req('agroambiental', '46', fill(ag.practicas_conservacion));
+    req('agroambiental', '47', fill(ag.uso_agroquimicos));
+    // 48 y 49 quedan bloqueadas en «Ninguno» cuando la 47 es «No»
+    if (ag.uso_agroquimicos !== 'No') {
+      req('agroambiental', '48', fill(ag.tipo_agroquimicos));
+      if (ag.tipo_agroquimicos === 'Otro') req('agroambiental', '48', fill(ag.tipo_agroquimicos_otro));
+      req('agroambiental', '49', fill(ag.herbicidas_cuales));
+    }
+    req('agroambiental', '50', fill(ag.manejo_residuos));
+
+    // ── RECOMENDACIONES DEL TÉCNICO (51-53) ──
+    req('recomendaciones', '51', fill(r.recomendaciones_tecnicas));
+    req('recomendaciones', '52', fill(r.compromisos_productor));
+    req('recomendaciones', '53', fill(r.recomendaciones_ambientales));
+
+    // ── DESARROLLO ACOMPAÑAMIENTO TÉCNICO ──
+    req('acompanamiento', 'Acompañamiento 1', ac.actividades_realizadas_si || ac.actividades_realizadas_no);
+    req('acompanamiento', 'Acompañamiento 2', fill(ac.manejo_plagas_hectareas));
+    req('acompanamiento', 'Acompañamiento 3', fill(ac.manejo_suelo_cantidad));
+    req('acompanamiento', 'Acompañamiento 4', ac.capacitacion_si || ac.capacitacion_no);
+    req('acompanamiento', 'Acompañamiento 5', ac.seguimiento_si || ac.seguimiento_no);
+    req('acompanamiento', 'Acompañamiento 6', !!(ac.entresacado_si || ac.entresacado_no));
+    req('acompanamiento', 'Acompañamiento 7', fill(ac.observaciones_visita));
+
+    // ── EVIDENCIAS (5 fotos + 1 video + 2 firmas obligatorias) ──
+    if (fotosCount < 5) faltas.evidencias.push(`Fotos (${fotosCount} de 5)`);
+    if (videosCount < 1) faltas.evidencias.push(`Video (${videosCount} de 1)`);
+    if (!firmaBeneficiarioOk) faltas.evidencias.push('Firma del beneficiario');
+    if (!firmaTecnicoOk) faltas.evidencias.push('Firma del técnico');
+
+    // Deduplicar etiquetas repetidas (p. ej. la pregunta 22 o la 27)
+    (Object.keys(faltas) as SectionKey[]).forEach((k) => {
+      faltas[k] = Array.from(new Set(faltas[k]));
+    });
+
+    // Lista plana en orden de sección, para el mensaje de la alerta
+    const faltantes = (Object.keys(faltas) as SectionKey[]).flatMap((k) => faltas[k]);
+
+    return { faltas, faltantes };
+  }, [data, fotosCount, videosCount, firmaBeneficiarioOk, firmaTecnicoOk]);
+
+  const faltas = validacion.faltas;
+
   // ─── Autoguardado silencioso ─────────────────────────────
   // Sin esto, un crash o que Android mate la app a mitad de la encuesta perdía
   // TODO lo no guardado a mano: 20-40 minutos de trabajo con el beneficiario
-  // delante. Guarda solo el borrador (sin subidas ni alertas) cada 60 s y al
+  // delante. Guarda solo el borrador (sin subidas ni alertas) cada 20 s y al
   // pasar la app a segundo plano.
   const autoguardarRef = useRef<(() => Promise<void>) | null>(null);
 
@@ -531,14 +879,19 @@ const EncuestaSocialAgroambientalScreen: React.FC<Props> = ({ navigation, route 
           firma_beneficiario: currentForm?.firma_beneficiario || '',
           firma_tecnico: currentForm?.firma_tecnico || '',
           huella_beneficiario: currentForm?.huella_beneficiario || false,
+          datosBloqueados,
           selectedDepartamento: 'Caquetá',
           selectedActividad: '',
           otraActividadText: '',
           descripcionDetallada: '',
           updated_at: new Date().toISOString(),
         };
-        await guardarBorrador(draft);
-        console.log('[Carac] Autoguardado:', draftIdActual);
+        const guardado = await guardarBorrador(draft);
+        if (guardado) {
+          console.log('[Carac] Autoguardado:', draftIdActual);
+        } else {
+          console.warn('[Carac] El borrador no quedó guardado localmente:', draftIdActual);
+        }
       } catch (e) {
         console.warn('[Carac] Autoguardado falló:', e);
       }
@@ -548,7 +901,7 @@ const EncuestaSocialAgroambientalScreen: React.FC<Props> = ({ navigation, route 
   useEffect(() => {
     const intervalo = setInterval(() => {
       autoguardarRef.current?.();
-    }, 60000);
+    }, 20000);
 
     const sub = AppState.addEventListener('change', (estado) => {
       // 'inactive' cubre iOS al deslizar hacia el multitarea
@@ -564,6 +917,35 @@ const EncuestaSocialAgroambientalScreen: React.FC<Props> = ({ navigation, route 
       autoguardarRef.current?.();
     };
   }, []);
+
+  // ─── Autoguardado reactivo (debounce) ────────────────────
+  // El intervalo de 20 s dejaba una ventana de pérdida de hasta 20 s: si
+  // Android mataba la app (o el técnico cerraba por error) justo después de
+  // escribir, ese pedazo se perdía. Con debounce de 1.5 s sobre cada cambio,
+  // el hueco real baja a ~2 s. El intervalo se mantiene como red de
+  // seguridad (por si algún cambio no pasa por `data`).
+  const autoguardadoDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    if (completadoRef.current) return;
+    // Nada que guardar todavía: evita crear borradores vacíos al abrir
+    if (!data.productor_nombre?.trim() && !data.documento?.trim()) return;
+
+    if (autoguardadoDebounceRef.current) {
+      clearTimeout(autoguardadoDebounceRef.current);
+    }
+    autoguardadoDebounceRef.current = setTimeout(() => {
+      autoguardadoDebounceRef.current = null;
+      autoguardarRef.current?.();
+    }, 1500);
+
+    return () => {
+      if (autoguardadoDebounceRef.current) {
+        clearTimeout(autoguardadoDebounceRef.current);
+        autoguardadoDebounceRef.current = null;
+      }
+    };
+  }, [data]);
 
   // ─── Guardar borrador ────────────────────────────────────
   const guardarBorradorHandler = useCallback(async () => {
@@ -607,6 +989,7 @@ const EncuestaSocialAgroambientalScreen: React.FC<Props> = ({ navigation, route 
         firma_beneficiario: firmaBenefActual,
         firma_tecnico: firmaTecActual,
         huella_beneficiario: huellaActual,
+        datosBloqueados,
         selectedDepartamento: 'Caquetá',
         selectedActividad: '',
         otraActividadText: '',
@@ -614,7 +997,17 @@ const EncuestaSocialAgroambientalScreen: React.FC<Props> = ({ navigation, route 
         updated_at: new Date().toISOString(),
       };
 
-      await guardarBorrador(draft);
+      const guardado = await guardarBorrador(draft);
+      if (!guardado) {
+        const detalle = obtenerUltimoErrorBorrador();
+        Alert.alert(
+          'No se pudo guardar',
+          'El borrador no quedó guardado en este dispositivo.' +
+            (detalle ? `\n\nDetalle: ${detalle}` : '') +
+            '\n\nTus datos siguen en pantalla: no cierres la app e inténtalo de nuevo.'
+        );
+        return;
+      }
 
       let verifyOk = false;
       try {
@@ -639,22 +1032,32 @@ const EncuestaSocialAgroambientalScreen: React.FC<Props> = ({ navigation, route 
       // SyncContext la volvía a subir — y cada pulsación de "Guardar borrador"
       // repetía la subida. Ya hay duplicados reales en MinIO por esto.
       // Ahora la cola es el ÚNICO camino de subida.
+      let colasEvidenciasCompletas = true;
       try {
         const beneficiarioActual = { cedula: data.documento, nombre: data.productor_nombre };
         for (const foto of fotosActuales) {
+          if (foto.uri?.startsWith('http')) continue;
           if (foto.tipo === 'video') {
-            saveVideoLocal(foto.id, draftIdActual, foto.uri, foto.coordenadas, beneficiarioActual, 'caracterizacion').catch(() => {});
+            await saveVideoLocal(foto.id, draftIdActual, foto.uri, foto.coordenadas, beneficiarioActual, 'caracterizacion');
           } else {
-            saveFotoLocal(foto.id, draftIdActual, foto.uri, foto.coordenadas, beneficiarioActual, 'caracterizacion').catch(() => {});
+            await saveFotoLocal(foto.id, draftIdActual, foto.uri, foto.coordenadas, beneficiarioActual, 'caracterizacion');
           }
         }
-      } catch { /* ignorar */ }
+      } catch (e) {
+        colasEvidenciasCompletas = false;
+        console.warn('[Carac] No se pudieron encolar todas las evidencias:', e);
+      }
+
+      // `fotosActuales` trae fotos y videos juntos: se desglosan para no
+      // reportar un video como si fuera una foto.
+      const nFotosGuardadas = fotosActuales.filter((f) => f.tipo !== 'video').length;
+      const nVideosGuardados = fotosActuales.filter((f) => f.tipo === 'video').length;
 
       Alert.alert(
-        '💾 Guardado',
-        verifyOk
-          ? `Evidencias guardadas:\n📸 ${fotosActuales.length} foto(s)\n✍️ ${firmaBenefActual ? 'Sí' : 'No'} firma beneficiario\n✍️ ${firmaTecActual ? 'Sí' : 'No'} firma técnico\n👆 ${huellaActual ? 'Sí' : 'No'} huella`
-          : `⚠️ Guardado con advertencia — revisa la consola.`
+        colasEvidenciasCompletas ? '💾 Guardado' : 'Guardado con advertencia',
+        verifyOk && colasEvidenciasCompletas
+          ? `Evidencias guardadas:\n📸 ${nFotosGuardadas} foto(s)\n🎥 ${nVideosGuardados} video(s)\n✍️ ${firmaBenefActual ? 'Sí' : 'No'} firma beneficiario\n✍️ ${firmaTecActual ? 'Sí' : 'No'} firma técnico\n👆 ${huellaActual ? 'Sí' : 'No'} huella`
+          : `El borrador está guardado, pero la verificación o la cola local de evidencias falló. Revisa el almacenamiento antes de continuar.`
       );
     } catch (err) {
       Alert.alert('Error', 'No se pudo guardar: ' + (err as Error)?.message);
@@ -662,7 +1065,7 @@ const EncuestaSocialAgroambientalScreen: React.FC<Props> = ({ navigation, route 
       setIsSaving(false);
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [data, coordenadas, user, formularioActual]);
+  }, [data, coordenadas, user, formularioActual, datosBloqueados]);
 
   // ─── Navegar a evidencia ─────────────────────────────────
   const goToEvidencia = useCallback(
@@ -684,6 +1087,10 @@ const EncuestaSocialAgroambientalScreen: React.FC<Props> = ({ navigation, route 
       Alert.alert('Campo requerido', 'El número de documento es obligatorio');
       return;
     }
+    if (!data.caracterizacion_finca.latitud || !data.caracterizacion_finca.longitud) {
+      Alert.alert('Coordenada requerida', 'Captura la coordenada de la finca (pregunta 20) antes de completar el formulario.');
+      return;
+    }
 
     setIsSubmitting(true);
 
@@ -699,13 +1106,19 @@ const EncuestaSocialAgroambientalScreen: React.FC<Props> = ({ navigation, route 
       try {
         const beneficiarioActual = { cedula: data.documento, nombre: data.productor_nombre };
         for (const foto of fotosParaUpload) {
+          if (foto.uri?.startsWith('http')) continue;
           if (foto.tipo === 'video') {
-            saveVideoLocal(foto.id, formId, foto.uri, foto.coordenadas, beneficiarioActual, 'caracterizacion').catch(() => {});
+            await saveVideoLocal(foto.id, formId, foto.uri, foto.coordenadas, beneficiarioActual, 'caracterizacion');
           } else {
-            saveFotoLocal(foto.id, formId, foto.uri, foto.coordenadas, beneficiarioActual, 'caracterizacion').catch(() => {});
+            await saveFotoLocal(foto.id, formId, foto.uri, foto.coordenadas, beneficiarioActual, 'caracterizacion');
           }
         }
-      } catch { /* ignorar */ }
+      } catch (queueError) {
+        setIsSubmitting(false);
+        Alert.alert('No se pudieron asegurar las evidencias', 'La encuesta sigue en el borrador local. Revisa el almacenamiento e inténtalo de nuevo.');
+        console.warn('[Carac] No se pudo encolar evidencia al completar:', queueError);
+        return;
+      }
 
       setTecnico({
         usuario_id: user?.id || '',
@@ -724,55 +1137,53 @@ const EncuestaSocialAgroambientalScreen: React.FC<Props> = ({ navigation, route 
         finca: data.caracterizacion_finca.nombre_finca || '',
       });
       setCaracterizacionNueva(data as any);
-      const coordenadasConLugar = coordenadas
-        ? { ...coordenadas, ...(lugarResuelto ? { lugar: lugarResuelto } : {}) }
-        : { latitud: 0, longitud: 0 };
-      setCoordenadas(coordenadasConLugar);
+      // La "Ubicación" del formulario toma la coordenada de la pregunta 20
+      // (captura de alta precisión, 8s de muestreo, validada como requerida
+      // arriba) en vez del GPS automático de apertura de pantalla, que es
+      // una sola lectura rápida y puede fallar sin señal — antes, cuando
+      // fallaba, se guardaba un placeholder { latitud: 0, longitud: 0 } que
+      // se veía como un dato real en el Detalle del Formulario. El GPS de
+      // apertura queda solo como respaldo si la 20 llegara a faltar en un
+      // borrador antiguo.
+      const latQ20 = Number(data.caracterizacion_finca.latitud);
+      const lonQ20 = Number(data.caracterizacion_finca.longitud);
+      const coordenadasBase = data.caracterizacion_finca.latitud && data.caracterizacion_finca.longitud && !Number.isNaN(latQ20) && !Number.isNaN(lonQ20)
+        ? {
+            latitud: latQ20,
+            longitud: lonQ20,
+            altitud: data.caracterizacion_finca.altitud ? Number(data.caracterizacion_finca.altitud) : undefined,
+            precision_gps: data.caracterizacion_finca.precision_gps ? Number(data.caracterizacion_finca.precision_gps) : undefined,
+          }
+        : coordenadas || undefined;
+      const coordenadasConLugar = coordenadasBase
+        ? { ...coordenadasBase, ...(lugarResuelto ? { lugar: lugarResuelto } : {}) }
+        : undefined;
+      setCoordenadas(coordenadasConLugar as any);
 
-      let pdfUrl: string | undefined;
-      try {
-        const { generarPDFLocal } = await import('../../services/pdfLocal.service');
-        const formData: Formulario = {
-          id: formIdRef.current || 'encuesta-' + Date.now(),
-          tipo: 'caracterizacion',
-          tecnico: {
-            usuario_id: user?.id || '',
-            nombre: data.tecnico_responsable,
-            cedula: user?.cedula || '',
-            telefono: data.telefono,
-            email: user?.email || '',
-          },
-          beneficiario: {
-            nombre: data.productor_nombre,
-            cedula: data.documento,
-            telefono: data.telefono,
-            departamento: 'Caquetá',
-            municipio: data.municipio,
-            vereda: data.vereda,
-            finca: data.caracterizacion_finca.nombre_finca || '',
-          },
-          actividad: {
-            descripcion: 'Encuesta Social AgroAmbiental',
-            observaciones: data.recomendaciones.recomendaciones_tecnicas,
-            recomendaciones: data.recomendaciones.recomendaciones_ambientales,
-          },
-          sociodemografico: undefined,
-          coordenadas: coordenadasConLugar,
-          clima: climaResuelto || undefined,
-          fotos: formularioActual?.fotos || [],
-          firma_beneficiario: formularioActual?.firma_beneficiario || '',
-          firma_tecnico: formularioActual?.firma_tecnico || '',
-          huella_beneficiario: formularioActual?.huella_beneficiario || false,
-          sincronizado: false,
-          created_at: new Date().toISOString(),
-          updated_at: new Date().toISOString(),
-          caracterizacion_nueva: data as any,
-        } as any;
-        const localUri = await generarPDFLocal(formData);
-        if (localUri) pdfUrl = localUri;
-      } catch (e) {
-        console.warn('[Encuesta] No se pudo generar PDF:', e);
-      }
+      // ─── AQUÍ SE GENERABA EL PDF. YA NO. ────────────────────────────────
+      // Antes, "Completar" esperaba a `generarPDFLocal(formData)` ANTES de
+      // guardar nada. Ese PDF recorre cada foto haciendo un
+      // resize+base64 (`manipulateAsync`) y arma una cadena HTML de varios
+      // MB en el hilo de JavaScript, y termina en un WebView nativo
+      // (`Print.printToFileAsync`) sin timeout. Con 10-20 fotos en una
+      // tablet de gama baja son minutos de CPU —y la UI no se puede ni
+      // repintar—, o directamente se queda sin memoria. Ese era el reporte
+      // de los técnicos: "le daba a completar y quedaba cargando cargando y
+      // nunca pasaba nada", y al cerrar, todo se perdía.
+      //
+      // Además ese PDF se descartaba igual: el backend solo conserva
+      // `pdf_url` si NO es local (ver backend/src/routes/forms.js, donde
+      // ignora las rutas `file://`), y la pantalla de detalle SIEMPRE
+      // regenera el documento bajo demanda desde los datos guardados
+      // (FormularioDetailScreen.generarPdfUri), que es justamente lo que
+      // se quiere: generar el PDF después, con el formulario ya completo,
+      // desde donde haya señal.
+      //
+      // Guardar primero y generar el PDF después: la encuesta nunca se
+      // pierde por un documento que se puede reconstruir.
+      //
+      // NOTA: el código de la variable `formData` que alimentaba ese `generarPDFLocal`
+      // salió de aquí, y con él el del `form.pdf_url`: el detalle regenera el PDF solo.
 
       // Pasar los datos frescos directamente: los setTecnico/setBeneficiario
       // despachados unas líneas arriba aún NO están en el estado del contexto
@@ -814,7 +1225,6 @@ const EncuestaSocialAgroambientalScreen: React.FC<Props> = ({ navigation, route 
         setIsSubmitting(false);
         return;
       }
-      form.pdf_url = pdfUrl || form.pdf_url;
       (form as any).caracterizacion_nueva = data;
 
       // El guardado local es el punto de no retorno: si falla, se ABORTA y se
@@ -860,6 +1270,33 @@ const EncuestaSocialAgroambientalScreen: React.FC<Props> = ({ navigation, route 
             await db.runAsync(
               'UPDATE documentos_finca SET formulario_id = ?, beneficiario_cedula = COALESCE(NULLIF(beneficiario_cedula, \'\'), ?) WHERE formulario_id = ?',
               [formRealId, cedula || null, idTemp]
+            );
+          }
+
+          // ─── Reasignar FOTOS y VIDEOS al id real del formulario ───────
+          // Las evidencias pueden haberse encolado con otro id (el temporal
+          // de la sesión, o '' si se capturaron antes de que existiera el
+          // formulario en curso). Sin este paso quedaban apuntando a un
+          // formulario que no existe, no entraban en el payload de sync de
+          // ESTE formulario y el técnico las veía como perdidas.
+          const idsEvidencia = Array.from(
+            new Set(
+              [
+                formularioActual?.id,
+                formIdRef.current,
+                '',
+                'sin-formulario',
+              ].filter((id): id is string => id !== formRealId && id !== undefined)
+            )
+          );
+          for (const idEvidencia of idsEvidencia) {
+            await db.runAsync(
+              'UPDATE fotos_locales SET formulario_id = ? WHERE formulario_id = ?',
+              [formRealId, idEvidencia]
+            );
+            await db.runAsync(
+              'UPDATE videos_locales SET formulario_id = ? WHERE formulario_id = ?',
+              [formRealId, idEvidencia]
             );
           }
         }
@@ -922,24 +1359,66 @@ const EncuestaSocialAgroambientalScreen: React.FC<Props> = ({ navigation, route 
     syncNow,
   ]);
 
+  // Confirmación antes de disparar el envío — evita que un toque accidental
+  // en "Completar" cierre la visita a mitad de llenado, sin forma de volver
+  // atrás una vez arrancó la subida. `handleCompletar` va en las
+  // dependencias para no quedar con una versión vieja capturada (cambia en
+  // cada tecla que el técnico escribe, por sus propias dependencias).
+  const confirmarCompletar = useCallback(() => {
+    if (isSubmitting) return;
+
+    // Puerta de validación: si hay espacios sin responder NO se completa. Se
+    // asegura el borrador (silencioso) y se le muestra al técnico la lista
+    // exacta de lo que falta, para que no cierre un formulario incompleto.
+    if (validacion.faltantes.length > 0) {
+      autoguardarRef.current?.();
+      Alert.alert(
+        'Formulario incompleto',
+        'Por favor termina de diligenciar el formulario. Espacios sin responder:\n\n' +
+          validacion.faltantes.join(', '),
+        [{ text: 'Revisar y completar', style: 'cancel' }]
+      );
+      return;
+    }
+
+    Alert.alert(
+      '¿Has completado todos los pasos?',
+      'Revisa que toda la información y evidencias estén correctas antes de continuar.',
+      [
+        { text: 'No, revisar nuevamente', style: 'cancel' },
+        { text: 'Sí, completar', onPress: () => handleCompletar() },
+      ]
+    );
+  }, [isSubmitting, handleCompletar, validacion]);
+
   // ─── Render ──────────────────────────────────────────────
 
   // --- Sección reutilizable ---
+  // Muestra un check verde cuando la sección no tiene espacios sin responder
   const renderSection = (
+    sectionKey: SectionKey,
     title: string,
     icon: string,
     color: string,
     children: React.ReactNode
-  ) => (
-    <View style={[styles.sectionCard, { borderLeftColor: color }]}>
-      <View style={[styles.sectionHeader, { backgroundColor: color + '12' }]}>
-        <Text style={[styles.sectionTitle, { color }]}>
-          {icon}  {title}
-        </Text>
+  ) => {
+    const completa = faltas[sectionKey].length === 0;
+    return (
+      <View style={[styles.sectionCard, { borderLeftColor: color }]}>
+        <View style={[styles.sectionHeader, { backgroundColor: color + '12' }]}>
+          <Text style={[styles.sectionTitle, { color, flex: 1 }]}>
+            {icon}  {title}
+          </Text>
+          {completa && (
+            <View style={styles.sectionOkBadge}>
+              <Text style={styles.sectionOkBadgeText}>✓</Text>
+            </View>
+          )}
+        </View>
+        <View style={styles.sectionBody}>{children}</View>
       </View>
-      <View style={styles.sectionBody}>{children}</View>
-    </View>
-  );
+    );
+  };
 
   // --- Input field corto ---
   const renderField = (
@@ -1007,43 +1486,6 @@ const EncuestaSocialAgroambientalScreen: React.FC<Props> = ({ navigation, route 
   };
 
   // --- Botón de captura GPS: llena lat/lon/alt y muestra el resultado debajo ---
-  const renderCapturaGPS = (
-    label: string,
-    lat: string | undefined,
-    lon: string | undefined,
-    alt: string | undefined,
-    onCapture: (lat: string, lon: string, alt: string) => void
-  ) => (
-    <View style={styles.fieldContainer}>
-      <Text style={styles.fieldLabel}>{label}</Text>
-      <TouchableOpacity
-        style={styles.gpsButton}
-        onPress={async () => {
-          const coords = await getCurrentPosition();
-          if (coords) {
-            onCapture(
-              String(coords.latitud),
-              String(coords.longitud),
-              coords.altitud != null ? String(Math.round(coords.altitud)) : ''
-            );
-          } else {
-            Alert.alert('Sin señal GPS', 'No se pudo obtener la ubicación. Verifica el permiso de ubicación y vuelve a intentar.');
-          }
-        }}
-        activeOpacity={0.7}
-      >
-        <Text style={styles.gpsButtonText}>📍 Capturar ubicación</Text>
-      </TouchableOpacity>
-      {lat && lon ? (
-        <Text style={styles.gpsResultado}>
-          Lat: {lat}   Lon: {lon}{alt ? `   Alt: ${alt} m` : ''}
-        </Text>
-      ) : (
-        <Text style={styles.gpsPendiente}>Aún sin capturar</Text>
-      )}
-    </View>
-  );
-
   return (
     <SafeAreaView style={styles.safeContainer} edges={['top']}>
       <AppBackground overlay={0.35}>
@@ -1055,7 +1497,7 @@ const EncuestaSocialAgroambientalScreen: React.FC<Props> = ({ navigation, route 
           showsVerticalScrollIndicator={true}
         >
           {/* ═══ DATOS GENERALES ═══ */}
-          {renderSection('DATOS GENERALES', '📋', COLORS.primary, (
+          {renderSection('datos', 'DATOS GENERALES', '📋', COLORS.primary, (
             <>
               <View style={styles.fieldContainer}>
                 <Text style={styles.fieldLabel}>Fecha *</Text>
@@ -1161,7 +1603,7 @@ const EncuestaSocialAgroambientalScreen: React.FC<Props> = ({ navigation, route 
           {/* ═══════════════════════════════════════════════════
                COMPONENTE SOCIAL (P1-P18)
                ═══════════════════════════════════════════════════ */}
-          {renderSection('COMPONENTE SOCIAL', '👥', '#2E7D32', (
+          {renderSection('social', 'COMPONENTE SOCIAL', '👥', '#2E7D32', (
             <>
               {/* 1 */}
               <DropdownPicker
@@ -1362,21 +1804,23 @@ const EncuestaSocialAgroambientalScreen: React.FC<Props> = ({ navigation, route 
           {/* ═══════════════════════════════════════════════════
                CARACTERIZACIÓN DE LA FINCA (P19-P27)
                ═══════════════════════════════════════════════════ */}
-          {renderSection('CARACTERIZACION DE LA FINCA', '🏠', '#8D6E63', (
+          {renderSection('finca', 'CARACTERIZACION DE LA FINCA', '🏠', '#8D6E63', (
             <>
               {/* 19 */}
               {renderField('19. Nombre de la finca', data.caracterizacion_finca.nombre_finca, (t) => updateFinca({ nombre_finca: t }), {
                 placeholder: '',
               })}
 
-              {/* 20 — Captura GPS con resultado debajo */}
-              {renderCapturaGPS(
-                '20. Coordenada de la finca',
-                data.caracterizacion_finca.latitud,
-                data.caracterizacion_finca.longitud,
-                data.caracterizacion_finca.altitud,
-                (lat, lon, alt) => updateFinca({ latitud: lat, longitud: lon, altitud: alt })
-              )}
+              {/* 20 — Captura GPS de alta precisión (cuenta regresiva + mapa) */}
+              <CapturaGPSPrecisa
+                label="20. Coordenada de la finca"
+                latitud={data.caracterizacion_finca.latitud}
+                longitud={data.caracterizacion_finca.longitud}
+                altitud={data.caracterizacion_finca.altitud}
+                precision={data.caracterizacion_finca.precision_gps}
+                ubicacionTexto={ubicacionGPSTexto}
+                onCapture={(lat, lon, alt, precision) => updateFinca({ latitud: lat, longitud: lon, altitud: alt, precision_gps: precision })}
+              />
 
               {/* 21 */}
               {renderField('21. ¿Cuál es el área total de la finca en hectáreas?', data.caracterizacion_finca.area_total, (t) => updateFinca({ area_total: t }), {
@@ -1477,7 +1921,7 @@ const EncuestaSocialAgroambientalScreen: React.FC<Props> = ({ navigation, route 
           {/* ═══════════════════════════════════════════════════
                COMPONENTE PRODUCTIVO (P28-P31)
                ═══════════════════════════════════════════════════ */}
-          {renderSection('COMPONENTE PRODUCTIVO', '🌱', '#1565C0', (
+          {renderSection('productivo', 'COMPONENTE PRODUCTIVO', '🌱', '#1565C0', (
             <>
               {/* 28 — sin campo "Cual?": ninguna opción de esta pregunta es "Otro",
                   así que no hay nada que el técnico deba especificar aparte. */}
@@ -1521,16 +1965,18 @@ const EncuestaSocialAgroambientalScreen: React.FC<Props> = ({ navigation, route 
           {/* ═══════════════════════════════════════════════════
                ANÁLISIS DE SUELO (P32-P42)
                ═══════════════════════════════════════════════════ */}
-          {renderSection('SECCIÓN DE SUELO', '🔬', '#6A1B9A', (
+          {renderSection('suelo', 'SECCIÓN DE SUELO', '🔬', '#6A1B9A', (
             <>
-              {/* 32 — Punto de georeferenciación */}
-              {renderCapturaGPS(
-                '32. Ubicación del área de intervención del proyecto',
-                data.analisis_suelo.intervencion_latitud,
-                data.analisis_suelo.intervencion_longitud,
-                data.analisis_suelo.intervencion_altitud,
-                (lat, lon, alt) => updateAnalisis({ intervencion_latitud: lat, intervencion_longitud: lon, intervencion_altitud: alt })
-              )}
+              {/* 32 — Captura GPS de alta precisión (cuenta regresiva + mapa) */}
+              <CapturaGPSPrecisa
+                label="32. Ubicación del área de intervención del proyecto"
+                latitud={data.analisis_suelo.intervencion_latitud}
+                longitud={data.analisis_suelo.intervencion_longitud}
+                altitud={data.analisis_suelo.intervencion_altitud}
+                precision={data.analisis_suelo.intervencion_precision_gps}
+                ubicacionTexto={ubicacionGPSTexto}
+                onCapture={(lat, lon, alt, precision) => updateAnalisis({ intervencion_latitud: lat, intervencion_longitud: lon, intervencion_altitud: alt, intervencion_precision_gps: precision })}
+              />
 
               {/* 33 */}
               <DropdownPicker
@@ -1623,7 +2069,7 @@ const EncuestaSocialAgroambientalScreen: React.FC<Props> = ({ navigation, route 
           {/* ═══════════════════════════════════════════════════
                COMPONENTE AGROAMBIENTAL (P43-P50)
                ═══════════════════════════════════════════════════ */}
-          {renderSection('COMPONENTE AGROAMBIENTAL', '🌿', '#E65100', (
+          {renderSection('agroambiental', 'COMPONENTE AGROAMBIENTAL', '🌿', '#E65100', (
             <>
               {/* 43 */}
               <DropdownPicker
@@ -1729,7 +2175,7 @@ const EncuestaSocialAgroambientalScreen: React.FC<Props> = ({ navigation, route 
           {/* ═══════════════════════════════════════════════════
                RECOMENDACIONES DEL TÉCNICO
                ═══════════════════════════════════════════════════ */}
-          {renderSection('RECOMENDACIONES DEL TÉCNICO', '📝', '#F57F17', (
+          {renderSection('recomendaciones', 'RECOMENDACIONES DEL TÉCNICO', '📝', '#F57F17', (
             <>
               {renderField(
                 '51. Recomendaciones técnicas para el sistema productivo:',
@@ -1755,7 +2201,7 @@ const EncuestaSocialAgroambientalScreen: React.FC<Props> = ({ navigation, route 
           {/* ═══════════════════════════════════════════════════
                DESARROLLO DEL ACOMPAÑAMIENTO TÉCNICO
                ═══════════════════════════════════════════════════ */}
-          {renderSection('DESARROLLO ACOMPAÑAMIENTO TECNICO', '📋', '#00897B', (
+          {renderSection('acompanamiento', 'DESARROLLO ACOMPAÑAMIENTO TECNICO', '📋', '#00897B', (
             <>
               {/* 1 — Socialización (Sí/No) */}
               <View style={styles.acompaniamientoItem}>
@@ -1883,14 +2329,24 @@ const EncuestaSocialAgroambientalScreen: React.FC<Props> = ({ navigation, route 
                   { placeholder: 'Observaciones...', multiline: true, numberOfLines: 2 }
                 )}
               </View>
+
+              {/* 7 — Observaciones generales de la visita (última pregunta del formulario) */}
+              <View style={styles.acompaniamientoItem}>
+                <Text style={styles.fieldLabel}>7. Observaciones generales de la VISITA</Text>
+                {renderField('Observaciones generales de la visita',
+                  data.acompaniamiento.observaciones_visita || '',
+                  (t) => updateAcompaniamiento({ observaciones_visita: t }),
+                  { placeholder: 'Escriba aquí las observaciones generales de la visita...', multiline: true, numberOfLines: 4 }
+                )}
+              </View>
             </>
           ))}
 
           {/* ═══ EVIDENCIAS ═══ */}
-          {renderSection('EVIDENCIAS', '📸', '#0984E3', (
+          {renderSection('evidencias', 'EVIDENCIAS', '📸', '#0984E3', (
             <>
               <TouchableOpacity
-                style={[styles.evidenciaCard, fotosCount > 0 && styles.evidenciaCardOk]}
+                style={[styles.evidenciaCard, fotosCount >= 5 && styles.evidenciaCardOk]}
                 onPress={() => goToEvidencia('Camara', {
                   mode: 'photo',
                   requisito: '5 Fotos (4 Fotos De Realizacion De Actividades + 1 Foto Del Cuaderno De Visita)',
@@ -1904,7 +2360,7 @@ const EncuestaSocialAgroambientalScreen: React.FC<Props> = ({ navigation, route 
                   <Text style={styles.evidenciaCardTitle}>Tomar Fotos</Text>
                   <Text style={styles.evidenciaCardDesc}>
                     {fotosCount > 0
-                      ? `${fotosCount} foto(s) capturada(s) — requisito: 5 Fotos (4 Fotos De Realizacion De Actividades + 1 Foto Del Cuaderno De Visita)`
+                      ? `${fotosCount} de 5 foto(s) — 4 de actividades + 1 del cuaderno de visita`
                       : '5 Fotos (4 Fotos De Realizacion De Actividades + 1 Foto Del Cuaderno De Visita)'}
                   </Text>
                 </View>
@@ -1912,7 +2368,7 @@ const EncuestaSocialAgroambientalScreen: React.FC<Props> = ({ navigation, route 
               </TouchableOpacity>
 
               <TouchableOpacity
-                style={[styles.evidenciaCard, fotosCount > 0 && styles.evidenciaCardOk]}
+                style={[styles.evidenciaCard, videosCount >= 1 && styles.evidenciaCardOk]}
                 onPress={() => goToEvidencia('Camara', { mode: 'video' })}
                 activeOpacity={0.7}
               >
@@ -1922,7 +2378,9 @@ const EncuestaSocialAgroambientalScreen: React.FC<Props> = ({ navigation, route 
                 <View style={styles.evidenciaContent}>
                   <Text style={styles.evidenciaCardTitle}>Tomar Video</Text>
                   <Text style={styles.evidenciaCardDesc}>
-                    Grabar video corto (máx. 30s)
+                    {videosCount > 0
+                      ? `${videosCount} de 1 video(s) grabado(s)`
+                      : 'Grabar video corto (máx. 30s)'}
                   </Text>
                 </View>
                 <Text style={styles.evidenciaArrow}>›</Text>
@@ -2002,7 +2460,8 @@ const EncuestaSocialAgroambientalScreen: React.FC<Props> = ({ navigation, route 
               </TouchableOpacity>
 
               <Text style={styles.evidenciasProgress}>
-                {[fotosCount > 0, firmaBeneficiarioOk, firmaTecnicoOk, huellaOk, documentosCount > 0].filter(Boolean).length} de 5 evidencias completadas
+                {[fotosCount >= 5, videosCount >= 1, firmaBeneficiarioOk, firmaTecnicoOk].filter(Boolean).length} de 4 requisitos obligatorios completados
+                {'\n'}Huella y documentos de la finca son opcionales
               </Text>
             </>
           ))}
@@ -2032,7 +2491,7 @@ const EncuestaSocialAgroambientalScreen: React.FC<Props> = ({ navigation, route 
           </TouchableOpacity>
           <TouchableOpacity
             style={[styles.completeBtn, isSubmitting && styles.buttonDisabled]}
-            onPress={handleCompletar}
+            onPress={confirmarCompletar}
             disabled={isSubmitting}
           >
             <Text style={styles.completeBtnText}>
@@ -2084,6 +2543,23 @@ const styles = StyleSheet.create({
   sectionHeader: {
     paddingHorizontal: SPACING.md,
     paddingVertical: SPACING.sm + 2,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  sectionOkBadge: {
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    backgroundColor: COLORS.success,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginLeft: SPACING.sm,
+  },
+  sectionOkBadgeText: {
+    color: '#FFFFFF',
+    fontSize: 13,
+    fontWeight: 'bold',
   },
   sectionTitle: {
     fontSize: FONTS.sizes.sm,
@@ -2172,30 +2648,6 @@ const styles = StyleSheet.create({
     fontSize: FONTS.sizes.md,
     color: COLORS.textPrimary,
     flex: 1,
-  },
-  // Captura GPS
-  gpsButton: {
-    backgroundColor: COLORS.primary,
-    borderRadius: BORDER_RADIUS.md,
-    paddingVertical: SPACING.sm + 2,
-    alignItems: 'center',
-  },
-  gpsButtonText: {
-    color: '#fff',
-    fontWeight: FONTS.weights.semibold,
-    fontSize: FONTS.sizes.md,
-  },
-  gpsResultado: {
-    marginTop: SPACING.xs,
-    fontSize: FONTS.sizes.sm,
-    color: COLORS.success,
-    fontWeight: FONTS.weights.medium,
-  },
-  gpsPendiente: {
-    marginTop: SPACING.xs,
-    fontSize: FONTS.sizes.sm,
-    color: COLORS.textLight,
-    fontStyle: 'italic',
   },
   // Nota informativa oficial (texto del ministerio)
   notaInfo: {

@@ -22,12 +22,21 @@ import CambiarContrasenaModal from '../../components/CambiarContrasenaModal';
 import AjustesMenu from '../../components/AjustesMenu';
 import NotificacionBell from '../../components/NotificacionBell';
 import AvatarViewerModal from '../../components/AvatarViewerModal';
+import SincronizacionModal from '../../components/SincronizacionModal';
 
 type SupervisionMenuScreenProps = {
   navigation: NativeStackNavigationProp<Record<string, any>>;
 };
 
 const MENU_ITEMS = [
+  {
+    id: 'seguimiento',
+    title: 'Seguimiento Coordinación',
+    subtitle: 'Registrar y consultar seguimientos en campo',
+    icon: '📝',
+    color: COLORS.roleCoordinador,
+    screen: 'SeguimientoMenu',
+  },
   {
     id: 'dashboard',
     title: 'Dashboard',
@@ -73,7 +82,7 @@ const MENU_ITEMS = [
     title: 'Base de Datos Beneficiarios',
     subtitle: 'Beneficiarios, asignación a técnicos',
     icon: '👤',
-    color: COLORS.roleSupervisor,
+    color: COLORS.roleCoordinador,
     screen: 'BaseDatosBeneficiarios',
   },
   {
@@ -91,6 +100,7 @@ const SupervisionMenuScreen: React.FC<SupervisionMenuScreenProps> = ({ navigatio
   const { avatarUri, cambiarAvatar, quitarAvatar, cambiando } = useAvatar();
   const [showPasswordModal, setShowPasswordModal] = useState(false);
   const [showAvatarViewer, setShowAvatarViewer] = useState(false);
+  const [showSyncModal, setShowSyncModal] = useState(false);
   const insets = useSafeAreaInsets();
 
   return (
@@ -125,12 +135,13 @@ const SupervisionMenuScreen: React.FC<SupervisionMenuScreenProps> = ({ navigatio
             </View>
           </TouchableOpacity>
           <View style={styles.userInfo}>
-            <Text style={styles.userName}>{user?.nombre || 'Supervisor'}</Text>
-            <Text style={styles.userRole}>Supervisor a Terreno</Text>
+            <Text style={styles.userName}>{user?.nombre || 'Coordinador/a'}</Text>
+            <Text style={styles.userRole}>Coordinador/a a Terreno</Text>
           </View>
           <NotificacionBell navigation={navigation} formularioDetailScreen="SupervisionFormularioDetail" />
           <AjustesMenu
             opciones={[
+              { id: 'sincronizar', label: 'Sincronizar ahora', icon: '🔄', onPress: () => setShowSyncModal(true) },
               { id: 'contrasena', label: 'Cambiar Contraseña', icon: '🔑', onPress: () => setShowPasswordModal(true) },
               { id: 'cerrar', label: 'Cerrar Sesión', icon: '🚪', onPress: logout, destructivo: true },
             ]}
@@ -155,6 +166,7 @@ const SupervisionMenuScreen: React.FC<SupervisionMenuScreenProps> = ({ navigatio
         </View>
       </ScrollView>
       <CambiarContrasenaModal visible={showPasswordModal} onClose={() => setShowPasswordModal(false)} />
+      <SincronizacionModal visible={showSyncModal} onClose={() => setShowSyncModal(false)} />
       <AvatarViewerModal
         visible={showAvatarViewer}
         avatarUri={avatarUri}

@@ -1,6 +1,6 @@
 // ============================================================
 // GEODAILY — Base de Datos de Beneficiarios
-// Roles: Supervisor, Interventor, Gerente, Admin
+// Roles: Coordinador, Interventor, Gerente, Admin
 // ============================================================
 
 import React, { useState, useEffect, useCallback } from 'react';
@@ -144,6 +144,8 @@ const BaseDatosBeneficiariosScreen: React.FC<Props> = ({ navigation }) => {
           onPress: async () => {
             try {
               await BeneficiariosDB.unassignTecnicoFromBeneficiario(beneficiario.item);
+              setAssignModalVisible(false);
+              setSelectedBeneficiario(null);
               await loadData();
             } catch (error) {
               const msg = error instanceof Error ? error.message : String(error);

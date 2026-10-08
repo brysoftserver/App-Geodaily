@@ -3,7 +3,7 @@
 // ============================================================
 
 import axios, { AxiosInstance, AxiosError, InternalAxiosRequestConfig } from 'axios';
-import * as SecureStore from 'expo-secure-store';
+import * as SecureStore from './secureStorage';
 import { API_CONFIG } from '../theme';
 import { STORAGE_KEYS } from '../utils/constants';
 

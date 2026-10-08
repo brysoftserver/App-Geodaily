@@ -26,7 +26,7 @@ function base64ToBuffer(dataUri) {
 // POST /api/firmas/subir — Subir una firma (base64) a MinIO
 router.post('/subir', authenticateToken, async (req, res) => {
   try {
-    const { tipo, data, beneficiario_cedula, beneficiario_nombre, tipo_formulario } = req.body; // tipo: 'beneficiario' | 'tecnico' | 'revisor'
+    const { tipo, data, beneficiario_cedula, beneficiario_nombre, tipo_formulario, evidencia_id } = req.body; // tipo: 'beneficiario' | 'tecnico' | 'revisor'
 
     if (!data || !tipo) {
       return res.status(400).json({
@@ -35,7 +35,7 @@ router.post('/subir', authenticateToken, async (req, res) => {
       });
     }
 
-    // 'revisor' = firma de supervisor/interventor/gerente/admin en su
+    // 'revisor' = firma de coordinador/interventor/gerente/admin en su
     // sección de evidencia final (no se asocia a formularios.firma_tecnico
     // como las otras, por eso solo pasa por /subir y no por
     // /guardar-en-formulario).
@@ -52,6 +52,22 @@ router.post('/subir', authenticateToken, async (req, res) => {
         estado: 'error',
         mensaje: 'Formato base64 inválido. Debe ser data:image/...;base64,...',
       });
+    }
+
+    if (evidencia_id) {
+      const yaSubida = await db.queryOne(
+        'SELECT id, minio_path, filename, size_bytes FROM archivos WHERE usuario_id = $1 AND evidencia_local_id = $2',
+        [req.user.id, evidencia_id]
+      );
+      if (yaSubida) {
+        return res.json({
+          estado: 'ok',
+          id: yaSubida.id,
+          ruta: yaSubida.minio_path,
+          filename: yaSubida.filename,
+          size: yaSubida.size_bytes,
+        });
+      }
     }
 
     const timestamp = Date.now();
@@ -76,7 +92,7 @@ router.post('/subir', authenticateToken, async (req, res) => {
     }
 
     // Subir a MinIO
-    await storage.uploadFile(
+    const objetoMinio = await storage.uploadFile(
       req.user.rol,
       req.user.usuario,
       'firmas',
@@ -91,16 +107,8 @@ router.post('/subir', authenticateToken, async (req, res) => {
     );
 
     // Guardar registro en PostgreSQL
-    const bucket = process.env.MINIO_BUCKET || 'geodaily-archivos';
-    const basePath = storage.getUserBasePath(req.user.rol, req.user.usuario);
-    let minioPath;
-    if (benefItem && benefNombre) {
-      const subpath = storage.getBeneficiarySubpath(benefItem, benefNombre);
-      const formFolder = storage.getFormTypeFolder(tipo_formulario);
-      minioPath = formFolder ? `${basePath}/${subpath}/${formFolder}/firmas/${filename}` : `${basePath}/${subpath}/firmas/${filename}`;
-    } else {
-      minioPath = `${basePath}/firmas/${filename}`;
-    }
+    const bucket = objetoMinio.bucket || process.env.MINIO_BUCKET || 'geodaily-archivos';
+    const minioPath = objetoMinio.path;
 
     const metadataExtra = {
       tipo_firma: tipo,
@@ -108,34 +116,57 @@ router.post('/subir', authenticateToken, async (req, res) => {
       beneficiario_cedula: beneficiario_cedula || null,
     };
 
-    await db.query(
-      `INSERT INTO archivos (usuario_id, tipo, filename, originalname, mimetype, size_bytes, minio_path, minio_bucket, metadata_json)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-      [
-        req.user.id,
-        'firma',
-        filename,
-        `firma_${tipo}.png`,
-        converted.mimetype,
-        converted.buffer.length,
-        minioPath,
-        bucket,
-        JSON.stringify({ tipo_firma: tipo }),
-      ]
-    );
+    let archivoCreado;
+    try {
+      archivoCreado = await db.query(
+        `INSERT INTO archivos (usuario_id, tipo, filename, originalname, mimetype, size_bytes, minio_path, minio_bucket, metadata_json, evidencia_local_id)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+         RETURNING id`,
+        [
+          req.user.id,
+          'firma',
+          filename,
+          `firma_${tipo}.png`,
+          converted.mimetype,
+          converted.buffer.length,
+          minioPath,
+          bucket,
+          JSON.stringify({ tipo_firma: tipo, beneficiario_cedula: beneficiario_cedula || null }),
+          evidencia_id || null,
+        ]
+      );
+    } catch (insertErr) {
+      if (insertErr.code === '23505' && evidencia_id) {
+        const existente = await db.queryOne(
+          'SELECT id, minio_path, filename, size_bytes FROM archivos WHERE usuario_id = $1 AND evidencia_local_id = $2',
+          [req.user.id, evidencia_id]
+        );
+        if (existente) {
+          await storage.deleteFile(minioPath);
+          return res.json({
+            estado: 'ok',
+            id: existente.id,
+            ruta: existente.minio_path,
+            filename: existente.filename,
+            size: existente.size_bytes,
+          });
+        }
+      }
+      await storage.deleteFile(minioPath);
+      throw insertErr;
+    }
 
-    // Obtener el ID generado
-    const archivo = await db.queryOne(
-      'SELECT id FROM archivos WHERE minio_path = $1 ORDER BY created_at DESC LIMIT 1',
-      [minioPath]
-    );
-    const firmaId = archivo ? archivo.id : `firma-${timestamp}`;
+    const firmaId = archivoCreado.rows[0]?.id || `firma-${timestamp}`;
 
     // Registrar en actividad
-    await db.query(
-      'INSERT INTO actividad_log (usuario_id, accion, detalle_json) VALUES ($1, $2, $3)',
-      [req.user.id, 'subir_firma', JSON.stringify({ archivo_id: firmaId, filename, tipo_firma: tipo })]
-    );
+    try {
+      await db.query(
+        'INSERT INTO actividad_log (usuario_id, accion, detalle_json) VALUES ($1, $2, $3)',
+        [req.user.id, 'subir_firma', JSON.stringify({ archivo_id: firmaId, filename, tipo_firma: tipo })]
+      );
+    } catch (logErr) {
+      console.warn('[Firmas] No se pudo registrar la actividad:', logErr.message);
+    }
 
     console.log(`[Firmas] ✍️ Firma subida a MinIO: ${minioPath}`);
 
@@ -169,7 +200,7 @@ router.post('/guardar-en-formulario', authenticateToken, async (req, res) => {
     // cualquier usuario autenticado podía sobrescribir la firma de un
     // formulario ajeno; y si se validaba al final, el archivo ya se había
     // subido a MinIO y registrado en la BD aunque luego se rechazara.
-    const ROLES_SUPERVISION = ['supervisor', 'interventor', 'gerente', 'admin'];
+    const ROLES_COORDINACION = ['coordinador', 'interventor', 'gerente', 'admin'];
     const propietario = await db.queryOne(
       'SELECT usuario_id FROM formularios WHERE id = $1',
       [formulario_id]
@@ -177,7 +208,7 @@ router.post('/guardar-en-formulario', authenticateToken, async (req, res) => {
     if (!propietario) {
       return res.status(404).json({ estado: 'error', mensaje: 'Formulario no encontrado' });
     }
-    if (propietario.usuario_id !== req.user.id && !ROLES_SUPERVISION.includes(req.user.rol)) {
+    if (propietario.usuario_id !== req.user.id && !ROLES_COORDINACION.includes(req.user.rol)) {
       return res.status(403).json({
         estado: 'error',
         mensaje: 'No autorizado para modificar este formulario',
@@ -230,12 +261,12 @@ router.post('/guardar-en-formulario', authenticateToken, async (req, res) => {
 
     const basePath = storage.getUserBasePath(req.user.rol, req.user.usuario);
     let minioPath;
+    const formFolder = storage.getFormTypeFolder(tipo_formulario);
     if (benefItem && benefNombre) {
       const subpath = storage.getBeneficiarySubpath(benefItem, benefNombre);
-      const formFolder = storage.getFormTypeFolder(tipo_formulario);
       minioPath = formFolder ? `${basePath}/${subpath}/${formFolder}/firmas/${filename}` : `${basePath}/${subpath}/firmas/${filename}`;
     } else {
-      minioPath = `${basePath}/firmas/${filename}`;
+      minioPath = formFolder ? `${basePath}/${formFolder}/firmas/${filename}` : `${basePath}/firmas/${filename}`;
     }
 
     const bucket = process.env.MINIO_BUCKET || 'geodaily-archivos';
@@ -293,10 +324,10 @@ router.get('/:id', authenticateToken, async (req, res) => {
       return res.status(404).json({ estado: 'error', mensaje: 'Firma no encontrada' });
     }
     // Roles de supervisión ven la evidencia de cualquier técnico. Antes solo
-    // 'admin' era excepción, así que un supervisor listaba los archivos y
+    // 'admin' era excepción, así que un coordinador listaba los archivos y
     // recibía 403 al abrir cualquiera de ellos.
-    const ROLES_SUPERVISION = ['supervisor', 'interventor', 'gerente', 'admin'];
-    if (!ROLES_SUPERVISION.includes(req.user.rol) && firma.usuario_id !== req.user.id) {
+    const ROLES_COORDINACION = ['coordinador', 'interventor', 'gerente', 'admin'];
+    if (!ROLES_COORDINACION.includes(req.user.rol) && firma.usuario_id !== req.user.id) {
       return res.status(403).json({ estado: 'error', mensaje: 'No autorizado' });
     }
     res.json({ estado: 'ok', firma });

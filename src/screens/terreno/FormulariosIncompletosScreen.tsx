@@ -16,9 +16,15 @@ import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import AppBackground from '../../components/AppBackground';
 import { COLORS, FONTS, SPACING, BORDER_RADIUS, SHADOWS } from '../../theme';
-import { cargarBorradores, eliminarBorrador, FormDraft } from '../../store/FormDraftStore';
+import {
+  cargarBorradores,
+  eliminarBorrador,
+  FormDraft,
+  sincronizarBorradoresConServidor,
+} from '../../store/FormDraftStore';
 import { useAuth } from '../../store/AuthContext';
 import LoadingSpinner from '../../components/LoadingSpinner';
+import { tituloVisitaTecnica } from '../../utils/visitaTecnica';
 
 type FormulariosIncompletosScreenProps = {
   navigation: NativeStackNavigationProp<Record<string, any>>;
@@ -33,26 +39,37 @@ const FormulariosIncompletosScreen: React.FC<FormulariosIncompletosScreenProps> 
 
   const loadDrafts = useCallback(async () => {
     try {
-      const loaded = await cargarBorradores();
-      // Filtrar solo borradores del técnico actual
-      let userDrafts: FormDraft[];
-      if (user?.id) {
-        userDrafts = loaded.filter((d) => {
-          // 1. Coincidencia por usuario_id (nuevos drafts)
-          if (d.tecnico?.usuario_id && d.tecnico.usuario_id === user.id) {
-            return true;
-          }
-          // 2. Fallback: coincidencia por cédula (drafts viejos sin usuario_id)
-          if (user.cedula && d.tecnico?.cedula === user.cedula) {
-            return true;
-          }
-          return false;
+      let loaded = await cargarBorradores();
+      const filtrarUsuario = (borradores: FormDraft[]): FormDraft[] => {
+        if (!user?.id) return borradores;
+        return borradores.filter((draft) => {
+          if (draft.tecnico?.usuario_id) return draft.tecnico.usuario_id === user.id;
+          if (user.cedula && draft.tecnico?.cedula) return draft.tecnico.cedula === user.cedula;
+          return !draft.tecnico?.usuario_id && !draft.tecnico?.cedula;
         });
-        console.log(`[Incompletos] ${loaded.length} borradores totales → ${userDrafts.length} para ${user.id}`);
-      } else {
-        userDrafts = loaded;
+      };
+
+      setDrafts(filtrarUsuario(loaded).sort((a, b) =>
+        (b.updated_at || '').localeCompare(a.updated_at || '')
+      ));
+
+      if (user?.id) {
+        try {
+          loaded = await sincronizarBorradoresConServidor(user.id, user.cedula, loaded);
+        } catch (error) {
+          console.warn('[Incompletos] Sin conexión para sincronizar borradores; se muestran los locales:', error);
+        }
       }
-      setDrafts(userDrafts);
+
+      // Filtrar solo borradores del técnico actual
+      const userDrafts = filtrarUsuario(loaded);
+      console.log(`[Incompletos] ${loaded.length} borradores disponibles → ${userDrafts.length} para ${user?.id || 'sesión local'}`);
+      // Los más recientes primero: el que acaba de interrumpirse es el que
+      // el técnico busca.
+      const ordenados = [...userDrafts].sort((a, b) =>
+        (b.updated_at || '').localeCompare(a.updated_at || '')
+      );
+      setDrafts(ordenados);
     } catch (error) {
       console.warn('[Incompletos] Error cargando borradores:', error);
     } finally {
@@ -82,12 +99,24 @@ const FormulariosIncompletosScreen: React.FC<FormulariosIncompletosScreenProps> 
       navigation.navigate('FormularioCaracterizacion', {
         draftId: draft.id,
       });
-    } else {
-      navigation.navigate('Formulario', {
-        tipo: draft.tipo || 'visita_tecnica',
+      return;
+    }
+
+    // Visitas técnicas con el formato nuevo por ítems (v2): se continúan en
+    // su propia pantalla. Las del formato antiguo siguen abriendo
+    // `Formulario` para no romper los borradores ya guardados.
+    if (draft.actividad?.formato_visita === 'v2') {
+      navigation.navigate('VisitaTecnicaForm', {
+        visitaNumero: draft.actividad?.visita_numero ?? 2,
         draftId: draft.id,
       });
+      return;
     }
+
+    navigation.navigate('Formulario', {
+      tipo: draft.tipo || 'visita_tecnica',
+      draftId: draft.id,
+    });
   };
 
   const handleDeleteDraft = (draft: FormDraft) => {
@@ -160,10 +189,16 @@ const FormulariosIncompletosScreen: React.FC<FormulariosIncompletosScreenProps> 
             >
               <View style={styles.draftHeader}>
                 <Text style={styles.draftType} numberOfLines={1} ellipsizeMode="tail">
-                  {item.tipo === 'caracterizacion' ? '👥 Caracterización Sociodemográfica' : '🔍 Visita Técnica'}
+                  {item.tipo === 'caracterizacion'
+                    ? '👥 Caracterización Sociodemográfica'
+                    : `🔍 ${tituloVisitaTecnica(item.actividad?.visita_numero)}`}
                 </Text>
                 <Text style={styles.draftStep} numberOfLines={1}>
-                  {item.tipo === 'caracterizacion' ? '📋 Completo' : `Paso ${item.step || 1} de 4`}
+                  {item.tipo === 'caracterizacion'
+                    ? '📋 Completo'
+                    : item.actividad?.formato_visita === 'v2'
+                    ? '📋 En progreso'
+                    : `Paso ${item.step || 1} de 4`}
                 </Text>
               </View>
 

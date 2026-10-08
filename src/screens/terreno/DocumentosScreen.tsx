@@ -154,7 +154,7 @@ const DocumentosScreen: React.FC<DocumentosScreenProps> = ({ navigation, route }
     let subido = false;
     if (bufferParaSubida) {
       setSubiendoDocAMinIO(true);
-      subido = await subirDocAMinIO(bufferParaSubida, nuevoDoc.descripcion, nuevoDoc.formulario_id);
+      subido = await subirDocAMinIO(bufferParaSubida, nuevoDoc.descripcion, nuevoDoc.formulario_id, nuevoDoc.id);
       if (subido) {
         await marcarDocumentoSincronizado(nuevoDoc.id);
       }
@@ -177,7 +177,8 @@ const DocumentosScreen: React.FC<DocumentosScreenProps> = ({ navigation, route }
   const subirDocAMinIO = async (
     archivo: { uri: string; nombre: string; mimeType: string },
     descripcion?: string,
-    formularioId?: string
+    formularioId?: string,
+    evidenciaId?: string
   ): Promise<boolean> => {
     try {
       const formData = new FormData();
@@ -206,6 +207,7 @@ const DocumentosScreen: React.FC<DocumentosScreenProps> = ({ navigation, route }
       if (formularioId && formularioId !== 'sin-formulario') {
         formData.append('formulario_id', formularioId);
       }
+      if (evidenciaId) formData.append('evidencia_id', evidenciaId);
 
       const response = await apiClient.post(
         API_CONFIG.ENDPOINTS.DOCUMENTOS + '/subir',

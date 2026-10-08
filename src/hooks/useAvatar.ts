@@ -2,7 +2,7 @@
 // GEODAILY — Hook de foto de perfil
 // ============================================================
 // Encapsula selección + persistencia de la foto de perfil, para que las
-// 5 pantallas de menú (técnico, supervisor, interventor, gerente, admin)
+// 5 pantallas de menú (técnico, coordinador, interventor, gerente, admin)
 // compartan la misma lógica en vez de reimplementarla cada una.
 // ============================================================
 

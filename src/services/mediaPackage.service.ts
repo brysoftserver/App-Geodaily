@@ -3,12 +3,12 @@
 // ============================================================
 // Descarga todas las fotos y videos que el servidor tiene asociados a un
 // formulario y arma un único .zip para compartir — pensado para cuando un
-// supervisor pide "las fotos o videos aparte" del técnico: en vez de
+// coordinador pide "las fotos o videos aparte" del técnico: en vez de
 // reenviar archivo por archivo, se genera un paquete con todo.
 //
 // Se usa el servidor como única fuente de verdad (fetchArchivosDeFormulario)
 // en vez de las URIs locales del formulario: así funciona igual desde el
-// teléfono del técnico que capturó la visita que desde el de un supervisor
+// teléfono del técnico que capturó la visita que desde el de un coordinador
 // que solo la está revisando.
 // ============================================================
 

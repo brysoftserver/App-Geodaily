@@ -12,8 +12,16 @@ import ConfiguracionIAScreen from '../screens/admin/ConfiguracionIAScreen';
 import MapaGeneralScreen from '../screens/MapaGeneralScreen';
 import DashboardScreen from '../screens/supervision/DashboardScreen';
 import VisitasJerarquicasScreen from '../screens/supervision/VisitasJerarquicasScreen';
+import CoordinadoresJerarquicasScreen from '../screens/supervision/CoordinadoresJerarquicasScreen';
+import SeguimientoDetailScreen from '../screens/supervision/SeguimientoDetailScreen';
 import CalendarioScreen from '../screens/CalendarioGlobalScreen';
 import ProyeccionScreen from '../screens/gerente/ProyeccionScreen';
+import PerfilTecnicosScreen from '../screens/gerente/PerfilTecnicosScreen';
+import ConsolidadoScreen from '../screens/gerente/ConsolidadoScreen';
+import CapacitacionScreen from '../screens/gerente/CapacitacionScreen';
+import MapaTecnicosScreen from '../screens/gerente/MapaTecnicosScreen';
+import DashboardGerencialScreen from '../screens/gerente/DashboardGerencialScreen';
+import PlantacionesPorTecnicoScreen from '../screens/supervision/PlantacionesPorTecnicoScreen';
 import SupervisionFormularioListScreen from '../screens/supervision/FormularioListScreen';
 import FormularioDetailScreen from '../screens/terreno/FormularioDetailScreen';
 import BaseDatosBeneficiariosScreen from '../screens/supervision/BaseDatosBeneficiariosScreen';
@@ -26,11 +34,19 @@ export type AdminStackParamList = {
   AdminDashboard: undefined;
   AdminProyeccion: undefined;
   AdminVisitasJerarquicas: undefined;
+  AdminCoordinadoresJerarquicas: undefined;
+  AdminSeguimientoDetail: { seguimientoId: string };
   AdminCalendario: undefined;
   AdminFormularioList: undefined;
   MapaGeneral: undefined;
   SupervisionFormularioDetail: { formulario: import('../types').Formulario; modo?: 'online' | 'campo' };
   BaseDatosBeneficiarios: undefined;
+  AdminPerfilTecnicos: undefined;
+  AdminConsolidado: undefined;
+  AdminCapacitacion: undefined;
+  AdminMapaTecnicos: undefined;
+  AdminPlantacionesPorTecnico: undefined;
+  DashboardGerencial: undefined;
 };
 
 const Stack = createNativeStackNavigator<AdminStackParamList>();
@@ -88,6 +104,16 @@ const AdminNavigator: React.FC = () => {
         options={{ title: 'Listado de técnicos y visitas' }}
       />
       <Stack.Screen
+        name="AdminCoordinadoresJerarquicas"
+        component={CoordinadoresJerarquicasScreen}
+        options={{ title: 'Listado de coordinadores/interventores y visitas' }}
+      />
+      <Stack.Screen
+        name="AdminSeguimientoDetail"
+        component={SeguimientoDetailScreen}
+        options={{ title: 'Detalle del Seguimiento' }}
+      />
+      <Stack.Screen
         name="AdminCalendario"
         component={CalendarioScreen}
         options={{ title: 'Calendario General' }}
@@ -111,6 +137,36 @@ const AdminNavigator: React.FC = () => {
         name="BaseDatosBeneficiarios"
         component={BaseDatosBeneficiariosScreen}
         options={{ title: 'Base de Datos Beneficiarios' }}
+      />
+      <Stack.Screen
+        name="AdminPerfilTecnicos"
+        component={PerfilTecnicosScreen}
+        options={{ title: 'Perfil de Técnicos' }}
+      />
+      <Stack.Screen
+        name="AdminConsolidado"
+        component={ConsolidadoScreen}
+        options={{ title: 'Consolidador' }}
+      />
+      <Stack.Screen
+        name="AdminCapacitacion"
+        component={CapacitacionScreen}
+        options={{ title: 'Capacitación' }}
+      />
+      <Stack.Screen
+        name="AdminMapaTecnicos"
+        component={MapaTecnicosScreen}
+        options={{ title: 'Mapa de Técnicos' }}
+      />
+      <Stack.Screen
+        name="AdminPlantacionesPorTecnico"
+        component={PlantacionesPorTecnicoScreen}
+        options={{ title: 'Áreas de Plantación' }}
+      />
+      <Stack.Screen
+        name="DashboardGerencial"
+        component={DashboardGerencialScreen}
+        options={{ title: 'Dashboard' }}
       />
     </Stack.Navigator>
   );

@@ -60,14 +60,14 @@ async function ensureBucket() {
 
 /**
  * Obtener la ruta base en MinIO para un usuario según su rol
- * @param {string} rol - tecnico | supervisor | interventor | gerente | admin
+ * @param {string} rol - tecnico | coordinador | interventor | gerente | admin
  * @param {string} usuario - nombre de usuario (ej: 'rodrigo.zuleta')
  * @returns {string} ruta base (ej: 'tecnicos/rodrigo.zuleta')
  */
 function getUserBasePath(rol, usuario) {
   const roleMap = {
     tecnico: 'tecnicos',
-    supervisor: 'supervisores',
+    coordinador: 'coordinadores',
     interventor: 'interventores',
     gerente: 'gerentes',
     admin: 'admin',
@@ -112,14 +112,18 @@ function getBeneficiarySubpath(item, nombreCompleto) {
 
 /**
  * Obtener la carpeta de tipo de formulario según el tipo
- * @param {string} tipoFormulario - 'caracterizacion' | 'visita_tecnica'
- * @returns {string} 'Formulario_1' | 'Formulario_2' | ''
+ * @param {string} tipoFormulario - 'caracterizacion' | 'visita_tecnica' | 'seguimiento'
+ * @returns {string} 'Formulario_1' | 'Formulario_2' | 'Seguimientos' | ''
  */
 function getFormTypeFolder(tipoFormulario) {
   if (!tipoFormulario) return '';
   const map = {
     caracterizacion: 'Formulario_1',
     visita_tecnica: 'Formulario_2',
+    // Seguimientos de Coordinación/Interventoría — evidencia (fotos, video,
+    // firmas, documentos) de la visita de acompañamiento, separada de los
+    // formularios del técnico.
+    seguimiento: 'Seguimientos',
   };
   return map[tipoFormulario] || '';
 }
@@ -327,6 +331,44 @@ async function statFile(filePath) {
 }
 
 /**
+ * Resolver la ruta REAL de un objeto en MinIO a partir de la ruta
+ * registrada en la base de datos.
+ *
+ * Contexto: los seguimientos de Coordinación/Interventoría subidos por una
+ * versión anterior del backend quedaron registrados con un segmento
+ * `Seguimientos/` que nunca existió en MinIO (los archivos se guardaron
+ * directamente en `{rol}/{usuario}/{fotos|firmas|videos}/...`). Como
+ * consecuencia, `statFile(minio_path)` fallaba y la evidencia (fotos,
+ * firmas, videos) no se veía ni en la app ni en la web.
+ *
+ * Esta función devuelve la ruta registrada si el objeto existe; si no,
+ * prueba la variante sin el segmento `Seguimientos/`. No modifica datos:
+ * solo corrige la lectura. Devuelve `null` si el objeto no existe en
+ * ninguna de las dos rutas.
+ *
+ * @param {string} filePath - ruta registrada en la BD (minio_path)
+ * @returns {Promise<string|null>} ruta real del objeto, o null
+ */
+async function resolveFilePath(filePath) {
+  if (!filePath) return null;
+
+  const directo = await statFile(filePath);
+  if (directo) return filePath;
+
+  // Variante sin el segmento espurio `Seguimientos/`.
+  if (filePath.includes('/Seguimientos/')) {
+    const alterno = filePath.replace('/Seguimientos/', '/');
+    const stat = await statFile(alterno);
+    if (stat) {
+      console.warn(`[Storage] ⚠️ Ruta corregida (Seguimientos/ espurio): ${filePath} → ${alterno}`);
+      return alterno;
+    }
+  }
+
+  return null;
+}
+
+/**
  * Stream de un rango de bytes de un archivo.
  * ExoPlayer (Android) y AVPlayer (iOS) piden el fichero por trozos: sin
  * esto los videos de evidencia no se podían reproducir desde la app.
@@ -352,6 +394,28 @@ async function deleteFile(filePath) {
     console.error('[Storage] Error al eliminar archivo:', err.message);
     return false;
   }
+}
+
+/**
+ * Mover un objeto dentro del mismo bucket (copy server-side + borrar
+ * origen). Se usa al reasignar un beneficiario de técnico: el subpath del
+ * beneficiario no cambia, solo el prefijo {rol}/{usuario} del dueño.
+ */
+async function moveFile(oldPath, newPath) {
+  await ensureBucket();
+  if (oldPath === newPath) return { moved: true, orphan: false };
+
+  await minioClient.copyObject(CONFIG.bucket, newPath, `/${CONFIG.bucket}/${oldPath}`);
+
+  // Si el copy ya funcionó, el archivo está disponible en newPath — que
+  // falle el borrado del origen deja basura recuperable, no una
+  // inconsistencia de datos, así que no se lanza error por eso.
+  const deleted = await deleteFile(oldPath);
+  if (!deleted) {
+    console.warn(`[Storage] ⚠️ Copiado a ${newPath} pero no se pudo borrar origen ${oldPath} (orphan)`);
+  }
+  console.log(`[Storage] 🔀 Archivo movido: ${oldPath} → ${newPath}`);
+  return { moved: true, orphan: !deleted };
 }
 
 /**
@@ -384,7 +448,7 @@ function getSubfoldersForRole(rol) {
   const common = ['fotos', 'videos', 'documentos', 'pdfs'];
   const roleSpecific = {
     tecnico: [...common, 'firmas'],
-    supervisor: [...common, 'informes', 'firmas'],
+    coordinador: [...common, 'informes', 'firmas'],
     interventor: [...common, 'informes', 'firmas'],
     gerente: [...common, 'reportes', 'dashboards'],
     admin: ['documentos', 'pdfs', 'configuracion', 'respaldos', 'logs'],
@@ -408,8 +472,10 @@ module.exports = {
   getSignedUrl,
   getFileStream,
   statFile,
+  resolveFilePath,
   getFileRangeStream,
   deleteFile,
+  moveFile,
   listFiles,
   getSubfoldersForRole,
   CONFIG,

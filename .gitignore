@@ -41,3 +41,5 @@ metro-cache/
 backend/node_modules/
 backend/uploads/
 backend/.env
+# Respaldos de base de datos (no versionar)
+backend/backups/

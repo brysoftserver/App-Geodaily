@@ -53,9 +53,9 @@ type CapaActiva = 'plantaciones' | 'tecnicos' | 'mediciones' | 'veredas';
 
 const MapaGeneralScreen: React.FC<{ navigation?: Record<string, any> }> = ({ navigation: _navigation }) => {
   const insets = useSafeAreaInsets();
-  const { isAdmin, isSupervisor, isInterventor, isGerente } = useAuth();
+  const { isAdmin, isCoordinador, isInterventor, isGerente } = useAuth();
   const { userLocation, getCurrentPosition, siguiendo, setSiguiendo } = useGPS();
-  const canViewAll = isAdmin || isSupervisor || isInterventor || isGerente;
+  const canViewAll = isAdmin || isCoordinador || isInterventor || isGerente;
 
   const {
     plantaciones,

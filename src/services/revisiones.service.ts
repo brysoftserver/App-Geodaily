@@ -1,6 +1,6 @@
 // ============================================================
 // GEODAILY — Servicio de Revisiones de Formularios
-// Flujo jerárquico: técnico finaliza → supervisor revisa (novedades /
+// Flujo jerárquico: técnico finaliza → coordinador revisa (novedades /
 // visto bueno) → solo entonces el interventor puede ver y revisar.
 // ============================================================
 
@@ -11,7 +11,7 @@ export interface Revision {
   formulario_id: string;
   revisor_id: string;
   revisor_nombre: string | null;
-  revisor_rol: 'supervisor' | 'interventor' | 'gerente' | 'admin';
+  revisor_rol: 'coordinador' | 'interventor' | 'gerente' | 'admin';
   /** 'formulario_rol' es el tipo histórico (antes de dividirse en línea/campo) — se conserva solo para leer datos viejos */
   tipo: 'novedad' | 'visto_bueno' | 'formulario_rol' | 'formulario_en_linea' | 'formulario_en_campo';
   /** Sección del formulario clonado a la que aplica (null = revisión global) */
@@ -37,7 +37,7 @@ export interface EvidenciaRevisor {
   formulario_id: string;
   revisor_id: string;
   revisor_nombre: string | null;
-  revisor_rol: 'supervisor' | 'interventor' | 'gerente' | 'admin';
+  revisor_rol: 'coordinador' | 'interventor' | 'gerente' | 'admin';
   fotos_json: ArchivoRevisorRef[];
   videos_json: ArchivoRevisorRef[];
   /** Id de archivo en MinIO (registros nuevos) o base64 "data:image/..." (registros antiguos, previos a esta migración) */
@@ -52,7 +52,7 @@ export interface EvidenciaRevisor {
 }
 
 export interface EstadoRevision {
-  supervisor: 'ok' | 'novedades' | null;
+  coordinador: 'ok' | 'novedades' | null;
   interventor: 'ok' | 'novedades' | null;
   gerente: 'ok' | 'novedades' | null;
   admin: 'ok' | 'novedades' | null;

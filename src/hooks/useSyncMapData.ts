@@ -29,8 +29,8 @@ interface SyncMapDataState {
 }
 
 export function useSyncMapData() {
-  const { user, isAdmin, isSupervisor, isGerente, isInterventor } = useAuth();
-  const canViewAll = isAdmin || isSupervisor || isGerente || isInterventor;
+  const { user, isAdmin, isCoordinador, isGerente, isInterventor } = useAuth();
+  const canViewAll = isAdmin || isCoordinador || isGerente || isInterventor;
   const syncingRef = useRef(false);
 
   const [state, setState] = useState<SyncMapDataState>({
@@ -111,7 +111,7 @@ export function useSyncMapData() {
 
   /**
    * Cargar todas las plantaciones
-   * - Para supervisores/gerentes/admin: desde el servidor (ve TODAS)
+   * - Para coordinadores/gerentes/admin: desde el servidor (ve TODAS)
    * - Para técnicos: desde BD local (solo sus propias)
    */
   const fetchAllPlantaciones = useCallback(async () => {
@@ -140,13 +140,13 @@ export function useSyncMapData() {
 
   /**
    * Cargar últimas posiciones de técnicos
-   * - Para supervisores/gerentes/admin: desde el servidor (ve TODOS los técnicos)
+   * - Para coordinadores/gerentes/admin: desde el servidor (ve TODOS los técnicos)
    * - Para técnicos: desde BD local (solo sus propias posiciones)
    */
   const fetchUltimasPosiciones = useCallback(async () => {
     try {
       if (canViewAll && user?.token) {
-        // Supervisor/gerente/admin → obtener de todos los técnicos desde el servidor
+        // Coordinador/gerente/admin → obtener de todos los técnicos desde el servidor
         const res = await fetch(`${API_CONFIG.BASE_URL}/api/tracking/ultimas`, {
           headers: { Authorization: `Bearer ${user.token}` },
         });
@@ -168,7 +168,7 @@ export function useSyncMapData() {
 
   /**
    * Cargar todas las mediciones
-   * - Para supervisores/gerentes/admin: desde el servidor (ve TODAS)
+   * - Para coordinadores/gerentes/admin: desde el servidor (ve TODAS)
    * - Para técnicos: desde BD local (solo sus propias)
    */
   const fetchAllMediciones = useCallback(async () => {

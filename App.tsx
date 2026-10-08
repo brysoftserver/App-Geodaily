@@ -17,6 +17,7 @@ import AppNavigator from './src/navigation/AppNavigator';
 import { initDatabase } from './src/services/database';
 import { initBeneficiariosDB } from './src/services/beneficiariosDB.service';
 import { migrarBorradoresDesdeSecureStore } from './src/store/FormDraftStore';
+import { compactarDatosOtrosFormatos } from './src/store/OtrosFormatosDraftStore';
 import LoadingSpinner from './src/components/LoadingSpinner';
 
 // LOGBOX_ENABLED=false por defecto (env.example/.env) — desactiva la pantalla
@@ -41,6 +42,13 @@ export default function App() {
         console.log('[App] Base de datos local inicializada correctamente');
         // Migrar borradores antiguos de SecureStore → AsyncStorage
         await migrarBorradoresDesdeSecureStore();
+        // Liberar espacio moviendo a archivo las firmas en base64 que los
+        // "Otros Formatos" guardaban dentro de AsyncStorage (tope de 6 MB en
+        // Android). Sin esto, las escrituras de borradores fallan aunque el
+        // teléfono tenga GB libres. No se espera: la app puede arrancar ya y,
+        // si el disco estaba lleno, `guardarBorrador` reintenta tras
+        // compactar (auto-reparación).
+        compactarDatosOtrosFormatos().catch(() => {});
       } catch (e) {
         console.error('[App] Error al inicializar base de datos:', e);
       } finally {

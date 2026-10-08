@@ -6,7 +6,7 @@
 // actividades) y/o cualquiera de las 6 secciones de la Encuesta Social
 // AgroAmbiental (una gráfica por pregunta). Lleva el membrete institucional
 // oficial (igual que los PDF de formularios) — ejecución (ACPR) para
-// supervisor/gerente, interventoría (ASEMP) para interventor — y la
+// coordinador/gerente, interventoría (ASEMP) para interventor — y la
 // fecha/hora exacta de generación.
 //
 // Las gráficas se reconstruyen como SVG inline dentro del HTML (mismo
@@ -45,14 +45,14 @@ import { analizarGrafico, SolicitudAnalisisGrafico } from './ia.service';
 export interface DatosReporteDashboard {
   formularios: Formulario[];
   /** Rol de quien genera el reporte — decide el membrete y el título. */
-  rolUsuario: 'supervisor' | 'interventor' | 'gerente' | string;
+  rolUsuario: 'coordinador' | 'interventor' | 'gerente' | string;
   nombreUsuario: string;
   /** Ids de las secciones a incluir (ver SECCIONES_GENERAL_PDF / SECCIONES_ENCUESTA_PDF). */
   secciones: string[];
 }
 
 const ETIQUETA_ROL: Record<string, string> = {
-  supervisor: 'Supervisión',
+  coordinador: 'Coordinación',
   interventor: 'Interventoría',
   gerente: 'Gerencia',
 };

@@ -2,7 +2,7 @@
 // GEODAILY — Menú Principal Técnico de Campo
 // ============================================================
 
-import React, { useState } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
   View,
   Text,
@@ -17,6 +17,7 @@ import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAuth } from '../../store/AuthContext';
 import { useAvatar } from '../../hooks/useAvatar';
+import { cargarBorradores, sincronizarBorradoresConServidor } from '../../store/FormDraftStore';
 import CambiarContrasenaModal from '../../components/CambiarContrasenaModal';
 import SincronizacionModal from '../../components/SincronizacionModal';
 import AjustesMenu from '../../components/AjustesMenu';
@@ -54,6 +55,14 @@ const MENU_ITEMS = [
     screen: 'TerrenoFormularioList',
   },
   {
+    id: 'incompletos',
+    title: 'Formularios Incompletos',
+    subtitle: 'Retoma los formularios guardados como borrador',
+    icon: '📝',
+    color: COLORS.warning,
+    screen: 'FormulariosIncompletos',
+  },
+  {
     id: 'calendario',
     title: 'Calendario',
     subtitle: 'Visitas realizadas y pendientes',
@@ -79,10 +88,47 @@ const TerrenoMenuScreen: React.FC<TerrenoMenuProps> = ({ navigation }) => {
   const [showPasswordModal, setShowPasswordModal] = useState(false);
   const [showSyncModal, setShowSyncModal] = useState(false);
   const [showAvatarViewer, setShowAvatarViewer] = useState(false);
+  const [borradorCount, setBorradorCount] = useState(0);
 
   const handlePress = (item: (typeof MENU_ITEMS)[0]) => {
     navigation.navigate(item.screen as string);
   };
+
+  // Cuenta los borradores del técnico para mostrarlos en la tarjeta
+  // "Formularios Incompletos" (misma lógica que SeleccionarTipoFormulario).
+  const loadBorradorCount = useCallback(async () => {
+    try {
+      let borradores = await cargarBorradores();
+      if (user?.id) {
+        try {
+          borradores = await sincronizarBorradoresConServidor(user.id, user.cedula, borradores);
+        } catch {
+          // La lista local permanece disponible si no hay conexión.
+        }
+      }
+      const propios = user?.id
+        ? borradores.filter((draft) =>
+            draft.tecnico?.usuario_id === user.id ||
+            (!draft.tecnico?.usuario_id && !!user.cedula && draft.tecnico?.cedula === user.cedula) ||
+            (!draft.tecnico?.usuario_id && !draft.tecnico?.cedula)
+          )
+        : borradores;
+      setBorradorCount(propios.length);
+    } catch (error) {
+      console.warn('[MenuTecnico] Error contando borradores:', error);
+    }
+  }, [user?.id, user?.cedula]);
+
+  useEffect(() => {
+    loadBorradorCount();
+  }, [loadBorradorCount]);
+
+  useEffect(() => {
+    const unsubscribe = navigation.addListener('focus', () => {
+      loadBorradorCount();
+    });
+    return unsubscribe;
+  }, [navigation, loadBorradorCount]);
 
   // Obtener cédula del usuario
   const cedula = (user as any)?.cedula || '';
@@ -158,6 +204,11 @@ const TerrenoMenuScreen: React.FC<TerrenoMenuProps> = ({ navigation }) => {
                 <Text style={styles.menuTitle}>{item.title}</Text>
                 <Text style={styles.menuSubtitle}>{item.subtitle}</Text>
               </View>
+              {item.id === 'incompletos' && borradorCount > 0 && (
+                <View style={styles.badge}>
+                  <Text style={styles.badgeText}>{borradorCount}</Text>
+                </View>
+              )}
               <Text style={styles.menuArrow}>›</Text>
             </TouchableOpacity>
           ))}
@@ -307,6 +358,21 @@ const styles = StyleSheet.create({
     fontSize: 24,
     color: COLORS.textLight,
     marginLeft: SPACING.sm,
+  },
+  badge: {
+    minWidth: 22,
+    height: 22,
+    paddingHorizontal: 6,
+    borderRadius: 11,
+    backgroundColor: COLORS.warning,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginLeft: SPACING.sm,
+  },
+  badgeText: {
+    fontSize: FONTS.sizes.xs,
+    fontWeight: FONTS.weights.bold,
+    color: COLORS.textOnPrimary,
   },
 });
 

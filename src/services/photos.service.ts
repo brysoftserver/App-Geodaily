@@ -20,7 +20,15 @@ export const uploadPhoto = async (
   timestampCaptura?: string,
   tipoFormulario?: string,
   /** Vincula la evidencia al formulario para poder recuperarla desde otro dispositivo */
-  formularioId?: string
+  formularioId?: string,
+  /**
+   * Id generado en el celular al capturar la foto (ver generarId() en
+   * useCamera). Permite al backend reconocer un reintento de la MISMA
+   * evidencia y devolver el registro ya guardado en vez de duplicarlo —
+   * esencial porque un timeout de red no distingue si el servidor ya
+   * había recibido y guardado la foto antes de que la respuesta se perdiera.
+   */
+  evidenciaId?: string
 ): Promise<{ id: string; estado: string; ruta?: string; filename?: string } | null> => {
   try {
     const formData = new FormData();
@@ -44,6 +52,7 @@ export const uploadPhoto = async (
     if (beneficiarioNombre) formData.append('beneficiario_nombre', beneficiarioNombre);
     if (tipoFormulario) formData.append('tipo_formulario', tipoFormulario);
     if (formularioId) formData.append('formulario_id', formularioId);
+    if (evidenciaId) formData.append('evidencia_id', evidenciaId);
 
     const response = await apiClient.post(
       API_CONFIG.ENDPOINTS.PHOTOS + '/subir',
@@ -56,6 +65,15 @@ export const uploadPhoto = async (
 
     return response.data;
   } catch (error) {
+    // 410 = un admin/coordinador eliminó esta evidencia desde el detalle del
+    // formulario (ver DELETE /api/archivos/:id). No es un fallo de red: se
+    // devuelve estado 'eliminado' para que el sincronizador descarte la copia
+    // local en vez de reintentar la subida para siempre.
+    const status = (error as { response?: { status?: number } })?.response?.status;
+    if (status === 410) {
+      console.warn('[Fotos] Evidencia eliminada en el servidor — se descarta la copia local');
+      return { id: '', estado: 'eliminado' };
+    }
     if (isOfflineError(error)) {
       console.warn('[Fotos] Offline — foto guardada solo localmente');
       return null;

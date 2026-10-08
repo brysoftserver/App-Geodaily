@@ -6,7 +6,7 @@
 // Puerto Rico (Caquetá). No pide ni muestra la ubicación GPS del
 // dispositivo — solo datos ya guardados: puntos de visita (Formulario 1/2,
 // con pin clásico) y áreas de cultivo marcadas por los técnicos
-// (plantaciones, ícono por especie) para supervisor/interventor.
+// (plantaciones, ícono por especie) para coordinador/interventor.
 // Al georreferenciarse con un mapa real, las coordenadas son exactas por
 // construcción — no depende de ninguna calibración manual.
 
@@ -19,12 +19,15 @@ import { eliminarFormularioDelServidor } from '../../services/formularios.servic
 import { getIconoEspecie } from '../../utils/constants';
 import { resolverCorregimiento, NOMBRE_VISIBLE_CORREGIMIENTO } from '../../utils/corregimientos';
 import MapViewOffline from '../MapViewOffline';
+import { tituloVisitaTecnica } from '../../utils/visitaTecnica';
 
 interface MapaVisitasPuertoRicoProps {
   formularios: Formulario[];
   onVerDetalle: (formulario: Formulario) => void;
-  /** Solo admin ve el botón de eliminar en los popups de visita/área de cultivo. */
+  /** Solo admin ve el botón de eliminar en el popup de área de cultivo. */
   isAdmin?: boolean;
+  /** Admin, coordinador e interventor ven el botón de eliminar en el popup de visita/formulario. */
+  puedeEliminarFormulario?: boolean;
   /** Se llama tras eliminar una visita del servidor, para que el padre refresque su lista. */
   onFormularioEliminado?: () => void;
 }
@@ -48,8 +51,10 @@ const PUERTO_RICO_CENTER = { latitud: 1.914, longitud: -75.145 };
 const ZOOM_MUNICIPIO = 13;
 const REFRESCO_PLANTACIONES_MS = 45000;
 
-const etiquetaTipo = (tipo: Formulario['tipo']) =>
-  tipo === 'visita_tecnica' ? 'Visita Técnica' : 'Encuesta Socioambiental';
+const etiquetaTipo = (formulario: Formulario) =>
+  formulario.tipo === 'visita_tecnica'
+    ? tituloVisitaTecnica(formulario.actividad?.visita_numero)
+    : 'Encuesta Socioambiental';
 
 const colorPorTipo = (tipo: Formulario['tipo']) =>
   tipo === 'visita_tecnica' ? COLORS.roleTecnico : COLORS.secondary;
@@ -58,6 +63,7 @@ const MapaVisitasPuertoRico: React.FC<MapaVisitasPuertoRicoProps> = ({
   formularios,
   onVerDetalle,
   isAdmin = false,
+  puedeEliminarFormulario = false,
   onFormularioEliminado,
 }) => {
   const { plantaciones, fetchAllPlantaciones, eliminarPlantacion } = useSyncMapData();
@@ -132,7 +138,7 @@ const MapaVisitasPuertoRico: React.FC<MapaVisitasPuertoRicoProps> = ({
           id: `visita-${f.id}`,
           latitud: f.coordenadas.latitud,
           longitud: f.coordenadas.longitud,
-          title: f.beneficiario?.nombre || etiquetaTipo(f.tipo),
+          title: f.beneficiario?.nombre || etiquetaTipo(f),
           color: colorPorTipo(f.tipo),
           tipoIcono: 'pin' as const,
         })),
@@ -251,7 +257,7 @@ const MapaVisitasPuertoRico: React.FC<MapaVisitasPuertoRicoProps> = ({
             {seleccionado && (
               <>
                 <View style={[styles.popupBadge, { backgroundColor: colorPorTipo(seleccionado.tipo) }]}>
-                  <Text style={styles.popupBadgeTexto}>{etiquetaTipo(seleccionado.tipo)}</Text>
+                  <Text style={styles.popupBadgeTexto}>{etiquetaTipo(seleccionado)}</Text>
                 </View>
                 <Text style={styles.popupNombre}>{seleccionado.beneficiario?.nombre || '—'}</Text>
                 <View style={styles.popupFila}>
@@ -293,7 +299,7 @@ const MapaVisitasPuertoRico: React.FC<MapaVisitasPuertoRicoProps> = ({
                     <Text style={styles.botonPrimarioTexto}>Ver detalle completo</Text>
                   </TouchableOpacity>
                 </View>
-                {isAdmin && (
+                {puedeEliminarFormulario && (
                   <TouchableOpacity
                     style={styles.botonEliminar}
                     disabled={eliminando}

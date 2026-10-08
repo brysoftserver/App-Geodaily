@@ -8,7 +8,7 @@ const path = require('path');
 const { authenticateToken } = require('../middleware/auth');
 const db = require('../database');
 const storage = require('../storage');
-const { aplicarMarcaAgua } = require('../watermark');
+const { aplicarMarcaAgua, normalizarSinMarca } = require('../watermark');
 
 const router = express.Router();
 
@@ -31,26 +31,82 @@ router.post('/subir', authenticateToken, upload.single('archivo'), async (req, r
       return res.status(400).json({ estado: 'error', mensaje: 'Archivo requerido' });
     }
 
-    const { latitud, longitud, altitud, nombre, descripcion, beneficiario_cedula, beneficiario_nombre, timestamp_captura, tipo_formulario, formulario_id } = req.body;
+    const { latitud, longitud, altitud, nombre, descripcion, beneficiario_cedula, beneficiario_nombre, timestamp_captura, tipo_formulario, formulario_id, evidencia_id } = req.body;
+
+    // ─── Anti-resurrección: si un admin/coordinador borró esta evidencia
+    // desde el detalle del formulario (DELETE /api/archivos/:id), se rechaza
+    // la re-subida. El teléfono que capturó la foto la conserva en local y la
+    // reintentaría en cada ciclo de sync; sin este check la fila volvería a
+    // crearse y la evidencia reaparecería en la visita.
+    if (evidencia_id) {
+      const tumbaEvidencia = await db.queryOne(
+        'SELECT id FROM evidencias_eliminadas WHERE evidencia_local_id = $1 LIMIT 1',
+        [evidencia_id]
+      );
+      if (tumbaEvidencia) {
+        console.log(`[Photos] Evidencia ${evidencia_id} fue eliminada — se rechaza la re-subida`);
+        return res.status(410).json({
+          estado: 'eliminado',
+          mensaje: 'Esta evidencia fue eliminada por un administrador y no puede volver a subirse',
+        });
+      }
+    }
+
+    // ─── Idempotencia: si esta evidencia (id generado en el celular al
+    // capturarla) ya se subió antes, se devuelve el registro existente en
+    // vez de crear uno nuevo. Evita duplicados cuando la app reintenta una
+    // subida que en realidad ya había llegado al servidor (timeout con
+    // señal débil, cierre de la app antes de marcarla como sincronizada).
+    if (evidencia_id) {
+      const yaSubida = await db.queryOne(
+        `SELECT id, minio_path, filename, size_bytes FROM archivos WHERE usuario_id = $1 AND evidencia_local_id = $2`,
+        [req.user.id, evidencia_id]
+      );
+      if (yaSubida) {
+        console.log(`[Photos] Evidencia ${evidencia_id} ya existía (id ${yaSubida.id}) — se omite duplicado`);
+        return res.json({
+          estado: 'ok',
+          id: yaSubida.id,
+          ruta: yaSubida.minio_path,
+          filename: yaSubida.filename,
+          size: yaSubida.size_bytes,
+        });
+      }
+    }
 
     // ─── Marca de agua de evidencia (fecha de captura + GPS + ubicación +
     // clima a la hora de la toma). Nunca bloquea la subida: si falla,
     // se guarda la foto original. Solo aplica a formatos de imagen que
     // sharp puede recomponer (jpeg/png/webp — no HEIC/GIF).
+    //
+    // EXCEPCIÓN — fotos de SEGUIMIENTO: se guardan LIMPIAS (sin fecha ni
+    // marca quemada). La fecha del seguimiento se estampa en el PDF, que es
+    // editable, en vez de fijarla en el píxel. Igual se normaliza la
+    // orientación EXIF y se re-codifica a JPEG para que la foto salga
+    // derecha y liviana.
     let bufferFinal = req.file.buffer;
     let mimetypeFinal = req.file.mimetype;
     let extFinal = path.extname(req.file.originalname) || '.jpg';
     if (/jpeg|jpg|png|webp/i.test(req.file.mimetype)) {
-      const { buffer: marcado, marcada } = await aplicarMarcaAgua(req.file.buffer, {
-        latitud,
-        longitud,
-        altitud,
-        timestampCaptura: timestamp_captura,
-      });
-      if (marcada) {
-        bufferFinal = marcado;
-        mimetypeFinal = 'image/jpeg'; // la marca re-codifica a JPEG
-        extFinal = '.jpg';
+      if (tipo_formulario === 'seguimiento') {
+        const { buffer: limpia, normalizada } = await normalizarSinMarca(req.file.buffer);
+        if (normalizada) {
+          bufferFinal = limpia;
+          mimetypeFinal = 'image/jpeg';
+          extFinal = '.jpg';
+        }
+      } else {
+        const { buffer: marcado, marcada } = await aplicarMarcaAgua(req.file.buffer, {
+          latitud,
+          longitud,
+          altitud,
+          timestampCaptura: timestamp_captura,
+        });
+        if (marcada) {
+          bufferFinal = marcado;
+          mimetypeFinal = 'image/jpeg'; // la marca re-codifica a JPEG
+          extFinal = '.jpg';
+        }
       }
     }
 
@@ -104,15 +160,22 @@ router.post('/subir', authenticateToken, upload.single('archivo'), async (req, r
       }
     }
 
-    // Subir a MinIO
+    // Preparar la ruta con la misma función que usa uploadFile; sirve también
+    // para limpiar si MinIO sube el objeto pero falla al generar la URL firmada.
+    const rutaEsperada = benefItem && benefNombre
+      ? storage.getBeneficiaryFilePath(userRol, userUsuario, benefItem, benefNombre, tipoFormularioResuelto, 'fotos', filename)
+      : storage.getFilePath(userRol, userUsuario, 'fotos', filename);
+
+    // No registrar ni confirmar la evidencia si MinIO no aceptó el objeto.
     const storageMeta = {
       contentType: mimetypeFinal,
       beneficiarioItem: benefItem,
       beneficiarioNombre: benefNombre,
       tipoFormulario: tipoFormularioResuelto,
     };
+    let objetoMinio;
     try {
-      await storage.uploadFile(
+      objetoMinio = await storage.uploadFile(
         userRol,
         userUsuario,
         'fotos',
@@ -121,20 +184,17 @@ router.post('/subir', authenticateToken, upload.single('archivo'), async (req, r
         storageMeta
       );
     } catch (storageErr) {
-      console.error('[Photos] Error al subir a MinIO (no crítico, continúa):', storageErr.message);
+      const eliminado = await storage.deleteFile(rutaEsperada);
+      if (!eliminado) {
+        console.warn('[Photos] No se pudo limpiar la ruta tras fallo de subida:', rutaEsperada);
+      }
+      console.error('[Photos] Error al subir a MinIO:', storageErr.message);
+      throw storageErr;
     }
 
     // Guardar registro en PostgreSQL
-    const bucket = process.env.MINIO_BUCKET || 'geodaily-archivos';
-    const basePath = storage.getUserBasePath(userRol, userUsuario);
-    let minioPath;
-    if (benefItem && benefNombre) {
-      const subpath = storage.getBeneficiarySubpath(benefItem, benefNombre);
-      const formFolder = storage.getFormTypeFolder(tipoFormularioResuelto);
-      minioPath = formFolder ? `${basePath}/${subpath}/${formFolder}/fotos/${filename}` : `${basePath}/${subpath}/fotos/${filename}`;
-    } else {
-      minioPath = `${basePath}/fotos/${filename}`;
-    }
+    const bucket = objetoMinio.bucket || process.env.MINIO_BUCKET || 'geodaily-archivos';
+    const minioPath = objetoMinio.path;
 
     const metadataExtra = {
       nombre: nombre || null,
@@ -150,38 +210,65 @@ router.post('/subir', authenticateToken, upload.single('archivo'), async (req, r
     // formulario_id permite recuperar la evidencia desde otro dispositivo.
     // El SELECT evita violar la FK cuando la foto llega antes que el
     // formulario (caso normal offline): queda NULL y se vincula después.
-    await db.query(
-      `INSERT INTO archivos (usuario_id, formulario_id, tipo, filename, originalname, mimetype, size_bytes, minio_path, minio_bucket, latitud, longitud, altitud, metadata_json)
-       VALUES ($1, (SELECT id FROM formularios WHERE id = $2), $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
-      [
-        req.user.id,
-        formulario_id || null,
-        'foto',
-        filename,
-        req.file.originalname,
-        mimetypeFinal,
-        bufferFinal.length,
-        minioPath,
-        bucket,
-        latitud ? parseFloat(latitud) : null,
-        longitud ? parseFloat(longitud) : null,
-        altitud ? parseFloat(altitud) : null,
-        JSON.stringify(metadataExtra),
-      ]
-    );
+    let archivoCreado;
+    try {
+      archivoCreado = await db.query(
+        `INSERT INTO archivos (usuario_id, formulario_id, tipo, filename, originalname, mimetype, size_bytes, minio_path, minio_bucket, latitud, longitud, altitud, metadata_json, evidencia_local_id)
+         VALUES ($1, (SELECT id FROM formularios WHERE id = $2), $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+         RETURNING id`,
+        [
+          req.user.id,
+          formulario_id || null,
+          'foto',
+          filename,
+          req.file.originalname,
+          mimetypeFinal,
+          bufferFinal.length,
+          minioPath,
+          bucket,
+          latitud ? parseFloat(latitud) : null,
+          longitud ? parseFloat(longitud) : null,
+          altitud ? parseFloat(altitud) : null,
+          JSON.stringify(metadataExtra),
+          evidencia_id || null,
+        ]
+      );
+    } catch (insertErr) {
+      // 23505 = unique_violation — dos subidas de la misma evidencia casi
+      // simultáneas (el chequeo de arriba no alcanzó a verla). El archivo ya
+      // se subió a MinIO de más, pero no se duplica el registro en BD.
+      if (insertErr.code === '23505' && evidencia_id) {
+        const existente = await db.queryOne(
+          `SELECT id, minio_path, filename, size_bytes FROM archivos WHERE usuario_id = $1 AND evidencia_local_id = $2`,
+          [req.user.id, evidencia_id]
+        );
+        if (existente) {
+          await storage.deleteFile(minioPath);
+          console.log(`[Photos] Carrera detectada para evidencia ${evidencia_id} — se omite duplicado`);
+          return res.json({
+            estado: 'ok',
+            id: existente.id,
+            ruta: existente.minio_path,
+            filename: existente.filename,
+            size: existente.size_bytes,
+          });
+        }
+      }
+      await storage.deleteFile(minioPath);
+      throw insertErr;
+    }
 
-    // Obtener el ID generado
-    const archivo = await db.queryOne(
-      'SELECT id FROM archivos WHERE minio_path = $1 ORDER BY created_at DESC LIMIT 1',
-      [minioPath]
-    );
-    const photoId = archivo ? archivo.id : `foto-${Date.now()}`;
+    const photoId = archivoCreado.rows[0]?.id || `foto-${Date.now()}`;
 
     // Registrar en actividad
-    await db.query(
-      'INSERT INTO actividad_log (usuario_id, accion, detalle_json) VALUES ($1, $2, $3)',
-      [req.user.id, 'subir_foto', JSON.stringify({ archivo_id: photoId, filename, tamaño: req.file.size })]
-    );
+    try {
+      await db.query(
+        'INSERT INTO actividad_log (usuario_id, accion, detalle_json) VALUES ($1, $2, $3)',
+        [req.user.id, 'subir_foto', JSON.stringify({ archivo_id: photoId, filename, tamaño: req.file.size })]
+      );
+    } catch (logErr) {
+      console.warn('[Photos] No se pudo registrar la actividad:', logErr.message);
+    }
 
     console.log(`[Photos] 📸 Foto subida a MinIO: ${minioPath}`);
 
@@ -209,10 +296,10 @@ router.get('/:id', authenticateToken, async (req, res) => {
       return res.status(404).json({ estado: 'error', mensaje: 'Foto no encontrada' });
     }
     // Roles de supervisión ven la evidencia de cualquier técnico. Antes solo
-    // 'admin' era excepción, así que un supervisor listaba los archivos y
+    // 'admin' era excepción, así que un coordinador listaba los archivos y
     // recibía 403 al abrir cualquiera de ellos.
-    const ROLES_SUPERVISION = ['supervisor', 'interventor', 'gerente', 'admin'];
-    if (!ROLES_SUPERVISION.includes(req.user.rol) && foto.usuario_id !== req.user.id) {
+    const ROLES_COORDINACION = ['coordinador', 'interventor', 'gerente', 'admin'];
+    if (!ROLES_COORDINACION.includes(req.user.rol) && foto.usuario_id !== req.user.id) {
       return res.status(403).json({ estado: 'error', mensaje: 'No autorizado' });
     }
 

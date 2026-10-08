@@ -17,14 +17,14 @@ import {
   ActivityIndicator,
 } from 'react-native';
 import { COLORS, FONTS, SPACING, BORDER_RADIUS, SHADOWS, API_CONFIG } from '../../theme';
-import { getUsuarios, crearUsuario, actualizarUsuario, eliminarUsuario, UsuarioBackend } from '../../services/admin.service';
+import { getUsuarios, crearUsuario, actualizarUsuario, eliminarUsuario, eliminarUsuarioPermanente, UsuarioBackend } from '../../services/admin.service';
 import { cabecerasDeArchivo } from '../../services/archivos.service';
 
 interface UserItem {
   id: string;
   nombre: string;
   usuario: string;
-  rol: 'tecnico' | 'supervisor' | 'interventor' | 'gerente' | 'admin';
+  rol: 'tecnico' | 'coordinador' | 'interventor' | 'gerente' | 'admin';
   email: string;
   telefono: string;
   contrasena_visible?: string;
@@ -35,7 +35,7 @@ interface UserItem {
 
 const ROLE_CONFIG: Record<string, { label: string; color: string }> = {
   tecnico: { label: 'Técnico de Campo', color: COLORS.roleTecnico },
-  supervisor: { label: 'Supervisor', color: COLORS.roleSupervisor },
+  coordinador: { label: 'Coordinador/a', color: COLORS.roleCoordinador },
   interventor: { label: 'Interventor', color: COLORS.roleInterventor },
   gerente: { label: 'Gerente', color: COLORS.roleGerente },
   admin: { label: 'Administrador', color: COLORS.roleAdmin },
@@ -190,6 +190,50 @@ const UserManagementScreen: React.FC = () => {
     ]);
   }, [loadUsers]);
 
+  const deleteUserPermanente = useCallback((user: Partial<UserItem>) => {
+    if (!user.id) return;
+    Alert.alert(
+      '⚠️ Eliminar permanentemente',
+      `Esto borrará para siempre la cuenta de "${user.nombre}" (@${user.usuario}) junto con TODOS sus formularios, fotos, firmas, PDFs, tracking y registros de actividad. No se puede deshacer.\n\n¿Continuar?`,
+      [
+        { text: 'Cancelar', style: 'cancel' },
+        {
+          text: 'Continuar',
+          style: 'destructive',
+          onPress: () => {
+            Alert.alert(
+              'Última confirmación',
+              `Escribe mentalmente "sí" — se eliminará todo lo de "${user.nombre}" sin posibilidad de recuperarlo. ¿Eliminar definitivamente?`,
+              [
+                { text: 'Cancelar', style: 'cancel' },
+                {
+                  text: 'Eliminar definitivamente',
+                  style: 'destructive',
+                  onPress: async () => {
+                    try {
+                      const resultado = await eliminarUsuarioPermanente(user.id!);
+                      setModalVisible(false);
+                      setEditingUser(null);
+                      await loadUsers();
+                      Alert.alert(
+                        '✅ Usuario eliminado',
+                        `Se eliminaron ${resultado.formularios_borrados} formulario(s) y ${resultado.archivos_fisicos_eliminados} archivo(s) asociados.`
+                      );
+                    } catch (error: any) {
+                      console.error('[UserManagement] Error al eliminar permanentemente:', error);
+                      const mensaje = error?.response?.data?.error || 'No se pudo eliminar el usuario.';
+                      Alert.alert('Error', mensaje);
+                    }
+                  },
+                },
+              ]
+            );
+          },
+        },
+      ]
+    );
+  }, [loadUsers]);
+
   if (loading) {
     return (
       <View style={[styles.container, styles.loadingContainer]}>
@@ -236,7 +280,7 @@ const UserManagementScreen: React.FC = () => {
         style={styles.chipRow}
         contentContainerStyle={styles.chipRowContent}
       >
-        {['todos', 'tecnico', 'supervisor', 'interventor', 'gerente', 'admin'].map((r) => (
+        {['todos', 'tecnico', 'coordinador', 'interventor', 'gerente', 'admin'].map((r) => (
           <TouchableOpacity
             key={r}
             style={[styles.chip, filterRol === r && styles.chipActive]}
@@ -419,6 +463,15 @@ const UserManagementScreen: React.FC = () => {
                 <Text style={styles.modalBtnSaveText}>Guardar</Text>
               </TouchableOpacity>
             </View>
+
+            {!editingUser?.esNuevo && editingUser?.id ? (
+              <TouchableOpacity
+                style={styles.modalBtnDeletePermanent}
+                onPress={() => deleteUserPermanente(editingUser)}
+              >
+                <Text style={styles.modalBtnDeletePermanentText}>🗑️ Eliminar permanentemente</Text>
+              </TouchableOpacity>
+            ) : null}
           </ScrollView>
         </View>
       </Modal>
@@ -643,6 +696,15 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   modalBtnSaveText: { fontSize: FONTS.sizes.md, color: COLORS.textOnPrimary, fontWeight: FONTS.weights.semibold },
+  modalBtnDeletePermanent: {
+    marginTop: SPACING.md,
+    paddingVertical: SPACING.sm,
+    borderRadius: BORDER_RADIUS.md,
+    borderWidth: 1,
+    borderColor: COLORS.error,
+    alignItems: 'center',
+  },
+  modalBtnDeletePermanentText: { fontSize: FONTS.sizes.sm, color: COLORS.error, fontWeight: FONTS.weights.semibold },
 });
 
 export default UserManagementScreen;

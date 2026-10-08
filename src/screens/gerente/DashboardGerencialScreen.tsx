@@ -25,6 +25,7 @@ import LoadingSpinner from '../../components/LoadingSpinner';
 import BotonPdfDashboard from '../../components/dashboard/BotonPdfDashboard';
 import EncuestaSocialResultados from '../../components/dashboard/EncuestaSocialResultados';
 import { getLocalDateString } from '../../utils/formatters';
+import { tituloVisitaTecnica } from '../../utils/visitaTecnica';
 
 type DashboardGerencialProps = {
   navigation: NativeStackNavigationProp<Record<string, any>>;
@@ -207,7 +208,7 @@ const DashboardGerencialScreen: React.FC<DashboardGerencialProps> = ({ navigatio
             <Text style={styles.recentName}>{form.beneficiario?.nombre || '—'}</Text>
             <Text style={styles.recentMeta}>
               {form.beneficiario?.municipio || '—'} · {form.tecnico?.nombre || '—'} ·{' '}
-              {form.tipo === 'visita_tecnica' ? 'Visita' : form.tipo === 'caracterizacion' ? 'Caracterización' : 'Plantación'}
+              {form.tipo === 'visita_tecnica' ? tituloVisitaTecnica(form.actividad?.visita_numero) : form.tipo === 'caracterizacion' ? 'Caracterización' : 'Plantación'}
             </Text>
           </View>
         ))}

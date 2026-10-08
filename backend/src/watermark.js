@@ -183,4 +183,22 @@ async function aplicarMarcaAgua(buffer, datos) {
   }
 }
 
-module.exports = { aplicarMarcaAgua };
+/**
+ * Normaliza la imagen (orientación EXIF + recompresión a JPEG a calidad 88)
+ * SIN estampar ninguna marca. Se usa para las fotos de SEGUIMIENTO: la fecha
+ * de la visita se pone en el PDF (que sí la puede ajustar), no en el píxel.
+ * Mantiene los mismos beneficios que la marca (fotos derechas y en JPEG) sin
+ * quemar la fecha en la evidencia original.
+ * Ante cualquier error, devuelve el buffer original para no perder la foto.
+ */
+async function normalizarSinMarca(buffer) {
+  try {
+    const normalizada = await sharp(buffer).rotate().jpeg({ quality: 88 }).toBuffer();
+    return { buffer: normalizada, normalizada: true };
+  } catch (error) {
+    console.warn('[Watermark] No se pudo normalizar sin marca (se guarda original):', error.message);
+    return { buffer, normalizada: false };
+  }
+}
+
+module.exports = { aplicarMarcaAgua, normalizarSinMarca };

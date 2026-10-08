@@ -23,16 +23,20 @@ import {
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useFocusEffect } from '@react-navigation/native';
 import { COLORS, FONTS, SPACING, BORDER_RADIUS, SHADOWS } from '../../theme';
-import { Formulario } from '../../types';
+import { Formulario, BeneficiarioDB } from '../../types';
 import { useAuth } from '../../store/AuthContext';
 import { getFormulariosLocales, mergeFormulariosDelServidor } from '../../services/database';
 import {
   fetchFormulariosDelServidor,
   eliminarFormularioDelServidor,
 } from '../../services/formularios.service';
+import { fetchBeneficiariosDelServidor } from '../../services/beneficiariosDB.service';
 import LoadingSpinner from '../../components/LoadingSpinner';
 import BotonPdfDashboard from '../../components/dashboard/BotonPdfDashboard';
+import BotonPdfTecnico from '../../components/dashboard/BotonPdfTecnico';
 import { descargarPaqueteMedia } from '../../services/mediaPackage.service';
+import { BeneficiarioInformeTecnico } from '../../services/informeTecnicoPdf.service';
+import { tituloVisitaTecnica } from '../../utils/visitaTecnica';
 
 type VisitasJerarquicasScreenProps = {
   navigation: NativeStackNavigationProp<Record<string, any>>;
@@ -45,10 +49,27 @@ interface TecnicoAgrupado {
   cedula: string;
   telefono: string;
   email: string;
+  /** usuario_id real (FK) del técnico — para cruzar con beneficiarios.tecnico_asignado_id. */
+  usuarioId: string;
   totalVisitas: number;
   totalBeneficiarios: number;
   beneficiarios: BeneficiarioAgrupado[];
 }
+
+/** Progreso de una visita numerada (1..12) sobre los beneficiarios ASIGNADOS actualmente al técnico. */
+interface VisitaStat {
+  numero: number;
+  completados: number;
+  total: number;
+}
+
+interface TecnicoConEstadisticas extends TecnicoAgrupado {
+  /** Total de beneficiarios asignados vigente (tabla beneficiarios), no el histórico de formularios. */
+  totalBeneficiariosAsignados: number;
+  visitasStats: VisitaStat[];
+}
+
+const MAX_VISITAS_TARJETA = 12;
 
 interface BeneficiarioAgrupado {
   nombre: string;
@@ -63,8 +84,9 @@ interface BeneficiarioAgrupado {
 type Nivel = 'tecnicos' | 'beneficiarios' | 'visitas';
 
 const VisitasJerarquicasScreen: React.FC<VisitasJerarquicasScreenProps> = ({ navigation }) => {
-  const { user, isAdmin } = useAuth();
+  const { user, puedeEliminarFormulario, isCoordinador, isInterventor } = useAuth();
   const [formularios, setFormularios] = useState<Formulario[]>([]);
+  const [beneficiariosAsignados, setBeneficiariosAsignados] = useState<BeneficiarioDB[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -74,7 +96,7 @@ const VisitasJerarquicasScreen: React.FC<VisitasJerarquicasScreenProps> = ({ nav
   // Estado de navegación jerárquica
   const [nivel, setNivel] = useState<Nivel>('tecnicos');
   const nivelRef = useRef<Nivel>('tecnicos');
-  const [tecnicoSeleccionado, setTecnicoSeleccionado] = useState<TecnicoAgrupado | null>(null);
+  const [tecnicoSeleccionado, setTecnicoSeleccionado] = useState<TecnicoConEstadisticas | null>(null);
   const [beneficiarioSeleccionado, setBeneficiarioSeleccionado] = useState<BeneficiarioAgrupado | null>(null);
 
   // --- Agrupar datos (con protección contra null) ---
@@ -95,6 +117,7 @@ const VisitasJerarquicasScreen: React.FC<VisitasJerarquicasScreenProps> = ({ nav
             cedula: tec.cedula || '',
             telefono: tec.telefono || '',
             email: tec.email || '',
+            usuarioId: '',
             totalVisitas: 0,
             totalBeneficiarios: 0,
             beneficiarios: [],
@@ -104,6 +127,19 @@ const VisitasJerarquicasScreen: React.FC<VisitasJerarquicasScreenProps> = ({ nav
         const grupo = mapa.get(key)!;
         if (tec.cedula && !grupo.cedula) {
           grupo.cedula = tec.cedula;
+        }
+        // Preferir tecnico.usuario_id (snapshot dentro de tecnico_json) sobre
+        // la columna formularios.usuario_id: esta última puede quedar a
+        // nombre de quien revisó/sincronizó el formulario (un interventor,
+        // p. ej.) y no del técnico dueño de la visita — se vio en datos
+        // reales formularios con usuario_id='int-007' pero
+        // tecnico_json.usuario_id='tec-004', lo que hacía que el cruce con
+        // beneficiarios.tecnico_asignado_id fallara y la tarjeta mostrara
+        // 0/0 aunque el técnico sí tuviera beneficiarios y visitas.
+        if (tec.usuario_id) {
+          grupo.usuarioId = tec.usuario_id;
+        } else if (!grupo.usuarioId && form.usuario_id) {
+          grupo.usuarioId = form.usuario_id;
         }
         grupo.totalVisitas++;
 
@@ -146,10 +182,85 @@ const VisitasJerarquicasScreen: React.FC<VisitasJerarquicasScreenProps> = ({ nav
     return Array.from(mapa.values()).sort((a, b) => (a.nombre || '').localeCompare(b.nombre || ''));
   }, [formularios]);
 
-  /** Todas las visitas del técnico actualmente seleccionado (para el informe PDF por técnico). */
+  // --- Estadísticas de progreso por técnico (Visita 1..12 sobre beneficiarios ASIGNADOS) ---
+  // A diferencia de `totalBeneficiarios` (que solo cuenta beneficiarios que ya
+  // tienen algún formulario), esto usa la asignación vigente de la tabla
+  // beneficiarios: si un técnico tiene 35 asignados y le ha hecho la primera
+  // visita a 5, la tarjeta debe mostrar 5/35, no 5/5. Si el padrón de
+  // asignación aún no cargó (sin conexión), se degrada al conteo histórico
+  // de formularios para no dejar la tarjeta en 0/0.
+  const tecnicosConStats = useMemo<TecnicoConEstadisticas[]>(() => {
+    const huboCargaDeAsignacion = beneficiariosAsignados.length > 0;
+
+    return tecnicos.map((tec) => {
+      const asignados = tec.usuarioId
+        ? beneficiariosAsignados.filter((b) => b.tecnico_asignado_id === tec.usuarioId)
+        : [];
+
+      // Cuántos formularios ya diligenció este técnico a cada beneficiario
+      // (por cédula) — tec.beneficiarios ya viene filtrado por técnico.
+      const visitasPorCedula = new Map<string, number>();
+      for (const b of tec.beneficiarios) {
+        if (b.cedula) visitasPorCedula.set(b.cedula, b.visitas.length);
+      }
+
+      const totalBeneficiariosAsignados = huboCargaDeAsignacion
+        ? asignados.length
+        : tec.totalBeneficiarios;
+
+      const visitasStats: VisitaStat[] = [];
+      for (let n = 1; n <= MAX_VISITAS_TARJETA; n++) {
+        const completados = huboCargaDeAsignacion
+          ? asignados.filter((b) => (visitasPorCedula.get(b.cedula) || 0) >= n).length
+          : tec.beneficiarios.filter((b) => b.visitas.length >= n).length;
+        visitasStats.push({ numero: n, completados, total: totalBeneficiariosAsignados });
+      }
+
+      return { ...tec, totalBeneficiariosAsignados, visitasStats };
+    });
+  }, [tecnicos, beneficiariosAsignados]);
+
+  /** Todas las visitas del técnico actualmente seleccionado (para el informe PDF general del dashboard). */
   const formulariosDelTecnicoSeleccionado = useMemo(
     () => (tecnicoSeleccionado ? tecnicoSeleccionado.beneficiarios.flatMap((b) => b.visitas) : []),
     [tecnicoSeleccionado]
+  );
+
+  /**
+   * TODOS los beneficiarios asignados a un técnico (tengan o no visitas
+   * aún) para el informe PDF por técnico — mismo criterio que las
+   * estadísticas "Visita (N): x/total" de la tarjeta: usa el padrón vigente
+   * de asignación (beneficiariosAsignados) cuando está cargado, y solo cae
+   * al histórico de formularios (tec.beneficiarios) si aún no cargó (ej.
+   * sin conexión), igual que en `tecnicosConStats`.
+   */
+  const beneficiariosParaInformeTecnico = useCallback(
+    (tec: TecnicoConEstadisticas): BeneficiarioInformeTecnico[] => {
+      const huboCargaDeAsignacion = beneficiariosAsignados.length > 0;
+      if (huboCargaDeAsignacion && tec.usuarioId) {
+        const visitasPorCedula = new Map<string, BeneficiarioAgrupado>();
+        tec.beneficiarios.forEach((b) => {
+          if (b.cedula) visitasPorCedula.set(b.cedula, b);
+        });
+        return beneficiariosAsignados
+          .filter((b) => b.tecnico_asignado_id === tec.usuarioId)
+          .map((b) => ({
+            nombre: b.nombre_completo,
+            cedula: b.cedula,
+            vereda: b.vereda,
+            municipio: b.municipio || '',
+            visitas: visitasPorCedula.get(b.cedula)?.visitas || [],
+          }));
+      }
+      return tec.beneficiarios.map((b) => ({
+        nombre: b.nombre,
+        cedula: b.cedula,
+        vereda: b.vereda,
+        municipio: b.municipio,
+        visitas: b.visitas,
+      }));
+    },
+    [beneficiariosAsignados]
   );
 
   // --- Cargar datos (servidor + local) ---
@@ -158,13 +269,17 @@ const VisitasJerarquicasScreen: React.FC<VisitasJerarquicasScreenProps> = ({ nav
     let localesCount = 0;
     let servidorCount = 0;
     try {
-      // Cargar en paralelo: local + servidor
-      const [locales, servidor] = await Promise.all([
+      // Cargar en paralelo: local + servidor + padrón de asignación vigente
+      // (beneficiarios.tecnico_asignado_id) — este último no depende de
+      // SQLite, así que funciona igual en la app y en el navegador (web).
+      const [locales, servidor, padron] = await Promise.all([
         getFormulariosLocales(),
         fetchFormulariosDelServidor(),
+        fetchBeneficiariosDelServidor(),
       ]);
       localesCount = locales.length;
       servidorCount = servidor.length;
+      setBeneficiariosAsignados(padron);
 
       // Persistir lo del servidor en el SQLite local y purgar de paso
       // cualquier formulario que ya no exista ahí (p. ej. borrado por un
@@ -272,7 +387,7 @@ const VisitasJerarquicasScreen: React.FC<VisitasJerarquicasScreenProps> = ({ nav
   };
 
   // --- Navegación entre niveles ---
-  const seleccionarTecnico = (tec: TecnicoAgrupado) => {
+  const seleccionarTecnico = (tec: TecnicoConEstadisticas) => {
     setTecnicoSeleccionado(tec);
     setNivel('beneficiarios');
   };
@@ -303,7 +418,7 @@ const VisitasJerarquicasScreen: React.FC<VisitasJerarquicasScreenProps> = ({ nav
   // mediciones, plantaciones y archivos (fotos/videos/firmas/PDF) —
   // ver backend/src/routes/forms.js (DELETE /api/formularios/:id).
   const confirmarEliminarVisita = (form: Formulario) => {
-    if (!isAdmin) return;
+    if (!puedeEliminarFormulario) return;
     Alert.alert(
       'Eliminar visita',
       `¿Eliminar definitivamente esta visita de "${form.beneficiario?.nombre || 'este beneficiario'}"?\n\nSe borrará también todo lo asociado: revisiones, notificaciones, mediciones, plantaciones, fotos, videos, firmas y PDF. Esta acción NO se puede deshacer.`,
@@ -386,7 +501,7 @@ const VisitasJerarquicasScreen: React.FC<VisitasJerarquicasScreenProps> = ({ nav
   );
 
   // --- Nivel 1: Técnicos ---
-  const renderTecnico = ({ item }: { item: TecnicoAgrupado }) => (
+  const renderTecnico = ({ item }: { item: TecnicoConEstadisticas }) => (
     <TouchableOpacity
       style={styles.card}
       onPress={() => seleccionarTecnico(item)}
@@ -404,19 +519,29 @@ const VisitasJerarquicasScreen: React.FC<VisitasJerarquicasScreenProps> = ({ nav
             📍 {item.cedula || 'Sin cédula'} {item.telefono ? `· ${item.telefono}` : ''}
           </Text>
         </View>
-        <View style={styles.badgeContainer}>
-          <View style={styles.badge}>
-            <Text style={styles.badgeNumber}>{item.totalVisitas}</Text>
-            <Text style={styles.badgeLabel}>Visitas</Text>
-          </View>
-          <View style={[styles.badge, styles.badgeSecondary]}>
-            <Text style={[styles.badgeNumber, { color: COLORS.roleSupervisor }]}>
-              {item.totalBeneficiarios}
-            </Text>
-            <Text style={styles.badgeLabel}>Benef.</Text>
-          </View>
+        <View style={styles.cardHeaderAcciones}>
+          <BotonPdfTecnico
+            datos={{
+              tecnicoNombre: item.nombre,
+              tecnicoCedula: item.cedula,
+              beneficiarios: beneficiariosParaInformeTecnico(item),
+              rolUsuario: user?.rol || 'coordinador',
+              nombreUsuario: user?.nombre || 'Usuario',
+            }}
+          />
+          <Text style={styles.chevron}>›</Text>
         </View>
-        <Text style={styles.chevron}>›</Text>
+      </View>
+
+      <View style={styles.visitasGrid}>
+        {item.visitasStats.map((stat) => (
+          <View key={stat.numero} style={styles.visitaGridCell}>
+            <Text style={styles.visitaGridLabel}>Visita ({stat.numero}):</Text>
+            <Text style={styles.visitaGridValue}>
+              {stat.completados}/{stat.total}
+            </Text>
+          </View>
+        ))}
       </View>
     </TouchableOpacity>
   );
@@ -456,7 +581,7 @@ const VisitasJerarquicasScreen: React.FC<VisitasJerarquicasScreenProps> = ({ nav
     <TouchableOpacity
       style={[styles.visitaCard, eliminandoId === item.id && styles.visitaCardEliminando]}
       onPress={() => abrirDetalleFormulario(item)}
-      onLongPress={isAdmin ? () => confirmarEliminarVisita(item) : undefined}
+      onLongPress={puedeEliminarFormulario ? () => confirmarEliminarVisita(item) : undefined}
       disabled={eliminandoId === item.id}
       activeOpacity={0.7}
     >
@@ -464,7 +589,7 @@ const VisitasJerarquicasScreen: React.FC<VisitasJerarquicasScreenProps> = ({ nav
         <View style={styles.visitaNumero}>
           <Text style={styles.visitaNumeroText}>Visita {index + 1}</Text>
         </View>
-        {isAdmin && (
+        {puedeEliminarFormulario && (
           <Text style={styles.visitaAdminHint}>
             {eliminandoId === item.id ? 'Eliminando…' : '🗑 Mantener para eliminar'}
           </Text>
@@ -482,7 +607,7 @@ const VisitasJerarquicasScreen: React.FC<VisitasJerarquicasScreenProps> = ({ nav
         <View style={styles.visitaTag}>
           <Text style={styles.visitaTagText}>
             {item.tipo === 'caracterizacion' ? '📋 Caracterización'
-              : item.tipo === 'visita_tecnica' ? '🔧 Visita Técnica'
+              : item.tipo === 'visita_tecnica' ? `🔧 ${tituloVisitaTecnica(item.actividad?.visita_numero)}`
               : '🌱 Plantación'}
           </Text>
         </View>
@@ -512,18 +637,17 @@ const VisitasJerarquicasScreen: React.FC<VisitasJerarquicasScreenProps> = ({ nav
           >
             <Text style={styles.actionBtnTextRevisionOnline}>🌐 Revisión en línea</Text>
           </TouchableOpacity>
-          <TouchableOpacity
-            style={[styles.actionBtn, styles.actionBtnRevisionCampo]}
-            onPress={() => abrirDetalleFormulario(item, 'campo')}
-          >
-            <Text style={styles.actionBtnTextRevisionCampo}>🚜 Revisión en campo</Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={styles.actionBtn}
-            onPress={() => abrirDetalleFormulario(item)}
-          >
-            <Text style={styles.actionBtnText}>👁️ Ver</Text>
-          </TouchableOpacity>
+          {/* Solo coordinación e interventoría registran el seguimiento de
+              campo (es su propio formulario) — mismo rol que acepta el
+              backend en /api/seguimientos. */}
+          {(isCoordinador || isInterventor) && (
+            <TouchableOpacity
+              style={[styles.actionBtn, styles.actionBtnSeguimiento]}
+              onPress={() => abrirDetalleFormulario(item, 'campo')}
+            >
+              <Text style={styles.actionBtnTextSeguimiento}>🛰️ Seguimiento en Campo</Text>
+            </TouchableOpacity>
+          )}
           <TouchableOpacity
             style={[styles.actionBtn, styles.actionBtnPDF]}
             onPress={() => abrirDetalleFormulario(item)}
@@ -584,7 +708,7 @@ const VisitasJerarquicasScreen: React.FC<VisitasJerarquicasScreenProps> = ({ nav
       {/* Lista según nivel */}
       {nivel === 'tecnicos' && (
         <FlatList
-          data={tecnicos}
+          data={tecnicosConStats}
           keyExtractor={(item) => item.id}
           renderItem={renderTecnico}
           contentContainerStyle={styles.listContent}
@@ -627,7 +751,7 @@ const VisitasJerarquicasScreen: React.FC<VisitasJerarquicasScreenProps> = ({ nav
                 <BotonPdfDashboard
                   datos={{
                     formularios: formulariosDelTecnicoSeleccionado,
-                    rolUsuario: user?.rol || 'supervisor',
+                    rolUsuario: user?.rol || 'coordinador',
                     nombreUsuario: user?.nombre || 'Usuario',
                   }}
                 />
@@ -815,7 +939,7 @@ const styles = StyleSheet.create({
     minWidth: 44,
   },
   badgeSecondary: {
-    backgroundColor: COLORS.roleSupervisor + '10',
+    backgroundColor: COLORS.roleCoordinador + '10',
   },
   badgeNumber: {
     fontSize: FONTS.sizes.sm,
@@ -831,6 +955,42 @@ const styles = StyleSheet.create({
     fontSize: 22,
     color: COLORS.textLight,
     marginLeft: 4,
+  },
+  cardHeaderAcciones: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
+
+  // --- Grid de progreso "Visita (N): x/total" (tarjeta de técnico) ---
+  visitasGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    marginTop: SPACING.sm,
+    paddingTop: SPACING.sm,
+    borderTopWidth: 1,
+    borderTopColor: COLORS.divider,
+    columnGap: 6,
+    rowGap: 6,
+  },
+  visitaGridCell: {
+    width: '31%',
+    backgroundColor: COLORS.primary + '0D',
+    borderRadius: BORDER_RADIUS.sm,
+    paddingVertical: 6,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  visitaGridLabel: {
+    fontSize: 10,
+    color: COLORS.textLight,
+    fontWeight: FONTS.weights.medium,
+  },
+  visitaGridValue: {
+    fontSize: FONTS.sizes.sm,
+    fontWeight: FONTS.weights.bold,
+    color: COLORS.primary,
+    marginTop: 1,
   },
 
   // --- Visita card (nivel 3) ---
@@ -917,11 +1077,6 @@ const styles = StyleSheet.create({
     borderRadius: BORDER_RADIUS.sm,
     backgroundColor: COLORS.info + '15',
   },
-  actionBtnText: {
-    fontSize: FONTS.sizes.xs,
-    fontWeight: FONTS.weights.medium,
-    color: COLORS.info,
-  },
   actionBtnPDF: {
     backgroundColor: COLORS.error + '10',
   },
@@ -942,20 +1097,20 @@ const styles = StyleSheet.create({
     color: COLORS.primary,
   },
   actionBtnRevisionOnline: {
-    backgroundColor: COLORS.roleSupervisor + '15',
+    backgroundColor: COLORS.roleCoordinador + '15',
   },
   actionBtnTextRevisionOnline: {
     fontSize: FONTS.sizes.xs,
     fontWeight: FONTS.weights.medium,
-    color: COLORS.roleSupervisor,
+    color: COLORS.roleCoordinador,
   },
-  actionBtnRevisionCampo: {
-    backgroundColor: COLORS.warning + '15',
+  actionBtnSeguimiento: {
+    backgroundColor: COLORS.success + '15',
   },
-  actionBtnTextRevisionCampo: {
+  actionBtnTextSeguimiento: {
     fontSize: FONTS.sizes.xs,
     fontWeight: FONTS.weights.medium,
-    color: COLORS.warning,
+    color: COLORS.success,
   },
 
   // --- List ---

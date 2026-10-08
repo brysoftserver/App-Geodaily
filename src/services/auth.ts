@@ -2,7 +2,7 @@
 // GEODAILY — Servicio de Autenticación (JWT real)
 // ============================================================
 
-import * as SecureStore from 'expo-secure-store';
+import * as SecureStore from './secureStorage';
 import * as Crypto from 'expo-crypto';
 import apiClient, { isOfflineError } from './api';
 import { API_CONFIG } from '../theme';

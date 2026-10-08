@@ -27,7 +27,7 @@ export type RootStackParamList = {
 const Stack = createNativeStackNavigator<RootStackParamList>();
 
 const AppNavigator: React.FC = () => {
-  const { isAuthenticated, isLoading, isTecnico, isSupervisor, isInterventor, isGerente, isAdmin } = useAuth();
+  const { isAuthenticated, isLoading, isTecnico, isCoordinador, isInterventor, isGerente, isAdmin } = useAuth();
 
   if (isLoading) {
     return <LoadingSpinner branded message="Iniciando sesión..." />;
@@ -63,7 +63,7 @@ const AppNavigator: React.FC = () => {
             name="Terreno"
             component={TerrenoNavigator}
           />
-        ) : isSupervisor ? (
+        ) : isCoordinador ? (
           <Stack.Screen
             name="Supervision"
             component={SupervisionNavigator}

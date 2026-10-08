@@ -571,7 +571,10 @@ const MapaScreen: React.FC = () => {
         sincronizado: false,
       })
         .then(() => { syncNow().catch(() => {}); })
-        .catch((e) => console.warn('[Mapa] No se pudo guardar la distancia:', e));
+        .catch((e) => {
+          console.warn('[Mapa] No se pudo guardar la distancia:', e);
+          Alert.alert('Medición no guardada', 'La distancia se calculó, pero no quedó guardada en el dispositivo. Inténtalo de nuevo.');
+        });
     } else {
       // Área (3+ puntos)
       const area = calcularArea(poligono);
@@ -589,7 +592,10 @@ const MapaScreen: React.FC = () => {
       }).then(() => {
         // Intentar sincronizar al servidor si hay conexión
         syncNow().catch(() => {});
-      }).catch(err => console.warn('[Mapa] Error al persistir medición:', err));
+      }).catch(err => {
+        console.warn('[Mapa] Error al persistir medición:', err);
+        Alert.alert('Medición no guardada', 'El área se calculó, pero no quedó guardada en el dispositivo. Inténtalo de nuevo.');
+      });
     }
     setMostrarResultado(true);
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -672,7 +678,13 @@ const MapaScreen: React.FC = () => {
       vereda: plantacionVereda || undefined,
       corregimiento: plantacionCorregimiento || undefined,
     };
-    await savePlantacion(plantacion);
+    try {
+      await savePlantacion(plantacion);
+    } catch (error) {
+      console.error('[Mapa] No se pudo guardar la plantación local:', error);
+      Alert.alert('No se pudo guardar', 'El conteo no quedó guardado en este dispositivo. Inténtalo de nuevo.');
+      return;
+    }
     setPlantaciones((prev) => [...prev, plantacion]);
     // Intentar sincronizar al servidor si hay conexión
     syncNow().catch(() => {});

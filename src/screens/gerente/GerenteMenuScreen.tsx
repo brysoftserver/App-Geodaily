@@ -73,7 +73,7 @@ const MENU_ITEMS = [
     title: 'Capacitación',
     subtitle: 'Materiales y guías para el equipo',
     icon: '📚',
-    color: COLORS.roleSupervisor,
+    color: COLORS.roleCoordinador,
     screen: 'CapacitacionGerente',
   },
   {

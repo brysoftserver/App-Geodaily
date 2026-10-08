@@ -3,7 +3,7 @@
 // ============================================================
 
 // --- Roles de usuario ---
-export type UserRole = 'tecnico' | 'supervisor' | 'interventor' | 'gerente' | 'admin';
+export type UserRole = 'tecnico' | 'coordinador' | 'interventor' | 'gerente' | 'admin';
 
 // --- Usuario autenticado ---
 export interface Usuario {
@@ -159,6 +159,33 @@ export interface ActividadRealizada {
   descripcion_detallada?: string;
   observaciones: string;
   recomendaciones: string;
+  visita_numero?: number;
+  // ─── Visita Técnica (formato nuevo v2) ─────────────────────
+  // Estos campos viajan DENTRO de `actividad` (columna `actividad_json`)
+  // para no tocar el esquema del backend. Todos son opcionales: las
+  // visitas del formato antiguo siguen funcionando sin ellos.
+  /** Marca de versión del formato del formulario (p.ej. 'v2'). */
+  formato_visita?: string;
+  /** Ítem 1 — N° de identificación del beneficiario (desplegable). */
+  no_identificacion?: string;
+  /** Ítem 2 — Objetivo de la visita. */
+  objetivo?: string;
+  /** Ítem 5 — Seguimiento a compromisos previos. */
+  seguimiento_compromisos?: string;
+  /** Ítem 6 — Valoración del cumplimiento (0–100). */
+  valoracion_cumplimiento?: string;
+  /** Ítem 8 — Compromisos para la visita siguiente (checklist). */
+  compromisos_siguiente_visita?: string[];
+  /** Ítem 4 — Polígono/puntos georreferenciados del área a intervenir. */
+  poligono?: PuntoPoligono[];
+  /** Ítem 4 — Área del cultivo en hectáreas (texto libre, opcional). */
+  area_intervencion?: string;
+  /**
+   * Estado completo del formulario de visita técnica (formato v2).
+   * Permite reabrir un borrador y reconstruir exactamente lo que el
+   * técnico había diligenciado, sin ambigüedad con los campos legibles.
+   */
+  visita_datos?: Record<string, unknown>;
 }
 
 export type TipoFormulario = 'caracterizacion' | 'visita_tecnica';
@@ -167,6 +194,8 @@ export type TipoFormulario = 'caracterizacion' | 'visita_tecnica';
 export interface FormularioBase {
   id: string;
   tipo: TipoFormulario;
+  /** FK real al técnico dueño del formulario (columna propia, no el snapshot de `tecnico`). */
+  usuario_id?: string;
   tecnico: DatosTecnico;
   beneficiario: DatosBeneficiario;
   actividad: ActividadRealizada;
@@ -247,6 +276,11 @@ export interface VisitaProgramada {
   ubicacion: string;
   fecha: string; // YYYY-MM-DD
   estado: 'pendiente' | 'realizada' | 'cancelada';
+  beneficiario_cedula?: string;
+  beneficiario_nombre?: string;
+  actividad_numero?: number;
+  vereda?: string;
+  corregimiento?: string;
   sincronizado?: boolean;
 }
 
@@ -535,6 +569,8 @@ export interface CaracterizacionFinca {
   latitud: string;
   longitud: string;
   altitud: string;
+  // Precisión de la captura GPS, en metros (radio de error reportado por el dispositivo)
+  precision_gps?: string;
   // P20. Área total (ha)
   area_total: string;
   // P21. División en hectáreas (texto oficial del ministerio)
@@ -584,6 +620,8 @@ export interface AnalisisSueloEncuesta {
   intervencion_latitud?: string;
   intervencion_longitud?: string;
   intervencion_altitud?: string;
+  // Precisión de la captura GPS, en metros (radio de error reportado por el dispositivo)
+  intervencion_precision_gps?: string;
   // P32. ¿Ha realizado alguna vez análisis de suelo en su predio?
   analisis_realizado?: string;
   // Campo antiguo (ya no se pregunta)
@@ -650,6 +688,8 @@ export interface AcompaniamientoTecnico {
   entresacado_si?: boolean;
   entresacado_no?: boolean;
   entresacado_obs?: string;
+  // 7. Observaciones generales de la visita (texto libre, última pregunta del formulario)
+  observaciones_visita?: string;
 }
 
 /** Datos completos de la Encuesta Social AgroAmbiental */

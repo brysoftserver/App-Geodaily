@@ -57,6 +57,8 @@ const corsOptions = {
     'http://192.168.80.20:8082',
     'http://localhost:8082',
     'http://localhost:8081',
+    'http://127.0.0.1:8082',
+    'http://127.0.0.1:8081',
     PROD_DOMAIN,
     PROD_DOMAIN.replace('api.', 'app.'),
     /\.brysoftsas\.com$/,
@@ -75,6 +77,7 @@ app.use('/api/auth', require('./routes/auth'));
 app.use('/api/georeference', require('./routes/georeference'));
 app.use('/api/climate', require('./routes/climate'));
 app.use('/api/formularios', require('./routes/forms'));
+app.use('/api/borradores', require('./routes/borradores'));
 app.use('/api/photos', require('./routes/photos'));
 app.use('/api/pdfs', require('./routes/pdfs'));
 app.use('/api/plantaciones', require('./routes/plantaciones'));
@@ -87,6 +90,7 @@ app.use('/api/firmas', require('./routes/firmas'));
 app.use('/api/documentos', require('./routes/documentos'));
 app.use('/api/beneficiarios', require('./routes/beneficiarios'));
 app.use('/api/revisiones', require('./routes/revisiones'));
+app.use('/api/seguimientos', require('./routes/seguimientos'));
 app.use('/api/archivos', require('./routes/archivos'));
 app.use('/api/notificaciones', require('./routes/notificaciones'));
 app.use('/api/ia', require('./routes/ia'));

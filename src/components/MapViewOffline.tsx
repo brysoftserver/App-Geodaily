@@ -723,9 +723,20 @@ const MapViewOffline: React.FC<MapViewOfflineProps> = ({
       // junto con el listener de mensajes
 
       // Agregar listener en el HTML para recibir postMessage
+      // IMPORTANTE: inyectamos el shim AL INICIO del script inline principal
+      // (justo después de su <script> de apertura, antes de `var map = ...`).
+      // Motivos:
+      //  1) Si apuntáramos al primer </script>, inyectaríamos el shim dentro de
+      //     <script src="...leaflet.js"></script>, y el navegador IGNORA el
+      //     contenido inline de un script con src → el shim nunca se ejecutaba.
+      //  2) Si lo inyectáramos al final del script inline, el propio script
+      //     llama a window.ReactNativeWebView.postMessage(...) ANTES de que el
+      //     shim defina window.ReactNativeWebView → TypeError.
+      // Inyectándolo al inicio, el shim queda definido antes de cualquier uso.
       const webHtmlWithListener = webMapHtml.replace(
-        '</script>',
-        `
+        `  <script>
+    var map = L.map(`,
+        `  <script>
     // Shim: en el iframe web no existe window.ReactNativeWebView (eso solo
     // lo inyecta el WebView nativo) — sin esto, el click de un marcador
     // (que llama a window.ReactNativeWebView.postMessage) fallaba en
@@ -754,7 +765,7 @@ const MapViewOffline: React.FC<MapViewOfflineProps> = ({
     if (document.readyState === 'complete') {
       window.parent.postMessage(JSON.stringify({ type: 'mapReady' }), '*');
     }
-  </script>`
+    var map = L.map(`
       );
 
       return (

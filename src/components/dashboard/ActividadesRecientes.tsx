@@ -7,6 +7,7 @@ import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
 import { COLORS, FONTS, SPACING, BORDER_RADIUS, SHADOWS } from '../../theme';
 import { Formulario } from '../../types';
 import { resolverCorregimiento, NOMBRE_VISIBLE_CORREGIMIENTO } from '../../utils/corregimientos';
+import { tituloVisitaTecnica } from '../../utils/visitaTecnica';
 
 interface ActividadesRecientesProps {
   formularios: Formulario[];
@@ -14,8 +15,10 @@ interface ActividadesRecientesProps {
   limite?: number;
 }
 
-const etiquetaTipo = (tipo: Formulario['tipo']) =>
-  tipo === 'visita_tecnica' ? 'Visita Técnica' : 'Encuesta Socioambiental';
+const etiquetaTipo = (formulario: Formulario) =>
+  formulario.tipo === 'visita_tecnica'
+    ? tituloVisitaTecnica(formulario.actividad?.visita_numero)
+    : 'Encuesta Socioambiental';
 
 const ActividadesRecientes: React.FC<ActividadesRecientesProps> = ({ formularios, onSeleccionar, limite = 8 }) => {
   const recientes = [...formularios]
@@ -50,7 +53,7 @@ const ActividadesRecientes: React.FC<ActividadesRecientesProps> = ({ formularios
                   { backgroundColor: form.tipo === 'visita_tecnica' ? COLORS.roleTecnico : COLORS.secondary },
                 ]}
               >
-                <Text style={styles.badgeTexto}>{etiquetaTipo(form.tipo)}</Text>
+                <Text style={styles.badgeTexto}>{etiquetaTipo(form)}</Text>
               </View>
             </View>
             <Text style={styles.itemMeta}>

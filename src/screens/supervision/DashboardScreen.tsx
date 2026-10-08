@@ -29,7 +29,7 @@ const INTERVALO_AUTOREFRESH_MS = 30000;
 
 const DashboardScreen: React.FC<DashboardScreenProps> = ({ navigation }) => {
   const { formularios, cargarFormularios } = useForm();
-  const { user, isInterventor, isAdmin } = useAuth();
+  const { user, isInterventor, isAdmin, puedeEliminarFormulario } = useAuth();
   const [loadingDashboard, setLoadingDashboard] = useState(true);
   const [refreshingDashboard, setRefreshingDashboard] = useState(false);
   const [dashboardError, setDashboardError] = useState<string | null>(null);
@@ -144,7 +144,7 @@ const DashboardScreen: React.FC<DashboardScreenProps> = ({ navigation }) => {
         <BotonPdfDashboard
           datos={{
             formularios,
-            rolUsuario: user?.rol || (isInterventor ? 'interventor' : 'supervisor'),
+            rolUsuario: user?.rol || (isInterventor ? 'interventor' : 'coordinador'),
             nombreUsuario: user?.nombre || 'Usuario',
           }}
         />
@@ -164,6 +164,7 @@ const DashboardScreen: React.FC<DashboardScreenProps> = ({ navigation }) => {
         formularios={formularios}
         onVerDetalle={irADetalle}
         isAdmin={isAdmin}
+        puedeEliminarFormulario={puedeEliminarFormulario}
         onFormularioEliminado={() => loadDashboardData(true)}
       />
 

@@ -3,7 +3,7 @@
 // ============================================================
 // Agrega las respuestas del Formulario 1 (`caracterizacion_nueva`)
 // pregunta por pregunta, para los carruseles de gráficas de los
-// dashboards de Supervisor / Interventor / Gerente.
+// dashboards de Coordinador/a / Interventor / Gerente.
 //
 // Las preguntas y su texto oficial son las mismas que documenta
 // `encuestaSchema.ts` (fuente única de verdad del formulario); acá

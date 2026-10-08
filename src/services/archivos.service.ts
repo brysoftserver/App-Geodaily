@@ -23,11 +23,41 @@ export interface ArchivoRemoto {
   latitud: number | null;
   longitud: number | null;
   created_at: string;
+  /**
+   * Marca de tiempo de la última modificación del binario en el servidor.
+   * Se usa como cache-buster (`?v=`) para que <Image> re-descargue la foto
+   * cuando se re-sube (p. ej. re-estampado de marca de agua). Si el backend
+   * no la envía, se cae a `created_at`.
+   */
+  updated_at?: string;
   /** Ruta relativa en la API, p.ej. /api/archivos/<id>/contenido */
   url: string;
   /** Solo presente en tipo 'firma': distingue beneficiario/técnico. */
   tipo_firma?: 'beneficiario' | 'tecnico' | null;
+  /**
+   * Id generado en el celular al capturar la evidencia. Es el mismo id que
+   * llevan las fotos del formulario (`formulario.fotos[].id`), así que sirve
+   * para reconocer si esa evidencia ya fue eliminada en el servidor.
+   */
+  evidencia_local_id?: string | null;
 }
+
+/** Evidencia eliminada individualmente (tumba en el servidor) */
+export interface EvidenciaEliminada {
+  archivo_id: number | null;
+  evidencia_local_id: string | null;
+}
+
+interface PayloadArchivos {
+  archivos: ArchivoRemoto[];
+  eliminadas: EvidenciaEliminada[];
+}
+
+/**
+ * Roles que pueden eliminar una evidencia desde el detalle del formulario.
+ * Debe coincidir con ROLES_PUEDEN_ELIMINAR_EVIDENCIA en backend/src/routes/archivos.js
+ */
+export const ROLES_PUEDEN_ELIMINAR_EVIDENCIA: string[] = ['admin', 'coordinador'];
 
 /** Firma lista para usar en <Image>: URI + cabeceras de autenticación si aplica */
 export interface FirmaResuelta {
@@ -36,8 +66,18 @@ export interface FirmaResuelta {
 }
 
 /** URL absoluta para descargar una evidencia */
-export const urlDeArchivo = (archivo: ArchivoRemoto): string =>
-  `${API_CONFIG.BASE_URL}${archivo.url}`;
+export const urlDeArchivo = (archivo: ArchivoRemoto): string => {
+  const base = `${API_CONFIG.BASE_URL}${archivo.url}`;
+  // Cache-buster: la URI de una evidencia es siempre la misma
+  // (/api/archivos/<id>/contenido), así que React Native <Image> y
+  // FileSystem.downloadAsync la cachean por URI e ignoran el ETag. Al
+  // agregar `?v=<updated_at>` la URI cambia cuando el binario se re-sube
+  // (p. ej. re-estampado de marca de agua) y el cliente re-descarga.
+  const version = archivo.updated_at || archivo.created_at;
+  if (!version) return base;
+  const separador = base.includes('?') ? '&' : '?';
+  return `${base}${separador}v=${encodeURIComponent(version)}`;
+};
 
 /**
  * Cabeceras necesarias para que <Image> y <VideoView> puedan descargar
@@ -76,23 +116,91 @@ export const fuenteConAuth = (
 export const fetchArchivosDeFormulario = async (
   formularioId: string
 ): Promise<ArchivoRemoto[]> => {
+  const payload = await fetchPayloadArchivos(formularioId);
+  return payload.archivos;
+};
+
+/**
+ * Lista de archivos + tumbas de evidencias borradas individualmente.
+ * Se pide en una sola llamada: el backend ya devuelve ambas cosas en
+ * GET /api/archivos/formulario/:id (ver `eliminadas` en archivos.js).
+ */
+const fetchPayloadArchivos = async (formularioId: string): Promise<PayloadArchivos> => {
+  const vacio: PayloadArchivos = { archivos: [], eliminadas: [] };
   try {
     const response = await apiClient.get(
       `${API_CONFIG.ENDPOINTS.ARCHIVOS}/formulario/${encodeURIComponent(formularioId)}`,
       { timeout: 15000 }
     );
-    if (response.data?.estado === 'ok' && Array.isArray(response.data?.archivos)) {
-      return response.data.archivos as ArchivoRemoto[];
+    if (response.data?.estado === 'ok') {
+      return {
+        archivos: Array.isArray(response.data?.archivos)
+          ? (response.data.archivos as ArchivoRemoto[])
+          : [],
+        eliminadas: Array.isArray(response.data?.eliminadas)
+          ? (response.data.eliminadas as EvidenciaEliminada[])
+          : [],
+      };
     }
-    return [];
+    return vacio;
   } catch (error) {
-    const err = error as any;
+    const err = error as { isOffline?: boolean; message?: string };
     if (err?.isOffline) {
       console.warn('[Archivos] Sin conexión — no se pueden traer evidencias remotas');
     } else {
       console.warn('[Archivos] Error obteniendo evidencias:', err?.message || error);
     }
-    return [];
+    return vacio;
+  }
+};
+
+/**
+ * ¿Esta evidencia ya fue eliminada en el servidor?
+ *
+ * El DELETE /api/archivos/:id deja una "tumba" (tabla `evidencias_eliminadas`)
+ * para que un dispositivo que conserva la foto en local deje de mostrarla.
+ */
+const estaEliminada = (
+  eliminadas: EvidenciaEliminada[],
+  archivo: Pick<ArchivoRemoto, 'id' | 'evidencia_local_id'>
+): boolean =>
+  eliminadas.some((e) => {
+    if (e.archivo_id !== null && e.archivo_id !== undefined && String(e.archivo_id) === String(archivo.id)) {
+      return true;
+    }
+    if (e.evidencia_local_id && archivo.evidencia_local_id === e.evidencia_local_id) {
+      return true;
+    }
+    return false;
+  });
+
+/**
+ * Elimina una evidencia (foto o video) en el servidor.
+ *
+ * Solo admin y coordinador (ver ROLES_PUEDEN_ELIMINAR_EVIDENCIA). El backend
+ * borra el objeto de MinIO, la fila de `archivos`, la entrada del fotos_json
+ * del formulario y deja la tumba anti-resurrección.
+ *
+ * @returns true si el servidor confirmó el borrado
+ */
+export const eliminarEvidenciaRemota = async (
+  archivoId: string | number
+): Promise<boolean> => {
+  try {
+    const response = await apiClient.delete(
+      `${API_CONFIG.ENDPOINTS.ARCHIVOS}/${encodeURIComponent(String(archivoId))}`,
+      { timeout: 20000 }
+    );
+    return response.data?.estado === 'ok';
+  } catch (error) {
+    const err = error as { response?: { status?: number; data?: { mensaje?: string } }; message?: string };
+    // 404 = ya no existe en el servidor: se considera borrado.
+    if (err?.response?.status === 404) return true;
+    console.error(
+      '[Archivos] Error eliminando evidencia:',
+      err?.response?.data?.mensaje || err?.message || error
+    );
+    return false;
   }
 };
 
@@ -150,9 +258,14 @@ export const resolverEvidenciasRemotas = async (
     }
   }
 
-  const remotos = await fetchArchivosDeFormulario(formularioId);
-  // Firmas y PDFs se muestran aparte; aquí solo fotos y videos
-  const evidencias = remotos.filter((a) => a.tipo === 'foto' || a.tipo === 'video');
+  const remotos = await fetchPayloadArchivos(formularioId);
+  // Firmas y PDFs se muestran aparte; aquí solo fotos y videos. Se descartan
+  // las que un admin/coordinador eliminó desde el detalle del formulario:
+  // la "tumba" del servidor evita que una copia que quedó en otro teléfono
+  // (o una re-subida) la haga reaparecer en la visita.
+  const evidencias = remotos.archivos.filter(
+    (a) => (a.tipo === 'foto' || a.tipo === 'video') && !estaEliminada(remotos.eliminadas, a)
+  );
   if (evidencias.length === 0) return null;
 
   console.log(

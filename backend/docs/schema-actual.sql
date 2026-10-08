@@ -274,7 +274,7 @@ CREATE TABLE public.usuarios (
     activo boolean DEFAULT true,
     created_at timestamp without time zone DEFAULT now(),
     updated_at timestamp without time zone DEFAULT now(),
-    CONSTRAINT usuarios_rol_check CHECK ((rol = ANY (ARRAY['tecnico'::text, 'supervisor'::text, 'interventor'::text, 'gerente'::text, 'admin'::text])))
+    CONSTRAINT usuarios_rol_check CHECK ((rol = ANY (ARRAY['tecnico'::text, 'coordinador'::text, 'interventor'::text, 'gerente'::text, 'admin'::text])))
 );
 
 

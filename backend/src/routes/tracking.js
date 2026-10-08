@@ -20,8 +20,9 @@ router.post('/sync', authenticateToken, async (req, res) => {
     for (const p of posiciones) {
       await db.query(
         `INSERT INTO tracking (usuario_id, latitud, longitud, altitud, precision_metros,
-          velocidad, timestamp)
-         VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+          velocidad, timestamp, id_local)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+         ON CONFLICT (usuario_id, id_local) WHERE id_local IS NOT NULL DO NOTHING`,
         [
           p.usuario_id || req.user.id,
           p.latitud,
@@ -30,6 +31,7 @@ router.post('/sync', authenticateToken, async (req, res) => {
           p.precision_metros || p.precision_gps || p.precision || null,
           p.velocidad || null,
           p.timestamp || p.timestamp_dispositivo || new Date().toISOString(),
+          p.id || null,
         ]
       );
       sincronizadas++;

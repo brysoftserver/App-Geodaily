@@ -57,3 +57,39 @@ export const analizarGrafico = async (solicitud: SolicitudAnalisisGrafico): Prom
     return null;
   }
 };
+
+export interface VisitaRondaIA {
+  beneficiario: string;
+  vereda?: string;
+  fecha: string;
+  tipo: string;
+}
+
+export interface RondaVisitaIA {
+  numero: number;
+  completados: number;
+  total: number;
+  visitas: VisitaRondaIA[];
+}
+
+export interface SolicitudAnalisisTecnico {
+  tecnico: string;
+  rondas: RondaVisitaIA[];
+}
+
+/**
+ * Pide las conclusiones en texto del informe de visitas de un técnico.
+ * Devuelve `null` si la IA no está configurada o la llamada falla — nunca
+ * lanza, para que el PDF se pueda generar igual sin las conclusiones.
+ */
+export const analizarTecnico = async (solicitud: SolicitudAnalisisTecnico): Promise<string | null> => {
+  try {
+    const response = await apiClient.post(`${IA_ENDPOINT}/analizar-tecnico`, solicitud, {
+      timeout: TIMEOUT_ANALISIS_MS,
+    });
+    return response.data?.analisis || null;
+  } catch (error: any) {
+    console.warn(`[IA] Sin conclusiones para el técnico "${solicitud.tecnico}":`, error?.message || error);
+    return null;
+  }
+};

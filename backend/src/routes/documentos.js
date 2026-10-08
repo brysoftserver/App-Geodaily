@@ -13,7 +13,7 @@ const storage = require('../storage');
 const router = express.Router();
 
 /** Roles que pueden ver los documentos de finca de cualquier técnico */
-const ROLES_SUPERVISION = ['supervisor', 'interventor', 'gerente', 'admin'];
+const ROLES_COORDINACION = ['coordinador', 'interventor', 'gerente', 'admin'];
 
 // Multer en memoria para subir a MinIO (límite 50MB para documentos)
 const upload = multer({
@@ -34,9 +34,25 @@ router.post('/subir', authenticateToken, upload.single('archivo'), async (req, r
       return res.status(400).json({ estado: 'error', mensaje: 'Archivo requerido' });
     }
 
-    const { descripcion, categoria, beneficiario_cedula, beneficiario_nombre, tipo_formulario, formulario_id } = req.body;
+    const { descripcion, categoria, beneficiario_cedula, beneficiario_nombre, tipo_formulario, formulario_id, evidencia_id } = req.body;
     const ext = path.extname(req.file.originalname);
     const filename = `doc_${Date.now()}_${Math.random().toString(36).slice(2, 6)}${ext}`;
+
+    if (evidencia_id) {
+      const yaSubido = await db.queryOne(
+        'SELECT id, minio_path, filename, size_bytes FROM archivos WHERE usuario_id = $1 AND evidencia_local_id = $2',
+        [req.user.id, evidencia_id]
+      );
+      if (yaSubido) {
+        return res.json({
+          estado: 'ok',
+          id: yaSubido.id,
+          ruta: yaSubido.minio_path,
+          filename: yaSubido.filename,
+          size: yaSubido.size_bytes,
+        });
+      }
+    }
 
     // Validar que el usuario tenga rol y nombre de usuario
     const userRol = req.user?.rol || 'otros';
@@ -60,9 +76,14 @@ router.post('/subir', authenticateToken, upload.single('archivo'), async (req, r
       }
     }
 
-    // Subir a MinIO (con try-catch para no bloquear si MinIO no está disponible)
+    const rutaEsperada = benefItem && benefNombre
+      ? storage.getBeneficiaryFilePath(userRol, userUsuario, benefItem, benefNombre, tipo_formulario, 'documentos', filename)
+      : storage.getFilePath(userRol, userUsuario, 'documentos', filename);
+
+    // El documento solo se considera subido si MinIO confirmó el objeto.
+    let objetoMinio;
     try {
-      await storage.uploadFile(
+      objetoMinio = await storage.uploadFile(
         userRol,
         userUsuario,
         'documentos',
@@ -76,20 +97,17 @@ router.post('/subir', authenticateToken, upload.single('archivo'), async (req, r
         }
       );
     } catch (storageErr) {
-      console.error('[Documentos] Error al subir a MinIO (no crítico, continúa):', storageErr.message);
+      const eliminado = await storage.deleteFile(rutaEsperada);
+      if (!eliminado) {
+        console.warn('[Documentos] No se pudo limpiar la ruta tras fallo de subida:', rutaEsperada);
+      }
+      console.error('[Documentos] Error al subir a MinIO:', storageErr.message);
+      throw storageErr;
     }
 
     // Guardar registro en PostgreSQL
-    const bucket = process.env.MINIO_BUCKET || 'geodaily-archivos';
-    const basePath = storage.getUserBasePath(userRol, userUsuario);
-    let minioPath;
-    if (benefItem && benefNombre) {
-      const subpath = storage.getBeneficiarySubpath(benefItem, benefNombre);
-      const formFolder = storage.getFormTypeFolder(tipo_formulario);
-      minioPath = formFolder ? `${basePath}/${subpath}/${formFolder}/documentos/${filename}` : `${basePath}/${subpath}/documentos/${filename}`;
-    } else {
-      minioPath = `${basePath}/documentos/${filename}`;
-    }
+    const bucket = objetoMinio.bucket || process.env.MINIO_BUCKET || 'geodaily-archivos';
+    const minioPath = objetoMinio.path;
 
     const metadataExtra = {
       descripcion: descripcion || null,
@@ -98,7 +116,7 @@ router.post('/subir', authenticateToken, upload.single('archivo'), async (req, r
       beneficiario_cedula: beneficiario_cedula || null,
       // Ver nota en photos.js: respaldo por si el documento llega antes de
       // que el formulario exista en el servidor. Antes NO se guardaba el
-      // vínculo en absoluto (ni columna ni metadata), así que un supervisor
+      // vínculo en absoluto (ni columna ni metadata), así que un coordinador
       // nunca podía ver los documentos de finca de una visita: no había
       // forma de saber a qué formulario pertenecía cada uno.
       formulario_id: formulario_id || null,
@@ -107,35 +125,58 @@ router.post('/subir', authenticateToken, upload.single('archivo'), async (req, r
     // El SELECT evita violar la FK cuando el documento se sube antes de que
     // el formulario correspondiente termine de sincronizarse (caso normal
     // sin señal): queda NULL y se resuelve por metadata_json más tarde.
-    await db.query(
-      `INSERT INTO archivos (usuario_id, formulario_id, tipo, filename, originalname, mimetype, size_bytes, minio_path, minio_bucket, metadata_json)
-       VALUES ($1, (SELECT id FROM formularios WHERE id = $2), $3, $4, $5, $6, $7, $8, $9, $10)`,
-      [
-        req.user.id,
-        formulario_id || null,
-        'other',
-        filename,
-        req.file.originalname,
-        req.file.mimetype,
-        req.file.size,
-        minioPath,
-        bucket,
-        JSON.stringify(metadataExtra),
-      ]
-    );
+    let archivoCreado;
+    try {
+      archivoCreado = await db.query(
+        `INSERT INTO archivos (usuario_id, formulario_id, tipo, filename, originalname, mimetype, size_bytes, minio_path, minio_bucket, metadata_json, evidencia_local_id)
+         VALUES ($1, (SELECT id FROM formularios WHERE id = $2), $3, $4, $5, $6, $7, $8, $9, $10, $11)
+         RETURNING id`,
+        [
+          req.user.id,
+          formulario_id || null,
+          'other',
+          filename,
+          req.file.originalname,
+          req.file.mimetype,
+          req.file.size,
+          minioPath,
+          bucket,
+          JSON.stringify(metadataExtra),
+          evidencia_id || null,
+        ]
+      );
+    } catch (insertErr) {
+      if (insertErr.code === '23505' && evidencia_id) {
+        const existente = await db.queryOne(
+          'SELECT id, minio_path, filename, size_bytes FROM archivos WHERE usuario_id = $1 AND evidencia_local_id = $2',
+          [req.user.id, evidencia_id]
+        );
+        if (existente) {
+          await storage.deleteFile(minioPath);
+          return res.json({
+            estado: 'ok',
+            id: existente.id,
+            ruta: existente.minio_path,
+            filename: existente.filename,
+            size: existente.size_bytes,
+          });
+        }
+      }
+      await storage.deleteFile(minioPath);
+      throw insertErr;
+    }
 
-    // Obtener el ID generado
-    const archivo = await db.queryOne(
-      'SELECT id FROM archivos WHERE minio_path = $1 ORDER BY created_at DESC LIMIT 1',
-      [minioPath]
-    );
-    const docId = archivo ? archivo.id : `doc-${Date.now()}`;
+    const docId = archivoCreado.rows[0]?.id || `doc-${Date.now()}`;
 
     // Registrar en actividad
-    await db.query(
-      'INSERT INTO actividad_log (usuario_id, accion, detalle_json) VALUES ($1, $2, $3)',
-      [req.user.id, 'subir_documento', JSON.stringify({ archivo_id: docId, filename, original: req.file.originalname })]
-    );
+    try {
+      await db.query(
+        'INSERT INTO actividad_log (usuario_id, accion, detalle_json) VALUES ($1, $2, $3)',
+        [req.user.id, 'subir_documento', JSON.stringify({ archivo_id: docId, filename, original: req.file.originalname })]
+      );
+    } catch (logErr) {
+      console.warn('[Documentos] No se pudo registrar la actividad:', logErr.message);
+    }
 
     console.log(`[Documentos] 📎 Documento subido a MinIO: ${minioPath}`);
 
@@ -204,12 +245,12 @@ router.post('/subir-multiple', authenticateToken, upload.array('archivos', 10), 
 
       const basePath = storage.getUserBasePath(userRol, userUsuario);
       let minioPath;
+      const formFolder = storage.getFormTypeFolder(tipo_formulario);
       if (benefItem && benefNombre) {
         const subpath = storage.getBeneficiarySubpath(benefItem, benefNombre);
-        const formFolder = storage.getFormTypeFolder(tipo_formulario);
         minioPath = formFolder ? `${basePath}/${subpath}/${formFolder}/documentos/${filename}` : `${basePath}/${subpath}/documentos/${filename}`;
       } else {
-        minioPath = `${basePath}/documentos/${filename}`;
+        minioPath = formFolder ? `${basePath}/${formFolder}/documentos/${filename}` : `${basePath}/documentos/${filename}`;
       }
 
       const bucket = process.env.MINIO_BUCKET || 'geodaily-archivos';
@@ -268,7 +309,7 @@ router.get('/', authenticateToken, async (req, res) => {
  */
 router.get('/formulario/:formularioId', authenticateToken, async (req, res) => {
   try {
-    const esSupervision = ROLES_SUPERVISION.includes(req.user.rol);
+    const esCoordinacion = ROLES_COORDINACION.includes(req.user.rol);
 
     const params = [req.params.formularioId];
     let sql = `
@@ -277,7 +318,7 @@ router.get('/formulario/:formularioId', authenticateToken, async (req, res) => {
       WHERE tipo = 'other'
         AND (formulario_id = $1 OR metadata_json->>'formulario_id' = $1)`;
 
-    if (!esSupervision) {
+    if (!esCoordinacion) {
       params.push(req.user.id);
       sql += ` AND usuario_id = $${params.length}`;
     }
@@ -357,9 +398,9 @@ router.get('/:id', authenticateToken, async (req, res) => {
       return res.status(404).json({ estado: 'error', mensaje: 'Documento no encontrado' });
     }
     // Roles de supervisión ven la evidencia de cualquier técnico. Antes solo
-    // 'admin' era excepción, así que un supervisor listaba los archivos y
+    // 'admin' era excepción, así que un coordinador listaba los archivos y
     // recibía 403 al abrir cualquiera de ellos.
-    if (!ROLES_SUPERVISION.includes(req.user.rol) && doc.usuario_id !== req.user.id) {
+    if (!ROLES_COORDINACION.includes(req.user.rol) && doc.usuario_id !== req.user.id) {
       return res.status(403).json({ estado: 'error', mensaje: 'No autorizado' });
     }
     res.json({ estado: 'ok', documento: doc });

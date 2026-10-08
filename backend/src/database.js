@@ -110,7 +110,7 @@ async function initSchema() {
       nombre VARCHAR(200) NOT NULL,
       cedula VARCHAR(20) DEFAULT '',
       email VARCHAR(200) DEFAULT '',
-      rol VARCHAR(20) NOT NULL CHECK (rol IN ('tecnico','supervisor','interventor','gerente','admin')),
+      rol VARCHAR(20) NOT NULL CHECK (rol IN ('tecnico','coordinador','interventor','gerente','admin')),
       telefono VARCHAR(20) DEFAULT '',
       activo BOOLEAN DEFAULT TRUE,
       created_at TIMESTAMPTZ DEFAULT NOW(),
@@ -137,7 +137,8 @@ async function initSchema() {
       mimetype VARCHAR(100) DEFAULT '',
       tamaño BIGINT DEFAULT 0,
       metadata JSONB DEFAULT '{}',
-      created_at TIMESTAMPTZ DEFAULT NOW()
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      updated_at TIMESTAMPTZ DEFAULT NOW()
     )`,
 
     // Veredas vienen de Overpass (OpenStreetMap) o de un fallback
@@ -197,6 +198,11 @@ async function initSchema() {
       ubicacion VARCHAR(200),
       fecha DATE NOT NULL,
       estado VARCHAR(20) DEFAULT 'pendiente',
+      beneficiario_cedula VARCHAR(30),
+      beneficiario_nombre VARCHAR(200),
+      actividad_numero INTEGER,
+      vereda VARCHAR(200),
+      corregimiento VARCHAR(200),
       timestamp_dispositivo TIMESTAMPTZ,
       created_at TIMESTAMPTZ DEFAULT NOW()
     )`,
@@ -267,6 +273,46 @@ async function initSchema() {
       valor TEXT,
       updated_at TIMESTAMPTZ DEFAULT NOW()
     )`,
+
+    // "Tumbas" de formularios borrados. POST /formularios/guardar es un
+    // upsert por id: sin este registro, cualquier dispositivo que aún
+    // conserve en su SQLite local un formulario que el admin ya borró en el
+    // servidor lo vuelve a subir en su próximo ciclo de sync, y el upsert lo
+    // recrea como si fuera nuevo. Con la tumba, ese POST se rechaza en vez
+    // de resucitar el registro.
+    `CREATE TABLE IF NOT EXISTS formularios_eliminados (
+      id VARCHAR(100) PRIMARY KEY,
+      eliminado_por VARCHAR(20),
+      eliminado_at TIMESTAMPTZ DEFAULT NOW()
+    )`,
+
+    `CREATE TABLE IF NOT EXISTS formularios_borradores (
+      id VARCHAR(100) PRIMARY KEY,
+      usuario_id VARCHAR(20) NOT NULL REFERENCES usuarios(id) ON DELETE CASCADE,
+      payload_json JSONB NOT NULL,
+      updated_at TIMESTAMPTZ NOT NULL,
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_formularios_borradores_usuario ON formularios_borradores(usuario_id, updated_at DESC)`,
+
+    // "Tumbas" de evidencias (foto/video) borradas individualmente desde el
+    // detalle del formulario por un admin/coordinador. El teléfono que capturó
+    // la foto conserva el archivo local, así que sin este registro podría
+    // volver a mostrarla o a subirla en un sync posterior; además sirve para
+    // filtrarla del fotos_json aunque otro dispositivo reenvíe el formulario
+    // completo (POST /guardar es un upsert por id).
+    `CREATE TABLE IF NOT EXISTS evidencias_eliminadas (
+      id SERIAL PRIMARY KEY,
+      -- TEXT, no INTEGER: archivos.id es uuid (ver docs/schema-actual.sql).
+      archivo_id TEXT,
+      formulario_id VARCHAR(100),
+      evidencia_local_id VARCHAR(100),
+      minio_path TEXT,
+      eliminado_por VARCHAR(20),
+      eliminado_at TIMESTAMPTZ DEFAULT NOW()
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_evidencias_eliminadas_formulario ON evidencias_eliminadas(formulario_id)`,
+    `CREATE INDEX IF NOT EXISTS idx_evidencias_eliminadas_local ON evidencias_eliminadas(evidencia_local_id)`,
   ];
 
   for (const sql of tables) {
@@ -278,6 +324,27 @@ async function initSchema() {
     }
   }
 
+  // Migración: la tabla evidencias_eliminadas se creó con archivo_id INTEGER,
+  // pero archivos.id es uuid (ver docs/schema-actual.sql). El INSERT de la
+  // tumba fallaba con 22P02 ("invalid input syntax for type integer") y por
+  // eso el DELETE de una evidencia devolvía 500. TEXT coincide además con las
+  // columnas vecinas (formulario_id, evidencia_local_id, minio_path). Se lee
+  // el tipo real antes de alterar para que la migración sea idempotente.
+  try {
+    const tipoActual = await query(
+      `SELECT data_type FROM information_schema.columns
+       WHERE table_name = 'evidencias_eliminadas' AND column_name = 'archivo_id'`
+    );
+    const tipo = tipoActual.rows[0]?.data_type;
+    if (tipo && tipo !== 'text') {
+      await query(`ALTER TABLE evidencias_eliminadas
+        ALTER COLUMN archivo_id TYPE TEXT USING archivo_id::text`);
+      console.log('[DB] ✅ evidencias_eliminadas.archivo_id migrado de', tipo, 'a TEXT');
+    }
+  } catch (err) {
+    console.error('[DB] Error migrando evidencias_eliminadas.archivo_id:', err.message);
+  }
+
   // Migración: agregar tecnico_json a formularios (para el agrupamiento
   // de visitas por técnico en el listado jerárquico de roles superiores)
   try {
@@ -287,6 +354,42 @@ async function initSchema() {
     if (!err.message.includes('already exists')) {
       console.error('[DB] Error agregando tecnico_json:', err.message);
     }
+  }
+
+  // Migración: columnas de detalle de las visitas programadas.
+  //
+  // La tabla se creó originalmente solo con (id, usuario_id, titulo,
+  // ubicacion, fecha, estado, timestamp_dispositivo, created_at). El
+  // `CREATE TABLE IF NOT EXISTS visitas_programadas` de arriba ya incluye
+  // estas 5 columnas, pero NO las añade a una tabla que YA existe — así que
+  // en producción nunca se crearon. Consecuencia:
+  //   • GET /api/visitas-programadas → 500 "column vp.beneficiario_cedula
+  //     does not exist" → el calendario caía al SQLite local y cada rol
+  //     veía solo SUS visitas planificadas.
+  //   • POST /api/visitas-programadas/sync → fallaba igual, así que las
+  //     visitas que programaba un técnico se quedaban para siempre en su
+  //     teléfono y ningún rol superior las veía.
+  // Idempotente: ADD COLUMN IF NOT EXISTS se puede correr en cada arranque.
+  const columnasVisitasProgramadas = [
+    ['beneficiario_cedula', 'VARCHAR(30)'],
+    ['beneficiario_nombre', 'VARCHAR(200)'],
+    ['actividad_numero', 'INTEGER'],
+    ['vereda', 'VARCHAR(200)'],
+    ['corregimiento', 'VARCHAR(200)'],
+  ];
+  for (const [col, tipo] of columnasVisitasProgramadas) {
+    try {
+      await query(`ALTER TABLE visitas_programadas ADD COLUMN IF NOT EXISTS ${col} ${tipo}`);
+    } catch (err) {
+      console.error(`[DB] Error agregando ${col} a visitas_programadas:`, err.message);
+    }
+  }
+  console.log('[DB] ✅ Columnas de detalle verificadas en visitas_programadas');
+
+  try {
+    await query(`CREATE INDEX IF NOT EXISTS idx_visitas_programadas_fecha ON visitas_programadas(fecha)`);
+  } catch (err) {
+    console.error('[DB] Error creando índice idx_visitas_programadas_fecha:', err.message);
   }
 
   // Migración: vincular las evidencias (fotos/videos) a su formulario.
@@ -387,7 +490,7 @@ async function initSchema() {
     }
   }
 
-  // Tabla: evidencia final del revisor (supervisor/interventor) — una fila
+  // Tabla: evidencia final del revisor (coordinador/interventor) — una fila
   // por formulario + rol revisor: fotos propias, video, firma dual
   // (beneficiario + revisor) y una georeferencia puntual (captura única,
   // no tracking). fotos_json/videos_json guardan [{ archivo_id }] —
@@ -457,6 +560,161 @@ async function initSchema() {
         console.error(`[DB] Error agregando ${col} a beneficiarios:`, err.message);
       }
     }
+  }
+
+  // Migración: id de evidencia local (generado en el celular al capturar la
+  // foto/video, ver generarId() en utils/formatters.ts — un UUID). Permite
+  // deduplicar subidas reintentadas: si el servidor ya recibió y guardó la
+  // evidencia pero la respuesta no llegó a tiempo al teléfono (timeout con
+  // señal débil, o la app se cerró antes de marcarla como sincronizada), la
+  // app la reintentaba en el siguiente ciclo y quedaba duplicada en
+  // `archivos`. Con este índice, el segundo intento del mismo id se
+  // reconoce y no crea una fila nueva.
+  try {
+    await query(`ALTER TABLE archivos ADD COLUMN evidencia_local_id TEXT`);
+    console.log('[DB] ✅ Columna evidencia_local_id agregada a archivos');
+  } catch (err) {
+    if (!err.message.includes('already exists')) {
+      console.error('[DB] Error agregando evidencia_local_id a archivos:', err.message);
+    }
+  }
+
+  // updated_at en archivos: permite invalidar la caché de imágenes del
+  // cliente. La app agrega `?v=<updated_at>` a la URL de cada evidencia; si
+  // el binario se re-sube (p. ej. re-estampado de marca de agua) y se toca
+  // esta columna, la URL cambia y el <Image> de React Native vuelve a
+  // descargar la versión nueva en vez de servir la cacheada por URI.
+  try {
+    await query(`ALTER TABLE archivos ADD COLUMN updated_at TIMESTAMPTZ DEFAULT NOW()`);
+    console.log('[DB] ✅ Columna updated_at agregada a archivos');
+  } catch (err) {
+    if (!err.message.includes('already exists')) {
+      console.error('[DB] Error agregando updated_at a archivos:', err.message);
+    }
+  }
+
+  try {
+    await query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_archivos_evidencia_local_id
+      ON archivos(usuario_id, evidencia_local_id)
+      WHERE evidencia_local_id IS NOT NULL`);
+    console.log('[DB] ✅ Índice único idx_archivos_evidencia_local_id creado');
+  } catch (err) {
+    console.error('[DB] Error creando índice idx_archivos_evidencia_local_id:', err.message);
+  }
+
+  // ID estable del punto GPS generado en el dispositivo. Los reintentos
+  // pueden reenviar lotes parcialmente aceptados; esta clave evita duplicarlos.
+  try {
+    await query('ALTER TABLE tracking ADD COLUMN IF NOT EXISTS id_local TEXT');
+    await query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_tracking_usuario_id_local
+      ON tracking(usuario_id, id_local) WHERE id_local IS NOT NULL`);
+    console.log('[DB] ✅ Idempotencia de tracking verificada');
+  } catch (err) {
+    console.error('[DB] Error agregando idempotencia a tracking:', err.message);
+  }
+
+  // Migración: el rol 'supervisor' pasa a llamarse 'coordinador' en todo
+  // el sistema (cambio de nomenclatura pedido por el proyecto). Se
+  // actualizan las cuentas existentes y el histórico de revisiones para
+  // que queden consistentes con el nuevo constraint — los ids de usuario
+  // (ej. 'sup-001') y las rutas ya subidas a MinIO NO se tocan, porque no
+  // dependen de esto (el id es solo una clave opaca y la ruta de archivo
+  // se lee tal como quedó guardada, no se reconstruye desde el rol).
+  try {
+    await query(`ALTER TABLE usuarios DROP CONSTRAINT IF EXISTS usuarios_rol_check`);
+    const res = await query(`UPDATE usuarios SET rol = 'coordinador' WHERE rol = 'supervisor'`);
+    if (res?.rowCount > 0) {
+      console.log(`[DB] ✅ Migración rol: ${res.rowCount} usuario(s) 'supervisor' → 'coordinador'`);
+    }
+    await query(`ALTER TABLE usuarios ADD CONSTRAINT usuarios_rol_check
+      CHECK (rol IN ('tecnico','coordinador','interventor','gerente','admin'))`);
+    console.log('[DB] ✅ Constraint usuarios_rol_check actualizado (coordinador en vez de supervisor)');
+  } catch (err) {
+    console.error('[DB] Error migrando rol supervisor→coordinador:', err.message);
+  }
+
+  try {
+    const r1 = await query(`UPDATE revisiones_formulario SET revisor_rol = 'coordinador' WHERE revisor_rol = 'supervisor'`);
+    const r2 = await query(`UPDATE revision_evidencia_formulario SET revisor_rol = 'coordinador' WHERE revisor_rol = 'supervisor'`);
+    if ((r1?.rowCount || 0) + (r2?.rowCount || 0) > 0) {
+      console.log(`[DB] ✅ Migración revisor_rol: ${r1.rowCount} revisión(es) + ${r2.rowCount} evidencia(s) 'supervisor' → 'coordinador'`);
+    }
+  } catch (err) {
+    console.error('[DB] Error migrando revisor_rol supervisor→coordinador:', err.message);
+  }
+
+  // Tabla: seguimientos de Coordinación/Interventoría — registro de
+  // acompañamiento en campo independiente del formulario del técnico (no
+  // requiere que el formulario del técnico ya exista ni esté sincronizado,
+  // a diferencia del flujo de revisión de revisiones_formulario). Fotos
+  // de evidencia se referencian igual que en revision_evidencia_formulario:
+  // [{ archivo_id, uri? }] contra la tabla `archivos`.
+  try {
+    await query(`CREATE TABLE IF NOT EXISTS seguimientos (
+      id VARCHAR(100) PRIMARY KEY,
+      autor_id VARCHAR(20) NOT NULL,
+      autor_nombre VARCHAR(200),
+      autor_rol VARCHAR(20) NOT NULL CHECK (autor_rol IN ('coordinador','interventor')),
+      beneficiario_cedula VARCHAR(30),
+      beneficiario_nombre VARCHAR(200),
+      formulario_id VARCHAR(100),
+      actividad VARCHAR(200) NOT NULL,
+      objetivo_visita TEXT,
+      descripcion_actividad TEXT,
+      observaciones TEXT,
+      fotos_json JSONB DEFAULT '[]',
+      videos_json JSONB DEFAULT '[]',
+      firma_beneficiario TEXT,
+      firma_autor TEXT,
+      geo_latitud DECIMAL(10,7),
+      geo_longitud DECIMAL(10,7),
+      geo_altitud DECIMAL(10,2),
+      geo_precision DECIMAL(10,2),
+      huella_beneficiario BOOLEAN DEFAULT FALSE,
+      pdf_url TEXT,
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      updated_at TIMESTAMPTZ DEFAULT NOW()
+    )`);
+    await query(`CREATE INDEX IF NOT EXISTS idx_seguimientos_autor ON seguimientos(autor_id)`);
+    await query(`CREATE INDEX IF NOT EXISTS idx_seguimientos_autor_rol ON seguimientos(autor_rol)`);
+    // NOTA: el índice de formulario_id se crea DESPUÉS del ALTER TABLE de
+    // abajo. Si se crea aquí, falla en instalaciones antiguas (la tabla ya
+    // existe sin la columna) y PostgreSQL aborta el bloque entero.
+  } catch (err) {
+    console.error('[DB] Error creando seguimientos:', err.message);
+  }
+
+  // Migración: video y firmas (beneficiario + autor) en seguimientos — la
+  // tabla ya existía sin estas columnas en instalaciones previas a esta
+  // versión. firma_beneficiario/firma_autor guardan el archivo_id de MinIO
+  // (subido vía /api/firmas), igual convención que revision_evidencia_formulario.
+  for (const [col, tipo] of [
+    ['videos_json', "JSONB DEFAULT '[]'"],
+    ['firma_beneficiario', 'TEXT'],
+    ['firma_autor', 'TEXT'],
+    ['geo_latitud', 'DECIMAL(10,7)'],
+    ['geo_longitud', 'DECIMAL(10,7)'],
+    ['geo_altitud', 'DECIMAL(10,2)'],
+    ['geo_precision', 'DECIMAL(10,2)'],
+    ['huella_beneficiario', 'BOOLEAN DEFAULT FALSE'],
+    ['formulario_id', 'VARCHAR(100)'],
+  ]) {
+    try {
+      await query(`ALTER TABLE seguimientos ADD COLUMN ${col} ${tipo}`);
+      console.log(`[DB] ✅ Columna ${col} agregada a seguimientos`);
+    } catch (err) {
+      if (!err.message.includes('already exists')) {
+        console.error(`[DB] Error agregando ${col} a seguimientos:`, err.message);
+      }
+    }
+  }
+
+  // Índice de formulario_id: después de la migración para que la columna
+  // exista sí o sí (ver nota arriba).
+  try {
+    await query(`CREATE INDEX IF NOT EXISTS idx_seguimientos_formulario ON seguimientos(formulario_id)`);
+  } catch (err) {
+    console.error('[DB] Error creando idx_seguimientos_formulario:', err.message);
   }
 
   await seedBeneficiarios();

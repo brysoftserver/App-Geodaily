@@ -7,7 +7,7 @@ import NetInfo from '@react-native-community/netinfo';
 import { useSync } from '../store/SyncContext';
 
 export const useOfflineSync = () => {
-  const { syncNow, checkPending, status, pendingCount, lastSync } = useSync();
+  const { syncNow, checkPending, status, pendingCount, lastSync, error, stage } = useSync();
 
   // El auto-sync por reconexión vive ahora en SyncContext (a nivel de
   // provider, siempre montado). Aquí ya no se registra otro listener para
@@ -34,5 +34,7 @@ export const useOfflineSync = () => {
     status,
     pendingCount,
     lastSync,
+    error,
+    stage,
   };
 };

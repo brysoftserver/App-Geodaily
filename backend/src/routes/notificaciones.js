@@ -3,7 +3,7 @@
 // ============================================================
 // Notificaciones simples dentro de la app (no push): se crean desde el
 // propio backend (ej. al registrar una novedad de revisión) y el técnico/
-// supervisor las ve en una campanita con contador dentro de su menú.
+// coordinador las ve en una campanita con contador dentro de su menú.
 // ============================================================
 
 const express = require('express');
