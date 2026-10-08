@@ -13,12 +13,28 @@
 // la marca se estampa con lo que haya (GPS + fecha siempre existen).
 // La subida NUNCA falla por culpa de la marca: ante error se guarda la
 // foto original.
+//
+// ADEMÁS: esos datos externos tienen PRESUPUESTO de tiempo
+// (PRESUPUESTO_DATOS_EXTERNOS_MS). Antes se esperaba hasta ~13 s a
+// Nominatim/Open-Meteo por CADA foto; con internet lento la subida
+// expiraba en el celular y la evidencia nunca llegaba al servidor. Ahora,
+// si no responden a tiempo, se ignoran y la foto se marca solo con fecha
+// y GPS — el clima es decorativo, la evidencia no.
 // ============================================================
 
 const sharp = require('sharp');
 const { resolverUbicacion, interpretarCodigoClima, fetchConTimeout } = require('./routes/climate');
+const { conPresupuesto } = require('./lib/presupuesto');
 
 const TZ = 'America/Bogota';
+
+/**
+ * Tiempo máximo que la marca espera por los datos externos (ubicación y
+ * clima). En una conexión normal responden en ~1 s, así que en la práctica
+ * no cambia nada; en una conexión lenta evita que la foto quede atrapada
+ * esperando un dato decorativo.
+ */
+const PRESUPUESTO_DATOS_EXTERNOS_MS = 2500;
 
 /** Formatear fecha en hora colombiana legible. */
 function formatearFecha(fechaISO) {
@@ -59,7 +75,9 @@ async function obtenerClimaEnFecha(lat, lon, fechaISO) {
       `&hourly=temperature_2m,relative_humidity_2m,wind_speed_10m,cloud_cover,weather_code` +
       `&start_date=${dia}&end_date=${dia}&timezone=${encodeURIComponent(TZ)}`;
 
-    const response = await fetchConTimeout(url, {}, 8000);
+    // El propio fetch se aborta al mismo tiempo que el presupuesto: no
+    // tiene sentido dejar la petición viva si ya nadie la va a esperar.
+    const response = await fetchConTimeout(url, {}, PRESUPUESTO_DATOS_EXTERNOS_MS);
     if (!response.ok) return null;
     const data = await response.json();
     const horas = data.hourly?.time || [];
@@ -158,10 +176,12 @@ async function aplicarMarcaAgua(buffer, datos) {
       if (Number.isFinite(alt)) lineaGPS += `  Alt ${Math.round(alt)} m`;
       lineas.push(lineaGPS);
 
-      // Ubicación y clima en paralelo — cualquiera puede fallar sin romper
+      // Ubicación y clima en paralelo, ambos con presupuesto: si alguno no
+      // responde a tiempo se sigue sin él y la marca sale igual con fecha +
+      // GPS. La foto nunca se queda esperando a un dato externo.
       const [ubicacion, clima] = await Promise.all([
-        resolverUbicacion(lat, lon).catch(() => null),
-        obtenerClimaEnFecha(lat, lon, fechaISO),
+        conPresupuesto(resolverUbicacion(lat, lon).catch(() => null), PRESUPUESTO_DATOS_EXTERNOS_MS),
+        conPresupuesto(obtenerClimaEnFecha(lat, lon, fechaISO), PRESUPUESTO_DATOS_EXTERNOS_MS),
       ]);
 
       if (ubicacion?.nombre && ubicacion.nombre !== 'Ubicación actual') {

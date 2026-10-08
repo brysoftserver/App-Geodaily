@@ -14,6 +14,19 @@ export interface ResultadoClimaUbicacion {
 }
 
 /**
+ * Tiempo máximo que se espera por el clima "en vivo" (el que se muestra en
+ * la pantalla de cámara).
+ *
+ * Estas consultas son DECORATIVAS: si el servidor o la conexión no
+ * responden, deben rendirse rápido y dejar seguir al técnico. Antes
+ * heredaban el timeout global (15 s) y, con señal mala, la tarjeta de
+ * clima quedaba girando "Obteniendo datos climáticos..." muchísimo tiempo
+ * por cada foto. La evidencia y sus coordenadas se guardan igual — y el
+ * clima que falte lo rellena después el sync (SyncContext).
+ */
+export const CONSULTA_CLIMA_TIMEOUT_MS = 6000;
+
+/**
  * Obtener clima actual desde el backend Express (no desde QGIS)
  */
 export const getClimaActual = async (
@@ -23,6 +36,7 @@ export const getClimaActual = async (
   try {
     const response = await apiClient.get(API_CONFIG.ENDPOINTS.CLIMATE + '/actual', {
       params: { lat, lon },
+      timeout: CONSULTA_CLIMA_TIMEOUT_MS,
     });
     return response.data;
   } catch (error) {
@@ -50,6 +64,7 @@ export const getResumenClimatico = async (
   try {
     const response = await apiClient.get(API_CONFIG.ENDPOINTS.CLIMATE + '/resumen', {
       params: { lat, lon },
+      timeout: CONSULTA_CLIMA_TIMEOUT_MS,
     });
     return response.data;
   } catch (error) {
