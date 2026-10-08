@@ -6,7 +6,75 @@ const express = require('express');
 const { authenticateToken } = require('../middleware/auth');
 const db = require('../database');
 const storage = require('../storage');
+const {
+  esTecnicoVigenteDelFormulario,
+  resolverAtribucionFormulario,
+  resolverTecnicoVigente,
+  snapshotConDueno,
+} = require('../lib/atribucion');
 const router = express.Router();
+
+/**
+ * Técnico al que pertenece HOY el beneficiario de un formulario, buscando por
+ * cédula (la única llave que une formularios con beneficiarios: no hay FK).
+ *
+ * Devuelve null cuando la cédula no identifica a un único técnico — sin
+ * cédula, cédula inexistente o cédula duplicada con técnicos distintos (el
+ * mismo beneficiario registrado dos veces). En esos casos la atribución no se
+ * toca, que es más seguro que inventar un dueño.
+ *
+ * @param {string|undefined} cedula
+ * @returns {Promise<string|null>}
+ */
+async function tecnicoVigenteDelBeneficiario(cedula) {
+  if (!cedula || typeof cedula !== 'string' || !cedula.trim()) return null;
+  try {
+    const filas = await db.queryAll(
+      `SELECT DISTINCT tecnico_asignado_id
+         FROM beneficiarios
+        WHERE TRIM(cedula) = TRIM($1)
+          AND tecnico_asignado_id IS NOT NULL`,
+      [cedula.trim()]
+    );
+    return resolverTecnicoVigente(filas);
+  } catch (error) {
+    console.warn('[Forms] No se pudo resolver el técnico vigente del beneficiario:', error.message);
+    return null;
+  }
+}
+
+/**
+ * Snapshot `tecnico_json` con los datos actuales del usuario en la BD.
+ *
+ * Si el usuario no existe (o la consulta falla) se reutiliza el snapshot del
+ * dispositivo, corregido al dueño correcto: nunca se deja un `usuario_id`
+ * ajeno, porque eso deja al dueño real sin poder editar (el backend resuelve
+ * el dueño por `tecnico_json.usuario_id`).
+ *
+ * @param {string} usuarioId
+ * @param {object|string|null} respaldoSnapshot
+ * @returns {Promise<string>} JSON listo para una columna jsonb
+ */
+async function snapshotTecnicoJson(usuarioId, respaldoSnapshot) {
+  try {
+    const u = await db.queryOne(
+      'SELECT nombre, cedula, telefono, email FROM usuarios WHERE id = $1',
+      [usuarioId]
+    );
+    if (u) {
+      return JSON.stringify({
+        usuario_id: usuarioId,
+        nombre: u.nombre || '',
+        cedula: u.cedula || '',
+        telefono: u.telefono || '',
+        email: u.email || '',
+      });
+    }
+  } catch (error) {
+    console.warn('[Forms] No se pudo leer el técnico para el snapshot:', error.message);
+  }
+  return snapshotConDueno(respaldoSnapshot, usuarioId);
+}
 
 /**
  * Detectar si un string es base64 (data URI)
@@ -189,7 +257,16 @@ router.post('/guardar', authenticateToken, async (req, res) => {
         : null;
 
     const existente = await db.queryOne(
-      'SELECT id, usuario_id, tecnico_json FROM formularios WHERE id = $1',
+      // `dueno_efectivo` es el dueño que realmente resuelven la lectura y el
+      // PATCH: el snapshot tecnico_json.usuario_id manda y la columna queda de
+      // respaldo (los formularios levantados por un supervisor/interventor
+      // "a nombre de" un técnico tienen la columna = creador y el snapshot =
+      // técnico responsable). Comparar contra la sola columna haría que un
+      // segundo supervisor reescribiera el responsable con sus propios datos.
+      `SELECT id, usuario_id,
+              COALESCE(NULLIF(tecnico_json->>'usuario_id', ''), usuario_id) AS dueno_efectivo,
+              tecnico_json
+         FROM formularios WHERE id = $1`,
       [formulario.id]
     );
 
@@ -213,26 +290,37 @@ router.post('/guardar', authenticateToken, async (req, res) => {
       }
     }
 
-    // Blindaje anti-"resurrección": si este formulario ya existe y el
-    // beneficiario fue reasignado a otro técnico desde que este dispositivo
-    // guardó su copia local, NO se debe pisar usuario_id/tecnico_json con el
-    // snapshot viejo que trae el dispositivo — eso deshace en silencio la
-    // reasignación hecha en PUT /api/beneficiarios/:item/asignacion. El resto
-    // del contenido (fotos, clima, coordenadas) sí se sigue guardando normal.
-    let usuarioIdParaGuardar = req.user.id;
-    let tecnicoJsonParaGuardar = JSON.stringify(tecnico);
-    if (existente && benefItem) {
-      const benefActual = await db.queryOne(
-        'SELECT tecnico_asignado_id FROM beneficiarios WHERE item = $1',
-        [benefItem]
-      );
-      if (benefActual?.tecnico_asignado_id && benefActual.tecnico_asignado_id !== req.user.id) {
-        // node-pg devuelve tecnico_json ya parseado (columna jsonb) — hay
-        // que volver a serializarlo para usarlo como bind del UPDATE.
-        usuarioIdParaGuardar = existente.usuario_id;
-        tecnicoJsonParaGuardar = JSON.stringify(existente.tecnico_json);
-        console.warn(`[Forms] 🛡️ Formulario ${formulario.id}: se preserva atribución vigente (usuario_id=${existente.usuario_id}) — sincronizado por ${req.user.id}, distinto del técnico actual del beneficiario`);
-      }
+    // ── Atribución del formulario (usuario_id + tecnico_json) ─────────────
+    //
+    // Un formulario pertenece al técnico asignado HOY al beneficiario. El
+    // `usuario_id`/`tecnico_json` que manda el dispositivo es una copia
+    // estática de cuando se guardó la visita, así que se queda vieja si
+    // alguien reasigna el beneficiario (PUT /api/beneficiarios/:item/asignacion).
+    //
+    // Antes esto solo se protegía cuando el formulario YA existía en el
+    // servidor, así que una copia que llegaba tarde y creaba la fila por
+    // primera vez (INSERT) nacía con el técnico anterior. Resultado: el
+    // técnico nuevo no veía la visita heredada y, si la abría, el backend le
+    // respondía 403 «Solo puedes completar tus propios formularios» al
+    // intentar corregir lo que el interventor le pidió.
+    //
+    // El resto del contenido (fotos, clima, coordenadas) se sigue guardando
+    // normal: aquí solo se decide a nombre de quién queda.
+    const tecnicoVigente = await tecnicoVigenteDelBeneficiario(beneficiario?.cedula);
+    const { usuarioId: usuarioIdParaGuardar, usarSnapshotDelPayload } = resolverAtribucionFormulario({
+      tecnicoVigente,
+      tecnicoDelSnapshot: tecnico?.usuario_id || null,
+      usuarioSolicitante: req.user.id,
+      usuarioExistente: existente ? existente.dueno_efectivo : null,
+    });
+    const tecnicoJsonParaGuardar = usarSnapshotDelPayload
+      ? JSON.stringify(tecnico)
+      : await snapshotTecnicoJson(usuarioIdParaGuardar, tecnico);
+
+    if (usuarioIdParaGuardar !== req.user.id) {
+      console.warn(`[Forms] 🔁 Formulario ${formulario.id}: queda atribuido a ${usuarioIdParaGuardar} (técnico vigente del beneficiario; lo sincronizó ${req.user.id} con snapshot ${tecnico?.usuario_id || 'sin usuario_id'})`);
+    } else if (!usarSnapshotDelPayload) {
+      console.warn(`[Forms] 🔧 Formulario ${formulario.id}: snapshot del dispositivo reescrito a ${usuarioIdParaGuardar} (venía con usuario_id ${tecnico?.usuario_id || 'vacío'})`);
     }
 
     const firmaBeneficiario = await subirBase64AMinIO(req, formulario.firma_beneficiario, 'beneficiario', `firma_beneficiario_${formulario.id}`, tipoFormulario, benefItem, benefNombre, formulario.id);
@@ -295,8 +383,11 @@ router.post('/guardar', authenticateToken, async (req, res) => {
         [
           formulario.id,
           formulario.tipo,
-          req.user.id,
-          JSON.stringify(tecnico),
+          // Mismo dueño resuelto arriba (técnico vigente del beneficiario):
+          // esta rama es la que creaba la fila con el snapshot viejo y dejaba
+          // la visita heredada a nombre del técnico anterior.
+          usuarioIdParaGuardar,
+          tecnicoJsonParaGuardar,
           JSON.stringify(beneficiario),
           JSON.stringify(actividad),
           jsonOrNull(sociodemografico),
@@ -621,19 +712,49 @@ router.patch('/:id/respuesta', authenticateToken, async (req, res) => {
       // contra la columna dejaba fuera a los formularios creados "a nombre
       // de" un técnico por un supervisor/interventor/admin, donde la columna
       // guarda al creador y el snapshot al responsable real de la visita.
-      `SELECT caracterizacion_nueva_json,
-              COALESCE(NULLIF(tecnico_json->>'usuario_id', ''), usuario_id) AS usuario_id
-         FROM formularios WHERE id = $1`,
+      `SELECT f.caracterizacion_nueva_json,
+              COALESCE(NULLIF(f.tecnico_json->>'usuario_id', ''), f.usuario_id) AS usuario_id,
+              -- Técnico asignado HOY al beneficiario (por cédula, la única
+              -- llave que los une). CASE + COUNT(DISTINCT) deja NULL cuando
+              -- la cédula está duplicada con técnicos distintos: con dos
+              -- responsables posibles no se habilita a nadie de más.
+              (SELECT CASE WHEN COUNT(DISTINCT b.tecnico_asignado_id) = 1
+                           THEN MIN(b.tecnico_asignado_id) END
+                 FROM beneficiarios b
+                WHERE TRIM(b.cedula) = TRIM(f.beneficiario_json->>'cedula')
+                  AND b.tecnico_asignado_id IS NOT NULL) AS tecnico_vigente
+         FROM formularios f WHERE f.id = $1`,
       [req.params.id]
     );
     if (!form) {
       return res.status(404).json({ estado: 'error', mensaje: 'Formulario no encontrado' });
     }
 
-    // El técnico solo puede completar SUS propios formularios. El admin
+    // El técnico solo puede completar SUS propios formularios, y el admin
     // puede completar cualquiera (es quien supervisa la calidad del dato).
+    //
+    // Excepción: el formulario quedó a nombre del técnico ANTERIOR pero el
+    // beneficiario está asignado hoy a quien está pidiendo el cambio. Es el
+    // caso de las visitas heredadas (el técnico que se retiró ya había
+    // diligenciado el formulario 1 y el interventor le pide al nuevo técnico
+    // corregirlo). Ahí el responsable de la visita es el técnico vigente, así
+    // que se le permite y de una vez se repara la atribución, para que la app
+    // deje de mostrarle un dueño equivocado.
     if (esTecnico && form.usuario_id !== req.user.id) {
-      return res.status(403).json({ estado: 'error', mensaje: 'Solo puedes completar tus propios formularios' });
+      const puedeCorregirHeredado = esTecnicoVigenteDelFormulario({
+        usuarioSolicitante: req.user.id,
+        duenoDelFormulario: form.usuario_id,
+        tecnicoVigente: form.tecnico_vigente,
+      });
+      if (!puedeCorregirHeredado) {
+        return res.status(403).json({ estado: 'error', mensaje: 'Solo puedes completar tus propios formularios' });
+      }
+      const snapshotPropio = await snapshotTecnicoJson(req.user.id, null);
+      await db.query(
+        'UPDATE formularios SET usuario_id = $1, tecnico_json = $2::jsonb WHERE id = $3',
+        [req.user.id, snapshotPropio, req.params.id]
+      );
+      console.warn(`[Forms] 🔧 Formulario ${req.params.id}: atribución reparada de ${form.usuario_id} a ${req.user.id} — lo corrige el técnico vigente del beneficiario`);
     }
 
     const encuesta = (form.caracterizacion_nueva_json && typeof form.caracterizacion_nueva_json === 'object')

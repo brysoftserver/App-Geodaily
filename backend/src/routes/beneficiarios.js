@@ -77,24 +77,37 @@ router.put('/:item/asignacion', authenticateToken, async (req, res) => {
         );
 
         if (benefData) {
-          // Obtener datos del técnico (usuario, rol, nombre, cedula, telefono, email)
+          // Obtener datos del técnico (usuario, rol, nombre, cedula, telefono, email).
+          // SIN el filtro activo = TRUE: si el técnico ya está inactivo (se
+          // retiró) pero se le estaba reasignando o corrigiendo su asignación,
+          // de todas formas hay que poder reetiquetar los formularios — antes
+          // esta consulta devolvía vacío y la reatribución se saltaba en
+          // silencio, dejando las visitas a nombre del técnico equivocado.
           const tecData = await db.queryOne(
-            'SELECT usuario, rol, nombre, cedula, telefono, email FROM usuarios WHERE id = $1 AND activo = TRUE',
+            'SELECT usuario, rol, nombre, cedula, telefono, email, activo FROM usuarios WHERE id = $1',
             [tecnico_id]
           );
 
           if (tecData) {
-            // Crear carpetas para ambos tipos de formulario
-            for (const tipoForm of ['caracterizacion', 'visita_tecnica']) {
-              await storage.createBeneficiaryFolders(
-                tecData.rol,
-                tecData.usuario,
-                item,
-                benefData.nombre_completo,
-                tipoForm
-              );
+            // Carpetas en MinIO: best effort y aislado. Antes iba dentro del
+            // mismo try que la reatribución de formularios, así que un fallo
+            // de MinIO (bucket, permisos, red) dejaba la reasignación a medias
+            // sin ningún aviso: el beneficiario cambiaba de técnico pero sus
+            // visitas seguían "a nombre" del anterior.
+            try {
+              for (const tipoForm of ['caracterizacion', 'visita_tecnica']) {
+                await storage.createBeneficiaryFolders(
+                  tecData.rol,
+                  tecData.usuario,
+                  item,
+                  benefData.nombre_completo,
+                  tipoForm
+                );
+              }
+              console.log(`[Beneficiarios] 📁 Carpetas MinIO creadas para item ${item} (${benefData.nombre_completo}) bajo ${tecData.usuario}`);
+            } catch (folderErr) {
+              console.warn(`[Beneficiarios] ⚠️ No se pudieron crear las carpetas MinIO del item ${item} bajo ${tecData.usuario}:`, folderErr.message);
             }
-            console.log(`[Beneficiarios] 📁 Carpetas MinIO creadas para item ${item} (${benefData.nombre_completo}) bajo ${tecData.usuario}`);
 
             // Reasignar el técnico también en los formularios ya diligenciados
             // de este beneficiario. El técnico dentro de "formularios" es un

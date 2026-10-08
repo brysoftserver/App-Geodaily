@@ -37,13 +37,17 @@ import {
   fuenteConAuth,
   FirmaResuelta,
   eliminarEvidenciaRemota,
-  ROLES_PUEDEN_ELIMINAR_EVIDENCIA,
 } from '../../services/archivos.service';
 import { deleteEvidenciaLocal, saveFormularioLocal, getUnsyncedPhotos, getUnsyncedVideos } from '../../services/database';
 import { eliminarArchivoLocal } from '../../services/mediaStorage.service';
 import { useSync } from '../../store/SyncContext';
 import { fetchDocumentosDeFormulario, fetchDocumentosDeBeneficiario, DocumentoDeFormulario } from '../../services/documentos.service';
 import { formatFecha } from '../../utils/formatters';
+import {
+  puedeEditarRespuestasFormulario,
+  puedeGestionarEvidenciasFormulario,
+  resolverDuenoFormulario,
+} from '../../utils/permisosFormulario';
 import { construirSeccionesEncuesta, esEncuestaSocial } from '../../utils/encuestaSchema';
 import { esVisitaTecnicaV2, tituloVisitaTecnica } from '../../utils/visitaTecnica';
 import {
@@ -739,7 +743,6 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
   const { user: usuarioActual } = useAuth();
   const rolActual = usuarioActual?.rol || 'tecnico';
   const esRevisorActual = ['coordinador', 'interventor', 'gerente', 'admin'].includes(rolActual);
-  const esAdmin = rolActual === 'admin';
   /**
    * Dueño de la visita. Mismo criterio y mismo orden que el backend en
    * PATCH /formularios/:id/respuesta: el snapshot `tecnico.usuario_id` manda
@@ -748,14 +751,17 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
    * queda como respaldo para filas antiguas. Si aquí se usara un criterio
    * distinto al del backend, el botón aparecería para luego responder 403.
    */
-  const duenoFormulario = formulario.tecnico?.usuario_id || formulario.usuario_id;
+  const duenoFormulario = resolverDuenoFormulario(formulario);
   /**
    * Quién puede completar las preguntas que quedaron "Sin responder": el
    * admin (cualquier formulario) y el técnico dueño de la visita. El backend
    * valida lo mismo en PATCH /formularios/:id/respuesta.
    */
-  const puedeCompletarRespuestas =
-    esAdmin || (rolActual === 'tecnico' && !!duenoFormulario && duenoFormulario === usuarioActual?.id);
+  const puedeCompletarRespuestas = puedeEditarRespuestasFormulario({
+    rol: rolActual,
+    usuarioId: usuarioActual?.id,
+    duenoFormulario,
+  });
   /**
    * Modo de la pantalla: 'online' y 'campo' habilitan los controles de
    * Novedad/Aprobado por sección (revisión); solo 'campo' añade además el
@@ -821,9 +827,11 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
    * (cualquier formulario) y el técnico dueño de la visita (solo las suyas).
    * Debe coincidir con la validación de backend/src/routes/archivos.js.
    */
-  const puedeEliminarEvidencias =
-    ROLES_PUEDEN_ELIMINAR_EVIDENCIA.includes(rolActual) ||
-    (rolActual === 'tecnico' && !!duenoFormulario && duenoFormulario === usuarioActual?.id);
+  const puedeEliminarEvidencias = puedeGestionarEvidenciasFormulario({
+    rol: rolActual,
+    usuarioId: usuarioActual?.id,
+    duenoFormulario,
+  });
   /**
    * Quién puede AGREGAR evidencia nueva a una visita ya completada: los
    * mismos que pueden eliminarla (admin/coordinador y el técnico dueño).
