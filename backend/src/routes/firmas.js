@@ -8,8 +8,12 @@ const path = require('path');
 const { authenticateToken } = require('../middleware/auth');
 const db = require('../database');
 const storage = require('../storage');
+const { esTecnicoVigenteDelFormulario } = require('../lib/atribucion');
 
 const router = express.Router();
+
+/** Roles de supervisión: pueden tocar la evidencia de cualquier formulario. */
+const ROLES_COORDINACION = ['coordinador', 'interventor', 'gerente', 'admin'];
 
 /**
  * Convertir base64 a Buffer
@@ -200,15 +204,41 @@ router.post('/guardar-en-formulario', authenticateToken, async (req, res) => {
     // cualquier usuario autenticado podía sobrescribir la firma de un
     // formulario ajeno; y si se validaba al final, el archivo ya se había
     // subido a MinIO y registrado en la BD aunque luego se rechazara.
-    const ROLES_COORDINACION = ['coordinador', 'interventor', 'gerente', 'admin'];
+    //
+    // El dueño se resuelve con el MISMO criterio que usa la app para mostrar
+    // el botón «Cambiar firma» (resolverDuenoFormulario) y que PATCH
+    // /formularios/:id/respuesta: manda el snapshot `tecnico_json.usuario_id`
+    // (se reescribe al reasignar el beneficiario) y la columna queda de
+    // respaldo. Comparar contra la sola columna dejaba fuera a los
+    // formularios levantados "a nombre de" un técnico por un supervisor.
+    //
+    // Además se trae el técnico asignado HOY al beneficiario: cuando el
+    // técnico cambia y el interventor pide reemplazar las firmas, el nuevo
+    // responsable de la visita es ese técnico vigente — el mismo caso de las
+    // visitas heredadas que ya se admite al corregir respuestas.
     const propietario = await db.queryOne(
-      'SELECT usuario_id FROM formularios WHERE id = $1',
+      `SELECT COALESCE(NULLIF(tecnico_json->>'usuario_id', ''), usuario_id) AS usuario_id,
+              (SELECT CASE WHEN COUNT(DISTINCT b.tecnico_asignado_id) = 1
+                           THEN MIN(b.tecnico_asignado_id) END
+                 FROM beneficiarios b
+                WHERE TRIM(b.cedula) = TRIM(beneficiario_json->>'cedula')
+                  AND b.tecnico_asignado_id IS NOT NULL) AS tecnico_vigente
+         FROM formularios WHERE id = $1`,
       [formulario_id]
     );
     if (!propietario) {
       return res.status(404).json({ estado: 'error', mensaje: 'Formulario no encontrado' });
     }
-    if (propietario.usuario_id !== req.user.id && !ROLES_COORDINACION.includes(req.user.rol)) {
+    const esCoordinacion = ROLES_COORDINACION.includes(req.user.rol);
+    const esDueno = propietario.usuario_id === req.user.id;
+    const esTecnicoVigente =
+      req.user.rol === 'tecnico' &&
+      esTecnicoVigenteDelFormulario({
+        usuarioSolicitante: req.user.id,
+        duenoDelFormulario: propietario.usuario_id,
+        tecnicoVigente: propietario.tecnico_vigente,
+      });
+    if (!esCoordinacion && !esDueno && !esTecnicoVigente) {
       return res.status(403).json({
         estado: 'error',
         mensaje: 'No autorizado para modificar este formulario',
@@ -323,10 +353,10 @@ router.get('/:id', authenticateToken, async (req, res) => {
     if (!firma) {
       return res.status(404).json({ estado: 'error', mensaje: 'Firma no encontrada' });
     }
-    // Roles de supervisión ven la evidencia de cualquier técnico. Antes solo
-    // 'admin' era excepción, así que un coordinador listaba los archivos y
-    // recibía 403 al abrir cualquiera de ellos.
-    const ROLES_COORDINACION = ['coordinador', 'interventor', 'gerente', 'admin'];
+    // Roles de supervisión ven la evidencia de cualquier técnico (constante
+    // declarada arriba del archivo). Antes solo 'admin' era excepción, así
+    // que un coordinador listaba los archivos y recibía 403 al abrir
+    // cualquiera de ellos.
     if (!ROLES_COORDINACION.includes(req.user.rol) && firma.usuario_id !== req.user.id) {
       return res.status(403).json({ estado: 'error', mensaje: 'No autorizado' });
     }

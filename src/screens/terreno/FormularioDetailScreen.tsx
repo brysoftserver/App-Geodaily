@@ -30,6 +30,7 @@ import { COLORS, FONTS, SPACING, BORDER_RADIUS, SHADOWS, API_CONFIG } from '../.
 import { Formulario, DatosCaracterizacionNueva, FotoGeotag } from '../../types';
 import VideoPlayerModal from '../../components/VideoPlayerModal';
 import CapturaGPSPrecisa from '../../components/CapturaGPSPrecisa';
+import SignaturePad from '../../components/SignaturePad';
 import {
   resolverEvidenciasRemotas,
   cabecerasDeArchivo,
@@ -97,6 +98,7 @@ import { useRevisiones } from '../../hooks/useRevisiones';
 import { descargarPaqueteMedia } from '../../services/mediaPackage.service';
 import SeguimientoCoordinacionSection from '../../components/SeguimientoCoordinacionSection';
 import { actualizarRespuestaFormulario } from '../../services/formularios.service';
+import { guardarFirmaEnFormulario } from '../../services/firmas.service';
 
 type FormularioDetailScreenProps = {
   navigation: NativeStackNavigationProp<Record<string, any>>;
@@ -823,6 +825,15 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
   /** Evidencia que se está borrando (para mostrar el spinner) */
   const [eliminandoEvidenciaId, setEliminandoEvidenciaId] = useState<string | null>(null);
   /**
+   * Tipo de firma que se está reemplazando en este momento (null = cerrado).
+   * El interventor puede pedir cambiar una firma cuando el técnico de la
+   * visita cambió; se vuelve a capturar y se sube con
+   * /api/firmas/guardar-en-formulario, que solo toca ese campo del
+   * formulario (no hay que reenviar la visita completa).
+   */
+  const [firmaEditando, setFirmaEditando] = useState<'beneficiario' | 'tecnico' | null>(null);
+  const [guardandoFirma, setGuardandoFirma] = useState(false);
+  /**
    * Quién puede eliminar evidencias individuales: admin y coordinador
    * (cualquier formulario) y el técnico dueño de la visita (solo las suyas).
    * Debe coincidir con la validación de backend/src/routes/archivos.js.
@@ -1098,6 +1109,71 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
         { text: '🎥 Video', onPress: () => agregarEvidencia('video') },
       ],
     );
+  };
+
+  /**
+   * Reemplazar una firma ya registrada (beneficiario o técnico).
+   *
+   * Caso real: el técnico de la visita cambió y el interventor pide que las
+   * firmas queden a nombre de quien realmente atendió al beneficiario. Hasta
+   * ahora no había forma de cambiarlas: el detalle solo las mostraba y las
+   * pantallas de captura no vuelven a abrir el panel cuando ya existe una.
+   *
+   * Se usa el endpoint dedicado `guardar-en-formulario`, que sube la imagen a
+   * MinIO y actualiza solo esa columna del formulario (no hay que reenviar la
+   * visita completa). Sin señal, la firma queda guardada en el teléfono y se
+   * envía en el próximo sync.
+   */
+  const reemplazarFirma = async (tipo: 'beneficiario' | 'tecnico', dataUri: string) => {
+    if (guardandoFirma) return;
+    setGuardandoFirma(true);
+    const campo = tipo === 'beneficiario' ? 'firma_beneficiario' : 'firma_tecnico';
+    try {
+      const subida = await guardarFirmaEnFormulario(
+        formulario.id,
+        tipo,
+        dataUri,
+        formulario.beneficiario?.cedula,
+        formulario.beneficiario?.nombre,
+        formulario.tipo
+      );
+
+      const actualizado: Formulario = {
+        ...formulario,
+        [campo]: subida?.ruta || dataUri,
+        // Si no se pudo subir, el formulario queda pendiente de sincronizar
+        // para que la firma nueva no se pierda al cerrar la pantalla.
+        sincronizado: subida ? formulario.sincronizado : false,
+      };
+      setFormulario(actualizado);
+      await saveFormularioLocal(actualizado);
+
+      if (subida?.ruta) {
+        // Ya está en el servidor: la firma mostrada es el archivo más
+        // reciente de ese tipo, así que basta con volver a resolverlas.
+        const beneficiario = tipo === 'beneficiario' ? subida.ruta : formulario.firma_beneficiario;
+        const tecnico = tipo === 'tecnico' ? subida.ruta : formulario.firma_tecnico;
+        setFirmasResueltas(await resolverFirmasRemotas(formulario.id, beneficiario, tecnico));
+        // El PDF guardado en memoria es el anterior (lleva la firma vieja).
+        setPdfUri(null);
+        setShowPdf(false);
+        Alert.alert(
+          '✅ Firma actualizada',
+          `La firma del ${tipo === 'beneficiario' ? 'beneficiario' : 'técnico'} quedó reemplazada en esta visita.`
+        );
+      } else {
+        void syncNow();
+        Alert.alert(
+          'Firma guardada en este teléfono',
+          'No se pudo subir en este momento (puede ser falta de conexión). Quedó guardada y se enviará automáticamente en la próxima sincronización.'
+        );
+      }
+    } catch (e) {
+      console.warn('[Detalle] No se pudo reemplazar la firma:', e);
+      Alert.alert('Error', 'No se pudo guardar la firma. Verifica tu conexión e inténtalo de nuevo.');
+    } finally {
+      setGuardandoFirma(false);
+    }
   };
 
   /**
@@ -2049,9 +2125,15 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
             de arriba, pero no había forma de VERLAS en la pantalla; solo
             aparecían dentro del PDF. Los roles de supervisión necesitan
             poder revisarlas aquí mismo, sin generar el documento completo. */}
-        {(formulario.firma_beneficiario || formulario.firma_tecnico) && (
+        {(formulario.firma_beneficiario || formulario.firma_tecnico || puedeAgregarEvidencias) && (
           <View style={styles.fotosSection}>
             <Text style={styles.sectionTitle}>✍️ Firmas</Text>
+            {puedeAgregarEvidencias && (
+              <Text style={styles.firmasHint}>
+                Si el técnico de la visita cambió, reemplaza aquí la firma que pida el interventor: se
+                guarda sobre la anterior y sale así en el PDF.
+              </Text>
+            )}
             <View style={styles.firmasRow}>
               <View style={styles.firmaCard}>
                 <Text style={styles.firmaCardLabel}>
@@ -2087,6 +2169,19 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
                     <Text style={styles.firmaVaciaTexto}>No se pudo cargar</Text>
                   </View>
                 )}
+                {puedeAgregarEvidencias && (
+                  <TouchableOpacity
+                    style={styles.cambiarFirmaBtn}
+                    onPress={() => setFirmaEditando('beneficiario')}
+                    disabled={guardandoFirma}
+                    accessibilityRole="button"
+                    accessibilityLabel="Cambiar firma del beneficiario"
+                  >
+                    <Text style={styles.cambiarFirmaBtnText}>
+                      {formulario.firma_beneficiario ? '✎ Cambiar firma' : '✎ Firmar ahora'}
+                    </Text>
+                  </TouchableOpacity>
+                )}
               </View>
               <View style={styles.firmaCard}>
                 <Text style={styles.firmaCardLabel}>
@@ -2121,6 +2216,19 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
                   <View style={[styles.firmaImg, styles.firmaImgVacia]}>
                     <Text style={styles.firmaVaciaTexto}>No se pudo cargar</Text>
                   </View>
+                )}
+                {puedeAgregarEvidencias && (
+                  <TouchableOpacity
+                    style={styles.cambiarFirmaBtn}
+                    onPress={() => setFirmaEditando('tecnico')}
+                    disabled={guardandoFirma}
+                    accessibilityRole="button"
+                    accessibilityLabel="Cambiar firma del técnico"
+                  >
+                    <Text style={styles.cambiarFirmaBtnText}>
+                      {formulario.firma_tecnico ? '✎ Cambiar firma' : '✎ Firmar ahora'}
+                    </Text>
+                  </TouchableOpacity>
                 )}
               </View>
             </View>
@@ -2390,6 +2498,63 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
           )}
         </Pressable>
       </Modal>
+
+      {/* ✍️ Captura de firma para REEMPLAZAR una ya registrada. Se abre con
+          los botones «Cambiar firma» del detalle. Modal nativo (igual que el
+          Seguimiento de coordinación) para que el gesto de dibujar no se
+          confunda con el scroll de la pantalla que lo contiene. */}
+      <Modal
+        visible={firmaEditando !== null}
+        animationType="slide"
+        onRequestClose={() => !guardandoFirma && setFirmaEditando(null)}
+      >
+        <View style={[styles.firmaPadContainer, { paddingTop: insets.top + SPACING.sm }]}>
+          <View style={styles.firmaPadHeader}>
+            <Text style={styles.firmaPadTitle}>
+              ✍️{' '}
+              {firmaEditando === 'beneficiario'
+                ? 'Firma del Beneficiario'
+                : `Firma de ${formulario.tecnico?.nombre || 'Técnico'}`}
+            </Text>
+            <TouchableOpacity
+              onPress={() => setFirmaEditando(null)}
+              disabled={guardandoFirma}
+              accessibilityRole="button"
+              accessibilityLabel="Cerrar captura de firma"
+            >
+              <Text style={styles.firmaPadClose}>✕ Cerrar</Text>
+            </TouchableOpacity>
+          </View>
+          <Text style={styles.firmaPadHint}>
+            Al confirmar se REEMPLAZA la firma anterior de esta visita (no se agrega otra). Dibújala
+            de nuevo con el dedo dentro del recuadro blanco.
+          </Text>
+          {firmaEditando && (
+            <SignaturePad
+              key={firmaEditando}
+              onOK={(sig) => {
+                const tipo = firmaEditando;
+                setFirmaEditando(null);
+                void reemplazarFirma(tipo, sig);
+              }}
+              description={
+                firmaEditando === 'beneficiario' ? 'Firma del beneficiario' : 'Firma del técnico'
+              }
+              containerStyle={styles.firmaPadPad}
+              height={Dimensions.get('window').height * 0.45}
+            />
+          )}
+        </View>
+      </Modal>
+
+      {/* Velo mientras se sube la firma nueva: sin él se puede volver a tocar
+          «Cambiar firma» con el formulario ya actualizado en pantalla. */}
+      {guardandoFirma && (
+        <View style={styles.guardandoFirmaOverlay}>
+          <ActivityIndicator size="large" color={COLORS.primary} />
+          <Text style={styles.guardandoFirmaTexto}>Guardando firma…</Text>
+        </View>
+      )}
 
       {/* Botones inferiores */}
       <View style={[styles.bottomBar, { paddingBottom: insets.bottom + SPACING.sm }]}>
@@ -2826,6 +2991,69 @@ const styles = StyleSheet.create({
     fontSize: FONTS.sizes.xs,
     color: COLORS.textLight,
     fontStyle: 'italic',
+  },
+  firmasHint: {
+    fontSize: FONTS.sizes.xs,
+    color: COLORS.textSecondary,
+    marginBottom: SPACING.sm,
+  },
+  /** Botón "✎ Cambiar firma" — reemplaza una firma ya registrada */
+  cambiarFirmaBtn: {
+    marginTop: SPACING.xs,
+    paddingVertical: SPACING.xs,
+    paddingHorizontal: SPACING.sm,
+    borderRadius: BORDER_RADIUS.sm,
+    borderWidth: 1,
+    borderColor: COLORS.primary,
+    backgroundColor: COLORS.surfaceAlt,
+    alignItems: 'center',
+  },
+  cambiarFirmaBtnText: {
+    color: COLORS.primary,
+    fontSize: FONTS.sizes.xs,
+    fontWeight: FONTS.weights.semibold,
+  },
+  firmaPadContainer: {
+    flex: 1,
+    backgroundColor: COLORS.background,
+    paddingHorizontal: SPACING.md,
+  },
+  firmaPadHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: SPACING.sm,
+  },
+  firmaPadTitle: {
+    flex: 1,
+    fontSize: FONTS.sizes.lg,
+    fontWeight: FONTS.weights.bold,
+    color: COLORS.textPrimary,
+  },
+  firmaPadClose: {
+    fontSize: FONTS.sizes.sm,
+    color: COLORS.error,
+    fontWeight: FONTS.weights.semibold,
+  },
+  firmaPadHint: {
+    fontSize: FONTS.sizes.xs,
+    color: COLORS.textSecondary,
+    marginBottom: SPACING.sm,
+  },
+  firmaPadPad: {
+    flex: 1,
+  },
+  guardandoFirmaOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(0,0,0,0.45)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  guardandoFirmaTexto: {
+    marginTop: SPACING.sm,
+    color: '#fff',
+    fontSize: FONTS.sizes.sm,
+    fontWeight: FONTS.weights.semibold,
   },
   section: {
     backgroundColor: COLORS.surface,

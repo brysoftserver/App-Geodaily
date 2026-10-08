@@ -43,6 +43,20 @@ const FirmaDigitalScreen: React.FC<Props> = ({ navigation }) => {
     ]);
   };
 
+  /**
+   * Volver a firmar cuando ya había una firma registrada. El interventor
+   * puede pedir reemplazarla (por ejemplo porque cambió el técnico de la
+   * visita) y antes no había forma: si existía firma solo se mostraba el
+   * recuadro con el check, nunca el panel para dibujar.
+   *
+   * Solo se limpia el estado LOCAL: la firma del formulario en curso se
+   * sobrescribe cuando el usuario confirma la nueva (handleFirmaOK).
+   */
+  const cambiarFirma = () => {
+    setFirmaLocal(null);
+    setMostrarPad(true);
+  };
+
   const handleVolver = () => {
     if (firma) {
       setFirmaTecnico(firma);
@@ -80,6 +94,14 @@ const FirmaDigitalScreen: React.FC<Props> = ({ navigation }) => {
             <Text style={styles.autoSaveHint}>La firma se guardó automáticamente ✅</Text>
             <TouchableOpacity style={styles.contentGuardarBtn} onPress={handleGuardar}>
               <Text style={styles.contentGuardarBtnText}>💾 Guardar y volver</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.firmarButton}
+              onPress={cambiarFirma}
+              accessibilityRole="button"
+              accessibilityLabel="Cambiar firma del técnico"
+            >
+              <Text style={styles.firmarButtonText}>✎ Cambiar firma</Text>
             </TouchableOpacity>
           </>
         ) : (
