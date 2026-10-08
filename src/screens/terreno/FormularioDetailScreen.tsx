@@ -1141,12 +1141,19 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
       const actualizado: Formulario = {
         ...formulario,
         [campo]: subida?.ruta || dataUri,
-        // Si no se pudo subir, el formulario queda pendiente de sincronizar
-        // para que la firma nueva no se pierda al cerrar la pantalla.
+        // Solo si NO se pudo subir: el formulario queda pendiente de
+        // sincronizar para que la firma nueva no se pierda al cerrar la
+        // pantalla (el sync lo reenvía completo, ya con el base64).
         sincronizado: subida ? formulario.sincronizado : false,
       };
       setFormulario(actualizado);
-      await saveFormularioLocal(actualizado);
+
+      // Persistencia local best-effort: si SQLite no responde (arranque en
+      // frío, web) NO debe tumbar el flujo ni ocultar que la firma sí se
+      // subió — mismo criterio que eliminarEvidencia().
+      saveFormularioLocal(actualizado).catch((persistErr) =>
+        console.warn('[Detalle] No se pudo persistir la firma reemplazada:', persistErr)
+      );
 
       if (subida?.ruta) {
         // Ya está en el servidor: la firma mostrada es el archivo más
