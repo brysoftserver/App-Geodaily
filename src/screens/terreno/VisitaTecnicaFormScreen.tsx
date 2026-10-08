@@ -73,6 +73,8 @@ import {
   DESCRIPCION_ITEM,
   OBJETIVO_VISITA_DEFAULT,
   getVisitaTecnica,
+  resolverBeneficiarioVisita,
+  tieneDatosBeneficiario,
 } from '../../utils/visitaTecnica';
 
 type Props = {
@@ -251,9 +253,15 @@ const VisitaTecnicaFormScreen: React.FC<Props> = ({ navigation, route }) => {
 
   const totalFotosCtx = formularioActual?.fotos?.length ?? 0;
 
-  // El beneficiario puede venir del detalle (params) o de lo ya precargado
-  // en el contexto por `SeleccionarVisitaTecnica`.
-  const beneficiario = beneficiarioParam || formularioActual?.beneficiario || undefined;
+  // El beneficiario puede venir del detalle (params), de lo ya precargado en
+  // el contexto por `SeleccionarVisitaTecnica`, o del borrador que se retoma
+  // (que `aplicarBorrador` deja en el contexto). Se resuelve por prioridad y
+  // descartando objetos vacíos: antes bastaba con que llegara un objeto sin
+  // nombre ni cédula para que el ítem 1 se diera por no diligenciado.
+  const beneficiario = resolverBeneficiarioVisita(
+    beneficiarioParam,
+    formularioActual?.beneficiario
+  );
 
   // ─── Identificación (ítem 1: "desplegable con los datos") ─
   const nombreBenef = beneficiario?.nombre;
@@ -286,6 +294,16 @@ const VisitaTecnicaFormScreen: React.FC<Props> = ({ navigation, route }) => {
     const aplicarBorrador = (draft: FormDraft) => {
       formIdRef.current = draft.id;
       iniciarFormulario('visita_tecnica', draft.id);
+      // Restaurar el beneficiario del borrador. `iniciarFormulario` solo
+      // conserva el que ya estuviera en el contexto; al reabrir un borrador
+      // desde "Formularios Incompletos" no llega ningún parámetro y el
+      // contexto suele estar vacío (la app se cerró, o el técnico venía de
+      // otro beneficiario), así que el ítem 1 quedaba sin diligenciar y al
+      // completar aparecía "Beneficiario (ítem 1)" aunque el dato sí estaba
+      // guardado en el borrador.
+      if (tieneDatosBeneficiario(draft.beneficiario)) {
+        setBeneficiario(draft.beneficiario);
+      }
       setData(hidratarEstado(draft.actividad, draft.actividad?.visita_numero ?? visitaNumero));
       if (draft.fotos?.length) {
         for (const foto of draft.fotos) addFoto(foto);

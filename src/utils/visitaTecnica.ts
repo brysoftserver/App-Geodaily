@@ -14,6 +14,8 @@
 // los borradores correctamente desde "Formularios Incompletos".
 // ============================================================
 
+import { DatosBeneficiario } from '../types';
+
 export type FormatoVisita = 'v2';
 
 export interface VisitaTecnicaDef {
@@ -72,6 +74,39 @@ export const esVisitaTecnicaV2 = (
  */
 export const tituloVisitaTecnica = (numero?: number): string =>
   numero != null ? `Visita Técnica ${numero}` : 'Visita Técnica';
+
+/**
+ * ¿El beneficiario trae datos utilizables? Basta con nombre O cédula: hay
+ * beneficiarios sin cédula capturada y, si solo se aceptara el nombre, se
+ * perderían al retomar un borrador.
+ */
+export const tieneDatosBeneficiario = (
+  beneficiario?: Partial<DatosBeneficiario> | null
+): boolean => !!beneficiario && (!!beneficiario.nombre || !!beneficiario.cedula);
+
+/**
+ * Beneficiario efectivo de una visita técnica, por orden de prioridad:
+ *
+ *   1. El que llega por parámetros de navegación (viene del detalle del
+ *      beneficiario → "Diligenciar").
+ *   2. El ya precargado en el contexto del formulario (lo deja
+ *      `SeleccionarVisitaTecnica` / `SeleccionarTipoFormulario`).
+ *   3. El guardado dentro del borrador que se está retomando.
+ *
+ * El paso 3 es imprescindible: al reabrir un borrador desde "Formularios
+ * Incompletos" NO se pasan parámetros y, si la app se cerró (o el técnico
+ * venía de otro beneficiario), el contexto puede estar vacío. Sin ese paso
+ * el ítem 1 quedaba sin diligenciar y al completar aparecía el error
+ * "Beneficiario (ítem 1)", aunque el dato sí estaba guardado en el borrador.
+ */
+export const resolverBeneficiarioVisita = (
+  deParametros?: Partial<DatosBeneficiario> | null,
+  delContexto?: Partial<DatosBeneficiario> | null,
+  delBorrador?: Partial<DatosBeneficiario> | null
+): DatosBeneficiario | undefined => {
+  const candidato = [deParametros, delContexto, delBorrador].find(tieneDatosBeneficiario);
+  return candidato ? (candidato as DatosBeneficiario) : undefined;
+};
 
 // ─── Valores por defecto del formulario de visita técnica ───
 
