@@ -137,6 +137,7 @@ export const API_CONFIG = {
     TRACKING: '/api/tracking',
     FIRMAS: '/api/firmas',
     DOCUMENTOS: '/api/documentos',
+    ANEXOS: '/api/anexos',
     VIDEOS: '/api/videos',
     ARCHIVOS: '/api/archivos',
     IA: '/api/ia',

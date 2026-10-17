@@ -20,6 +20,7 @@ import { useForm } from '../../store/FormContext';
 import { useAuth } from '../../store/AuthContext';
 import { getFormulariosLocales } from '../../services/database';
 import { fetchFormulariosDelServidor } from '../../services/formularios.service';
+import { useSyncMapData } from '../../hooks/useSyncMapData';
 import MetricCard from '../../components/MetricCard';
 import LoadingSpinner from '../../components/LoadingSpinner';
 import BotonPdfDashboard from '../../components/dashboard/BotonPdfDashboard';
@@ -39,6 +40,10 @@ const DashboardGerencialScreen: React.FC<DashboardGerencialProps> = ({ navigatio
   const [loadingGerencial, setLoadingGerencial] = useState(true);
   const [refreshingGerencial, setRefreshingGerencial] = useState(false);
   const [gerencialError, setGerencialError] = useState<string | null>(null);
+
+  // Datos reales de terreno (mediciones GPS + plantaciones) para las tarjetas
+  // de hectáreas medidas y plantas sembradas.
+  const { mediciones, plantaciones, loadAll: loadTerreno } = useSyncMapData();
 
   // Cargar datos del servidor + local
   const loadGerencialData = useCallback(async () => {
@@ -73,6 +78,9 @@ const DashboardGerencialScreen: React.FC<DashboardGerencialProps> = ({ navigatio
   useEffect(() => { loadGerencialData(); }, [loadGerencialData]);
   useFocusEffect(useCallback(() => { loadGerencialData(); }, [loadGerencialData]));
 
+  // Cargar datos de terreno al enfocar la pantalla
+  useFocusEffect(useCallback(() => { loadTerreno(); }, [loadTerreno]));
+
   const metrics = useMemo(() => {
     const total = formularios.length;
     const hoy = getLocalDateString();
@@ -82,6 +90,25 @@ const DashboardGerencialScreen: React.FC<DashboardGerencialProps> = ({ navigatio
     const tecnicosUnicos = new Set(formularios.map(f => f.tecnico?.nombre || '')).size;
     return { total, visitasHoy, sincronizadas, pendientes, tecnicosUnicos };
   }, [formularios]);
+
+  // Métricas reales de terreno
+  const terreno = useMemo(() => {
+    let hectareas = 0;
+    for (const m of mediciones) {
+      const ha = Number(m.area_hectareas);
+      if (Number.isFinite(ha) && ha > 0) hectareas += ha;
+    }
+    let plantas = 0;
+    for (const p of plantaciones) {
+      const cant = Number(p.cantidad);
+      if (Number.isFinite(cant) && cant > 0) plantas += cant;
+    }
+    return {
+      hectareas: Math.round(hectareas * 100) / 100,
+      mediciones: mediciones.length,
+      plantas,
+    };
+  }, [mediciones, plantaciones]);
 
   // Datos para gráfico de tendencia
   const chartData = useMemo(() => {
@@ -142,6 +169,32 @@ const DashboardGerencialScreen: React.FC<DashboardGerencialProps> = ({ navigatio
         <MetricCard titulo="Sincronizadas" valor={metrics.sincronizadas} color={COLORS.success} />
         <MetricCard titulo="Pendientes" valor={metrics.pendientes} color={COLORS.warning} />
         <MetricCard titulo="Técnicos Activos" valor={metrics.tecnicosUnicos} color={COLORS.roleTecnico} />
+      </View>
+
+      {/* Métricas reales de terreno (mediciones GPS + plantaciones) */}
+      <Text style={styles.sectionTitle}>Datos de terreno</Text>
+      <View style={styles.metricsGrid}>
+        <MetricCard
+          titulo="Hectáreas medidas"
+          valor={`${terreno.hectareas} ha`}
+          icono="📐"
+          color={COLORS.primary}
+          subtitulo="Área medida con GPS"
+        />
+        <MetricCard
+          titulo="Mediciones"
+          valor={terreno.mediciones}
+          icono="📍"
+          color={COLORS.info}
+          subtitulo="Registros de terreno"
+        />
+        <MetricCard
+          titulo="Plantas sembradas"
+          valor={terreno.plantas.toLocaleString()}
+          icono="🌱"
+          color={COLORS.success}
+          subtitulo="Total en plantaciones"
+        />
       </View>
 
       {/* Accesos rápidos */}
@@ -234,6 +287,10 @@ const styles = StyleSheet.create({
   subtitle: { fontSize: FONTS.sizes.sm, color: COLORS.textSecondary, marginBottom: SPACING.md },
   metricsGrid: {
     flexDirection: 'row', flexWrap: 'wrap', gap: SPACING.sm, marginBottom: SPACING.md,
+  },
+  sectionTitle: {
+    fontSize: FONTS.sizes.lg, fontWeight: FONTS.weights.semibold,
+    color: COLORS.textPrimary, marginBottom: SPACING.sm,
   },
   quickActions: {
     flexDirection: 'row', gap: SPACING.sm, marginBottom: SPACING.md,

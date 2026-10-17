@@ -78,6 +78,14 @@ const MENU_ITEMS = [
     color: COLORS.info,
     screen: 'TerrenoCapacitacion',
   },
+  {
+    id: 'anexos',
+    title: 'Anexos',
+    subtitle: 'Carpetas y documentos propios (explorador de archivos)',
+    icon: '🗂️',
+    color: COLORS.primary,
+    screen: 'Anexos',
+  },
   // cerrar se renderiza por separado (después del panel de sincronización)
 ];
 

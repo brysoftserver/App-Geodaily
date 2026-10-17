@@ -109,6 +109,8 @@ interface VisitaFormState {
   recomendaciones: string;
   // Ítem 8
   compromisos: CompromisoRow[];
+  /** Ítem 8: el técnico marca que NO hay compromisos para la próxima visita. */
+  sin_compromisos: boolean;
   // Ítem 10
   observaciones: string;
 }
@@ -119,6 +121,38 @@ const nuevoCompromiso = (texto = '', activo = true): CompromisoRow => ({
   texto,
   activo,
 });
+
+/**
+ * Sanea el texto del área de intervención (hectáreas).
+ * - Solo dígitos y UN separador decimal (`.` o `,`).
+ * - Máximo 2 decimales.
+ * - Evita valores como "1,5,3", "..", "1.2.3".
+ * Devuelve el texto listo para mostrar/guardar.
+ */
+const sanearArea = (raw: string): string => {
+  // Normaliza comas a punto y descarta todo lo que no sea dígito o punto.
+  const limpio = raw.replace(/,/g, '.').replace(/[^0-9.]/g, '');
+  const [entero, ...resto] = limpio.split('.');
+  if (resto.length === 0) return entero;
+  // Conserva solo el primer punto y hasta 2 decimales.
+  return `${entero}.${resto.join('').slice(0, 2)}`;
+};
+
+/**
+ * Sanea el texto de la valoración del cumplimiento (%).
+ * - Solo dígitos, máximo 3.
+ * - Rechaza valores > 100.
+ * - Normaliza ceros a la izquierda ("000" → "0", "007" → "7") para que no
+ *   se muestre "000%" ni se confunda con un valor vacío.
+ * Devuelve `null` si el valor debe rechazarse (no se actualiza el estado).
+ */
+const sanearValoracion = (raw: string): string | null => {
+  const limpio = raw.replace(/[^0-9]/g, '').slice(0, 3);
+  if (limpio === '') return '';
+  const n = Number(limpio);
+  if (n > 100) return null;
+  return String(n);
+};
 
 /** Construye el estado inicial del formulario. */
 const crearEstadoInicial = (): VisitaFormState => ({
@@ -134,6 +168,7 @@ const crearEstadoInicial = (): VisitaFormState => ({
   valoracion_cumplimiento: '',
   recomendaciones: '',
   compromisos: COMPROMISOS_VISITA_DEFAULT.map((t) => nuevoCompromiso(t, false)),
+  sin_compromisos: false,
   observaciones: '',
 });
 
@@ -163,6 +198,11 @@ const hidratarEstado = (actividad: ActividadRealizada | undefined, numeroVisita:
   // Fallback: borrador v2 guardado solo con los campos legibles.
   // La `descripcion` es el texto de la visita, pero si quedó el valor por
   // defecto (`Visita Técnica N`) no sirve como contenido editable.
+  //
+  // LIMITACIÓN CONOCIDA: los borradores v2 antiguos (sin `visita_datos`) no
+  // guardaban altitud ni precisión GPS en ningún campo legible, por lo que
+  // esos dos valores no se pueden recuperar aquí. Los borradores nuevos sí
+  // los conservan porque `visita_datos` guarda el estado completo.
   const descripcion = actividad.descripcion && actividad.descripcion !== `Visita Técnica ${numeroVisita}`
     ? actividad.descripcion
     : '';
@@ -186,6 +226,7 @@ const hidratarEstado = (actividad: ActividadRealizada | undefined, numeroVisita:
       ...COMPROMISOS_VISITA_DEFAULT.map((t) => nuevoCompromiso(t, activos.has(t))),
       ...extras.map((t) => nuevoCompromiso(t, true)),
     ],
+    sin_compromisos: (actividad.compromisos_siguiente_visita || []).length === 0,
   };
 };
 
@@ -264,13 +305,20 @@ const VisitaTecnicaFormScreen: React.FC<Props> = ({ navigation, route }) => {
   );
 
   // ─── Identificación (ítem 1: "desplegable con los datos") ─
+  // El ítem pide un desplegable con los datos del beneficiario. Antes solo
+  // se ofrecía UNA opción (nombre — C.C.) y, si el beneficiario llegaba sin
+  // nombre ni cédula, el desplegable desaparecía y caía a texto libre. Ahora
+  // se ofrecen todas las variantes útiles (nombre, cédula y combinación) para
+  // que el técnico elija sin escribir, y se conserva el texto libre como
+  // último recurso cuando no hay ningún dato.
   const nombreBenef = beneficiario?.nombre;
   const cedulaBenef = beneficiario?.cedula;
   const opcionesIdentificacion = React.useMemo(() => {
-    const etiqueta = [nombreBenef, cedulaBenef ? `C.C. ${cedulaBenef}` : '']
-      .filter(Boolean)
-      .join(' — ');
-    return etiqueta ? [etiqueta] : [];
+    const opciones: string[] = [];
+    if (nombreBenef && cedulaBenef) opciones.push(`${nombreBenef} — C.C. ${cedulaBenef}`);
+    if (nombreBenef) opciones.push(nombreBenef);
+    if (cedulaBenef) opciones.push(`C.C. ${cedulaBenef}`);
+    return Array.from(new Set(opciones));
   }, [nombreBenef, cedulaBenef]);
 
   const fotos = formularioActual?.fotos || [];
@@ -374,9 +422,11 @@ const VisitaTecnicaFormScreen: React.FC<Props> = ({ navigation, route }) => {
     if (formularioActual?.id) formIdRef.current = formularioActual.id;
   }, [formularioActual?.id]);
 
-  // Autoseleccionar la identificación cuando ya se conocen los datos
+  // Autoseleccionar la identificación cuando ya se conocen los datos.
+  // Se toma la primera opción (la más completa: "Nombre — C.C. X") solo si
+  // el técnico aún no ha elegido nada, para no pisar su selección.
   useEffect(() => {
-    if (!data.no_identificacion && opcionesIdentificacion.length === 1) {
+    if (!data.no_identificacion && opcionesIdentificacion.length > 0) {
       set('no_identificacion', opcionesIdentificacion[0]);
     }
   }, [opcionesIdentificacion, data.no_identificacion, set]);
@@ -390,7 +440,9 @@ const VisitaTecnicaFormScreen: React.FC<Props> = ({ navigation, route }) => {
         ? [{ latitud: lat, longitud: lon, orden: 0 }]
         : undefined;
 
-    const compromisosActivos = data.compromisos.filter((c) => c.activo && c.texto.trim()).map((c) => c.texto.trim());
+    const compromisosActivos = data.sin_compromisos
+      ? []
+      : data.compromisos.filter((c) => c.activo && c.texto.trim()).map((c) => c.texto.trim());
 
     return {
       descripcion: data.descripcion_visita.trim() || `Visita Técnica ${visitaNumero}`,
@@ -404,7 +456,7 @@ const VisitaTecnicaFormScreen: React.FC<Props> = ({ navigation, route }) => {
       seguimiento_compromisos: data.seguimiento_compromisos.trim(),
       valoracion_cumplimiento: data.valoracion_cumplimiento,
       compromisos_siguiente_visita: compromisosActivos,
-      area_intervencion: data.area_intervencion.trim() || undefined,
+      area_intervencion: sanearArea(data.area_intervencion) || undefined,
       poligono,
       visita_datos: data as unknown as Record<string, unknown>,
     };
@@ -486,6 +538,9 @@ const VisitaTecnicaFormScreen: React.FC<Props> = ({ navigation, route }) => {
       data.latitud ||
       data.valoracion_cumplimiento ||
       data.no_identificacion ||
+      data.area_intervencion.trim() ||
+      data.sin_compromisos ||
+      data.compromisos.some((c) => c.activo && c.texto.trim()) ||
       (currentForm?.fotos?.length || 0) > 0
     );
   }, [data, formularioActual]);
@@ -613,7 +668,10 @@ const VisitaTecnicaFormScreen: React.FC<Props> = ({ navigation, route }) => {
     if (!data.seguimiento_compromisos.trim()) f.push('Seguimiento a compromisos (ítem 5)');
     if (!data.valoracion_cumplimiento.trim()) f.push('Valoración del cumplimiento (ítem 6)');
     if (!data.recomendaciones.trim()) f.push('Recomendaciones (ítem 7)');
-    if (!data.compromisos.some((c) => c.activo && c.texto.trim())) f.push('Compromisos para la próxima visita (ítem 8)');
+    // Ítem 8: se exige al menos un compromiso activo O marcar "sin compromisos".
+    if (!data.sin_compromisos && !data.compromisos.some((c) => c.activo && c.texto.trim())) {
+      f.push('Compromisos para la próxima visita (ítem 8)');
+    }
     if (fotos.length === 0) f.push('Registro fotográfico (ítem 9)');
     if (!data.observaciones.trim()) f.push('Observaciones de la visita (ítem 10)');
     return f;
@@ -956,7 +1014,7 @@ const VisitaTecnicaFormScreen: React.FC<Props> = ({ navigation, route }) => {
           <TextInput
             style={styles.input}
             value={data.area_intervencion}
-            onChangeText={(v) => set('area_intervencion', v.replace(/[^0-9.,]/g, ''))}
+            onChangeText={(v) => set('area_intervencion', sanearArea(v))}
             keyboardType="decimal-pad"
             placeholder="Ej. 1.5"
             placeholderTextColor={COLORS.textLight}
@@ -992,9 +1050,8 @@ const VisitaTecnicaFormScreen: React.FC<Props> = ({ navigation, route }) => {
               style={[styles.input, styles.inputPorcentaje]}
               value={data.valoracion_cumplimiento}
               onChangeText={(v) => {
-                const limpio = v.replace(/[^0-9]/g, '').slice(0, 3);
-                const n = Number(limpio);
-                if (limpio === '' || n <= 100) set('valoracion_cumplimiento', limpio);
+                const limpio = sanearValoracion(v);
+                if (limpio !== null) set('valoracion_cumplimiento', limpio);
               }}
               keyboardType="number-pad"
               placeholder="0"
@@ -1063,57 +1120,73 @@ const VisitaTecnicaFormScreen: React.FC<Props> = ({ navigation, route }) => {
           numero={8}
           titulo={`Compromisos para la ${visitaNumero + 1}ª visita`}
           ayuda="Selecciona los compromisos adquiridos (puedes agregar los tuyos)"
-          completo={data.compromisos.some((c) => c.activo && c.texto.trim())}
+          completo={data.sin_compromisos || data.compromisos.some((c) => c.activo && c.texto.trim())}
         >
-          {data.compromisos.map((c, index) => (
-            <View key={c.id} style={styles.compromisoRow}>
-              <Switch
-                value={c.activo}
-                onValueChange={(v) =>
-                  setData((prev) => ({
-                    ...prev,
-                    compromisos: prev.compromisos.map((x, i) => (i === index ? { ...x, activo: v } : x)),
-                  }))
-                }
-                trackColor={{ false: COLORS.border, true: COLORS.primaryLight }}
-                thumbColor={c.activo ? COLORS.primary : '#f4f3f4'}
-              />
-              <TextInput
-                style={[styles.input, styles.inputCompromiso]}
-                value={c.texto}
-                onChangeText={(v) =>
-                  setData((prev) => ({
-                    ...prev,
-                    compromisos: prev.compromisos.map((x, i) => (i === index ? { ...x, texto: v } : x)),
-                  }))
-                }
-                placeholder="Descripción del compromiso"
-                placeholderTextColor={COLORS.textLight}
-              />
+          <View style={styles.compromisoRow}>
+            <Switch
+              value={data.sin_compromisos}
+              onValueChange={(v) => set('sin_compromisos', v)}
+              trackColor={{ false: COLORS.border, true: COLORS.primaryLight }}
+              thumbColor={data.sin_compromisos ? COLORS.primary : '#f4f3f4'}
+            />
+            <Text style={styles.sinCompromisosText}>
+              Sin compromisos para la próxima visita (no aplica)
+            </Text>
+          </View>
+
+          {!data.sin_compromisos && (
+            <>
+              {data.compromisos.map((c, index) => (
+                <View key={c.id} style={styles.compromisoRow}>
+                  <Switch
+                    value={c.activo}
+                    onValueChange={(v) =>
+                      setData((prev) => ({
+                        ...prev,
+                        compromisos: prev.compromisos.map((x, i) => (i === index ? { ...x, activo: v } : x)),
+                      }))
+                    }
+                    trackColor={{ false: COLORS.border, true: COLORS.primaryLight }}
+                    thumbColor={c.activo ? COLORS.primary : '#f4f3f4'}
+                  />
+                  <TextInput
+                    style={[styles.input, styles.inputCompromiso]}
+                    value={c.texto}
+                    onChangeText={(v) =>
+                      setData((prev) => ({
+                        ...prev,
+                        compromisos: prev.compromisos.map((x, i) => (i === index ? { ...x, texto: v } : x)),
+                      }))
+                    }
+                    placeholder="Descripción del compromiso"
+                    placeholderTextColor={COLORS.textLight}
+                  />
+                  <TouchableOpacity
+                    onPress={() =>
+                      setData((prev) => ({
+                        ...prev,
+                        compromisos: prev.compromisos.filter((_, i) => i !== index),
+                      }))
+                    }
+                    hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                    activeOpacity={0.7}
+                  >
+                    <Text style={styles.eliminarCompromiso}>✕</Text>
+                  </TouchableOpacity>
+                </View>
+              ))}
+
               <TouchableOpacity
+                style={styles.agregarBtn}
                 onPress={() =>
-                  setData((prev) => ({
-                    ...prev,
-                    compromisos: prev.compromisos.filter((_, i) => i !== index),
-                  }))
+                  setData((prev) => ({ ...prev, compromisos: [...prev.compromisos, nuevoCompromiso('', true)] }))
                 }
-                hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
                 activeOpacity={0.7}
               >
-                <Text style={styles.eliminarCompromiso}>✕</Text>
+                <Text style={styles.agregarBtnText}>+ Agregar compromiso</Text>
               </TouchableOpacity>
-            </View>
-          ))}
-
-          <TouchableOpacity
-            style={styles.agregarBtn}
-            onPress={() =>
-              setData((prev) => ({ ...prev, compromisos: [...prev.compromisos, nuevoCompromiso('', true)] }))
-            }
-            activeOpacity={0.7}
-          >
-            <Text style={styles.agregarBtnText}>+ Agregar compromiso</Text>
-          </TouchableOpacity>
+            </>
+          )}
         </ItemCard>
 
         {/* ─── Ítem 9: Registro fotográfico ──────────────── */}
@@ -1356,6 +1429,7 @@ const styles = StyleSheet.create({
   compromisoRow: { flexDirection: 'row', alignItems: 'center', marginBottom: SPACING.sm },
   inputCompromiso: { flex: 1, marginHorizontal: SPACING.sm },
   eliminarCompromiso: { fontSize: 18, color: COLORS.error, paddingHorizontal: SPACING.xs },
+  sinCompromisosText: { flex: 1, marginLeft: SPACING.sm, color: COLORS.textPrimary, fontSize: FONTS.sizes.sm },
   agregarBtn: {
     marginTop: SPACING.xs,
     borderRadius: BORDER_RADIUS.md,

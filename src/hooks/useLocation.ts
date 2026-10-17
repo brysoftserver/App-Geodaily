@@ -49,6 +49,13 @@ interface LocationState {
   isLoading: boolean;
   error: string | null;
   permissionStatus: Location.PermissionStatus | null;
+  /**
+   * Si el servicio de ubicación del teléfono está ENCENDIDO (hardware).
+   * Distinto del permiso: puede estar concedido y el GPS apagado. En ese
+   * caso `getCurrentPositionAsync` nunca resuelve y la captura se cuelga.
+   * `undefined` = aún sin verificar.
+   */
+  gpsHabilitado: boolean | undefined;
 }
 
 interface OpcionesPosicion {
@@ -71,6 +78,7 @@ export const useLocation = () => {
     isLoading: false,
     error: null,
     permissionStatus: null,
+    gpsHabilitado: undefined,
   });
 
   const requestPermissions = useCallback(async (): Promise<boolean> => {
@@ -104,6 +112,49 @@ export const useLocation = () => {
             ...prev,
             isLoading: false,
             error: 'Permiso de ubicación denegado',
+          }));
+          return null;
+        }
+
+        // 0. Verificar que el servicio de ubicación esté ENCENDIDO. Si está
+        //    apagado, `getCurrentPositionAsync` se queda colgado hasta el
+        //    timeout y luego cae a una posición vieja/nula. Mejor detectarlo
+        //    de inmediato y avisar al técnico que encienda el GPS para el
+        //    trabajo offline.
+        const gpsHabilitado = await Location.hasServicesEnabledAsync().catch(() => true);
+        setState((prev) => ({ ...prev, gpsHabilitado }));
+        if (!gpsHabilitado) {
+          // Intentar al menos la última posición conocida (puede servir para
+          // georreferenciar la foto aunque el GPS esté apagado ahora mismo).
+          let ultima: Location.LocationObject | null = null;
+          try {
+            ultima = await Location.getLastKnownPositionAsync({
+              maxAge: ULTIMA_POSICION_MAX_AGE_MS,
+            });
+          } catch {
+            ultima = null;
+          }
+          if (ultima) {
+            const coords: Coordenadas = {
+              latitud: ultima.coords.latitude,
+              longitud: ultima.coords.longitude,
+              altitud: ultima.coords.altitude ?? undefined,
+              precision_gps: ultima.coords.accuracy ?? undefined,
+              heading: ultima.coords.heading ?? undefined,
+              timestamp: new Date(ultima.timestamp).toISOString(),
+            };
+            setState((prev) => ({
+              ...prev,
+              coordenadas: coords,
+              isLoading: false,
+              error: 'El GPS del teléfono está desactivado. Enciéndelo para el trabajo offline.',
+            }));
+            return coords;
+          }
+          setState((prev) => ({
+            ...prev,
+            isLoading: false,
+            error: 'El GPS del teléfono está desactivado. Enciéndelo para el trabajo offline.',
           }));
           return null;
         }

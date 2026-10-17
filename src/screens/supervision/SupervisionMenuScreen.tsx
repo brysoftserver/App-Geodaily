@@ -93,6 +93,14 @@ const MENU_ITEMS = [
     color: COLORS.success,
     screen: 'SupervisionPlantacionesPorTecnico',
   },
+  {
+    id: 'anexos',
+    title: 'Revisar Anexos',
+    subtitle: 'Carpetas y documentos subidos por los técnicos',
+    icon: '🗂️',
+    color: COLORS.roleCoordinador,
+    screen: 'RevisarAnexos',
+  },
 ];
 
 const SupervisionMenuScreen: React.FC<SupervisionMenuScreenProps> = ({ navigation }) => {

@@ -92,6 +92,14 @@ const MENU_ITEMS = [
     color: COLORS.success,
     screen: 'InterventorPlantacionesPorTecnico',
   },
+  {
+    id: 'anexos',
+    title: 'Revisar Anexos',
+    subtitle: 'Carpetas y documentos subidos por los técnicos',
+    icon: '🗂️',
+    color: COLORS.roleInterventor,
+    screen: 'RevisarAnexos',
+  },
 ];
 
 const InterventorMenuScreen: React.FC<InterventorMenuScreenProps> = ({ navigation }) => {

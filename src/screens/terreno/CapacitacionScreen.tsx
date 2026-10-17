@@ -45,6 +45,12 @@ const MATERIALES: MaterialEducativo[] = [
     descripcion: 'Presentación oficial del proyecto de cacao para el técnico de campo.',
     archivo: require('../../../assets/educacion_tecnicos/presentacion-proyecto-cacao-2026.pdf'),
   },
+  {
+    id: 'guia-toma-evidencias-fotograficas',
+    titulo: 'Guía para la Toma de Evidencias Fotográficas',
+    descripcion: 'Lineamientos para capturar correctamente las evidencias fotográficas en campo.',
+    archivo: require('../../../assets/educacion_tecnicos/guia-toma-evidencias-fotograficas.pdf'),
+  },
 ];
 
 const CapacitacionScreen: React.FC = () => {

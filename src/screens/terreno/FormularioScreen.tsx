@@ -22,6 +22,7 @@ import { COLORS, FONTS, SPACING, BORDER_RADIUS, SHADOWS, API_CONFIG } from '../.
 import { useAuth } from '../../store/AuthContext';
 import { useForm } from '../../store/FormContext';
 import { useLocation } from '../../hooks/useLocation';
+import { useGPS } from '../../store/GPSContext';
 import { resolverClimaYUbicacion } from '../../services/climate.service';
 import {
   getVeredasByMunicipio,
@@ -67,6 +68,7 @@ const FormularioScreen: React.FC<FormularioScreenProps> = ({ navigation, route }
     formularioActual,
   } = useForm();
   const { getCurrentPosition, coordenadas } = useLocation();
+  const { userLocation } = useGPS();
   const { syncNow } = useSync();
   const insets = useSafeAreaInsets();
 
@@ -193,7 +195,15 @@ const FormularioScreen: React.FC<FormularioScreenProps> = ({ navigation, route }
 
       // Solo obtener ubicación si no viene del draft
       if (!draftId) {
-        const coords = await getCurrentPosition();
+        // Reutilizar la posición del GPSContext si es reciente (<60 s): evita
+        // un fix nuevo (que puede tardar o colgarse) cuando ya tenemos una
+        // lectura viva del watch global. Si está vieja o no hay, se pide una
+        // fresca como antes.
+        const edadMs = userLocation?.timestamp
+          ? Date.now() - new Date(userLocation.timestamp).getTime()
+          : Infinity;
+        const coords =
+          userLocation && edadMs < 60000 ? userLocation : await getCurrentPosition();
         if (coords) {
           setCoordenadas(coords);
           // Best-effort: si no hay señal, el formulario se guarda igual con

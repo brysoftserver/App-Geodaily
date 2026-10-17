@@ -19,6 +19,7 @@ import SeguimientoFormScreen from '../screens/supervision/SeguimientoFormScreen'
 import SeguimientoListScreen from '../screens/supervision/SeguimientoListScreen';
 import SeguimientoIncompletosScreen from '../screens/supervision/SeguimientoIncompletosScreen';
 import SeguimientoDetailScreen from '../screens/supervision/SeguimientoDetailScreen';
+import RevisarAnexosScreen from '../screens/supervision/RevisarAnexosScreen';
 
 export type InterventorStackParamList = {
   InterventorMenu: undefined;
@@ -35,6 +36,7 @@ export type InterventorStackParamList = {
   InterventorFormularioDetail: { formulario: import('../types').Formulario; modo?: 'online' | 'campo' };
   BaseDatosBeneficiarios: undefined;
   InterventorPlantacionesPorTecnico: undefined;
+  RevisarAnexos: undefined;
 };
 
 const Stack = createNativeStackNavigator<InterventorStackParamList>();
@@ -125,6 +127,11 @@ const InterventorNavigator: React.FC = () => {
         name="InterventorPlantacionesPorTecnico"
         component={PlantacionesPorTecnicoScreen}
         options={{ title: 'Áreas de Plantación' }}
+      />
+      <Stack.Screen
+        name="RevisarAnexos"
+        component={RevisarAnexosScreen}
+        options={{ title: 'Revisar Anexos' }}
       />
     </Stack.Navigator>
   );

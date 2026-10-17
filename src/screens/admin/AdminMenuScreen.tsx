@@ -141,20 +141,20 @@ const MENU_ITEMS = [
     screen: 'AdminCapacitacion',
   },
   {
-    id: 'mapaTecnicos',
-    title: 'Mapa de Técnicos',
-    subtitle: 'Ubicación en tiempo real del equipo',
-    icon: '📍',
-    color: COLORS.roleGerente,
-    screen: 'AdminMapaTecnicos',
-  },
-  {
     id: 'plantaciones',
     title: 'Áreas de Plantación',
     subtitle: 'Áreas marcadas por técnico, vereda y beneficiario',
     icon: '🌱',
     color: COLORS.success,
     screen: 'AdminPlantacionesPorTecnico',
+  },
+  {
+    id: 'anexos',
+    title: 'Revisar Anexos',
+    subtitle: 'Carpetas y documentos subidos por los técnicos',
+    icon: '🗂️',
+    color: COLORS.roleAdmin,
+    screen: 'RevisarAnexos',
   },
 ];
 

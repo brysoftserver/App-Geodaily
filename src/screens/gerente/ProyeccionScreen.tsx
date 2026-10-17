@@ -13,10 +13,11 @@ import {
 } from 'react-native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { BarChart } from 'react-native-chart-kit';
-import { COLORS, FONTS, SPACING, BORDER_RADIUS, SHADOWS } from '../../theme';
+import { COLORS, FONTS, SPACING, BORDER_RADIUS, SHADOWS, API_CONFIG } from '../../theme';
 import { Formulario } from '../../types';
-import { getFormulariosLocales } from '../../services/database';
+import { getFormulariosLocales, getMediciones, getPlantaciones } from '../../services/database';
 import { fetchFormulariosDelServidor } from '../../services/formularios.service';
+import { useAuth } from '../../store/AuthContext';
 
 type ProyeccionProps = {
   navigation: NativeStackNavigationProp<Record<string, any>>;
@@ -29,8 +30,12 @@ const ESTIMACION_KG_HA = 800; // kg/ha/año en sistemas tradicionales
 const ARBOLES_POR_HA = 1200; // densidad típica cacao
 
 const ProyeccionScreen: React.FC<ProyeccionProps> = ({ navigation: _navigation }) => {
+  const { user, isAdmin, isCoordinador, isGerente, isInterventor } = useAuth();
+  const canViewAll = isAdmin || isCoordinador || isGerente || isInterventor;
   const [periodo, setPeriodo] = useState<'3m' | '6m' | '12m'>('12m');
   const [formularios, setFormularios] = useState<Formulario[]>([]);
+  const [mediciones, setMediciones] = useState<Record<string, any>[]>([]);
+  const [plantaciones, setPlantaciones] = useState<Record<string, any>[]>([]);
 
   // Cargar formularios reales (local + servidor)
   const loadData = useCallback(async () => {
@@ -48,9 +53,63 @@ const ProyeccionScreen: React.FC<ProyeccionProps> = ({ navigation: _navigation }
     }
   }, []);
 
+  // Cargar mediciones y plantaciones reales de terreno (local + servidor).
+  // Para roles con visión global se consulta el servidor (ven TODAS); si
+  // falla o no hay token, se cae al respaldo local sin romper la pantalla.
+  const loadTerreno = useCallback(async () => {
+    const token = user?.token;
+    // --- Mediciones ---
+    try {
+      if (canViewAll && token) {
+        const res = await fetch(`${API_CONFIG.BASE_URL}${API_CONFIG.ENDPOINTS.MEDICIONES}`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (res.ok) {
+          const data = await res.json();
+          if (Array.isArray(data?.mediciones)) {
+            setMediciones(data.mediciones);
+          } else {
+            setMediciones(await getMediciones());
+          }
+        } else {
+          setMediciones(await getMediciones());
+        }
+      } else {
+        setMediciones(await getMediciones());
+      }
+    } catch (error) {
+      console.warn('[Proyeccion] Error cargando mediciones:', error);
+      try { setMediciones(await getMediciones()); } catch { /* ignorar */ }
+    }
+    // --- Plantaciones ---
+    try {
+      if (canViewAll && token) {
+        const res = await fetch(`${API_CONFIG.BASE_URL}${API_CONFIG.ENDPOINTS.PLANTACIONES}`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (res.ok) {
+          const data = await res.json();
+          if (Array.isArray(data?.plantaciones)) {
+            setPlantaciones(data.plantaciones);
+          } else {
+            setPlantaciones(await getPlantaciones());
+          }
+        } else {
+          setPlantaciones(await getPlantaciones());
+        }
+      } else {
+        setPlantaciones(await getPlantaciones());
+      }
+    } catch (error) {
+      console.warn('[Proyeccion] Error cargando plantaciones:', error);
+      try { setPlantaciones(await getPlantaciones()); } catch { /* ignorar */ }
+    }
+  }, [canViewAll, user?.token]);
+
   useEffect(() => {
     loadData();
-  }, [loadData]);
+    loadTerreno();
+  }, [loadData, loadTerreno]);
 
   // Área REAL registrada: hectáreas reportadas en el paso sociodemográfico,
   // contando una sola vez a cada beneficiario (por cédula) aunque tenga
@@ -69,6 +128,39 @@ const ProyeccionScreen: React.FC<ProyeccionProps> = ({ navigation: _navigation }
 
   const arbolesEstimados = Math.round(areaHa * ARBOLES_POR_HA);
   const produccionAnualKg = Math.round(areaHa * ESTIMACION_KG_HA);
+
+  // --- Datos REALES de terreno ---
+  // Hectáreas medidas con GPS (suma de area_hectareas de las mediciones).
+  const hectareasMedidas = useMemo(() => {
+    let total = 0;
+    for (const m of mediciones) {
+      const ha = Number(m.area_hectareas);
+      if (Number.isFinite(ha) && ha > 0) total += ha;
+    }
+    return Math.round(total * 100) / 100;
+  }, [mediciones]);
+
+  const totalMediciones = mediciones.length;
+
+  // Plantas sembradas (suma de cantidad) y desglose por especie.
+  const { totalPlantas, plantasPorEspecie } = useMemo(() => {
+    const porEspecie = new Map<string, number>();
+    let total = 0;
+    for (const p of plantaciones) {
+      const cant = Number(p.cantidad);
+      const n = Number.isFinite(cant) && cant > 0 ? cant : 0;
+      total += n;
+      const especie = (p.especie && String(p.especie).trim()) || 'Desconocida';
+      porEspecie.set(especie, (porEspecie.get(especie) || 0) + n);
+    }
+    const lista = Array.from(porEspecie.entries())
+      .map(([especie, cantidad]) => ({ especie, cantidad }))
+      .sort((a, b) => b.cantidad - a.cantidad);
+    return { totalPlantas: total, plantasPorEspecie: lista };
+  }, [plantaciones]);
+
+  // Diferencia entre lo registrado en caracterizaciones y lo medido en campo.
+  const diferenciaHa = Math.round((hectareasMedidas - areaHa) * 100) / 100;
 
   const factorPeriodo = periodo === '3m' ? 0.25 : periodo === '6m' ? 0.5 : 1;
   const produccionPeriodo = Math.round(produccionAnualKg * factorPeriodo);
@@ -149,6 +241,56 @@ const ProyeccionScreen: React.FC<ProyeccionProps> = ({ navigation: _navigation }
 
       <Text style={styles.disclaimer}>* Estimación a $12.000/kg precio referencia cacao</Text>
 
+      {/* ============================================================
+          DATOS REALES DE TERRENO (mediciones GPS + plantaciones)
+          ============================================================ */}
+      <Text style={styles.sectionTitle}>Datos reales de terreno</Text>
+      <View style={styles.estimationGrid}>
+        <View style={styles.estCard}>
+          <Text style={styles.estIcon}>📐</Text>
+          <Text style={styles.estLabel}>Hectáreas medidas</Text>
+          <Text style={[styles.estValor, { color: COLORS.primary }]}>{hectareasMedidas} ha</Text>
+        </View>
+        <View style={styles.estCard}>
+          <Text style={styles.estIcon}>📍</Text>
+          <Text style={styles.estLabel}>Mediciones</Text>
+          <Text style={[styles.estValor, { color: COLORS.primary }]}>{totalMediciones}</Text>
+        </View>
+        <View style={styles.estCard}>
+          <Text style={styles.estIcon}>🌱</Text>
+          <Text style={styles.estLabel}>Plantas sembradas</Text>
+          <Text style={[styles.estValor, { color: COLORS.success }]}>{totalPlantas.toLocaleString()}</Text>
+        </View>
+        <View style={styles.estCard}>
+          <Text style={styles.estIcon}>⚖️</Text>
+          <Text style={styles.estLabel}>Diferencia vs registrado</Text>
+          <Text style={[styles.estValor, { color: diferenciaHa >= 0 ? COLORS.success : COLORS.error }]}>
+            {diferenciaHa >= 0 ? '+' : ''}{diferenciaHa} ha
+          </Text>
+        </View>
+      </View>
+      <Text style={styles.disclaimer}>
+        Comparación entre el área medida con GPS en terreno ({hectareasMedidas} ha) y el área
+        declarada en las caracterizaciones ({areaHa} ha).
+      </Text>
+
+      {/* Plantas por especie */}
+      {plantasPorEspecie.length > 0 && (
+        <View style={styles.infoCard}>
+          <Text style={styles.infoTitle}>Plantas sembradas por especie</Text>
+          {plantasPorEspecie.map(({ especie, cantidad }) => (
+            <View key={especie} style={styles.infoRow}>
+              <Text style={styles.infoLabel}>{especie}</Text>
+              <Text style={styles.infoValue}>{cantidad.toLocaleString()}</Text>
+            </View>
+          ))}
+          <View style={[styles.infoRow, styles.infoRowTotal]}>
+            <Text style={styles.infoLabelTotal}>Total</Text>
+            <Text style={styles.infoValueTotal}>{totalPlantas.toLocaleString()}</Text>
+          </View>
+        </View>
+      )}
+
       {/* Gráfico de proyección */}
       <View style={styles.chartCard}>
         <Text style={styles.chartTitle}>Proyección mensual de producción (kg)</Text>
@@ -211,6 +353,10 @@ const styles = StyleSheet.create({
   estLabel: { fontSize: FONTS.sizes.xs, color: COLORS.textSecondary },
   estValor: { fontSize: FONTS.sizes.xl, fontWeight: FONTS.weights.bold, color: COLORS.textPrimary, marginTop: 2 },
   disclaimer: { fontSize: FONTS.sizes.xs, color: COLORS.textLight, marginBottom: SPACING.md, fontStyle: 'italic' },
+  sectionTitle: {
+    fontSize: FONTS.sizes.lg, fontWeight: FONTS.weights.semibold,
+    color: COLORS.textPrimary, marginBottom: SPACING.sm,
+  },
   chartCard: {
     backgroundColor: COLORS.surface, borderRadius: BORDER_RADIUS.md,
     padding: SPACING.md, marginBottom: SPACING.md, ...SHADOWS.sm,
@@ -224,6 +370,11 @@ const styles = StyleSheet.create({
   infoRow: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 4 },
   infoLabel: { fontSize: FONTS.sizes.sm, color: COLORS.textSecondary },
   infoValue: { fontSize: FONTS.sizes.sm, fontWeight: FONTS.weights.medium, color: COLORS.textPrimary },
+  infoRowTotal: {
+    borderTopWidth: 1, borderTopColor: COLORS.border, marginTop: SPACING.xs, paddingTop: SPACING.sm,
+  },
+  infoLabelTotal: { fontSize: FONTS.sizes.sm, fontWeight: FONTS.weights.bold, color: COLORS.textPrimary },
+  infoValueTotal: { fontSize: FONTS.sizes.sm, fontWeight: FONTS.weights.bold, color: COLORS.primary },
 });
 
 export default ProyeccionScreen;

@@ -15,6 +15,7 @@ import {
   ActivityIndicator,
   AppState,
   AppStateStatus,
+  Modal,
 } from 'react-native';
 import * as Location from 'expo-location';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -35,7 +36,7 @@ import { normalizarVereda } from '../utils/corregimientos';
 import {
   saveVeredasCache,
   getVeredasCache,
-  isVeredasCacheFresh,
+  removeVeredaFromCache,
 } from '../services/database';
 
 // ============================================================
@@ -45,7 +46,6 @@ const PUERTO_RICO_CENTER = { latitud: 1.914, longitud: -75.145 };
 const ZOOM_MUNICIPIO = 13;
 const ZOOM_UBICACION = 15;
 const POLLING_INTERVAL_MS = 30000; // 30s
-const VEREDAS_CACHE_TTL = 86400000; // 24h
 
 type CapaActiva = 'plantaciones' | 'tecnicos' | 'mediciones' | 'veredas';
 
@@ -77,6 +77,9 @@ const MapaGeneralScreen: React.FC<{ navigation?: Record<string, any> }> = ({ nav
   const [veredasFeatures, setVeredasFeatures] = useState<Record<string, any>[] | null>(null);
   const [selectedItem, setSelectedItem] = useState<Record<string, any> | null>(null);
   const [selectedVereda, setSelectedVereda] = useState<Record<string, any> | null>(null);
+  // Confirmación de borrado con Modal propio (Alert.alert con botones NO
+  // funciona en Expo web, por eso no se usa aquí).
+  const [confirmarEliminar, setConfirmarEliminar] = useState<{ tipo: 'plantación' | 'medición' | 'vereda'; id: string; nombre?: string } | null>(null);
   const [showList, setShowList] = useState(false);
   const [mapCenter, setMapCenter] = useState<Coordenadas>(PUERTO_RICO_CENTER);
   const [mapZoom, setMapZoom] = useState(ZOOM_MUNICIPIO);
@@ -149,38 +152,36 @@ const MapaGeneralScreen: React.FC<{ navigation?: Record<string, any> }> = ({ nav
   const cargarVeredas = useCallback(async () => {
     setVeredasLoading(true);
     try {
-      // 1. Intentar desde cache local si está fresco
-      const fresco = await isVeredasCacheFresh(VEREDAS_CACHE_TTL);
-      if (fresco) {
-        const cache = await getVeredasCache();
-        if (cache.veredas.length > 0) {
-          setVeredasFeatures(cache.veredas);
-          setVeredasLoading(false);
-          return;
-        }
+      // 1. Mostrar el cache local de inmediato (si existe) para que el mapa
+      //    no parpadee. NO se retorna aquí: aunque el cache esté fresco,
+      //    SIEMPRE se revalida contra el servidor. Antes, un cache fresco
+      //    (<24h) evitaba la consulta y las veredas que el admin había
+      //    ocultado seguían apareciendo hasta que el cache expiraba.
+      const cache = await getVeredasCache();
+      if (cache.veredas.length > 0) {
+        setVeredasFeatures(cache.veredas);
       }
 
-      // 2. Descargar del servidor.
-      //    Antes usaba `fetch` crudo SIN cabecera Authorization: el endpoint
-      //    exige token, devolvía 401, y como solo se miraba `res.ok` fallaba
-      //    en silencio — el mapa se quedaba sin la capa de veredas y ni
-      //    siquiera caía al respaldo del caché.
+      // 2. Descargar del servidor (fuente de verdad, ya con las exclusiones
+      //    aplicadas). Antes usaba `fetch` crudo SIN cabecera Authorization:
+      //    el endpoint exige token, devolvía 401, y como solo se miraba
+      //    `res.ok` fallaba en silencio.
       const resp = await apiClient.get('/api/maps/veredas', { timeout: 20000 });
       {
         const data = resp.data;
-        if (data?.veredas && data.veredas.length > 0) {
+        if (data?.veredas) {
           const features = data.veredas.map((v: Record<string, any>) => ({
             ...v,
             geometry: v.geometry || { type: 'MultiPolygon', coordinates: [] },
           }));
           setVeredasFeatures(features);
-          // Guardar en cache local
+          // Guardar en cache local (ya sin las veredas excluidas)
           await saveVeredasCache(features, data.fuente || 'overpass');
         }
       }
     } catch (err) {
       console.warn('[MapaGeneral] Error al cargar veredas:', err);
-      // 3. Fallback: cache local aunque esté vencido
+      // 3. Fallback: cache local aunque esté vencido (modo offline)
       const cache = await getVeredasCache();
       if (cache.veredas.length > 0) {
         setVeredasFeatures(cache.veredas);
@@ -196,7 +197,14 @@ const MapaGeneralScreen: React.FC<{ navigation?: Record<string, any> }> = ({ nav
   const centrarEnMiUbicacion = useCallback(async () => {
     setLocating(true);
     try {
-      const coords = await getCurrentPosition();
+      // Reutilizar la posición del watch global si es reciente (<60 s):
+      // evita un fix nuevo que puede tardar o colgarse cuando ya hay una
+      // lectura viva. Si está vieja o no hay, se pide una fresca.
+      const edadMs = userLocation?.timestamp
+        ? Date.now() - new Date(userLocation.timestamp).getTime()
+        : Infinity;
+      const coords =
+        userLocation && edadMs < 60000 ? userLocation : await getCurrentPosition();
       if (coords) {
         setMapCenter({ latitud: coords.latitud, longitud: coords.longitud });
         setMapZoom(ZOOM_UBICACION);
@@ -218,7 +226,7 @@ const MapaGeneralScreen: React.FC<{ navigation?: Record<string, any> }> = ({ nav
     } finally {
       setLocating(false);
     }
-  }, [getCurrentPosition, setSiguiendo]);
+  }, [getCurrentPosition, setSiguiendo, userLocation]);
 
   const detenerSeguimiento = useCallback(() => {
     setSiguiendo(false);
@@ -364,46 +372,43 @@ const MapaGeneralScreen: React.FC<{ navigation?: Record<string, any> }> = ({ nav
   // Handlers
   // ============================================================
   const handleConfirmDelete = (tipo: 'plantación' | 'medición', id: string) => {
-    Alert.alert(`Eliminar ${tipo}`, `¿Estás seguro de eliminar esta ${tipo}? Esta acción no se puede deshacer.`, [
-      { text: 'Cancelar', style: 'cancel' },
-      {
-        text: 'Eliminar',
-        style: 'destructive',
-        onPress: () => {
-          if (tipo === 'plantación') eliminarPlantacion(id);
-          else eliminarMedicion(id);
-          setSelectedItem(null);
-        },
-      },
-    ]);
+    // Abre el Modal de confirmación (Alert.alert no muestra botones en web).
+    setConfirmarEliminar({ tipo, id });
   };
+
+  const ejecutarEliminar = useCallback(async () => {
+    const pendiente = confirmarEliminar;
+    if (!pendiente) return;
+    setConfirmarEliminar(null);
+    try {
+      if (pendiente.tipo === 'plantación') await eliminarPlantacion(pendiente.id);
+      else if (pendiente.tipo === 'medición') await eliminarMedicion(pendiente.id);
+      else if (pendiente.tipo === 'vereda') {
+        // Las veredas no son datos propios (vienen de OpenStreetMap/Overpass o
+        // de un fallback del backend) — "eliminar" en realidad es ocultarlas
+        // de la vista de la app (tabla `veredas_excluidas`).
+        await apiClient.delete(`/api/maps/veredas/${encodeURIComponent(pendiente.id)}`, {
+          data: { nombre: pendiente.nombre },
+        });
+        // Quitar también del caché local: si no, al recargar la pantalla se
+        // leía el caché (24h) y la vereda reaparecía aunque el servidor ya
+        // la hubiera excluido.
+        await removeVeredaFromCache(pendiente.id);
+        setVeredasFeatures((prev) => (prev ? prev.filter((v) => v.id !== pendiente.id) : prev));
+        setSelectedVereda(null);
+      }
+    } catch (err: any) {
+      Alert.alert('Error', err?.response?.data?.mensaje || `No se pudo eliminar la ${pendiente.tipo}`);
+    }
+    setSelectedItem(null);
+  }, [confirmarEliminar, eliminarPlantacion, eliminarMedicion]);
 
   // Las veredas no son datos propios (vienen de OpenStreetMap/Overpass o de
   // un fallback del backend) — "eliminar" en realidad es ocultarlas de la
   // vista de la app (tabla `veredas_excluidas`), no borrar el dato de origen.
+  // Se usa el Modal de confirmación (Alert.alert no muestra botones en web).
   const handleOcultarVereda = (id: string, nombre: string) => {
-    Alert.alert(
-      'Ocultar vereda',
-      `¿Ocultar "${nombre}" del mapa para todos los usuarios? Esto no borra el dato de OpenStreetMap, solo deja de mostrarse en la app.`,
-      [
-        { text: 'Cancelar', style: 'cancel' },
-        {
-          text: 'Ocultar',
-          style: 'destructive',
-          onPress: async () => {
-            try {
-              await apiClient.delete(`/api/maps/veredas/${encodeURIComponent(id)}`, {
-                data: { nombre },
-              });
-              setVeredasFeatures((prev) => (prev ? prev.filter((v) => v.id !== id) : prev));
-              setSelectedVereda(null);
-            } catch (err: any) {
-              Alert.alert('Error', err?.response?.data?.mensaje || 'No se pudo ocultar la vereda');
-            }
-          },
-        },
-      ]
-    );
+    setConfirmarEliminar({ tipo: 'vereda', id, nombre });
   };
 
   const totalPlantacionesEnVereda = (nombreVereda?: string): number => {
@@ -512,9 +517,11 @@ const MapaGeneralScreen: React.FC<{ navigation?: Record<string, any> }> = ({ nav
           plantaciones={plantaciones}
           mediciones={mediciones}
           posiciones={posiciones}
+          veredas={capasActivas.has('veredas') ? veredasFeatures || [] : []}
           isAdmin={isAdmin}
           onSelect={setSelectedItem}
           onDelete={handleConfirmDelete}
+          onDeleteVereda={handleOcultarVereda}
         />
       )}
 
@@ -542,6 +549,36 @@ const MapaGeneralScreen: React.FC<{ navigation?: Record<string, any> }> = ({ nav
           onDelete={handleOcultarVereda}
         />
       )}
+
+      {/* Modal: confirmar eliminación (Alert.alert no muestra botones en web) */}
+      <Modal visible={!!confirmarEliminar} transparent animationType="fade" onRequestClose={() => setConfirmarEliminar(null)}>
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <Text style={styles.modalTitle}>
+              {confirmarEliminar?.tipo === 'vereda' ? '🗺️ Ocultar vereda' : `🗑️ Eliminar ${confirmarEliminar?.tipo}`}
+            </Text>
+            <Text style={styles.confirmarTexto}>
+              {confirmarEliminar?.tipo === 'vereda'
+                ? `¿Ocultar "${confirmarEliminar?.nombre || 'esta vereda'}" del mapa para todos los usuarios? Esto no borra el dato de OpenStreetMap, solo deja de mostrarse en la app.`
+                : `¿Seguro que quieres eliminar esta ${confirmarEliminar?.tipo}? Esta acción no se puede deshacer.`}
+            </Text>
+            <TouchableOpacity
+              style={[styles.modalBtn, styles.modalBtnEliminar]}
+              onPress={ejecutarEliminar}
+            >
+              <Text style={styles.modalBtnTextEliminar}>
+                {confirmarEliminar?.tipo === 'vereda' ? 'Ocultar' : 'Eliminar'}
+              </Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.modalBtn, styles.modalBtnCancel]}
+              onPress={() => setConfirmarEliminar(null)}
+            >
+              <Text style={styles.modalBtnTextCancel}>Cancelar</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 };
@@ -605,6 +642,42 @@ const styles = StyleSheet.create({
     color: COLORS.primary,
     fontWeight: FONTS.weights.semibold,
   },
+  // Modal de confirmación de borrado
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: SPACING.lg,
+  },
+  modalContent: {
+    width: '100%',
+    maxWidth: 400,
+    backgroundColor: COLORS.surface,
+    borderRadius: BORDER_RADIUS.lg,
+    padding: SPACING.lg,
+  },
+  modalTitle: {
+    fontSize: FONTS.sizes.lg,
+    fontWeight: FONTS.weights.bold,
+    color: COLORS.textPrimary,
+    marginBottom: SPACING.sm,
+  },
+  confirmarTexto: {
+    fontSize: FONTS.sizes.md,
+    color: COLORS.textSecondary,
+    marginBottom: SPACING.lg,
+  },
+  modalBtn: {
+    paddingVertical: SPACING.md,
+    borderRadius: BORDER_RADIUS.md,
+    alignItems: 'center',
+    marginBottom: SPACING.sm,
+  },
+  modalBtnEliminar: { backgroundColor: COLORS.error },
+  modalBtnTextEliminar: { color: '#fff', fontSize: FONTS.sizes.md, fontWeight: FONTS.weights.bold },
+  modalBtnCancel: { backgroundColor: COLORS.background, borderWidth: 1, borderColor: COLORS.border },
+  modalBtnTextCancel: { color: COLORS.textPrimary, fontSize: FONTS.sizes.md, fontWeight: FONTS.weights.semibold },
 });
 
 export default MapaGeneralScreen;

@@ -88,6 +88,7 @@ app.use('/api/videos', require('./routes/videos'));
 app.use('/api/maps', require('./routes/maps'));
 app.use('/api/firmas', require('./routes/firmas'));
 app.use('/api/documentos', require('./routes/documentos'));
+app.use('/api/anexos', require('./routes/anexos'));
 app.use('/api/beneficiarios', require('./routes/beneficiarios'));
 app.use('/api/revisiones', require('./routes/revisiones'));
 app.use('/api/seguimientos', require('./routes/seguimientos'));

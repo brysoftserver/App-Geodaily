@@ -25,6 +25,7 @@ import PlantacionesPorTecnicoScreen from '../screens/supervision/PlantacionesPor
 import SupervisionFormularioListScreen from '../screens/supervision/FormularioListScreen';
 import FormularioDetailScreen from '../screens/terreno/FormularioDetailScreen';
 import BaseDatosBeneficiariosScreen from '../screens/supervision/BaseDatosBeneficiariosScreen';
+import RevisarAnexosScreen from '../screens/supervision/RevisarAnexosScreen';
 
 export type AdminStackParamList = {
   AdminMenu: undefined;
@@ -47,6 +48,7 @@ export type AdminStackParamList = {
   AdminMapaTecnicos: undefined;
   AdminPlantacionesPorTecnico: undefined;
   DashboardGerencial: undefined;
+  RevisarAnexos: undefined;
 };
 
 const Stack = createNativeStackNavigator<AdminStackParamList>();
@@ -167,6 +169,11 @@ const AdminNavigator: React.FC = () => {
         name="DashboardGerencial"
         component={DashboardGerencialScreen}
         options={{ title: 'Dashboard' }}
+      />
+      <Stack.Screen
+        name="RevisarAnexos"
+        component={RevisarAnexosScreen}
+        options={{ title: 'Revisar Anexos' }}
       />
     </Stack.Navigator>
   );

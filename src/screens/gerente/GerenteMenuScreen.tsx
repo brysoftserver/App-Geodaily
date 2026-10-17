@@ -77,14 +77,6 @@ const MENU_ITEMS = [
     screen: 'CapacitacionGerente',
   },
   {
-    id: 'mapa',
-    title: 'Mapa de Técnicos',
-    subtitle: 'Ubicación en tiempo real del equipo',
-    icon: '📍',
-    color: COLORS.roleGerente,
-    screen: 'MapaTecnicos',
-  },
-  {
     id: 'mapaGeneral',
     title: 'Mapa General',
     subtitle: 'Mapas, mediciones y tracking',
@@ -107,6 +99,14 @@ const MENU_ITEMS = [
     icon: '🌱',
     color: COLORS.success,
     screen: 'GerentePlantacionesPorTecnico',
+  },
+  {
+    id: 'anexos',
+    title: 'Revisar Anexos',
+    subtitle: 'Carpetas y documentos subidos por los técnicos',
+    icon: '🗂️',
+    color: COLORS.roleGerente,
+    screen: 'RevisarAnexos',
   },
 ];
 

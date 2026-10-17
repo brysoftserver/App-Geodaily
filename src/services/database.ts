@@ -2339,6 +2339,24 @@ export const getVeredasCache = async (): Promise<{
 };
 
 /**
+ * Quitar una vereda del caché local.
+ *
+ * Se usa cuando el admin oculta una vereda: el backend la guarda en
+ * `veredas_excluidas` y deja de servirla, pero el caché local (24h) todavía
+ * la tiene. Sin esto, al recargar la pantalla se leía el caché fresco y la
+ * vereda "reaparecía" aunque el servidor ya la hubiera excluido.
+ */
+export const removeVeredaFromCache = async (id: string): Promise<void> => {
+  const database = await ensureDb();
+  if (!database) return;
+  try {
+    await database.runAsync('DELETE FROM veredas_cache WHERE id = ?', [id]);
+  } catch (error) {
+    console.error('[DB] Error al quitar vereda del cache:', error);
+  }
+};
+
+/**
  * Verificar si el cache de veredas está vigente (menos de 24h)
  */
 export const isVeredasCacheFresh = async (maxAgeMs: number = 86400000): Promise<boolean> => {

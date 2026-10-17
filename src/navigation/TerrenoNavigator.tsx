@@ -15,6 +15,7 @@ import FormularioScreen from '../screens/terreno/FormularioScreen';
 import FormularioCaracterizacionScreen from '../screens/terreno/FormularioCaracterizacionScreen';
 import CamaraScreen from '../screens/terreno/CamaraScreen';
 import DocumentosScreen from '../screens/terreno/DocumentosScreen';
+import AnexosScreen from '../screens/terreno/AnexosScreen';
 import FirmaDigitalScreen from '../screens/terreno/FirmaDigitalScreen';
 import FirmaBeneficiarioScreen from '../screens/terreno/FirmaBeneficiarioScreen';
 import FirmaBiometricaScreen from '../screens/terreno/FirmaBiometricaScreen';
@@ -66,6 +67,8 @@ export type TerrenoStackParamList = {
     tipoFormulario?: string;
   };
   Documentos: { beneficiarioCedula?: string; beneficiarioNombre?: string } | undefined;
+  /** Explorador de anexos del técnico (carpetas y archivos libres en MinIO). */
+  Anexos: undefined;
   FirmaDigital: undefined;
   FirmaBeneficiario: undefined;
   FirmaBiometrica: undefined;
@@ -160,6 +163,11 @@ const TerrenoNavigator: React.FC = () => {
         name="Documentos"
         component={DocumentosScreen}
         options={{ title: 'Documentos de la Finca' }}
+      />
+      <Stack.Screen
+        name="Anexos"
+        component={AnexosScreen}
+        options={{ title: 'Anexos' }}
       />
       <Stack.Screen
         name="FirmaDigital"

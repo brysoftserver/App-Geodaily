@@ -39,6 +39,18 @@ import { FotoGeotag } from '../../types';
 import { saveFotoLocal, saveVideoLocal, deleteEvidenciaLocal } from '../../services/database';
 import { cabecerasDeArchivo } from '../../services/archivos.service';
 
+// Duración máxima de un video de evidencia (segundos). Debe coincidir con el
+// `maxDuration` de `recordAsync` y con el texto "máx. 30s" de la UI.
+const VIDEO_MAX_SEGUNDOS = 30;
+
+/** Formatea segundos como m:ss (p. ej. 7 → "0:07"). */
+const formatearDuracion = (segs: number): string => {
+  const total = Math.max(0, Math.floor(segs));
+  const m = Math.floor(total / 60);
+  const s = total % 60;
+  return `${m}:${String(s).padStart(2, '0')}`;
+};
+
 type CamaraScreenProps = {
   navigation: NativeStackNavigationProp<Record<string, any>>;
   route: RouteProp<Record<string, any> & { params: { mode?: 'photo' | 'video'; requisito?: string; formularioId?: string; beneficiarioCedula?: string; beneficiarioNombre?: string; tipoFormulario?: string } }, 'params'>;
@@ -69,6 +81,13 @@ const CamaraScreen: React.FC<CamaraScreenProps> = ({ navigation, route }) => {
   const [showCamera, setShowCamera] = useState(false);
   const [modoVideo, setModoVideo] = useState(esVideo);
   const [isRecording, setIsRecording] = useState(false);
+  // Contador de segundos de la grabación en curso (se muestra en pantalla).
+  // El técnico no veía cuánto llevaba grabando ni cuándo se acercaba el corte
+  // automático a los 30 s, así que muchas veces creía que el video "se había
+  // perdido" cuando en realidad la grabación ya había terminado sola.
+  const [segundosGrabacion, setSegundosGrabacion] = useState(0);
+  const grabacionTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const segundosGrabacionRef = useRef(0);
   const { capturarFoto, removeFoto, fotos, isLoading, setFotos } = useCamera();
   const { addFoto, removeFotoDelFormulario, formularioActual } = useForm();
   const { climaActual, isLoading: climaLoading, error: climaError, fetchClimate } = useClimate();
@@ -345,7 +364,11 @@ const CamaraScreen: React.FC<CamaraScreenProps> = ({ navigation, route }) => {
    * Si el GPS no llega, la evidencia se guarda igual y se reintenta el
    * geotag al encolarla con la última posición conocida.
    */
-  const procesarCapturaEnSegundoPlano = async (uri: string, esVideoCaptura: boolean) => {
+  const procesarCapturaEnSegundoPlano = async (
+    uri: string,
+    esVideoCaptura: boolean,
+    duracionSegundos?: number
+  ) => {
     setProcesandoEvidencia(true);
     try {
       const nuevaFoto = await capturarFoto(uri, undefined, esVideoCaptura);
@@ -357,6 +380,12 @@ const CamaraScreen: React.FC<CamaraScreenProps> = ({ navigation, route }) => {
         return;
       }
       nuevaFoto.tipo = esVideoCaptura ? 'video' : 'foto';
+      // Guarda la duración real del clip (segundos contados en vivo) para
+      // poder mostrarla en la tarjeta del video. Es solo informativo, viaja
+      // dentro de `metadata` (objeto libre) y no altera el esquema backend.
+      if (esVideoCaptura && typeof duracionSegundos === 'number') {
+        nuevaFoto.metadata = { ...(nuevaFoto.metadata || {}), duracionSegundos };
+      }
       const encolada = await guardarEvidenciaInmediata(nuevaFoto);
       if (!encolada) {
         Alert.alert(
@@ -395,18 +424,60 @@ const CamaraScreen: React.FC<CamaraScreenProps> = ({ navigation, route }) => {
     capturandoRef.current = false;
   }, []);
 
+  // ---- Contador de segundos de grabación de video ----
+  // Se arranca al empezar a grabar y se detiene al terminar. Es puramente
+  // visual (no interviene en el guardado) y se limpia al desmontar/cerrar la
+  // cámara para no dejar intervalos huérfanos.
+  const iniciarContadorGrabacion = useCallback(() => {
+    if (grabacionTimerRef.current) {
+      clearInterval(grabacionTimerRef.current);
+      grabacionTimerRef.current = null;
+    }
+    segundosGrabacionRef.current = 0;
+    setSegundosGrabacion(0);
+    grabacionTimerRef.current = setInterval(() => {
+      setSegundosGrabacion((s) => {
+        // Al llegar al máximo el clip se corta solo: se congela el contador.
+        const siguiente = s < VIDEO_MAX_SEGUNDOS ? s + 1 : s;
+        segundosGrabacionRef.current = siguiente;
+        return siguiente;
+      });
+    }, 1000);
+  }, []);
+
+  // Detiene el contador y devuelve los segundos transcurridos (para guardar
+  // la duración real del clip en la evidencia).
+  const detenerContadorGrabacion = useCallback((): number => {
+    if (grabacionTimerRef.current) {
+      clearInterval(grabacionTimerRef.current);
+      grabacionTimerRef.current = null;
+    }
+    return segundosGrabacionRef.current;
+  }, []);
+
   // Cerrar la cámara siempre cancela la cuenta: si quedara corriendo, el
   // disparo llegaría con la cámara ya desmontada (captura fantasma).
   const cerrarCamara = useCallback(() => {
     cancelarTemporizador();
+    detenerContadorGrabacion();
+    setSegundosGrabacion(0);
+    setIsRecording(false);
     setShowCamera(false);
-  }, [cancelarTemporizador]);
+  }, [cancelarTemporizador, detenerContadorGrabacion]);
 
   // Limpieza al desmontar y al cerrar la vista de cámara
   useEffect(() => cancelarTemporizador, [cancelarTemporizador]);
   useEffect(() => {
-    if (!showCamera) cancelarTemporizador();
-  }, [showCamera, cancelarTemporizador]);
+    return () => {
+      detenerContadorGrabacion();
+    };
+  }, [detenerContadorGrabacion]);
+  useEffect(() => {
+    if (!showCamera) {
+      cancelarTemporizador();
+      detenerContadorGrabacion();
+    }
+  }, [showCamera, cancelarTemporizador, detenerContadorGrabacion]);
 
   const dispararFoto = async () => {
     // Bloqueo síncrono contra doble-toque: `takePictureAsync` tarda varios
@@ -590,6 +661,8 @@ const CamaraScreen: React.FC<CamaraScreenProps> = ({ navigation, route }) => {
       } catch (error) {
         console.error('[Camara] Error al detener grabación:', error);
         // Si falla, aseguramos limpiar el estado
+        detenerContadorGrabacion();
+        setSegundosGrabacion(0);
         setIsRecording(false);
         setShowCamera(false);
       }
@@ -610,24 +683,28 @@ const CamaraScreen: React.FC<CamaraScreenProps> = ({ navigation, route }) => {
         await new Promise(resolve => setTimeout(resolve, 200));
 
         setIsRecording(true);
+        iniciarContadorGrabacion();
 
         // 3. Iniciar grabación — se bloquea hasta que se detenga
-        const video = await cameraRef.current.recordAsync({ maxDuration: 30 });
+        const video = await cameraRef.current.recordAsync({ maxDuration: VIDEO_MAX_SEGUNDOS });
 
         // 4. Grabación finalizada (por stopRecording o por maxDuration)
         if (video?.uri) {
           // La cámara se cierra ANTES del geotag, igual que en las fotos: el
           // video ya está en disco y el técnico no debe esperar al GPS.
+          const duracion = detenerContadorGrabacion();
           setIsRecording(false);
           setShowCamera(false);
           // esVideo=true → se persiste con extensión .mp4
-          await procesarCapturaEnSegundoPlano(video.uri, true);
+          await procesarCapturaEnSegundoPlano(video.uri, true, duracion);
           return;
         }
         console.warn('[Camara] La grabación no devolvió URI');
       } catch (error) {
         console.error('[Camara] Error en grabación de video:', error);
       }
+      detenerContadorGrabacion();
+      setSegundosGrabacion(0);
       setIsRecording(false);
       setShowCamera(false);
     }
@@ -670,11 +747,18 @@ const CamaraScreen: React.FC<CamaraScreenProps> = ({ navigation, route }) => {
               <View style={styles.recordingBadge}>
                 <View style={styles.recordingDot} />
                 <Text style={styles.recordingText}>GRABANDO</Text>
+                {/* Contador de segundos en vivo: el técnico ve avanzar y
+                    cuándo se acerca el corte automático a los 30 s. */}
+                <Text style={styles.recordingTimerText}>
+                  {formatearDuracion(Math.min(segundosGrabacion, VIDEO_MAX_SEGUNDOS))}
+                  {' / '}
+                  {formatearDuracion(VIDEO_MAX_SEGUNDOS)}
+                </Text>
               </View>
             )}
-            {modoVideo && (
+            {modoVideo && !isRecording && (
               <View style={styles.maxDurationBadge}>
-                <Text style={styles.maxDurationText}>⏱ Máx 30s</Text>
+                <Text style={styles.maxDurationText}>⏱ Máx {VIDEO_MAX_SEGUNDOS}s</Text>
               </View>
             )}
           </View>
@@ -891,7 +975,12 @@ const CamaraScreen: React.FC<CamaraScreenProps> = ({ navigation, route }) => {
                   )}
                   <View style={styles.fotoInfo}>
                     {item.tipo === 'video' && (
-                      <Text style={styles.fotoVideoTag}>🎥 Video</Text>
+                      <Text style={styles.fotoVideoTag}>
+                        🎥 Video
+                        {typeof item.metadata?.duracionSegundos === 'number'
+                          ? ` · ${formatearDuracion(item.metadata.duracionSegundos as number)}`
+                          : ''}
+                      </Text>
                     )}
                     {item.metadata?.sinUbicacion ? (
                       <Text style={styles.fotoSinUbicacion}>
@@ -1084,6 +1173,13 @@ const styles = StyleSheet.create({
     color: '#fff',
     fontSize: 14,
     fontWeight: FONTS.weights.bold,
+  },
+  recordingTimerText: {
+    color: '#fff',
+    fontSize: 14,
+    fontWeight: FONTS.weights.bold,
+    marginLeft: SPACING.sm,
+    fontVariant: ['tabular-nums'],
   },
   closeButton: {
     width: 40,

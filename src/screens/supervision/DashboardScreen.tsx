@@ -11,6 +11,7 @@ import { useForm } from '../../store/FormContext';
 import { useAuth } from '../../store/AuthContext';
 import { getFormulariosLocales } from '../../services/database';
 import { fetchFormulariosDelServidor } from '../../services/formularios.service';
+import { useSyncMapData } from '../../hooks/useSyncMapData';
 import { Formulario } from '../../types';
 import { normalizarVereda } from '../../utils/corregimientos';
 import MetricCard from '../../components/MetricCard';
@@ -34,6 +35,10 @@ const DashboardScreen: React.FC<DashboardScreenProps> = ({ navigation }) => {
   const [refreshingDashboard, setRefreshingDashboard] = useState(false);
   const [dashboardError, setDashboardError] = useState<string | null>(null);
   const enFocoRef = useRef(false);
+
+  // Datos reales de terreno (mediciones GPS + plantaciones) para las tarjetas
+  // de hectáreas medidas y plantas sembradas.
+  const { mediciones, plantaciones, loadAll: loadTerreno } = useSyncMapData();
 
   const detailScreen = isInterventor ? 'InterventorFormularioDetail' : 'SupervisionFormularioDetail';
 
@@ -82,6 +87,11 @@ const DashboardScreen: React.FC<DashboardScreenProps> = ({ navigation }) => {
     loadDashboardData();
   }, [loadDashboardData]);
 
+  // Cargar datos de terreno al montar
+  useEffect(() => {
+    loadTerreno();
+  }, [loadTerreno]);
+
   // Recargar al enfocar la pantalla + poll silencioso mientras está enfocada
   useFocusEffect(
     useCallback(() => {
@@ -115,6 +125,25 @@ const DashboardScreen: React.FC<DashboardScreenProps> = ({ navigation }) => {
     ).size;
     return { encuestaSocioambiental, visitasTecnicas, veredasUnicas };
   }, [formularios]);
+
+  // Métricas reales de terreno
+  const terreno = useMemo(() => {
+    let hectareas = 0;
+    for (const m of mediciones) {
+      const ha = Number(m.area_hectareas);
+      if (Number.isFinite(ha) && ha > 0) hectareas += ha;
+    }
+    let plantas = 0;
+    for (const p of plantaciones) {
+      const cant = Number(p.cantidad);
+      if (Number.isFinite(cant) && cant > 0) plantas += cant;
+    }
+    return {
+      hectareas: Math.round(hectareas * 100) / 100,
+      mediciones: mediciones.length,
+      plantas,
+    };
+  }, [mediciones, plantaciones]);
 
   if (loadingDashboard && formularios.length === 0) {
     return <LoadingSpinner message="Cargando dashboard..." fullScreen />;
@@ -193,6 +222,32 @@ const DashboardScreen: React.FC<DashboardScreenProps> = ({ navigation }) => {
         />
       </View>
 
+      {/* 2b. Tarjetas de datos reales de terreno */}
+      <Text style={styles.sectionTitle}>Datos de terreno</Text>
+      <View style={styles.metricsGrid}>
+        <MetricCard
+          titulo="Hectáreas medidas"
+          valor={`${terreno.hectareas} ha`}
+          color={COLORS.primary}
+          icono="📐"
+          subtitulo="Área medida con GPS"
+        />
+        <MetricCard
+          titulo="Mediciones"
+          valor={terreno.mediciones}
+          color={COLORS.info}
+          icono="📍"
+          subtitulo="Registros de terreno"
+        />
+        <MetricCard
+          titulo="Plantas sembradas"
+          valor={terreno.plantas.toLocaleString()}
+          color={COLORS.success}
+          icono="🌱"
+          subtitulo="Total en plantaciones"
+        />
+      </View>
+
       {/* 3. Resultados de la Encuesta Social AgroAmbiental (Formulario 1) */}
       <EncuestaSocialResultados formularios={formularios} />
 
@@ -234,6 +289,12 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     flexWrap: 'wrap',
     marginHorizontal: -SPACING.xs,
+    marginTop: SPACING.md,
+  },
+  sectionTitle: {
+    fontSize: FONTS.sizes.lg,
+    fontWeight: FONTS.weights.semibold,
+    color: COLORS.textPrimary,
     marginTop: SPACING.md,
   },
   chartCard: {

@@ -285,8 +285,22 @@ router.post('/usuarios', authenticateToken, async (req, res) => {
 
     const prefixMap = { tecnico: 'tec', coordinador: 'coo', interventor: 'int', gerente: 'ger', admin: 'adm' };
     const prefix = prefixMap[rol];
-    const count = await db.queryOne('SELECT COUNT(*) as total FROM usuarios WHERE id LIKE $1', [`${prefix}-%`]);
-    const nextNum = String((parseInt(count?.total || '0') + 1)).padStart(3, '0');
+    // El próximo consecutivo se calcula con el MÁXIMO id existente, NO con
+    // COUNT(*). Si un usuario fue eliminado permanentemente queda un hueco en
+    // la secuencia (p. ej. hay 11 técnicos pero existe 'tec-012'), y COUNT+1
+    // generaba un id ya ocupado → violación de PK → error al crear el usuario
+    // (síntoma real: crear técnico fallaba y había que crearlo con otro rol y
+    // luego cambiarlo).
+    const idsExistentes = await db.queryAll(
+      'SELECT id FROM usuarios WHERE id LIKE $1',
+      [`${prefix}-%`]
+    );
+    const maxNum = idsExistentes.reduce((max, row) => {
+      const match = new RegExp(`^${prefix}-(\\d+)$`).exec(row.id);
+      const num = match ? parseInt(match[1], 10) : 0;
+      return num > max ? num : max;
+    }, 0);
+    const nextNum = String(maxNum + 1).padStart(3, '0');
     const id = `${prefix}-${nextNum}`;
 
     const hash = await bcrypt.hash(contrasena, 10);

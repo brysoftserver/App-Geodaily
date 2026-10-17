@@ -25,6 +25,7 @@ import { escapeHtml } from './pdfLocal.service';
 import { construirMosaicoMapa, dibujarPuntosEnMosaico, MosaicoMapa } from '../utils/staticMap';
 import { LIMITES_PUERTO_RICO_MUNICIPIO } from './offlineMap.service';
 import { analizarTecnico, RondaVisitaIA } from './ia.service';
+import { numeroVisitaFormulario } from '../utils/visitaTecnica';
 import { COLORS } from '../theme';
 
 export const NUMEROS_VISITA_INFORME_TECNICO = Array.from({ length: 12 }, (_, i) => i + 1);
@@ -85,7 +86,11 @@ function calcularRondas(datos: DatosInformeTecnico): RondaCalculada[] {
       beneficiario: b.nombre,
       vereda: b.vereda,
       municipio: b.municipio,
-      visita: b.visitas.length >= numero ? b.visitas[numero - 1] : null,
+      // La visita de esta ronda se ubica por su NÚMERO real
+      // (`numeroVisitaFormulario`), NO por su posición en el arreglo: la
+      // caracterización es siempre Visita 1, así que un beneficiario con 3
+      // caracterizaciones NO debe aparecer en las rondas 2 y 3.
+      visita: b.visitas.find((v) => numeroVisitaFormulario(v) === numero) || null,
     }));
     const completados = filas.filter((f) => f.visita !== null).length;
     return { numero, completados, total: datos.beneficiarios.length, filas };

@@ -36,7 +36,11 @@ import BotonPdfDashboard from '../../components/dashboard/BotonPdfDashboard';
 import BotonPdfTecnico from '../../components/dashboard/BotonPdfTecnico';
 import { descargarPaqueteMedia } from '../../services/mediaPackage.service';
 import { BeneficiarioInformeTecnico } from '../../services/informeTecnicoPdf.service';
-import { tituloVisitaTecnica } from '../../utils/visitaTecnica';
+import {
+  tituloVisitaTecnica,
+  etiquetaVisitaFormulario,
+  numerosVisitaDeFormularios,
+} from '../../utils/visitaTecnica';
 
 type VisitasJerarquicasScreenProps = {
   navigation: NativeStackNavigationProp<Record<string, any>>;
@@ -81,7 +85,10 @@ interface BeneficiarioAgrupado {
   visitas: Formulario[];
 }
 
-type Nivel = 'tecnicos' | 'beneficiarios' | 'visitas';
+type Nivel = 'tecnicos' | 'beneficiarios' | 'visita' | 'visitas';
+
+/** Origen del nivel "visitas": decide a qué nivel vuelve el botón atrás. */
+type OrigenVisitas = 'beneficiarios' | 'visita';
 
 const VisitasJerarquicasScreen: React.FC<VisitasJerarquicasScreenProps> = ({ navigation }) => {
   const { user, puedeEliminarFormulario, isCoordinador, isInterventor } = useAuth();
@@ -98,6 +105,10 @@ const VisitasJerarquicasScreen: React.FC<VisitasJerarquicasScreenProps> = ({ nav
   const nivelRef = useRef<Nivel>('tecnicos');
   const [tecnicoSeleccionado, setTecnicoSeleccionado] = useState<TecnicoConEstadisticas | null>(null);
   const [beneficiarioSeleccionado, setBeneficiarioSeleccionado] = useState<BeneficiarioAgrupado | null>(null);
+  // Nivel intermedio "Visita N": número de ronda abierta desde una celda de la cuadrilla.
+  const [visitaSeleccionada, setVisitaSeleccionada] = useState<number | null>(null);
+  // Desde dónde se abrió el nivel "visitas" — para que atrás vuelva a "Visita N" si se llegó por ahí.
+  const origenVisitasRef = useRef<OrigenVisitas>('beneficiarios');
 
   // --- Agrupar datos (con protección contra null) ---
   const tecnicos = useMemo(() => {
@@ -197,12 +208,26 @@ const VisitasJerarquicasScreen: React.FC<VisitasJerarquicasScreenProps> = ({ nav
         ? beneficiariosAsignados.filter((b) => b.tecnico_asignado_id === tec.usuarioId)
         : [];
 
-      // Cuántos formularios ya diligenció este técnico a cada beneficiario
-      // (por cédula) — tec.beneficiarios ya viene filtrado por técnico.
-      const visitasPorCedula = new Map<string, number>();
+      // Rondas DISTINTAS que este técnico ya le hizo a cada beneficiario (por
+      // cédula) — tec.beneficiarios ya viene filtrado por técnico. Se guarda
+      // un Set de números de visita, NO el conteo crudo de formularios: la
+      // caracterización es SIEMPRE Visita 1, así que 3 caracterizaciones
+      // deben contar SOLO en la Visita 1 (antes el conteo por posición las
+      // metía también en Visita 2 y 3, inflando el contador).
+      const numerosPorCedula = new Map<string, Set<number>>();
+      const numerosPorNombre = new Map<string, Set<number>>();
       for (const b of tec.beneficiarios) {
-        if (b.cedula) visitasPorCedula.set(b.cedula, b.visitas.length);
+        const numeros = new Set(numerosVisitaDeFormularios(b.visitas));
+        if (b.cedula) numerosPorCedula.set(b.cedula, numeros);
+        if (b.nombre) numerosPorNombre.set(b.nombre, numeros);
       }
+
+      const rondasDeAsignado = (b: BeneficiarioDB): Set<number> =>
+        numerosPorCedula.get(b.cedula) || numerosPorNombre.get(b.nombre_completo) || new Set<number>();
+      const rondasDeGrupo = (b: BeneficiarioAgrupado): Set<number> =>
+        (b.cedula ? numerosPorCedula.get(b.cedula) : undefined) ||
+        (b.nombre ? numerosPorNombre.get(b.nombre) : undefined) ||
+        new Set<number>();
 
       const totalBeneficiariosAsignados = huboCargaDeAsignacion
         ? asignados.length
@@ -211,8 +236,8 @@ const VisitasJerarquicasScreen: React.FC<VisitasJerarquicasScreenProps> = ({ nav
       const visitasStats: VisitaStat[] = [];
       for (let n = 1; n <= MAX_VISITAS_TARJETA; n++) {
         const completados = huboCargaDeAsignacion
-          ? asignados.filter((b) => (visitasPorCedula.get(b.cedula) || 0) >= n).length
-          : tec.beneficiarios.filter((b) => b.visitas.length >= n).length;
+          ? asignados.filter((b) => rondasDeAsignado(b).has(n)).length
+          : tec.beneficiarios.filter((b) => rondasDeGrupo(b).has(n)).length;
         visitasStats.push({ numero: n, completados, total: totalBeneficiariosAsignados });
       }
 
@@ -261,6 +286,55 @@ const VisitasJerarquicasScreen: React.FC<VisitasJerarquicasScreenProps> = ({ nav
       }));
     },
     [beneficiariosAsignados]
+  );
+
+  /**
+   * Beneficiarios que YA tienen la ronda `numero` (Visita N) del técnico —
+   * MISMA fuente que produce el contador "Visita (N): x/total" de la
+   * tarjeta, para que la lista nunca se desincronice del número mostrado.
+   * Al tocar la celda N se listan exactamente estos (si no hay ninguno,
+   * llega vacío y la pantalla muestra el estado "Sin beneficiarios").
+   */
+  const beneficiariosDeVisita = useCallback(
+    (tec: TecnicoConEstadisticas, numero: number): BeneficiarioAgrupado[] => {
+      const asignados = tec.usuarioId
+        ? beneficiariosAsignados.filter((b) => b.tecnico_asignado_id === tec.usuarioId)
+        : [];
+
+      // Sin padrón cargado: se degrada al histórico de formularios del técnico
+      // (mismo criterio que `tecnicosConStats`).
+      if (asignados.length === 0) {
+        return tec.beneficiarios.filter((b) =>
+          numerosVisitaDeFormularios(b.visitas).includes(numero)
+        );
+      }
+
+      const porCedula = new Map<string, BeneficiarioAgrupado>();
+      const porNombre = new Map<string, BeneficiarioAgrupado>();
+      for (const b of tec.beneficiarios) {
+        if (b.cedula) porCedula.set(b.cedula, b);
+        if (b.nombre) porNombre.set(b.nombre, b);
+      }
+
+      const resultado: BeneficiarioAgrupado[] = [];
+      for (const asig of asignados) {
+        const grupo = porCedula.get(asig.cedula) || porNombre.get(asig.nombre_completo);
+        if (grupo && numerosVisitaDeFormularios(grupo.visitas).includes(numero)) {
+          resultado.push(grupo);
+        }
+      }
+      return resultado;
+    },
+    [beneficiariosAsignados]
+  );
+
+  /** Lista de beneficiarios de la Visita N abierta (para el nivel intermedio). */
+  const beneficiariosVisitaSeleccionada = useMemo(
+    () =>
+      tecnicoSeleccionado && visitaSeleccionada != null
+        ? beneficiariosDeVisita(tecnicoSeleccionado, visitaSeleccionada)
+        : [],
+    [tecnicoSeleccionado, visitaSeleccionada, beneficiariosDeVisita]
   );
 
   // --- Cargar datos (servidor + local) ---
@@ -352,8 +426,17 @@ const VisitasJerarquicasScreen: React.FC<VisitasJerarquicasScreenProps> = ({ nav
         volverATecnicos();
         return true; // prevenir salida
       }
-      if (nivel === 'visitas') {
+      if (nivel === 'visita') {
         volverABeneficiarios();
+        return true;
+      }
+      if (nivel === 'visitas') {
+        // Si el beneficiario se abrió desde "Visita N", atrás vuelve a esa lista.
+        if (origenVisitasRef.current === 'visita') {
+          volverAVisita();
+        } else {
+          volverABeneficiarios();
+        }
         return true; // prevenir salida
       }
       return false; // salir de la pantalla
@@ -370,8 +453,16 @@ const VisitasJerarquicasScreen: React.FC<VisitasJerarquicasScreenProps> = ({ nav
       e.preventDefault(); // prevenir salida
       // Subir un nivel (usar refs para evitar stale closure)
       if (nivelRef.current === 'visitas') {
+        if (origenVisitasRef.current === 'visita') {
+          setNivel('visita');
+          setBeneficiarioSeleccionado(null);
+        } else {
+          setNivel('beneficiarios');
+          setBeneficiarioSeleccionado(null);
+        }
+      } else if (nivelRef.current === 'visita') {
         setNivel('beneficiarios');
-        setBeneficiarioSeleccionado(null);
+        setVisitaSeleccionada(null);
       } else if (nivelRef.current === 'beneficiarios') {
         setNivel('tecnicos');
         setTecnicoSeleccionado(null);
@@ -392,7 +483,16 @@ const VisitasJerarquicasScreen: React.FC<VisitasJerarquicasScreenProps> = ({ nav
     setNivel('beneficiarios');
   };
 
+  /** Abre la lista de beneficiarios de una ronda específica (celda "Visita (N)"). */
+  const seleccionarVisita = (tec: TecnicoConEstadisticas, numero: number) => {
+    setTecnicoSeleccionado(tec);
+    setVisitaSeleccionada(numero);
+    setNivel('visita');
+  };
+
   const seleccionarBeneficiario = (benef: BeneficiarioAgrupado) => {
+    // Recordar el origen para que atrás regrese al nivel correcto.
+    origenVisitasRef.current = nivel === 'visita' ? 'visita' : 'beneficiarios';
     setBeneficiarioSeleccionado(benef);
     setNivel('visitas');
   };
@@ -406,10 +506,18 @@ const VisitasJerarquicasScreen: React.FC<VisitasJerarquicasScreenProps> = ({ nav
     setNivel('tecnicos');
     setTecnicoSeleccionado(null);
     setBeneficiarioSeleccionado(null);
+    setVisitaSeleccionada(null);
   };
 
   const volverABeneficiarios = () => {
     setNivel('beneficiarios');
+    setBeneficiarioSeleccionado(null);
+    setVisitaSeleccionada(null);
+  };
+
+  /** Vuelve de la lista de visitas de un beneficiario al nivel "Visita N" de origen. */
+  const volverAVisita = () => {
+    setNivel('visita');
     setBeneficiarioSeleccionado(null);
   };
 
@@ -487,6 +595,16 @@ const VisitasJerarquicasScreen: React.FC<VisitasJerarquicasScreenProps> = ({ nav
           </TouchableOpacity>
         </>
       )}
+      {(nivel === 'visita' || nivel === 'visitas') && visitaSeleccionada != null && (
+        <>
+          <Text style={styles.breadcrumbSep}>›</Text>
+          <TouchableOpacity onPress={volverAVisita} style={styles.breadcrumbItem}>
+            <Text style={[styles.breadcrumbText, nivel === 'visita' && styles.breadcrumbActive]}>
+              Visita {visitaSeleccionada}
+            </Text>
+          </TouchableOpacity>
+        </>
+      )}
       {nivel === 'visitas' && (
         <>
           <Text style={styles.breadcrumbSep}>›</Text>
@@ -535,12 +653,17 @@ const VisitasJerarquicasScreen: React.FC<VisitasJerarquicasScreenProps> = ({ nav
 
       <View style={styles.visitasGrid}>
         {item.visitasStats.map((stat) => (
-          <View key={stat.numero} style={styles.visitaGridCell}>
+          <TouchableOpacity
+            key={stat.numero}
+            style={styles.visitaGridCell}
+            onPress={() => seleccionarVisita(item, stat.numero)}
+            activeOpacity={0.7}
+          >
             <Text style={styles.visitaGridLabel}>Visita ({stat.numero}):</Text>
             <Text style={styles.visitaGridValue}>
               {stat.completados}/{stat.total}
             </Text>
-          </View>
+          </TouchableOpacity>
         ))}
       </View>
     </TouchableOpacity>
@@ -567,7 +690,7 @@ const VisitasJerarquicasScreen: React.FC<VisitasJerarquicasScreenProps> = ({ nav
         </View>
         <View style={styles.badgeContainer}>
           <View style={styles.badge}>
-            <Text style={styles.badgeNumber}>{item.visitas.length}</Text>
+            <Text style={styles.badgeNumber}>{numerosVisitaDeFormularios(item.visitas).length}</Text>
             <Text style={styles.badgeLabel}>Visitas</Text>
           </View>
         </View>
@@ -577,7 +700,16 @@ const VisitasJerarquicasScreen: React.FC<VisitasJerarquicasScreenProps> = ({ nav
   );
 
   // --- Nivel 3: Visitas ---
-  const renderVisita = ({ item, index }: { item: Formulario; index: number }) => (
+  const renderVisita = ({ item }: { item: Formulario }) => {
+    // Rótulo por la RONDA REAL del formulario (no por su posición): la
+    // caracterización es siempre "Visita 1".
+    //
+    // Cada visita equivale a UN formulario. Si un técnico duplicó un
+    // formulario por error, AMBOS se etiquetan igual ("Visita N") para que
+    // el duplicado se detecte a simple vista; no se usa numeración
+    // "(1 de 2)", "(2 de 2)" que se confundía con Visita 1 / Visita 2.
+    const etiqueta = etiquetaVisitaFormulario(item);
+    return (
     <TouchableOpacity
       style={[styles.visitaCard, eliminandoId === item.id && styles.visitaCardEliminando]}
       onPress={() => abrirDetalleFormulario(item)}
@@ -587,7 +719,7 @@ const VisitasJerarquicasScreen: React.FC<VisitasJerarquicasScreenProps> = ({ nav
     >
       <View style={styles.visitaHeader}>
         <View style={styles.visitaNumero}>
-          <Text style={styles.visitaNumeroText}>Visita {index + 1}</Text>
+          <Text style={styles.visitaNumeroText}>{etiqueta}</Text>
         </View>
         {puedeEliminarFormulario && (
           <Text style={styles.visitaAdminHint}>
@@ -670,7 +802,8 @@ const VisitasJerarquicasScreen: React.FC<VisitasJerarquicasScreenProps> = ({ nav
         </View>
       </View>
     </TouchableOpacity>
-  );
+    );
+  };
 
   // --- Pantalla de carga ---
   if (isLoading) {
@@ -766,6 +899,34 @@ const VisitasJerarquicasScreen: React.FC<VisitasJerarquicasScreenProps> = ({ nav
         />
       )}
 
+      {nivel === 'visita' && tecnicoSeleccionado && visitaSeleccionada != null && (
+        <FlatList
+          data={beneficiariosVisitaSeleccionada}
+          keyExtractor={(item) => item.cedula || item.nombre}
+          renderItem={renderBeneficiario}
+          contentContainerStyle={styles.listContent}
+          ListHeaderComponent={
+            <View style={styles.levelHeader}>
+              <Text style={styles.levelTitle}>
+                Visita {visitaSeleccionada} · {tecnicoSeleccionado.nombre}
+              </Text>
+              <Text style={styles.levelCount}>
+                {beneficiariosVisitaSeleccionada.length} de {tecnicoSeleccionado.totalBeneficiariosAsignados} beneficiario(s) con la Visita {visitaSeleccionada}
+              </Text>
+            </View>
+          }
+          ListEmptyComponent={
+            <View style={styles.emptyState}>
+              <Text style={styles.emptyIcon}>📭</Text>
+              <Text style={styles.emptyText}>Sin beneficiarios en esta visita</Text>
+              <Text style={styles.emptySubtext}>
+                Ningún beneficiario tiene registrada la Visita {visitaSeleccionada} todavía.
+              </Text>
+            </View>
+          }
+        />
+      )}
+
       {nivel === 'visitas' && beneficiarioSeleccionado && (
         <FlatList
           data={beneficiarioSeleccionado.visitas}
@@ -779,7 +940,7 @@ const VisitasJerarquicasScreen: React.FC<VisitasJerarquicasScreenProps> = ({ nav
               </Text>
               <Text style={styles.levelCount}>
                 {beneficiarioSeleccionado.vereda}, {beneficiarioSeleccionado.municipio}
-                {' · '}{beneficiarioSeleccionado.visitas.length} visita(s)
+                {' · '}{numerosVisitaDeFormularios(beneficiarioSeleccionado.visitas).length} visita(s)
               </Text>
             </View>
           }

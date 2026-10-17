@@ -11,9 +11,11 @@ interface MapItemListProps {
   plantaciones: Record<string, any>[];
   mediciones: Record<string, any>[];
   posiciones: Record<string, any>[];
+  veredas?: Record<string, any>[];
   isAdmin: boolean;
   onSelect: (item: Record<string, any>) => void;
   onDelete: (tipo: 'plantación' | 'medición', id: string) => void;
+  onDeleteVereda?: (id: string, nombre: string) => void;
 }
 
 /** Formatear timestamp ISO a "hace X tiempo" — misma lógica que MapItemDetailCard. */
@@ -49,9 +51,11 @@ const MapItemList: React.FC<MapItemListProps> = ({
   plantaciones,
   mediciones,
   posiciones,
+  veredas = [],
   isAdmin,
   onSelect,
   onDelete,
+  onDeleteVereda,
 }) => {
   return (
     <ScrollView style={styles.container} contentContainerStyle={styles.content}>
@@ -129,6 +133,29 @@ const MapItemList: React.FC<MapItemListProps> = ({
 
         return null;
       })}
+
+      {/* Veredas: no son marcadores, son polígonos GeoJSON. Se listan aparte
+          para que el admin pueda verlas y ocultarlas (no se pueden "seleccionar"
+          como un marcador, solo ocultar). */}
+      {veredas.length > 0 && (
+        <>
+          <Text style={styles.sectionTitle}>🗺️ Veredas ({veredas.length})</Text>
+          {veredas.map((v: Record<string, any>) => (
+            <View key={v.id} style={styles.item}>
+              <Text style={styles.icon}>🗺️</Text>
+              <View style={styles.contentCol}>
+                <Text style={styles.title}>{v.nombre || 'Vereda sin nombre'}</Text>
+                <Text style={styles.subtitle}>Capa geográfica (OpenStreetMap)</Text>
+              </View>
+              {isAdmin && onDeleteVereda && (
+                <TouchableOpacity onPress={() => onDeleteVereda(v.id, v.nombre)}>
+                  <Text style={styles.deleteIcon}>🗑</Text>
+                </TouchableOpacity>
+              )}
+            </View>
+          ))}
+        </>
+      )}
     </ScrollView>
   );
 };
@@ -149,6 +176,14 @@ const styles = StyleSheet.create({
   title: { fontSize: FONTS.sizes.md, fontWeight: FONTS.weights.semibold, color: COLORS.textPrimary },
   subtitle: { fontSize: FONTS.sizes.sm, color: COLORS.textSecondary },
   deleteIcon: { fontSize: 18 },
+  sectionTitle: {
+    fontSize: FONTS.sizes.sm,
+    fontWeight: FONTS.weights.bold,
+    color: COLORS.textSecondary,
+    paddingHorizontal: SPACING.md,
+    paddingTop: SPACING.sm,
+    paddingBottom: SPACING.xs,
+  },
 });
 
 export default MapItemList;

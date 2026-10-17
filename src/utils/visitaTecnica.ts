@@ -75,6 +75,61 @@ export const esVisitaTecnicaV2 = (
 export const tituloVisitaTecnica = (numero?: number): string =>
   numero != null ? `Visita Técnica ${numero}` : 'Visita Técnica';
 
+// ─── Número real (ronda) de un formulario ────────────────────
+// REGLA DEL DOMINIO:
+//   - `caracterizacion` es EXCLUSIVAMENTE la Visita 1 (ver membrete.ts:
+//     "FORMATO INFORME DE CARACTERIZACIÓN (VISITA 1)").
+//   - `visita_tecnica` lleva su número en `actividad.visita_numero` (2, 3…).
+// Antes las listas numeraban por POSICIÓN en el arreglo, así que un
+// beneficiario con 3 caracterizaciones mostraba "Visita 1/2/3" (incorrecto)
+// e inflaba el contador "Visita (N): x/total" contándolo en las rondas 1, 2
+// y 3. Con estos helpers el número sale del contenido del formulario.
+
+/** Forma mínima de un formulario para derivar su ronda (sin acoplar a `Formulario`). */
+type VisitaLike =
+  | { tipo?: string; actividad?: { visita_numero?: number } | null }
+  | null
+  | undefined;
+
+/**
+ * Ronda (número de visita) real de un formulario:
+ *   - caracterización → 1
+ *   - visita técnica  → `actividad.visita_numero`
+ *   - no determinable → `undefined`
+ */
+export const numeroVisitaFormulario = (form: VisitaLike): number | undefined => {
+  if (!form) return undefined;
+  if (form.tipo === 'caracterizacion') return 1;
+  if (form.tipo === 'visita_tecnica') return form.actividad?.visita_numero ?? undefined;
+  return undefined;
+};
+
+/**
+ * Rótulo visible y unificado de una visita ya guardada → "Visita N".
+ * Si no se puede derivar el número cae a un rótulo por tipo, para no dejar
+ * la tarjeta sin etiqueta.
+ */
+export const etiquetaVisitaFormulario = (form: VisitaLike): string => {
+  const n = numeroVisitaFormulario(form);
+  if (n != null) return `Visita ${n}`;
+  if (form?.tipo === 'visita_tecnica') return 'Visita Técnica';
+  return 'Visita';
+};
+
+/**
+ * Rondas DISTINTAS presentes en un conjunto de formularios (p. ej. las
+ * visitas de un beneficiario), ordenadas de menor a mayor. Se usa para el
+ * badge "Visitas" y para saber en qué celdas de la cuadrilla cuenta.
+ */
+export const numerosVisitaDeFormularios = (forms?: VisitaLike[] | null): number[] => {
+  const set = new Set<number>();
+  for (const f of forms || []) {
+    const n = numeroVisitaFormulario(f);
+    if (n != null) set.add(n);
+  }
+  return Array.from(set).sort((a, b) => a - b);
+};
+
 /**
  * ¿El beneficiario trae datos utilizables? Basta con nombre O cédula: hay
  * beneficiarios sin cédula capturada y, si solo se aceptara el nombre, se

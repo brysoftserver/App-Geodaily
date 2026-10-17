@@ -76,6 +76,8 @@ interface MapViewOfflineProps {
   mapStyle?: 'relieve' | 'satelite';
   /** Array de puntos para dibujar una polyline (ruta GPS) */
   polyline?: { latitud: number; longitud: number }[];
+  /** Color de la polyline (por defecto verde #1B5E20). Usar naranja/amarillo en terreno con bosque. */
+  polylineColor?: string;
   /** Marcador verde de inicio de ruta */
   startMarker?: { latitud: number; longitud: number };
   /** Marcador azul de posición actual */
@@ -191,6 +193,7 @@ const MapViewOffline: React.FC<MapViewOfflineProps> = ({
   markers = [],
   mapStyle = 'relieve',
   polyline,
+  polylineColor,
   startMarker,
   endMarker,
   showUserLocation = false,
@@ -311,8 +314,8 @@ const MapViewOffline: React.FC<MapViewOfflineProps> = ({
   // Web: sincronizar polyline
   useEffect(() => {
     if (Platform.OS !== 'web' || !webIframeReady) return;
-    postMsg({ type: 'setPolyline', polyline: polyline?.map(p => ({ lat: p.latitud, lng: p.longitud })) || [] });
-  }, [webIframeReady, polyline, postMsg]);
+    postMsg({ type: 'setPolyline', polyline: polyline?.map(p => ({ lat: p.latitud, lng: p.longitud })) || [], color: polylineColor });
+  }, [webIframeReady, polyline, polylineColor, postMsg]);
 
   // Web: sincronizar marcador inicio
   useEffect(() => {
@@ -477,11 +480,11 @@ const MapViewOffline: React.FC<MapViewOfflineProps> = ({
       });
     };
 
-    window._setPolyline = function(data) {
+    window._setPolyline = function(data, color) {
       if (window._polylineLayer) { map.removeLayer(window._polylineLayer); window._polylineLayer = null; }
       if (data && data.length > 1) {
         window._polylineLayer = L.polyline(data.map(function(p) { return [p.lat, p.lng]; }), {
-          color: '#1B5E20', weight: 4, opacity: 0.8
+          color: color || '#1B5E20', weight: 4, opacity: 0.9
         }).addTo(map);
         window._polylineLayer.bindPopup('🛣️ Ruta: ' + data.length + ' puntos');
       }
@@ -749,7 +752,7 @@ const MapViewOffline: React.FC<MapViewOfflineProps> = ({
       if (!data || !data.type) return;
       switch(data.type) {
         case 'setMarkers': window._setMarkers(data.markers); break;
-        case 'setPolyline': window._setPolyline(data.polyline); break;
+        case 'setPolyline': window._setPolyline(data.polyline, data.color); break;
         case 'setStartMarker': window._setStartMarker(data.data); break;
         case 'setEndMarker': window._setEndMarker(data.data); break;
         case 'setUserLocation': window._setUserLocation(data.data); break;
@@ -866,9 +869,9 @@ const MapViewOffline: React.FC<MapViewOfflineProps> = ({
             <MapLibreGL.LineLayer
               id="rutaLine"
               style={{
-                lineColor: '#1B5E20',
+                lineColor: polylineColor || '#1B5E20',
                 lineWidth: 4,
-                lineOpacity: 0.8,
+                lineOpacity: 0.9,
                 lineCap: 'round',
                 lineJoin: 'round',
               }}

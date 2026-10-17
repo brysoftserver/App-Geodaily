@@ -28,6 +28,7 @@ import { useAuth } from '../../store/AuthContext';
 import { useForm } from '../../store/FormContext';
 import { useSync } from '../../store/SyncContext';
 import { useLocation } from '../../hooks/useLocation';
+import { useGPS } from '../../store/GPSContext';
 import { resolverClimaYUbicacion } from '../../services/climate.service';
 import {
   getVeredasByMunicipio,
@@ -270,6 +271,7 @@ const EncuestaSocialAgroambientalScreen: React.FC<Props> = ({ navigation, route 
   } = useForm();
   const { syncNow } = useSync();
   const { getCurrentPosition, coordenadas } = useLocation();
+  const { userLocation } = useGPS();
   /**
    * Nombre de lugar y clima resueltos por separado — antes venían unidos
    * en `useClimate()`/`climaActual` y si no había señal para el clima,
@@ -502,8 +504,14 @@ const EncuestaSocialAgroambientalScreen: React.FC<Props> = ({ navigation, route 
         }
       }
 
-      // Capturar ubicación
-      const coords = await getCurrentPosition();
+      // Capturar ubicación. Si el GPSContext ya tiene una lectura reciente
+      // (<60 s) se reutiliza: evita un fix nuevo que puede tardar o colgarse.
+      // Si el borrador trae coordenadas, igual mandan esas (ver abajo).
+      const edadMs = userLocation?.timestamp
+        ? Date.now() - new Date(userLocation.timestamp).getTime()
+        : Infinity;
+      const coords =
+        userLocation && edadMs < 60000 ? userLocation : await getCurrentPosition();
       // Si el borrador recuperado ya traía la ubicación donde se levantó la
       // encuesta, ESA manda: el GPS de ahora puede ser otro punto (el técnico
       // reabre la encuesta al día siguiente desde otra vereda) y antes la
@@ -743,7 +751,9 @@ const EncuestaSocialAgroambientalScreen: React.FC<Props> = ({ navigation, route 
 
     // ── CARACTERIZACIÓN DE LA FINCA (19-27) ──
     req('finca', '19', fill(f.nombre_finca));
-    req('finca', '20', fill(f.latitud) && fill(f.longitud));
+    // P20 (coordenada de la finca): OPCIONAL. En veredas sin cielo abierto el
+    // GPS puede no dar fix; no se debe bloquear el formulario por eso. El
+    // técnico puede capturarla después o dejarla vacía.
     req('finca', '21', fill(f.area_total));
     req('finca', '22', fill(f.division_bosque));
     req('finca', '22', fill(f.division_agricola));
@@ -772,7 +782,7 @@ const EncuestaSocialAgroambientalScreen: React.FC<Props> = ({ navigation, route 
     req('productivo', '31', fill(p.asistencia_tecnica));
 
     // ── SECCIÓN DE SUELO (32-42) ──
-    req('suelo', '32', fill(a.intervencion_latitud) && fill(a.intervencion_longitud));
+    // P32 (coordenada de la intervención): OPCIONAL por la misma razón que P20.
     req('suelo', '33', fill(a.analisis_realizado));
     req('suelo', '34', fill(a.textura));
     req('suelo', '35', fill(a.color));
@@ -1087,10 +1097,8 @@ const EncuestaSocialAgroambientalScreen: React.FC<Props> = ({ navigation, route 
       Alert.alert('Campo requerido', 'El número de documento es obligatorio');
       return;
     }
-    if (!data.caracterizacion_finca.latitud || !data.caracterizacion_finca.longitud) {
-      Alert.alert('Coordenada requerida', 'Captura la coordenada de la finca (pregunta 20) antes de completar el formulario.');
-      return;
-    }
+    // La coordenada de la finca (P20) es opcional: si el GPS no dio fix, el
+    // técnico puede completar el formulario igual y capturarla más tarde.
 
     setIsSubmitting(true);
 

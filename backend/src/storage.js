@@ -420,15 +420,21 @@ async function moveFile(oldPath, newPath) {
 
 /**
  * Listar archivos en una carpeta
+ *
+ * @param {string} prefix
+ * @param {boolean} recursive
+ * @param {boolean} includeKeep - Si es true NO filtra los marcadores `.keep`
+ *   (carpetas vacías). Necesario para borrar/mover una carpeta completa: si
+ *   se ignoran, una carpeta que sólo tiene su `.keep` nunca se eliminaría.
  */
-async function listFiles(prefix, recursive = true) {
+async function listFiles(prefix, recursive = true, includeKeep = false) {
   try {
     const objects = [];
     const stream = minioClient.listObjects(CONFIG.bucket, prefix, recursive);
-    
+
     return new Promise((resolve, reject) => {
       stream.on('data', obj => {
-        if (!obj.name.endsWith('.keep')) {
+        if (includeKeep || !obj.name.endsWith('.keep')) {
           objects.push(obj);
         }
       });
@@ -439,6 +445,234 @@ async function listFiles(prefix, recursive = true) {
     console.error('[Storage] Error al listar archivos:', err.message);
     return [];
   }
+}
+
+// ============================================================
+// EXPLORADOR DE ANEXOS (carpetas libres por usuario)
+// ============================================================
+// Los técnicos necesitan un espacio tipo "explorador de Windows" para
+// organizar documentos por su cuenta (carpetas, subcarpetas, archivos de
+// cualquier tipo). Se aísla en `{rol}/{usuario}/Anexos/` para NO mezclarse
+// con las carpetas de evidencia que genera la app (fotos, videos,
+// documentos, pdfs, firmas): así renombrar o borrar aquí jamás puede dañar
+// la estructura automática de evidencias.
+
+/**
+ * Ruta raíz del explorador de anexos para un usuario.
+ * @returns {string} ej: 'tecnicos/rodrigo.zuleta/Anexos'
+ */
+function getAnexosRoot(rol, usuario) {
+  return `${getUserBasePath(rol, usuario)}/Anexos`;
+}
+
+/**
+ * Limpia un nombre de archivo/carpeta individual (sin separadores de ruta).
+ * @returns {string|null} nombre limpio o null si queda vacío
+ */
+function sanitizeAnexoName(name) {
+  if (name === undefined || name === null) return null;
+  const limpio = String(name)
+    .normalize('NFC')
+    .replace(/[\/\\\u0000-\u001F]/g, '') // sin separadores ni caracteres de control
+    .replace(/^\.+$/, '')                // "." y ".." quedan vacíos
+    .trim()
+    .slice(0, 150);
+  return limpio || null;
+}
+
+/**
+ * Normaliza y valida una ruta RELATIVA dentro del explorador.
+ * Rechaza cualquier intento de salir de la carpeta (`..`), rutas
+ * absolutas, y caracteres de control.
+ * @returns {string|null} ruta relativa normalizada (sin slashes extremos) o
+ *   null si es inválida
+ */
+function sanitizeAnexoPath(rel) {
+  if (rel === undefined || rel === null || rel === '') return '';
+  let p = String(rel).replace(/\\/g, '/').trim();
+  if (p.startsWith('/')) return null; // ruta absoluta → no permitida
+  p = p.replace(/^\/+/, '').replace(/\/+$/, '');
+  if (p === '') return '';
+  const segmentos = p.split('/');
+  const limpios = [];
+  for (const seg of segmentos) {
+    const s = seg.trim();
+    if (s === '' || s === '.') continue;
+    if (s === '..') return null; // traversal → inválido
+    const limpio = sanitizeAnexoName(s);
+    if (!limpio) return null;
+    limpios.push(limpio);
+  }
+  return limpios.join('/');
+}
+
+/**
+ * Listar los hijos inmediatos (carpetas y archivos) de una ruta de anexos.
+ * Se lista recursivamente y se agregan los hijos directos por segmento: es
+ * más robusto que depender de cómo MinIO expone los "prefijos" de carpeta.
+ * @returns {Promise<Array<{nombre,esCarpeta,tamaño,modificado}>>}
+ */
+async function listAnexos(rol, usuario, rel = '') {
+  await ensureBucket();
+  const root = getAnexosRoot(rol, usuario);
+  const prefix = rel ? `${root}/${rel}/` : `${root}/`;
+
+  const objetos = await listFiles(prefix, true, true);
+  const carpetas = new Map();
+  const archivos = [];
+
+  for (const obj of objetos) {
+    const resto = obj.name.slice(prefix.length);
+    if (!resto) continue;
+    const idx = resto.indexOf('/');
+    if (idx === -1) {
+      if (resto === '.keep') continue; // marcador de carpeta, no un archivo real
+      archivos.push({
+        nombre: resto,
+        esCarpeta: false,
+        tamaño: obj.size || 0,
+        modificado: obj.lastModified || null,
+      });
+    } else {
+      const nombreCarpeta = resto.slice(0, idx);
+      if (!nombreCarpeta || nombreCarpeta === '.keep') continue;
+      if (!carpetas.has(nombreCarpeta)) {
+        carpetas.set(nombreCarpeta, {
+          nombre: nombreCarpeta,
+          esCarpeta: true,
+          tamaño: 0,
+          modificado: null,
+        });
+      }
+    }
+  }
+
+  const ordenadas = [...carpetas.values()].sort((a, b) =>
+    a.nombre.localeCompare(b.nombre, 'es', { sensitivity: 'base' })
+  );
+  const ordenados = archivos.sort((a, b) =>
+    a.nombre.localeCompare(b.nombre, 'es', { sensitivity: 'base' })
+  );
+
+  return [...ordenadas, ...ordenados];
+}
+
+/**
+ * Crear una carpeta vacía en el explorador de anexos (marcador `.keep`).
+ * @param {string} rel - ruta relativa del padre ('' = raíz)
+ * @param {string} nombre - nombre de la nueva carpeta
+ */
+async function createAnexoFolder(rol, usuario, rel, nombre) {
+  await ensureBucket();
+  const limpio = sanitizeAnexoName(nombre);
+  if (!limpio) throw new Error('Nombre de carpeta inválido');
+
+  const root = getAnexosRoot(rol, usuario);
+  const base = rel ? `${root}/${rel}` : root;
+  await minioClient.putObject(CONFIG.bucket, `${base}/${limpio}/.keep`, Buffer.from(''));
+  console.log(`[Storage] 📁 Carpeta de anexos creada: ${base}/${limpio}`);
+  return limpio;
+}
+
+/**
+ * Subir un archivo a una ruta del explorador de anexos.
+ */
+async function uploadAnexo(rol, usuario, rel, filename, data, contentType) {
+  await ensureBucket();
+  const nombreLimpio = sanitizeAnexoName(filename) || `archivo_${Date.now()}`;
+  const root = getAnexosRoot(rol, usuario);
+  const carpeta = rel ? `${root}/${rel}` : root;
+  const key = `${carpeta}/${nombreLimpio}`;
+
+  await minioClient.putObject(CONFIG.bucket, key, data, null, {
+    'Content-Type': contentType || 'application/octet-stream',
+  });
+  console.log(`[Storage] 📎 Anexo subido: ${key}`);
+  return { path: key, nombre: nombreLimpio, size: Buffer.isBuffer(data) ? data.length : 0 };
+}
+
+/**
+ * Eliminar un archivo o una carpeta (recursiva) del explorador de anexos.
+ * @param {string} rel - ruta relativa a eliminar (no puede ser la raíz)
+ */
+async function deleteAnexoPath(rol, usuario, rel) {
+  await ensureBucket();
+  if (!rel) throw new Error('No se puede eliminar la raíz de Anexos');
+
+  const root = getAnexosRoot(rol, usuario);
+  const key = `${root}/${rel}`;
+
+  // ¿Es un archivo suelto?
+  const stat = await statFile(key);
+  if (stat) {
+    await minioClient.removeObject(CONFIG.bucket, key);
+    console.log(`[Storage] 🗑️ Anexo eliminado: ${key}`);
+    return { tipo: 'archivo', eliminados: 1 };
+  }
+
+  // Carpeta: se borra todo lo que cuelga de ella (incluye `.keep`).
+  const objetos = await listFiles(`${key}/`, true, true);
+  if (!objetos.length) throw new Error('Elemento no encontrado');
+  const nombres = objetos.map((o) => o.name);
+  await minioClient.removeObjects(CONFIG.bucket, nombres);
+  console.log(`[Storage] 🗑️ Carpeta de anexos eliminada: ${key} (${nombres.length} objetos)`);
+  return { tipo: 'carpeta', eliminados: nombres.length };
+}
+
+/**
+ * Renombrar un archivo o carpeta del explorador de anexos.
+ * Renombrar una carpeta implica copiar cada objeto con el nuevo prefijo y
+ * borrar los originales (MinIO no tiene "rename" nativo).
+ * @param {string} rel - ruta relativa del elemento a renombrar
+ * @param {string} nuevoNombre - nuevo nombre (mismo padre)
+ */
+async function renameAnexoPath(rol, usuario, rel, nuevoNombre) {
+  await ensureBucket();
+  if (!rel) throw new Error('No se puede renombrar la raíz de Anexos');
+
+  const nombreLimpio = sanitizeAnexoName(nuevoNombre);
+  if (!nombreLimpio) throw new Error('Nombre inválido');
+
+  const root = getAnexosRoot(rol, usuario);
+  const segmentos = rel.split('/');
+  const viejoNombre = segmentos.pop();
+  const padre = segmentos.join('/');
+  const prefijoPadre = padre ? `${root}/${padre}` : root;
+  const oldKey = `${prefijoPadre}/${viejoNombre}`;
+  const newKey = `${prefijoPadre}/${nombreLimpio}`;
+
+  if (oldKey === newKey) return { tipo: 'sin-cambios', nombre: nombreLimpio };
+
+  // Archivo suelto
+  const stat = await statFile(oldKey);
+  if (stat) {
+    await minioClient.copyObject(CONFIG.bucket, newKey, `/${CONFIG.bucket}/${oldKey}`);
+    await minioClient.removeObject(CONFIG.bucket, oldKey);
+    console.log(`[Storage] ✏️ Anexo renombrado: ${oldKey} → ${newKey}`);
+    return { tipo: 'archivo', nombre: nombreLimpio };
+  }
+
+  // Carpeta: copiar todo con el nuevo prefijo y borrar el original
+  const objetos = await listFiles(`${oldKey}/`, true, true);
+  if (!objetos.length) throw new Error('Elemento no encontrado');
+
+  const paraBorrar = [];
+  for (const obj of objetos) {
+    const destino = newKey + obj.name.slice(oldKey.length);
+    await minioClient.copyObject(CONFIG.bucket, destino, `/${CONFIG.bucket}/${obj.name}`);
+    paraBorrar.push(obj.name);
+  }
+  await minioClient.removeObjects(CONFIG.bucket, paraBorrar);
+  console.log(`[Storage] ✏️ Carpeta de anexos renombrada: ${oldKey} → ${newKey} (${objetos.length} objetos)`);
+  return { tipo: 'carpeta', nombre: nombreLimpio, movidos: objetos.length };
+}
+
+/**
+ * ¿Existe ya la carpeta raíz de Anexos de este usuario?
+ */
+async function existeAnexosRoot(rol, usuario) {
+  const objetos = await listFiles(`${getAnexosRoot(rol, usuario)}/`, true, true);
+  return objetos.length > 0;
 }
 
 /**
@@ -478,5 +712,15 @@ module.exports = {
   moveFile,
   listFiles,
   getSubfoldersForRole,
+  // Explorador de anexos
+  getAnexosRoot,
+  sanitizeAnexoName,
+  sanitizeAnexoPath,
+  listAnexos,
+  createAnexoFolder,
+  uploadAnexo,
+  deleteAnexoPath,
+  renameAnexoPath,
+  existeAnexosRoot,
   CONFIG,
 };
