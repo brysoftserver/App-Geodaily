@@ -32,6 +32,7 @@ import { calcularArea, exportarKML, importarKML } from '../../services/kml.servi
 import {
   savePlantacion,
   saveMedicion,
+  actualizarNombreMedicion,
   getPlantaciones,
   getMediciones,
   deleteMedicionLocal,
@@ -144,6 +145,13 @@ const MapaScreen: React.FC = () => {
     distanciaKm: number;
   } | null>(null);
 
+  /**
+   * Id de la medición del polígono actual (el mismo que usa «Calcular» para
+   * guardarla en SQLite). «Guardar» lo necesita para ponerle nombre a esa fila
+   * y que quede identificable en el 📋 Historial.
+   */
+  const [idMedicionActual, setIdMedicionActual] = useState<string | null>(null);
+
   // --- Estado para Conteo (polígono de plantación + selector de especie) ---
   const [mostrarPanelConteo, setMostrarPanelConteo] = useState(false);
   const [plantaSeleccionada, setPlantaSeleccionada] = useState<string>('Cacao');
@@ -229,12 +237,14 @@ const MapaScreen: React.FC = () => {
   const [mostrarModalNombreKML, setMostrarModalNombreKML] = useState(false);
   const [nombreBaseKML, setNombreBaseKML] = useState('');
   const [exportandoKML, setExportandoKML] = useState(false);
+  const [guardandoMedicion, setGuardandoMedicion] = useState(false);
   /**
-   * true cuando el modal de nombre se abrió desde el botón «Guardar» del panel
-   * de resultado: al exportar se cierra la medición (se limpia el polígono)
-   * para quedar listo para la siguiente.
+   * Qué hace el botón de confirmar del modal de nombre:
+   * - 'exportar' → genera el archivo .kml (botón «Exportar KML»).
+   * - 'guardar'  → guarda el nombre en la medición y la deja en el historial
+   *                (botón «Guardar»), SIN exportar archivo.
    */
-  const [kmlCerrarAlExportar, setKmlCerrarAlExportar] = useState(false);
+  const [accionNombre, setAccionNombre] = useState<'exportar' | 'guardar'>('exportar');
   /** Nombre del beneficiario recibido desde el formulario de visita técnica. */
   const beneficiarioNombreRuta = limpiarNombreKML(route.params?.beneficiarioNombre ?? '');
 
@@ -242,7 +252,7 @@ const MapaScreen: React.FC = () => {
   const [mostrarHistorialMediciones, setMostrarHistorialMediciones] = useState(false);
   const [medicionesGuardadas, setMedicionesGuardadas] = useState<Record<string, any>[]>([]);
   const [cargandoHistorialMediciones, setCargandoHistorialMediciones] = useState(false);
-  const [medicionPreview, setMedicionPreview] = useState<{ id: string; puntos: { latitud: number; longitud: number }[] } | null>(null);
+  const [medicionPreview, setMedicionPreview] = useState<{ id: string; nombre?: string | null; puntos: { latitud: number; longitud: number }[] } | null>(null);
   const [eliminandoMedicionId, setEliminandoMedicionId] = useState<string | null>(null);
   // Confirmación de borrado propia (Alert.alert no muestra botones en web).
   const [confirmarEliminarMedicion, setConfirmarEliminarMedicion] = useState<Record<string, any> | null>(null);
@@ -652,6 +662,9 @@ const MapaScreen: React.FC = () => {
         .toString(36)
         .replace('-', 'n');
 
+    // Se guarda para que «Guardar» pueda ponerle nombre a esta misma fila.
+    setIdMedicionActual(idMedicion);
+
     if (poligono.length === 2) {
       // Distancia lineal entre 2 puntos
       const d = calcularDistanciaHaversine(poligono[0], poligono[1]);
@@ -713,6 +726,7 @@ const MapaScreen: React.FC = () => {
     setMostrarResultado(false);
     setMedicionPreview(null);
     setMedicionPersistida(false);
+    setIdMedicionActual(null);
   }, []);
 
   const deshacerUltimoPunto = useCallback(() => {
@@ -722,36 +736,19 @@ const MapaScreen: React.FC = () => {
     setMostrarResultado(false);
     // El polígono cambió: el resultado anterior ya no corresponde a lo guardado.
     setMedicionPersistida(false);
+    setIdMedicionActual(null);
   }, []);
 
   /**
    * Botón «Guardar» del panel de resultado.
    *
    * La medición se persiste al presionar «Calcular» (con un id determinista,
-   * así que recalcular NO duplica filas). Este botón confirma al técnico que
-   * el resultado quedó guardado y deja el mapa listo para la siguiente
-   * medición, en lugar del antiguo «Nuevo», que borraba sin dejar claro si
-   * algo se había guardado.
+   * así que recalcular NO duplica filas); «Guardar» pide el nombre y lo deja
+   * grabado en esa fila para poder identificarla en el 📋 Historial. Antes el
+   * historial mostraba solo fecha y hora (todas las mediciones se veían
+   * iguales) y «Guardar» exportaba un KML, que ya tiene su propio botón.
+   * La apertura del diálogo se maneja en `abrirModalNombreMedicion`.
    */
-  const confirmarGuardarMedicion = useCallback(() => {
-    if (!medicionPersistida) {
-      Alert.alert(
-        'Medición sin guardar',
-        'El resultado no quedó guardado en este dispositivo. Vuelve a presionar «Calcular» para reintentarlo.'
-      );
-      return;
-    }
-    const detalle = resultadoArea
-      ? `${resultadoArea.areaHectareas} ha (${Math.round(resultadoArea.areaMetros2).toLocaleString()} m²) · perímetro ${Math.round(resultadoArea.perimetroMetros).toLocaleString()} m`
-      : resultadoDistancia
-        ? `${Math.round(resultadoDistancia.distanciaMetros).toLocaleString()} m`
-        : '';
-    Alert.alert(
-      '✅ Medición guardada',
-      detalle ? `${detalle}\n\nPuedes verla en el 📋 Historial.` : 'Puedes verla en el 📋 Historial.'
-    );
-    limpiarPoligono();
-  }, [medicionPersistida, resultadoArea, resultadoDistancia, limpiarPoligono]);
 
   /** Calcular centroide para la previsualización del polígono de plantación */
   const getPlantacionCentroide = useCallback((): { lat: number; lon: number } | null => {
@@ -864,43 +861,70 @@ const MapaScreen: React.FC = () => {
   const sufijoKML = SUFIJOS_KML[modo];
 
   /**
-   * Nombre completo del KML: lo que escribió el técnico + el origen
-   * («Beneficiario Luiz Rojas - Medicion», «Camilo Zapata - Conteo»).
+   * Nombre completo: lo que escribió el técnico + el origen
+   * («Luiz Rojas - Medicion», «Camilo Zapata - Conteo»). Sirve tanto para el
+   * archivo KML como para el nombre que se ve en el 📋 Historial.
    */
   const nombreCompletoKML = React.useMemo(() => {
     const base = limpiarNombreKML(nombreBaseKML);
     return base ? `${base} - ${sufijoKML}` : sufijoKML;
   }, [nombreBaseKML, sufijoKML]);
 
+  /** Quita el sufijo de origen («- Medicion» / «- Conteo») para reusar el nombre. */
+  const quitarSufijoOrigen = React.useCallback((texto?: string | null) => {
+    return limpiarNombreKML(String(texto ?? '')).replace(/\s*-\s*(Medicion|Conteo)\s*$/i, '').trim();
+  }, []);
+
   /**
-   * Abre el modal para nombrar el KML. Antes se exportaba siempre como
-   * `Medicion_<fecha>`, así que todos los archivos se llamaban igual y solo
-   * los distinguía la fecha (y dos exportaciones del mismo día se
-   * sobrescribían). Ahora el técnico pone el nombre y el origen se agrega
-   * automáticamente al final.
+   * Abre el modal para nombrar (o exportar).
+   *
+   * `accion = 'guardar'`: solo pide el nombre y lo guarda en la medición, para
+   * identificarla en el historial. NO genera archivo (para eso está
+   * «Exportar KML»).
+   * `accion = 'exportar'`: pide el nombre y genera el .kml.
    */
-  const abrirModalNombreKML = useCallback((cerrarAlExportar = false) => {
-    const puntos = modo === 'contar' ? plantacionPoligono : poligono;
-    if (puntos.length < 3) {
+  const abrirModalNombreMedicion = useCallback((accion: 'exportar' | 'guardar') => {
+    if (accion === 'exportar') {
+      const puntos = modo === 'contar' ? plantacionPoligono : poligono;
+      if (puntos.length < 3) {
+        Alert.alert(
+          'Sin polígono',
+          modo === 'contar'
+            ? 'Dibuja el área de plantación en el mapa (mínimo 3 puntos) antes de exportar el KML.'
+            : 'Dibuja un polígono en modo Medición primero (mínimo 3 puntos).'
+        );
+        return;
+      }
+    } else if (!medicionPersistida || !idMedicionActual) {
       Alert.alert(
-        'Sin polígono',
-        modo === 'contar'
-          ? 'Dibuja el área de plantación en el mapa (mínimo 3 puntos) antes de exportar el KML.'
-          : 'Dibuja un polígono en modo Medición primero (mínimo 3 puntos).'
+        'Medición sin guardar',
+        'El resultado no quedó guardado en este dispositivo. Vuelve a presionar «Calcular» para reintentarlo.'
       );
       return;
     }
-    // Sugerencia por defecto: el beneficiario (del formulario o del padrón en
-    // modo conteo). El técnico puede editarla antes de exportar.
+    // Sugerencia por defecto: el nombre que ya tenía la medición (si se está
+    // renombrando), el beneficiario del formulario o el del padrón en conteo.
     const sugerido =
+      quitarSufijoOrigen(medicionPreview?.nombre) ||
       beneficiarioNombreRuta ||
       (modo === 'contar' ? limpiarNombreKML(plantacionBeneficiarioNombre) : '');
     setNombreBaseKML(sugerido);
-    setKmlCerrarAlExportar(cerrarAlExportar);
+    setAccionNombre(accion);
     setMostrarModalKML(false);
     setMostrarModalNombreKML(true);
-  }, [modo, poligono, plantacionPoligono, beneficiarioNombreRuta, plantacionBeneficiarioNombre]);
+  }, [
+    modo,
+    poligono,
+    plantacionPoligono,
+    medicionPersistida,
+    idMedicionActual,
+    medicionPreview?.nombre,
+    quitarSufijoOrigen,
+    beneficiarioNombreRuta,
+    plantacionBeneficiarioNombre,
+  ]);
 
+  /** Exporta el polígono actual a .kml (no toca la medición guardada). */
   const handleExportarKML = useCallback(async () => {
     const puntos = modo === 'contar' ? plantacionPoligono : poligono;
     if (puntos.length < 3) {
@@ -918,18 +942,59 @@ const MapaScreen: React.FC = () => {
         );
         return;
       }
-      if (kmlCerrarAlExportar) {
-        setKmlCerrarAlExportar(false);
-        limpiarPoligono();
-        Alert.alert(
-          '✅ KML guardado',
-          `Se generó «${nombreCompletoKML}.kml» y la medición quedó en el 📋 Historial.`
-        );
-      }
     } finally {
       setExportandoKML(false);
     }
-  }, [modo, plantacionPoligono, poligono, nombreCompletoKML, kmlCerrarAlExportar, limpiarPoligono]);
+  }, [modo, plantacionPoligono, poligono, nombreCompletoKML]);
+
+  /**
+   * Botón «Guardar»: pide el nombre y lo graba en la medición para que quede
+   * identificable en el historial.
+   */
+  const confirmarGuardarMedicion = useCallback(async () => {
+    if (!idMedicionActual) {
+      Alert.alert(
+        'Medición sin guardar',
+        'El resultado no quedó guardado en este dispositivo. Vuelve a presionar «Calcular» para reintentarlo.'
+      );
+      return;
+    }
+    const nombre = nombreCompletoKML;
+    const detalle = resultadoArea
+      ? `${resultadoArea.areaHectareas} ha (${Math.round(resultadoArea.areaMetros2).toLocaleString()} m²) · perímetro ${Math.round(resultadoArea.perimetroMetros).toLocaleString()} m`
+      : resultadoDistancia
+        ? `${Math.round(resultadoDistancia.distanciaMetros).toLocaleString()} m`
+        : '';
+    setGuardandoMedicion(true);
+    try {
+      await actualizarNombreMedicion(idMedicionActual, nombre);
+      // Se marca como no sincronizada: el nombre viaja al servidor en el sync.
+      syncNow().catch(() => {});
+      setMostrarModalNombreKML(false);
+      limpiarPoligono();
+      Alert.alert(
+        '✅ Medición guardada',
+        `Guardada como «${nombre}».${detalle ? `\n\n${detalle}` : ''}\n\nPuedes verla en el 📋 Historial.`
+      );
+    } catch (error) {
+      console.warn('[Mapa] No se pudo guardar el nombre de la medición:', error);
+      Alert.alert(
+        'No se pudo guardar',
+        'El nombre no se pudo guardar en este dispositivo. Inténtalo de nuevo.'
+      );
+    } finally {
+      setGuardandoMedicion(false);
+    }
+  }, [idMedicionActual, nombreCompletoKML, resultadoArea, resultadoDistancia, limpiarPoligono, syncNow]);
+
+  /** Botón de confirmar del modal de nombre: guarda o exporta según el origen. */
+  const confirmarAccionNombre = useCallback(async () => {
+    if (accionNombre === 'exportar') {
+      await handleExportarKML();
+    } else {
+      await confirmarGuardarMedicion();
+    }
+  }, [accionNombre, handleExportarKML, confirmarGuardarMedicion]);
 
   // Antes llamaba a `importarKML('')` con URI vacía: fallaba dentro de su
   // propio try/catch, descartaba el resultado y mostraba una instrucción que
@@ -1007,7 +1072,10 @@ const MapaScreen: React.FC = () => {
       setResultadoDistancia(null);
     }
     setMostrarResultado(true);
-    setMedicionPreview({ id: medicion.id, puntos });
+    setMedicionPreview({ id: medicion.id, nombre: medicion.nombre || null, puntos });
+    // La medición revivida ya está en SQLite: «Guardar» puede renombrarla.
+    setIdMedicionActual(medicion.id);
+    setMedicionPersistida(true);
     setFoco({ coords: puntos[0], nonce: Date.now() });
     setMostrarHistorialMediciones(false);
   }, [calcularDistanciaHaversine]);
@@ -1365,13 +1433,13 @@ const MapaScreen: React.FC = () => {
             <View style={styles.resultActions}>
               <TouchableOpacity
                 style={styles.resultBtn}
-                onPress={() => abrirModalNombreKML(false)}
+                onPress={() => abrirModalNombreMedicion('exportar')}
               >
                 <Text style={styles.resultBtnText}>Exportar KML</Text>
               </TouchableOpacity>
               <TouchableOpacity
                 style={[styles.resultBtn, styles.resultBtnSecondary]}
-                onPress={() => abrirModalNombreKML(true)}
+                onPress={() => abrirModalNombreMedicion('guardar')}
               >
                 <Text style={styles.resultBtnTextSecondary}>Guardar</Text>
               </TouchableOpacity>
@@ -1394,7 +1462,7 @@ const MapaScreen: React.FC = () => {
             <View style={styles.resultActions}>
               <TouchableOpacity
                 style={[styles.resultBtn, styles.resultBtnSecondary]}
-                onPress={confirmarGuardarMedicion}
+                onPress={() => abrirModalNombreMedicion('guardar')}
               >
                 <Text style={styles.resultBtnTextSecondary}>Guardar</Text>
               </TouchableOpacity>
@@ -1748,8 +1816,12 @@ const MapaScreen: React.FC = () => {
           <View style={styles.modalContent}>
             {mostrarModalNombreKML ? (
               <>
-                <Text style={styles.modalTitle}>📤 Guardar KML</Text>
-                <Text style={styles.kmlLabel}>Nombre del KML</Text>
+                <Text style={styles.modalTitle}>
+                  {accionNombre === 'guardar' ? '💾 Guardar medición' : '📤 Exportar KML'}
+                </Text>
+                <Text style={styles.kmlLabel}>
+                  {accionNombre === 'guardar' ? 'Nombre de la medición' : 'Nombre del KML'}
+                </Text>
                 <View style={styles.kmlNombreRow}>
                   <TextInput
                     style={styles.kmlNombreInput}
@@ -1764,23 +1836,31 @@ const MapaScreen: React.FC = () => {
                   <Text style={styles.kmlSufijo} numberOfLines={1}>- {sufijoKML}</Text>
                 </View>
                 <Text style={styles.kmlPreview} numberOfLines={2}>
-                  Se guardará como: {nombreCompletoKML}.kml
+                  {accionNombre === 'guardar'
+                    ? `Se guardará en el historial como: ${nombreCompletoKML}`
+                    : `Se exportará como: ${nombreCompletoKML}.kml`}
                 </Text>
                 <TouchableOpacity
-                  style={[styles.modalBtn, styles.modalBtnExportar, exportandoKML && styles.toolBtnDisabled]}
-                  onPress={handleExportarKML}
-                  disabled={exportandoKML}
+                  style={[
+                    styles.modalBtn,
+                    styles.modalBtnExportar,
+                    (exportandoKML || guardandoMedicion) && styles.toolBtnDisabled,
+                  ]}
+                  onPress={confirmarAccionNombre}
+                  disabled={exportandoKML || guardandoMedicion}
                 >
-                  {exportandoKML ? (
+                  {exportandoKML || guardandoMedicion ? (
                     <ActivityIndicator color={COLORS.textOnPrimary} />
                   ) : (
-                    <Text style={styles.modalBtnTextExportar}>📤 Guardar KML</Text>
+                    <Text style={styles.modalBtnTextExportar}>
+                      {accionNombre === 'guardar' ? '💾 Guardar medición' : '📤 Exportar KML'}
+                    </Text>
                   )}
                 </TouchableOpacity>
                 <TouchableOpacity
                   style={[styles.modalBtn, styles.modalBtnCancel]}
                   onPress={() => setMostrarModalNombreKML(false)}
-                  disabled={exportandoKML}
+                  disabled={exportandoKML || guardandoMedicion}
                 >
                   <Text style={styles.modalBtnTextCancel}>Cancelar</Text>
                 </TouchableOpacity>
@@ -1788,7 +1868,7 @@ const MapaScreen: React.FC = () => {
             ) : (
               <>
                 <Text style={styles.modalTitle}>🗺️ Importar / Exportar KML</Text>
-                <TouchableOpacity style={styles.modalBtn} onPress={() => abrirModalNombreKML(false)}>
+                <TouchableOpacity style={styles.modalBtn} onPress={() => abrirModalNombreMedicion('exportar')}>
                   <Text style={styles.modalBtnIcon}>📤</Text>
                   <Text style={styles.modalBtnText}>Exportar polígono a KML</Text>
                 </TouchableOpacity>
@@ -1824,6 +1904,12 @@ const MapaScreen: React.FC = () => {
                 {medicionesGuardadas.map((m) => (
                   <View key={m.id} style={styles.historialItem}>
                     <View style={styles.historialItemInfo}>
+                      {/* El nombre es lo que permite distinguir una medición de
+                          otra; la fecha queda como dato secundario. Las
+                          mediciones viejas (sin nombre) siguen mostrando la fecha. */}
+                      <Text style={styles.historialItemNombre} numberOfLines={2}>
+                        {m.nombre || 'Medición sin nombre'}
+                      </Text>
                       <Text style={styles.historialItemFecha}>
                         {m.created_at ? new Date(m.created_at).toLocaleDateString('es-CO') : '—'} ·{' '}
                         {m.created_at ? new Date(m.created_at).toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit' }) : ''}
@@ -2703,10 +2789,17 @@ const styles = StyleSheet.create({
     flex: 1,
     marginRight: SPACING.sm,
   },
-  historialItemFecha: {
+  // Nombre de la medición: línea principal del historial, para poder
+  // distinguir una medición de otra sin mirar la fecha.
+  historialItemNombre: {
     fontSize: FONTS.sizes.sm,
-    fontWeight: FONTS.weights.medium,
+    fontWeight: FONTS.weights.semibold,
     color: COLORS.textPrimary,
+  },
+  historialItemFecha: {
+    fontSize: FONTS.sizes.xs,
+    color: COLORS.textLight,
+    marginTop: 2,
   },
   historialItemDetalle: {
     fontSize: FONTS.sizes.xs,

@@ -1344,6 +1344,7 @@ export const runMigrations = async (): Promise<void> => {
         area_metros2 REAL NOT NULL,
         perimetro_metros REAL NOT NULL,
         puntos_json TEXT NOT NULL,
+        nombre TEXT DEFAULT NULL,
         created_at TEXT NOT NULL,
         sincronizado INTEGER DEFAULT 0,
         FOREIGN KEY (formulario_id) REFERENCES formularios(id)
@@ -1583,6 +1584,15 @@ export const runMigrations = async (): Promise<void> => {
     try {
       await db.runAsync('ALTER TABLE mediciones_terreno ADD COLUMN sincronizado INTEGER DEFAULT 0');
       console.log('[DB] Columna sincronizado agregada a mediciones_terreno');
+    } catch {
+      // Ya existe, ignorar
+    }
+
+    // Migración: nombre de la medición (para identificarla en el historial;
+    // antes todas se veían solo con fecha y hora).
+    try {
+      await db.runAsync('ALTER TABLE mediciones_terreno ADD COLUMN nombre TEXT DEFAULT NULL');
+      console.log('[DB] Columna nombre agregada a mediciones_terreno');
     } catch {
       // Ya existe, ignorar
     }
@@ -2013,6 +2023,10 @@ export const getMedicionesNoSincronizadas = async (): Promise<Record<string, any
         valor: medicionDeArea ? areaHectareas : Number(row.perimetro_metros) || 0,
         unidad: medicionDeArea ? 'hectareas' : 'metros',
         metadata_json: {
+          // El nombre que el técnico le puso a la medición (identificable en
+          // el historial). Va en metadata para no requerir migrar la tabla
+          // `mediciones` del servidor.
+          nombre: row.nombre || null,
           area_hectareas: areaHectareas,
           area_metros2: Number(row.area_metros2) || 0,
           perimetro_metros: Number(row.perimetro_metros) || 0,
@@ -2207,6 +2221,7 @@ export const getMediciones = async (): Promise<Record<string, any>[]> => {
       id: r.id,
       formulario_id: r.formulario_id,
       usuario_id: r.usuario_id,
+      nombre: r.nombre || null,
       area_hectareas: r.area_hectareas,
       area_metros2: r.area_metros2,
       perimetro_metros: r.perimetro_metros,
@@ -2228,6 +2243,8 @@ export const saveMedicion = async (
     id: string;
     formulario_id?: string;
     usuario_id?: string;
+    /** Nombre que identifica la medición en el historial (opcional). */
+    nombre?: string | null;
     area_hectareas: number;
     area_metros2: number;
     perimetro_metros: number;
@@ -2241,8 +2258,8 @@ export const saveMedicion = async (
     await database.runAsync(
       `INSERT OR REPLACE INTO mediciones_terreno (
         id, formulario_id, usuario_id, area_hectareas, area_metros2,
-        perimetro_metros, puntos_json, created_at, sincronizado
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        perimetro_metros, puntos_json, nombre, created_at, sincronizado
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         data.id,
         data.formulario_id || 'mapa_directo',
@@ -2251,6 +2268,7 @@ export const saveMedicion = async (
         data.area_metros2,
         data.perimetro_metros,
         JSON.stringify(data.puntos),
+        data.nombre || null,
         new Date().toISOString(),
         data.sincronizado ? 1 : 0,
       ]
@@ -2258,6 +2276,35 @@ export const saveMedicion = async (
     console.log('[DB] Medición guardada localmente:', data.id);
   } catch (error) {
     console.error('[DB] Error al guardar medición:', error);
+    throw error;
+  }
+};
+
+/**
+ * Ponerle nombre a una medición ya guardada.
+ *
+ * El área/distancia se persiste al presionar «Calcular» (id determinista), y
+ * el nombre se elige después con «Guardar». Sin esto, todas las mediciones se
+ * veían igual en el historial (solo fecha y hora) y no había forma de
+ * identificar la que se acababa de hacer.
+ *
+ * Se marca como no sincronizada para que el próximo sync envíe el nombre al
+ * servidor (va en `metadata_json.nombre`).
+ */
+export const actualizarNombreMedicion = async (
+  id: string,
+  nombre: string
+): Promise<void> => {
+  const database = await ensureDb();
+  if (!database) throw new Error('La base de datos local no está disponible; el nombre no se guardó');
+  try {
+    await database.runAsync(
+      'UPDATE mediciones_terreno SET nombre = ?, sincronizado = 0 WHERE id = ?',
+      [nombre || null, id]
+    );
+    console.log('[DB] Nombre de medición actualizado:', id, nombre);
+  } catch (error) {
+    console.error('[DB] Error al nombrar la medición:', error);
     throw error;
   }
 };
