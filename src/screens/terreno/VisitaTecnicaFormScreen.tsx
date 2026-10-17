@@ -1004,7 +1004,15 @@ const VisitaTecnicaFormScreen: React.FC<Props> = ({ navigation, route }) => {
 
           <TouchableOpacity
             style={styles.mapBtn}
-            onPress={() => navigation.navigate('TerrenoMapa')}
+            onPress={() =>
+              navigation.navigate('TerrenoMapa', {
+                // Se pasa el beneficiario para que el KML exportado desde el
+                // mapa se nombre «Nombre del beneficiario - Medición» y se
+                // pueda distinguir de los demás.
+                beneficiarioNombre: beneficiario?.nombre,
+                beneficiarioCedula: beneficiario?.cedula,
+              })
+            }
             activeOpacity={0.7}
           >
             <Text style={styles.mapBtnText}>🗺️ Abrir mapa para trazar el área</Text>

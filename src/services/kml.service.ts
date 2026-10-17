@@ -6,6 +6,52 @@ import * as FileSystem from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
 
 /**
+ * Escapar los caracteres reservados del XML.
+ *
+ * El nombre del KML ahora lo escribe el técnico (o viene del beneficiario),
+ * así que puede contener `&`, `<`, `"`, etc. Sin escapar, el archivo se
+ * generaba mal y Google Earth / QGIS lo rechazaban como KML inválido.
+ */
+const escaparXml = (texto: string): string =>
+  texto
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;');
+
+/**
+ * Construir el nombre de archivo del KML.
+ *
+ * Antes TODAS las exportaciones se llamaban igual (`Medicion_2026-10-17`),
+ * así que la segunda sobrescribía a la primera y dos predios exportados el
+ * mismo día quedaban indistinguibles al compartirlos. Ahora:
+ *   1. El nombre legible que escribió el usuario va primero
+ *      (`Luiz Rojas - Medicion`).
+ *   2. Se agrega fecha + hora + segundos para que nunca haya colisión.
+ * Los acentos se quitan y los espacios se vuelven `_` para que el archivo
+ * ser pueda compartir sin problemas; el `<name>` interno del KML conserva
+ * el texto tal cual lo escribió el usuario.
+ */
+const nombreArchivoKML = (nombre: string): string => {
+  const limpio = nombre
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[\\/:*?"<>|]+/g, ' ')
+    .trim()
+    .replace(/\s+/g, '_')
+    .replace(/_+/g, '_')
+    .replace(/^[_.-]+|[_.-]+$/g, '');
+  const base = limpio || 'KML';
+  const ahora = new Date();
+  const dos = (n: number) => String(n).padStart(2, '0');
+  const sello =
+    `${ahora.getFullYear()}-${dos(ahora.getMonth() + 1)}-${dos(ahora.getDate())}` +
+    `_${dos(ahora.getHours())}-${dos(ahora.getMinutes())}-${dos(ahora.getSeconds())}`;
+  return `${base}_${sello}.kml`;
+};
+
+/**
  * Generar archivo KML a partir de un polígono de puntos
  */
 export const generarKML = (
@@ -15,13 +61,14 @@ export const generarKML = (
   const coords = puntos
     .map((p) => `${p.longitud},${p.latitud},0`)
     .join(' ');
+  const nombreXml = escaparXml(nombre);
 
   return `<?xml version="1.0" encoding="UTF-8"?>
 <kml xmlns="http://www.opengis.net/kml/2.2">
   <Document>
-    <name>${nombre}</name>
+    <name>${nombreXml}</name>
     <Placemark>
-      <name>${nombre}</name>
+      <name>${nombreXml}</name>
       <Polygon>
         <outerBoundaryIs>
           <LinearRing>
@@ -43,7 +90,7 @@ export const exportarKML = async (
 ): Promise<string | null> => {
   try {
     const kmlContent = generarKML(nombre, puntos);
-    const filename = `${nombre.replace(/[^a-zA-Z0-9]/g, '_')}.kml`;
+    const filename = nombreArchivoKML(nombre);
     const fileUri = `${FileSystem.documentDirectory}${filename}`;
 
     await FileSystem.writeAsStringAsync(fileUri, kmlContent, {
@@ -78,13 +125,14 @@ export const generarKMLRuta = (
   const coords = puntos
     .map((p) => `${p.longitud},${p.latitud},${p.altitud ?? 0}`)
     .join(' ');
+  const nombreXml = escaparXml(nombre);
 
   return `<?xml version="1.0" encoding="UTF-8"?>
 <kml xmlns="http://www.opengis.net/kml/2.2">
   <Document>
-    <name>${nombre}</name>
+    <name>${nombreXml}</name>
     <Placemark>
-      <name>${nombre}</name>
+      <name>${nombreXml}</name>
       <Style>
         <LineStyle>
           <color>ff0000ff</color>
@@ -110,7 +158,7 @@ export const exportarKMLRuta = async (
 ): Promise<string | null> => {
   try {
     const kmlContent = generarKMLRuta(nombre, puntos);
-    const filename = `${nombre.replace(/[^a-zA-Z0-9]/g, '_')}.kml`;
+    const filename = nombreArchivoKML(nombre);
     const fileUri = `${FileSystem.documentDirectory}${filename}`;
 
     await FileSystem.writeAsStringAsync(fileUri, kmlContent, {

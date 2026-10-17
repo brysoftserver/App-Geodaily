@@ -85,7 +85,12 @@ export type TerrenoStackParamList = {
   ConsentimientoDatos: { beneficiario?: DatosBeneficiario } | undefined;
   EvaluacionEca: { beneficiario?: DatosBeneficiario } | undefined;
   TerrenoCalendario: undefined;
-  TerrenoMapa: undefined;
+  /**
+   * Mapa de trazado de polígonos. Recibe el beneficiario para poder nombrar
+   * el KML exportado («Beneficiario - Medición» / «Beneficiario - Conteo»),
+   * que antes salía siempre como `Medicion_<fecha>` y no se distinguía.
+   */
+  TerrenoMapa: { beneficiarioNombre?: string; beneficiarioCedula?: string } | undefined;
   TerrenoCapacitacion: undefined;
 };
 
