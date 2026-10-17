@@ -229,6 +229,12 @@ const MapaScreen: React.FC = () => {
   const [mostrarModalNombreKML, setMostrarModalNombreKML] = useState(false);
   const [nombreBaseKML, setNombreBaseKML] = useState('');
   const [exportandoKML, setExportandoKML] = useState(false);
+  /**
+   * true cuando el modal de nombre se abrió desde el botón «Guardar» del panel
+   * de resultado: al exportar se cierra la medición (se limpia el polígono)
+   * para quedar listo para la siguiente.
+   */
+  const [kmlCerrarAlExportar, setKmlCerrarAlExportar] = useState(false);
   /** Nombre del beneficiario recibido desde el formulario de visita técnica. */
   const beneficiarioNombreRuta = limpiarNombreKML(route.params?.beneficiarioNombre ?? '');
 
@@ -873,7 +879,7 @@ const MapaScreen: React.FC = () => {
    * sobrescribían). Ahora el técnico pone el nombre y el origen se agrega
    * automáticamente al final.
    */
-  const abrirModalNombreKML = useCallback(() => {
+  const abrirModalNombreKML = useCallback((cerrarAlExportar = false) => {
     const puntos = modo === 'contar' ? plantacionPoligono : poligono;
     if (puntos.length < 3) {
       Alert.alert(
@@ -890,6 +896,7 @@ const MapaScreen: React.FC = () => {
       beneficiarioNombreRuta ||
       (modo === 'contar' ? limpiarNombreKML(plantacionBeneficiarioNombre) : '');
     setNombreBaseKML(sugerido);
+    setKmlCerrarAlExportar(cerrarAlExportar);
     setMostrarModalKML(false);
     setMostrarModalNombreKML(true);
   }, [modo, poligono, plantacionPoligono, beneficiarioNombreRuta, plantacionBeneficiarioNombre]);
@@ -909,11 +916,20 @@ const MapaScreen: React.FC = () => {
           'No se pudo exportar',
           'El archivo KML no se pudo generar en este dispositivo. Inténtalo de nuevo.'
         );
+        return;
+      }
+      if (kmlCerrarAlExportar) {
+        setKmlCerrarAlExportar(false);
+        limpiarPoligono();
+        Alert.alert(
+          '✅ KML guardado',
+          `Se generó «${nombreCompletoKML}.kml» y la medición quedó en el 📋 Historial.`
+        );
       }
     } finally {
       setExportandoKML(false);
     }
-  }, [modo, plantacionPoligono, poligono, nombreCompletoKML]);
+  }, [modo, plantacionPoligono, poligono, nombreCompletoKML, kmlCerrarAlExportar, limpiarPoligono]);
 
   // Antes llamaba a `importarKML('')` con URI vacía: fallaba dentro de su
   // propio try/catch, descartaba el resultado y mostraba una instrucción que
@@ -1349,13 +1365,13 @@ const MapaScreen: React.FC = () => {
             <View style={styles.resultActions}>
               <TouchableOpacity
                 style={styles.resultBtn}
-                onPress={abrirModalNombreKML}
+                onPress={() => abrirModalNombreKML(false)}
               >
                 <Text style={styles.resultBtnText}>Exportar KML</Text>
               </TouchableOpacity>
               <TouchableOpacity
                 style={[styles.resultBtn, styles.resultBtnSecondary]}
-                onPress={confirmarGuardarMedicion}
+                onPress={() => abrirModalNombreKML(true)}
               >
                 <Text style={styles.resultBtnTextSecondary}>Guardar</Text>
               </TouchableOpacity>
@@ -1715,69 +1731,79 @@ const MapaScreen: React.FC = () => {
         </TouchableOpacity>
       </View>
 
-      {/* Modal KML */}
-      <Modal visible={mostrarModalKML} transparent animationType="fade">
+      {/* Modal KML — un solo <Modal> con dos pasos (menú / nombre).
+          Antes eran dos <Modal> separados: al cerrar el del menú y abrir el
+          del nombre en el mismo instante, en iOS el segundo no se presentaba
+          y parecía que el KML se guardaba sin poder nombrarlo. */}
+      <Modal
+        visible={mostrarModalKML || mostrarModalNombreKML}
+        transparent
+        animationType="fade"
+        onRequestClose={() => {
+          setMostrarModalKML(false);
+          setMostrarModalNombreKML(false);
+        }}
+      >
         <View style={styles.modalOverlay}>
           <View style={styles.modalContent}>
-            <Text style={styles.modalTitle}>🗺️ Importar / Exportar KML</Text>
-            <TouchableOpacity style={styles.modalBtn} onPress={abrirModalNombreKML}>
-              <Text style={styles.modalBtnIcon}>📤</Text>
-              <Text style={styles.modalBtnText}>Exportar polígono a KML</Text>
-            </TouchableOpacity>
-            <TouchableOpacity style={styles.modalBtn} onPress={handleImportarKML}>
-              <Text style={styles.modalBtnIcon}>📥</Text>
-              <Text style={styles.modalBtnText}>Importar KML</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={[styles.modalBtn, styles.modalBtnCancel]}
-              onPress={() => setMostrarModalKML(false)}
-            >
-              <Text style={styles.modalBtnTextCancel}>Cancelar</Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-      </Modal>
-
-      {/* Modal: nombrar el KML antes de exportarlo */}
-      <Modal visible={mostrarModalNombreKML} transparent animationType="fade">
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalContent}>
-            <Text style={styles.modalTitle}>📤 Exportar KML</Text>
-            <Text style={styles.kmlLabel}>Nombre del KML</Text>
-            <View style={styles.kmlNombreRow}>
-              <TextInput
-                style={styles.kmlNombreInput}
-                value={nombreBaseKML}
-                onChangeText={setNombreBaseKML}
-                placeholder="Ej. Luiz Rojas"
-                placeholderTextColor={COLORS.textLight}
-                autoCorrect={false}
-                maxLength={80}
-              />
-              {/* El origen se agrega solo, el técnico no lo puede borrar por error */}
-              <Text style={styles.kmlSufijo} numberOfLines={1}>- {sufijoKML}</Text>
-            </View>
-            <Text style={styles.kmlPreview} numberOfLines={2}>
-              Se guardará como: {nombreCompletoKML}.kml
-            </Text>
-            <TouchableOpacity
-              style={[styles.modalBtn, styles.modalBtnExportar, exportandoKML && styles.toolBtnDisabled]}
-              onPress={handleExportarKML}
-              disabled={exportandoKML}
-            >
-              {exportandoKML ? (
-                <ActivityIndicator color={COLORS.textOnPrimary} />
-              ) : (
-                <Text style={styles.modalBtnTextExportar}>📤 Exportar</Text>
-              )}
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={[styles.modalBtn, styles.modalBtnCancel]}
-              onPress={() => setMostrarModalNombreKML(false)}
-              disabled={exportandoKML}
-            >
-              <Text style={styles.modalBtnTextCancel}>Cancelar</Text>
-            </TouchableOpacity>
+            {mostrarModalNombreKML ? (
+              <>
+                <Text style={styles.modalTitle}>📤 Guardar KML</Text>
+                <Text style={styles.kmlLabel}>Nombre del KML</Text>
+                <View style={styles.kmlNombreRow}>
+                  <TextInput
+                    style={styles.kmlNombreInput}
+                    value={nombreBaseKML}
+                    onChangeText={setNombreBaseKML}
+                    placeholder="Ej. Luiz Rojas"
+                    placeholderTextColor={COLORS.textLight}
+                    autoCorrect={false}
+                    maxLength={80}
+                  />
+                  {/* El origen se agrega solo, el técnico no lo puede borrar por error */}
+                  <Text style={styles.kmlSufijo} numberOfLines={1}>- {sufijoKML}</Text>
+                </View>
+                <Text style={styles.kmlPreview} numberOfLines={2}>
+                  Se guardará como: {nombreCompletoKML}.kml
+                </Text>
+                <TouchableOpacity
+                  style={[styles.modalBtn, styles.modalBtnExportar, exportandoKML && styles.toolBtnDisabled]}
+                  onPress={handleExportarKML}
+                  disabled={exportandoKML}
+                >
+                  {exportandoKML ? (
+                    <ActivityIndicator color={COLORS.textOnPrimary} />
+                  ) : (
+                    <Text style={styles.modalBtnTextExportar}>📤 Guardar KML</Text>
+                  )}
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[styles.modalBtn, styles.modalBtnCancel]}
+                  onPress={() => setMostrarModalNombreKML(false)}
+                  disabled={exportandoKML}
+                >
+                  <Text style={styles.modalBtnTextCancel}>Cancelar</Text>
+                </TouchableOpacity>
+              </>
+            ) : (
+              <>
+                <Text style={styles.modalTitle}>🗺️ Importar / Exportar KML</Text>
+                <TouchableOpacity style={styles.modalBtn} onPress={() => abrirModalNombreKML(false)}>
+                  <Text style={styles.modalBtnIcon}>📤</Text>
+                  <Text style={styles.modalBtnText}>Exportar polígono a KML</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={styles.modalBtn} onPress={handleImportarKML}>
+                  <Text style={styles.modalBtnIcon}>📥</Text>
+                  <Text style={styles.modalBtnText}>Importar KML</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[styles.modalBtn, styles.modalBtnCancel]}
+                  onPress={() => setMostrarModalKML(false)}
+                >
+                  <Text style={styles.modalBtnTextCancel}>Cancelar</Text>
+                </TouchableOpacity>
+              </>
+            )}
           </View>
         </View>
       </Modal>
