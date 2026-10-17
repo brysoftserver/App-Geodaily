@@ -154,6 +154,25 @@ export interface DatosBeneficiario {
   corregimiento?: string;
 }
 
+/**
+ * Medición de terreno (área o distancia) del historial del mapa, adjuntada
+ * a una actividad. Se guarda con sus coordenadas para poder dibujar la
+ * captura del polígono y abrirla en Google Earth desde el Detalle del
+ * Formulario, sin depender de la base local del técnico.
+ */
+export interface MedicionAdjunta {
+  /** Id de la medición original en `mediciones_terreno`. */
+  id: string;
+  /** Nombre con el que el técnico la guardó («Luiz Rojas - Medicion»). */
+  nombre: string;
+  area_hectareas: number;
+  area_metros2: number;
+  perimetro_metros: number;
+  puntos: { latitud: number; longitud: number }[];
+  /** Fecha de la medición (ISO). */
+  created_at?: string;
+}
+
 export interface ActividadRealizada {
   descripcion: string;
   descripcion_detallada?: string;
@@ -180,6 +199,12 @@ export interface ActividadRealizada {
   poligono?: PuntoPoligono[];
   /** Ítem 4 — Área del cultivo en hectáreas (texto libre, opcional). */
   area_intervencion?: string;
+  /**
+   * Ítem 4 — Medición del historial elegida para esta visita. Guarda el
+   * nombre, el área y los puntos, para que el coordinador/interventor vea
+   * la captura del polígono y pueda abrirla en Google Earth.
+   */
+  medicion_historial?: MedicionAdjunta;
   /**
    * Estado completo del formulario de visita técnica (formato v2).
    * Permite reabrir un borrador y reconstruir exactamente lo que el

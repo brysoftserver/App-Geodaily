@@ -51,6 +51,7 @@ import {
 } from '../../utils/permisosFormulario';
 import { construirSeccionesEncuesta, esEncuestaSocial } from '../../utils/encuestaSchema';
 import { esVisitaTecnicaV2, tituloVisitaTecnica } from '../../utils/visitaTecnica';
+import MedicionCaptura from '../../components/MedicionCaptura';
 import {
   RECONOCIMIENTO_OPTS,
   NIVEL_EDUCATIVO_ENV_OPTS,
@@ -2059,6 +2060,20 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
                     <Text style={styles.value}>{formulario.actividad.area_intervencion} ha</Text>
                   </View>
                 )}
+                {/* Ítem 4 (georreferenciación): si el técnico adjuntó una
+                    medición del historial, el coordinador/interventor ve aquí
+                    la captura del polígono y puede abrirlo en Google Earth. */}
+                {!!formulario.actividad.medicion_historial &&
+                  (formulario.actividad.medicion_historial.puntos || []).length > 0 && (
+                    <View style={styles.bloqueTexto}>
+                      <Text style={styles.bloqueTextoLabel}>Captura de la medición</Text>
+                      <MedicionCaptura
+                        medicion={formulario.actividad.medicion_historial}
+                        altura={200}
+                        mostrarAcciones
+                      />
+                    </View>
+                  )}
                 {(formulario.actividad.compromisos_siguiente_visita || []).length > 0 && (
                   <View style={styles.bloqueTexto}>
                     <Text style={styles.bloqueTextoLabel}>Compromisos próxima visita</Text>

@@ -40,6 +40,7 @@ import {
   AppState,
   Image,
   KeyboardAvoidingView,
+  Modal,
   Platform,
 } from 'react-native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
@@ -49,9 +50,10 @@ import { COLORS, FONTS, SPACING, BORDER_RADIUS, SHADOWS } from '../../theme';
 import { useAuth } from '../../store/AuthContext';
 import { useForm } from '../../store/FormContext';
 import { useSync } from '../../store/SyncContext';
-import { ActividadRealizada, DatosBeneficiario, PuntoPoligono } from '../../types';
+import { ActividadRealizada, DatosBeneficiario, MedicionAdjunta, PuntoPoligono } from '../../types';
 import DropdownPicker from '../../components/DropdownPicker';
 import CapturaGPSPrecisa from '../../components/CapturaGPSPrecisa';
+import MedicionCaptura from '../../components/MedicionCaptura';
 import {
   guardarBorrador,
   getBorrador,
@@ -64,6 +66,7 @@ import {
   saveFormularioLocal,
   getFormularioById,
   getDb,
+  getMediciones,
   saveFotoLocal,
   saveVideoLocal,
   vincularDocumentosHuerfanos,
@@ -103,6 +106,8 @@ interface VisitaFormState {
   altitud: string;
   precision: string;
   area_intervencion: string;
+  /** Medición del historial elegida para esta visita (ítem 4). */
+  medicion_historial: MedicionAdjunta | null;
   // Ítems 5–7
   seguimiento_compromisos: string;
   valoracion_cumplimiento: string;
@@ -164,6 +169,7 @@ const crearEstadoInicial = (): VisitaFormState => ({
   altitud: '',
   precision: '',
   area_intervencion: '',
+  medicion_historial: null,
   seguimiento_compromisos: '',
   valoracion_cumplimiento: '',
   recomendaciones: '',
@@ -220,6 +226,7 @@ const hidratarEstado = (actividad: ActividadRealizada | undefined, numeroVisita:
     recomendaciones: actividad.recomendaciones || '',
     observaciones: actividad.observaciones || '',
     area_intervencion: actividad.area_intervencion || '',
+    medicion_historial: actividad.medicion_historial || null,
     latitud: actividad.poligono?.[0]?.latitud != null ? String(actividad.poligono[0].latitud) : '',
     longitud: actividad.poligono?.[0]?.longitud != null ? String(actividad.poligono[0].longitud) : '',
     compromisos: [
@@ -331,6 +338,73 @@ const VisitaTecnicaFormScreen: React.FC<Props> = ({ navigation, route }) => {
   const set = useCallback(<K extends keyof VisitaFormState>(key: K, value: VisitaFormState[K]) => {
     setData((prev) => ({ ...prev, [key]: value }));
   }, []);
+
+  // ─── Ítem 4: medición del historial ───────────────────────
+  // El técnico puede reutilizar un área ya medida y guardada en el mapa en
+  // vez de volver a trazarla. Se guarda completa (nombre + puntos + área)
+  // para que el coordinador/interventor vea la captura en el detalle.
+  const [mostrarSelectorMediciones, setMostrarSelectorMediciones] = useState(false);
+  const [medicionesHistorial, setMedicionesHistorial] = useState<Record<string, unknown>[]>([]);
+  const [cargandoMediciones, setCargandoMediciones] = useState(false);
+
+  const abrirSelectorMediciones = useCallback(async () => {
+    setMostrarSelectorMediciones(true);
+    setCargandoMediciones(true);
+    try {
+      const todas = await getMediciones();
+      const propias = user?.id ? todas.filter((m) => !m.usuario_id || m.usuario_id === user.id) : todas;
+      // Sin coordenadas no se puede dibujar la captura ni abrir en Earth.
+      setMedicionesHistorial(
+        propias.filter((m) => Array.isArray(m.puntos) && (m.puntos as unknown[]).length > 0)
+      );
+    } catch (error) {
+      console.warn('[VisitaTecnica] No se pudo leer el historial de mediciones:', error);
+      setMedicionesHistorial([]);
+    } finally {
+      setCargandoMediciones(false);
+    }
+  }, [user?.id]);
+
+  const aplicarMedicionHistorial = useCallback((cruda: Record<string, unknown>) => {
+    const puntos = ((cruda.puntos || []) as { latitud: number; longitud: number }[])
+      .map((p) => ({ latitud: Number(p.latitud), longitud: Number(p.longitud) }))
+      .filter((p) => Number.isFinite(p.latitud) && Number.isFinite(p.longitud));
+    if (puntos.length === 0) return;
+
+    const centro = puntos.reduce(
+      (acc, p) => ({ latitud: acc.latitud + p.latitud / puntos.length, longitud: acc.longitud + p.longitud / puntos.length }),
+      { latitud: 0, longitud: 0 }
+    );
+
+    const adjunta: MedicionAdjunta = {
+      id: String(cruda.id ?? ''),
+      nombre: String(cruda.nombre || 'Medición de terreno'),
+      area_hectareas: Number(cruda.area_hectareas) || 0,
+      area_metros2: Number(cruda.area_metros2) || 0,
+      perimetro_metros: Number(cruda.perimetro_metros) || 0,
+      puntos,
+      created_at: typeof cruda.created_at === 'string' ? cruda.created_at : undefined,
+    };
+
+    setData((prev) => ({
+      ...prev,
+      medicion_historial: adjunta,
+      // Las coordenadas del ítem 4 se completan con el centro del área medida
+      // solo si el técnico no las había capturado ya.
+      latitud: prev.latitud || centro.latitud.toFixed(6),
+      longitud: prev.longitud || centro.longitud.toFixed(6),
+      // El área del cultivo se toma de la medición si aún está vacía.
+      area_intervencion:
+        prev.area_intervencion.trim() || adjunta.area_hectareas <= 0
+          ? prev.area_intervencion
+          : sanearArea(adjunta.area_hectareas.toFixed(2)),
+    }));
+    setMostrarSelectorMediciones(false);
+  }, []);
+
+  const quitarMedicionHistorial = useCallback(() => {
+    set('medicion_historial', null);
+  }, [set]);
 
   // ─── Restaurar / iniciar ──────────────────────────────────
   useEffect(() => {
@@ -457,6 +531,7 @@ const VisitaTecnicaFormScreen: React.FC<Props> = ({ navigation, route }) => {
       valoracion_cumplimiento: data.valoracion_cumplimiento,
       compromisos_siguiente_visita: compromisosActivos,
       area_intervencion: sanearArea(data.area_intervencion) || undefined,
+      medicion_historial: data.medicion_historial || undefined,
       poligono,
       visita_datos: data as unknown as Record<string, unknown>,
     };
@@ -539,6 +614,7 @@ const VisitaTecnicaFormScreen: React.FC<Props> = ({ navigation, route }) => {
       data.valoracion_cumplimiento ||
       data.no_identificacion ||
       data.area_intervencion.trim() ||
+      data.medicion_historial ||
       data.sin_compromisos ||
       data.compromisos.some((c) => c.activo && c.texto.trim()) ||
       (currentForm?.fotos?.length || 0) > 0
@@ -1018,6 +1094,51 @@ const VisitaTecnicaFormScreen: React.FC<Props> = ({ navigation, route }) => {
             <Text style={styles.mapBtnText}>🗺️ Abrir mapa para trazar el área</Text>
           </TouchableOpacity>
 
+          <TouchableOpacity
+            style={styles.mapBtnSecundario}
+            onPress={abrirSelectorMediciones}
+            activeOpacity={0.7}
+          >
+            <Text style={styles.mapBtnSecundarioText}>📌 Elegir una medición del historial</Text>
+          </TouchableOpacity>
+
+          {data.medicion_historial ? (
+            <View style={styles.medicionCard}>
+              <View style={styles.medicionCardHeader}>
+                <View style={styles.medicionCardHeaderText}>
+                  <Text style={styles.medicionCardTitulo}>Medición adjunta</Text>
+                  <Text style={styles.medicionCardNombre} numberOfLines={2}>
+                    {data.medicion_historial.nombre}
+                  </Text>
+                </View>
+                <TouchableOpacity
+                  onPress={quitarMedicionHistorial}
+                  style={styles.medicionQuitarBtn}
+                  accessibilityLabel="Quitar la medición adjunta"
+                  activeOpacity={0.7}
+                >
+                  <Text style={styles.medicionQuitarTexto}>✕</Text>
+                </TouchableOpacity>
+              </View>
+
+              <MedicionCaptura
+                medicion={data.medicion_historial}
+                altura={170}
+                mostrarAcciones={false}
+              />
+
+              <Text style={styles.medicionCardAyuda}>
+                El coordinador y el interventor verán esta captura en el detalle del formulario y podrán
+                abrir el área en Google Earth.
+              </Text>
+            </View>
+          ) : (
+            <Text style={styles.medicionVacio}>
+              Opcional: adjunta una medición ya guardada en el mapa para que el área quede con su nombre y su
+              captura de imagen.
+            </Text>
+          )}
+
           <Text style={styles.fieldLabel}>Área del cultivo (ha) — opcional</Text>
           <TextInput
             style={styles.input}
@@ -1301,6 +1422,72 @@ const VisitaTecnicaFormScreen: React.FC<Props> = ({ navigation, route }) => {
           )}
         </TouchableOpacity>
       </View>
+
+      {/* ─── Selector de medición del historial (ítem 4) ── */}
+      <Modal
+        visible={mostrarSelectorMediciones}
+        animationType="slide"
+        transparent
+        onRequestClose={() => setMostrarSelectorMediciones(false)}
+      >
+        <View style={styles.selectorOverlay}>
+          <View style={styles.selectorHoja}>
+            <View style={styles.selectorHeader}>
+              <Text style={styles.selectorTitulo}>Mediciones guardadas</Text>
+              <TouchableOpacity
+                onPress={() => setMostrarSelectorMediciones(false)}
+                hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                activeOpacity={0.7}
+              >
+                <Text style={styles.selectorCerrar}>✕</Text>
+              </TouchableOpacity>
+            </View>
+            <Text style={styles.selectorAyuda}>
+              Elige el área medida en el mapa. Se adjuntará con su nombre y su captura de imagen.
+            </Text>
+
+            {cargandoMediciones ? (
+              <View style={styles.selectorVacioBox}>
+                <ActivityIndicator color={COLORS.primary} />
+              </View>
+            ) : medicionesHistorial.length === 0 ? (
+              <View style={styles.selectorVacioBox}>
+                <Text style={styles.selectorVacioTexto}>
+                  No hay mediciones guardadas. Traza el área desde el mapa y guárdala con un nombre para
+                  poder reutilizarla aquí.
+                </Text>
+              </View>
+            ) : (
+              <ScrollView style={styles.selectorLista} contentContainerStyle={styles.selectorListaContenido}>
+                {medicionesHistorial.map((m) => {
+                  const puntos = (m.puntos as unknown[]) || [];
+                  const esArea = puntos.length >= 3;
+                  const fecha = m.created_at ? String(m.created_at).slice(0, 10) : '';
+                  return (
+                    <TouchableOpacity
+                      key={String(m.id)}
+                      style={styles.selectorItem}
+                      onPress={() => aplicarMedicionHistorial(m)}
+                      activeOpacity={0.7}
+                    >
+                      <Text style={styles.selectorItemNombre} numberOfLines={2}>
+                        {String(m.nombre || 'Medición sin nombre')}
+                      </Text>
+                      <Text style={styles.selectorItemMeta}>
+                        {fecha ? `${fecha} · ` : ''}
+                        {esArea
+                          ? `📐 ${Number(m.area_hectareas || 0).toFixed(2)} ha`
+                          : `📏 ${Number(m.perimetro_metros || 0).toFixed(0)} m`}
+                        {` · ${puntos.length} pts`}
+                      </Text>
+                    </TouchableOpacity>
+                  );
+                })}
+              </ScrollView>
+            )}
+          </View>
+        </View>
+      </Modal>
     </KeyboardAvoidingView>
   );
 };
@@ -1406,6 +1593,111 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   mapBtnText: { fontSize: FONTS.sizes.sm, color: COLORS.primary, fontWeight: FONTS.weights.medium },
+
+  mapBtnSecundario: {
+    marginTop: SPACING.sm,
+    borderRadius: BORDER_RADIUS.md,
+    borderWidth: 1,
+    borderStyle: 'dashed',
+    borderColor: COLORS.primaryLight,
+    paddingVertical: SPACING.sm,
+    alignItems: 'center',
+  },
+  mapBtnSecundarioText: {
+    fontSize: FONTS.sizes.sm,
+    color: COLORS.primary,
+    fontWeight: FONTS.weights.medium,
+  },
+  medicionVacio: {
+    fontSize: FONTS.sizes.xs,
+    color: COLORS.textSecondary,
+    marginTop: SPACING.xs,
+    lineHeight: 15,
+  },
+  medicionCard: {
+    marginTop: SPACING.sm,
+    borderRadius: BORDER_RADIUS.md,
+    borderWidth: 1,
+    borderColor: COLORS.divider,
+    backgroundColor: COLORS.background,
+    padding: SPACING.sm,
+  },
+  medicionCardHeader: { flexDirection: 'row', alignItems: 'flex-start', marginBottom: SPACING.xs },
+  medicionCardHeaderText: { flex: 1 },
+  medicionCardTitulo: {
+    fontSize: FONTS.sizes.xs,
+    color: COLORS.textSecondary,
+    fontWeight: FONTS.weights.medium,
+  },
+  medicionCardNombre: {
+    fontSize: FONTS.sizes.sm,
+    color: COLORS.textPrimary,
+    fontWeight: FONTS.weights.bold,
+    marginTop: 1,
+  },
+  medicionCardAyuda: {
+    fontSize: FONTS.sizes.xs,
+    color: COLORS.textSecondary,
+    marginTop: SPACING.xs,
+    lineHeight: 15,
+  },
+  medicionQuitarBtn: {
+    paddingHorizontal: SPACING.sm,
+    paddingVertical: 2,
+    marginLeft: SPACING.sm,
+  },
+  medicionQuitarTexto: { fontSize: 16, color: COLORS.error, fontWeight: FONTS.weights.bold },
+
+  selectorOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.45)', justifyContent: 'flex-end' },
+  selectorHoja: {
+    backgroundColor: COLORS.surface,
+    borderTopLeftRadius: BORDER_RADIUS.xl,
+    borderTopRightRadius: BORDER_RADIUS.xl,
+    padding: SPACING.md,
+    maxHeight: '75%',
+  },
+  selectorHeader: { flexDirection: 'row', alignItems: 'center' },
+  selectorTitulo: {
+    flex: 1,
+    fontSize: FONTS.sizes.lg,
+    fontWeight: FONTS.weights.bold,
+    color: COLORS.textPrimary,
+  },
+  selectorCerrar: { fontSize: 18, color: COLORS.textSecondary, paddingHorizontal: SPACING.xs },
+  selectorAyuda: {
+    fontSize: FONTS.sizes.xs,
+    color: COLORS.textSecondary,
+    marginTop: SPACING.xs,
+    marginBottom: SPACING.sm,
+    lineHeight: 15,
+  },
+  selectorLista: { maxHeight: 420 },
+  selectorListaContenido: { paddingBottom: SPACING.sm },
+  selectorItem: {
+    borderWidth: 1,
+    borderColor: COLORS.divider,
+    borderRadius: BORDER_RADIUS.md,
+    padding: SPACING.sm,
+    marginBottom: SPACING.xs,
+    backgroundColor: COLORS.background,
+  },
+  selectorItemNombre: {
+    fontSize: FONTS.sizes.sm,
+    fontWeight: FONTS.weights.bold,
+    color: COLORS.textPrimary,
+  },
+  selectorItemMeta: {
+    fontSize: FONTS.sizes.xs,
+    color: COLORS.textSecondary,
+    marginTop: 2,
+  },
+  selectorVacioBox: { paddingVertical: SPACING.xl, alignItems: 'center' },
+  selectorVacioTexto: {
+    fontSize: FONTS.sizes.sm,
+    color: COLORS.textSecondary,
+    textAlign: 'center',
+    lineHeight: 18,
+  },
 
   porcentajeRow: { flexDirection: 'row', alignItems: 'center' },
   inputPorcentaje: { width: 90, textAlign: 'center', fontSize: FONTS.sizes.xl, fontWeight: FONTS.weights.bold },

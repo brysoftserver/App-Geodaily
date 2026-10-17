@@ -166,3 +166,98 @@ export function dibujarPuntosEnMosaico(
     </div>
   </div>`;
 }
+
+// ============================================================
+// Vista de mapa para una MEDICIÓN (componente en pantalla)
+// ============================================================
+// A diferencia de `construirMosaicoMapa` (que descarga las teselas a base64
+// para el PDF), esto solo calcula la geometría: qué teselas hacen falta y en
+// qué píxel cae cada punto del polígono. El componente `MedicionCaptura`
+// pinta las teselas como <Image> remotos y encima el polígono con SVG.
+
+export interface VistaMapa {
+  zoom: number;
+  xMin: number;
+  yMin: number;
+  columnas: number;
+  filas: number;
+  /** Tamaño del mosaico completo en píxeles (256 por tesela). */
+  anchoPx: number;
+  altoPx: number;
+  /** URL de una tesela concreta del mosaico. */
+  urlTesela: (x: number, y: number) => string;
+  /** Convierte coordenadas a píxeles DENTRO del mosaico. */
+  proyectar: (latitud: number, longitud: number) => { x: number; y: number };
+}
+
+/** Extensión mínima del recuadro (~110 m) para que un polígono diminuto no quede en un zoom absurdo. */
+const SPAN_MINIMO_GRADOS = 0.001;
+
+/**
+ * Calcula el encuadre (zoom + teselas) que contiene todos los puntos con un
+ * margen del 20 %. Devuelve `null` si no hay puntos.
+ */
+export function construirVistaMapa(
+  puntos: { latitud: number; longitud: number }[],
+  maxTeselasLado = 3
+): VistaMapa | null {
+  const validos = puntos.filter(
+    (p) => Number.isFinite(p?.latitud) && Number.isFinite(p?.longitud)
+  );
+  if (validos.length === 0) return null;
+
+  const lats = validos.map((p) => p.latitud);
+  const lons = validos.map((p) => p.longitud);
+  let norte = Math.max(...lats);
+  let sur = Math.min(...lats);
+  let este = Math.max(...lons);
+  let oeste = Math.min(...lons);
+
+  // Margen del 20 % y un mínimo, para que el polígono no toque los bordes.
+  const spanLat = Math.max(norte - sur, SPAN_MINIMO_GRADOS);
+  const spanLon = Math.max(este - oeste, SPAN_MINIMO_GRADOS);
+  norte += spanLat * 0.2;
+  sur -= spanLat * 0.2;
+  este += spanLon * 0.2;
+  oeste -= spanLon * 0.2;
+
+  const bbox: BBox = { norte, sur, este, oeste };
+  const zoom = elegirZoomConLimite(bbox, maxTeselasLado);
+  const xMin = Math.floor(lon2x(oeste, zoom));
+  const xMax = Math.floor(lon2x(este, zoom));
+  const yMin = Math.floor(lat2y(norte, zoom));
+  const yMax = Math.floor(lat2y(sur, zoom));
+
+  const columnas = xMax - xMin + 1;
+  const filas = yMax - yMin + 1;
+
+  return {
+    zoom,
+    xMin,
+    yMin,
+    columnas,
+    filas,
+    anchoPx: columnas * TAMANO_TESELA,
+    altoPx: filas * TAMANO_TESELA,
+    urlTesela: (x, y) => URL_TESELA(zoom, x, y),
+    proyectar: (latitud, longitud) => ({
+      x: (lon2x(longitud, zoom) - xMin) * TAMANO_TESELA,
+      y: (lat2y(latitud, zoom) - yMin) * TAMANO_TESELA,
+    }),
+  };
+}
+
+/** Igual que `elegirZoom` pero con un límite de teselas configurable. */
+function elegirZoomConLimite(bbox: BBox, maxTeselasLado: number): number {
+  const limite = Math.max(1, Math.min(maxTeselasLado, MAX_TESELAS_LADO));
+  for (let z = 18; z >= 3; z--) {
+    const xMin = Math.floor(lon2x(bbox.oeste, z));
+    const xMax = Math.floor(lon2x(bbox.este, z));
+    const yMin = Math.floor(lat2y(bbox.norte, z));
+    const yMax = Math.floor(lat2y(bbox.sur, z));
+    if (xMax - xMin + 1 <= limite && yMax - yMin + 1 <= limite) {
+      return z;
+    }
+  }
+  return 3;
+}
