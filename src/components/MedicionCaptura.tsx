@@ -14,7 +14,7 @@
 // fondo neutro (nunca bloquea ni rompe la pantalla).
 // ============================================================
 
-import React, { useCallback, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { View, Text, Image, StyleSheet, TouchableOpacity, Alert } from 'react-native';
 import Svg, { Polygon, Circle } from 'react-native-svg';
 import { COLORS, FONTS, BORDER_RADIUS, SPACING } from '../theme';
@@ -22,6 +22,8 @@ import { construirVistaMapa } from '../utils/staticMap';
 import { abrirKMLEnGoogleEarth } from '../services/googleEarth.service';
 
 const TAMANO_TESELA = 256;
+/** Alto reservado al pie (nombre + área/perímetro + coordenadas). */
+const ALTURA_PIE = 56;
 
 export interface MedicionCapturaDatos {
   nombre?: string | null;
@@ -66,20 +68,36 @@ const MedicionCaptura: React.FC<Props> = ({
   );
 
   // Máximo 3×3 teselas: suficiente para ver el predio y no castigar los datos.
-  const vista = useMemo(() => construirVistaMapa(puntos, 3), [puntos]);
+  // Fondo satélite: es el mismo mapa que el técnico ve al trazar el área
+  // (World_Imagery). El relieve claro de los PDF no tiene datos a partir de
+  // zoom 17 y devolvía teselas grises «Map data not yet available».
+  const vista = useMemo(() => construirVistaMapa(puntos, 3, 'satelite'), [puntos]);
+
+  // Centro del área medida: es la coordenada que se muestra en el pie.
+  const centro = useMemo(() => {
+    if (puntos.length === 0) return null;
+    const suma = puntos.reduce(
+      (acc, p) => ({ lat: acc.lat + p.latitud, lon: acc.lon + p.longitud }),
+      { lat: 0, lon: 0 }
+    );
+    return { latitud: suma.lat / puntos.length, longitud: suma.lon / puntos.length };
+  }, [puntos]);
+
+  // El mapa se dibuja por encima del pie, para que el polígono no quede tapado.
+  const alturaMapa = Math.max(altura - ALTURA_PIE, 80);
 
   const escala = useMemo(() => {
     if (!vista || ancho <= 0) return 1;
-    return Math.min(ancho / vista.anchoPx, altura / vista.altoPx);
-  }, [vista, ancho, altura]);
+    return Math.min(ancho / vista.anchoPx, alturaMapa / vista.altoPx);
+  }, [vista, ancho, alturaMapa]);
 
   const desplazamiento = useMemo(() => {
     if (!vista || ancho <= 0) return { x: 0, y: 0 };
     return {
       x: (ancho - vista.anchoPx * escala) / 2,
-      y: (altura - vista.altoPx * escala) / 2,
+      y: (alturaMapa - vista.altoPx * escala) / 2,
     };
-  }, [vista, ancho, altura, escala]);
+  }, [vista, ancho, alturaMapa, escala]);
 
   const poligonoPuntos = useMemo(() => {
     if (!vista) return '';
@@ -93,6 +111,11 @@ const MedicionCaptura: React.FC<Props> = ({
 
   const totalTeselas = vista ? vista.columnas * vista.filas : 0;
   const sinMapa = totalTeselas > 0 && teselasConError >= totalTeselas;
+
+  // Si cambia la medición mostrada, se vuelve a intentar cargar el fondo.
+  useEffect(() => {
+    setTeselasConError(0);
+  }, [vista]);
 
   const handleAbrirEarth = useCallback(async () => {
     if (puntos.length < 3) {
@@ -162,7 +185,7 @@ const MedicionCaptura: React.FC<Props> = ({
 
         {/* Polígono medido, siempre visible (aunque no haya teselas). */}
         {ancho > 0 && (
-          <Svg width={ancho} height={altura} style={StyleSheet.absoluteFill}>
+          <Svg width={ancho} height={alturaMapa} style={StyleSheet.absoluteFill}>
             {puntos.length >= 3 && (
               <Polygon
                 points={poligonoPuntos}
@@ -217,6 +240,11 @@ const MedicionCaptura: React.FC<Props> = ({
             {' · '}
             {puntos.length} punto(s)
           </Text>
+          {!!centro && (
+            <Text style={styles.pieCoordenadas} numberOfLines={1}>
+              📍 Lat {centro.latitud.toFixed(6)} · Lon {centro.longitud.toFixed(6)}
+            </Text>
+          )}
         </View>
       </View>
 
@@ -297,6 +325,12 @@ const styles = StyleSheet.create({
   pieDetalle: {
     fontSize: FONTS.sizes.xs,
     color: COLORS.textSecondary,
+  },
+  pieCoordenadas: {
+    fontSize: FONTS.sizes.xs,
+    color: COLORS.textPrimary,
+    fontWeight: FONTS.weights.medium,
+    marginTop: 1,
   },
   acciones: {
     flexDirection: 'row',

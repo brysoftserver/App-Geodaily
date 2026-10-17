@@ -21,6 +21,25 @@ const TAMANO_TESELA = 256;
 const URL_TESELA = (z: number, x: number, y: number) =>
   `https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Light_Gray_Base/MapServer/tile/${z}/${y}/${x}`;
 
+/**
+ * Teselas ArcGIS "World Imagery" (satélite, sin key) — el mismo mapa que
+ * MapViewOffline.tsx pinta con mapStyle="satelite", que es el que el técnico
+ * ve mientras traza y guarda el polígono.
+ *
+ * OJO: `Canvas/World_Light_Gray_Base` (relieve) solo tiene datos hasta zoom
+ * 16 en buena parte del país; a partir de 17 Esri devuelve la tesela gris
+ * «Map data not yet available». Por eso la captura de la medición usa
+ * satélite: así el fondo se ve igual que en el mapa en vivo.
+ */
+export const URL_TESELA_SATELITE = (z: number, x: number, y: number) =>
+  `https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/${z}/${y}/${x}`;
+
+/** Estilo de teselas de la vista estática. */
+export type EstiloTesela = 'relieve' | 'satelite';
+
+const urlTeselaSegunEstilo = (estilo: EstiloTesela) =>
+  estilo === 'relieve' ? URL_TESELA : URL_TESELA_SATELITE;
+
 /** Máximo de teselas a descargar (ancho × alto) — límite de costo/tiempo razonable para un mapa impreso. */
 const MAX_TESELAS_LADO = 6;
 
@@ -196,10 +215,15 @@ const SPAN_MINIMO_GRADOS = 0.001;
 /**
  * Calcula el encuadre (zoom + teselas) que contiene todos los puntos con un
  * margen del 20 %. Devuelve `null` si no hay puntos.
+ *
+ * `estilo` decide el fondo: `satelite` (por defecto) es el mismo que ve el
+ * técnico al trazar el área en el mapa en vivo; `relieve` es el claro que
+ * usan los PDF.
  */
 export function construirVistaMapa(
   puntos: { latitud: number; longitud: number }[],
-  maxTeselasLado = 3
+  maxTeselasLado = 3,
+  estilo: EstiloTesela = 'satelite'
 ): VistaMapa | null {
   const validos = puntos.filter(
     (p) => Number.isFinite(p?.latitud) && Number.isFinite(p?.longitud)
@@ -239,7 +263,7 @@ export function construirVistaMapa(
     filas,
     anchoPx: columnas * TAMANO_TESELA,
     altoPx: filas * TAMANO_TESELA,
-    urlTesela: (x, y) => URL_TESELA(zoom, x, y),
+    urlTesela: (x, y) => urlTeselaSegunEstilo(estilo)(zoom, x, y),
     proyectar: (latitud, longitud) => ({
       x: (lon2x(longitud, zoom) - xMin) * TAMANO_TESELA,
       y: (lat2y(latitud, zoom) - yMin) * TAMANO_TESELA,
