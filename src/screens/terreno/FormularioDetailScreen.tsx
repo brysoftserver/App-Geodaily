@@ -52,6 +52,7 @@ import {
 import { construirSeccionesEncuesta, esEncuestaSocial } from '../../utils/encuestaSchema';
 import { esVisitaTecnicaV2, tituloVisitaTecnica } from '../../utils/visitaTecnica';
 import MedicionCaptura from '../../components/MedicionCaptura';
+import type { MedicionCapturaDatos } from '../../components/MedicionCaptura';
 import {
   RECONOCIMIENTO_OPTS,
   NIVEL_EDUCATIVO_ENV_OPTS,
@@ -759,6 +760,75 @@ const filaLocalAEvidencia = (
     longitud: Number(fila.longitud) || 0,
   },
 });
+
+// ─── Visita Técnica v2 (ítem 4): imágenes de ubicación y de área ───────────
+// El coordinador y el interventor tienen que ver la MISMA información gráfica
+// que el técnico al diligenciar la visita. Antes el detalle solo pintaba la
+// medición del historial, así que las visitas hechas con la coordenada del
+// ítem 4 (sin medición adjunta) se veían sin ninguna imagen.
+
+interface PuntoVisita {
+  latitud: number;
+  longitud: number;
+  altitud?: number;
+  precision?: number;
+}
+
+/** Convierte un valor suelto (número o texto del formulario) en número válido. */
+const numeroValido = (valor: unknown): number | null => {
+  if (valor == null || String(valor).trim() === '') return null;
+  const n = Number(valor);
+  return Number.isFinite(n) ? n : null;
+};
+
+/** Descarta puntos sin coordenadas utilizables. */
+const puntosValidos = (
+  lista?: { latitud: number; longitud: number }[] | null
+): { latitud: number; longitud: number }[] =>
+  (lista || [])
+    .map((p) => ({ latitud: Number(p?.latitud), longitud: Number(p?.longitud) }))
+    .filter((p) => Number.isFinite(p.latitud) && Number.isFinite(p.longitud));
+
+/**
+ * Punto GPS de la visita (ítem 4), con sus respaldos por si la copia que
+ * llegó al dispositivo viene "adelgazada": coordenadas del formulario →
+ * primer vértice del polígono → estado completo del borrador.
+ */
+const puntoDeVisitaTecnica = (formulario: Formulario): PuntoVisita | null => {
+  const c = formulario.coordenadas;
+  const latC = numeroValido(c?.latitud);
+  const lonC = numeroValido(c?.longitud);
+  if (latC != null && lonC != null) {
+    return {
+      latitud: latC,
+      longitud: lonC,
+      altitud: numeroValido(c?.altitud) ?? undefined,
+      precision: numeroValido(c?.precision_gps) ?? undefined,
+    };
+  }
+
+  const primero = puntosValidos(formulario.actividad?.poligono)[0];
+  if (primero) return primero;
+
+  const datos = (formulario.actividad?.visita_datos || {}) as Record<string, unknown>;
+  const latB = numeroValido(datos.latitud);
+  const lonB = numeroValido(datos.longitud);
+  if (latB != null && lonB != null) return { latitud: latB, longitud: lonB };
+
+  return null;
+};
+
+/**
+ * Puntos del ÁREA de la visita: los de la medición adjunta si el técnico
+ * eligió una del historial; si no, los del polígono del ítem 4.
+ */
+const puntosDeAreaVisita = (
+  formulario: Formulario
+): { latitud: number; longitud: number }[] => {
+  const deMedicion = puntosValidos(formulario.actividad?.medicion_historial?.puntos);
+  if (deMedicion.length > 0) return deMedicion;
+  return puntosValidos(formulario.actividad?.poligono);
+};
 
 const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, navigation: _navigation }) => {
   const { formulario: formularioInicial, modo } = route.params;
@@ -1883,6 +1953,48 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
       />
     ) : null;
 
+  // ─── Imágenes del ítem 4 (georreferenciación) de la Visita Técnica v2 ────
+  // Se calculan para cualquier rol: el técnico ve lo que capturó y el
+  // coordinador/interventor ve exactamente lo mismo al revisar la visita.
+  const puntoVisita = puntoDeVisitaTecnica(formulario);
+  const puntosAreaVisita = puntosDeAreaVisita(formulario);
+  /**
+   * Datos de la captura del ÁREA: la medición del historial tal cual (con su
+   * nombre y su área) o, si el técnico no adjuntó ninguna, el polígono del
+   * ítem 4 dibujado en el mapa. Con un solo punto no hay área que mostrar
+   * como polígono, así que en ese caso solo se pinta la imagen de ubicación.
+   */
+  const medicionVisita: MedicionCapturaDatos | null = (() => {
+    const medicion = formulario.actividad?.medicion_historial;
+    const puntosMedicion = puntosValidos(medicion?.puntos);
+    if (medicion && puntosMedicion.length > 0) {
+      return {
+        nombre: medicion.nombre,
+        area_hectareas: medicion.area_hectareas,
+        area_metros2: medicion.area_metros2,
+        perimetro_metros: medicion.perimetro_metros,
+        puntos: puntosMedicion,
+        created_at: medicion.created_at,
+      };
+    }
+    if (puntosAreaVisita.length >= 3) {
+      const areaTexto = Number(String(formulario.actividad?.area_intervencion || '').replace(',', '.'));
+      return {
+        nombre: 'Área a intervenir (ítem 4)',
+        area_hectareas: Number.isFinite(areaTexto) ? areaTexto : 0,
+        perimetro_metros: 0,
+        puntos: puntosAreaVisita,
+      };
+    }
+    return null;
+  })();
+
+  /** Municipio · vereda/corregimiento, para titular la imagen de ubicación. */
+  const textoUbicacionVisita =
+    [formulario.beneficiario?.vereda, formulario.beneficiario?.corregimiento, formulario.beneficiario?.municipio]
+      .filter(Boolean)
+      .join(' · ') || 'Ubicación de la visita';
+
   return (
     <View style={styles.container}>
       <ScrollView contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + SPACING.xxl }]}>
@@ -2060,20 +2172,35 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
                     <Text style={styles.value}>{formulario.actividad.area_intervencion} ha</Text>
                   </View>
                 )}
-                {/* Ítem 4 (georreferenciación): si el técnico adjuntó una
-                    medición del historial, el coordinador/interventor ve aquí
-                    la captura del polígono y puede abrirlo en Google Earth. */}
-                {!!formulario.actividad.medicion_historial &&
-                  (formulario.actividad.medicion_historial.puntos || []).length > 0 && (
-                    <View style={styles.bloqueTexto}>
-                      <Text style={styles.bloqueTextoLabel}>Captura de la medición</Text>
-                      <MedicionCaptura
-                        medicion={formulario.actividad.medicion_historial}
-                        altura={200}
-                        mostrarAcciones
-                      />
-                    </View>
-                  )}
+                {/* Ítem 4 (georreferenciación): imágenes para que el
+                    coordinador/interventor vea lo mismo que el técnico.
+                    (a) la ubicación capturada con GPS, siempre que exista, y
+                    (b) el ÁREA: la medición del historial si se adjuntó, o el
+                    polígono del ítem 4 si se trazó en el mapa. */}
+                {!!puntoVisita && (
+                  <View style={styles.bloqueTexto}>
+                    <Text style={styles.bloqueTextoLabel}>Imagen de la ubicación</Text>
+                    <MedicionCaptura
+                      medicion={{
+                        nombre: textoUbicacionVisita,
+                        puntos: [{ latitud: puntoVisita.latitud, longitud: puntoVisita.longitud }],
+                      }}
+                      altura={190}
+                      mostrarAcciones={false}
+                      subtexto={
+                        `📍 ${puntoVisita.latitud.toFixed(6)}, ${puntoVisita.longitud.toFixed(6)}` +
+                        (puntoVisita.precision ? ` · ±${Math.round(puntoVisita.precision)} m` : '') +
+                        (puntoVisita.altitud ? ` · ${Math.round(puntoVisita.altitud)} m s.n.m.` : '')
+                      }
+                    />
+                  </View>
+                )}
+                {!!medicionVisita && (
+                  <View style={styles.bloqueTexto}>
+                    <Text style={styles.bloqueTextoLabel}>Captura de la medición</Text>
+                    <MedicionCaptura medicion={medicionVisita} altura={200} mostrarAcciones />
+                  </View>
+                )}
                 {(formulario.actividad.compromisos_siguiente_visita || []).length > 0 && (
                   <View style={styles.bloqueTexto}>
                     <Text style={styles.bloqueTextoLabel}>Compromisos próxima visita</Text>

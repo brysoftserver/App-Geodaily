@@ -112,8 +112,53 @@ export interface MosaicoMapa {
   yMin: number;
 }
 
-/** Descarga el mosaico de teselas para una región fija (sin puntos aún) — se calcula una sola vez y se reutiliza para varios mapas (una ronda de visitas por sección) marcando puntos distintos sobre el mismo fondo. */
-export async function construirMosaicoMapa(bbox: BBox): Promise<MosaicoMapa | null> {
+export type { BBox };
+
+/**
+ * Caja geográfica (con margen y un mínimo) que contiene todos los puntos.
+ * Sirve para pedir el mosaico de teselas de un polígono medido sin tener
+ * que repetir la matemática de Web Mercator en cada llamador.
+ * Devuelve `null` si no hay ningún punto válido.
+ */
+export function bboxDePuntos(
+  puntos: { latitud: number; longitud: number }[],
+  margen = 0.2
+): BBox | null {
+  const validos = (puntos || []).filter(
+    (p) => Number.isFinite(p?.latitud) && Number.isFinite(p?.longitud)
+  );
+  if (validos.length === 0) return null;
+
+  const lats = validos.map((p) => p.latitud);
+  const lons = validos.map((p) => p.longitud);
+  let norte = Math.max(...lats);
+  let sur = Math.min(...lats);
+  let este = Math.max(...lons);
+  let oeste = Math.min(...lons);
+
+  const spanLat = Math.max(norte - sur, SPAN_MINIMO_GRADOS);
+  const spanLon = Math.max(este - oeste, SPAN_MINIMO_GRADOS);
+  norte += spanLat * margen;
+  sur -= spanLat * margen;
+  este += spanLon * margen;
+  oeste -= spanLon * margen;
+
+  return { norte, sur, este, oeste };
+}
+
+/**
+ * Descarga el mosaico de teselas para una región fija (sin puntos aún) — se
+ * calcula una sola vez y se reutiliza para varios mapas (una ronda de visitas
+ * por sección) marcando puntos distintos sobre el mismo fondo.
+ *
+ * `estilo` permite pedir el fondo satélite (el mismo que el técnico ve al
+ * trazar el área); el valor por defecto sigue siendo el relieve claro, así
+ * que los PDF que ya usaban esta función no cambian.
+ */
+export async function construirMosaicoMapa(
+  bbox: BBox,
+  estilo: EstiloTesela = 'relieve'
+): Promise<MosaicoMapa | null> {
   const zoom = elegirZoom(bbox);
   const xMin = Math.floor(lon2x(bbox.oeste, zoom));
   const xMax = Math.floor(lon2x(bbox.este, zoom));
@@ -127,7 +172,8 @@ export async function construirMosaicoMapa(bbox: BBox): Promise<MosaicoMapa | nu
     }
   }
 
-  const descargas = await Promise.all(coords.map((c) => descargarComoDataUri(URL_TESELA(zoom, c.x, c.y))));
+  const urlTesela = urlTeselaSegunEstilo(estilo);
+  const descargas = await Promise.all(coords.map((c) => descargarComoDataUri(urlTesela(zoom, c.x, c.y))));
   if (descargas.every((d) => !d)) return null; // sin internet o servicio caído — ninguna tesela cargó
 
   const teselasHtml = coords
@@ -182,6 +228,57 @@ export function dibujarPuntosEnMosaico(
     <div style="width:${mosaico.anchoPx}px;height:${mosaico.altoPx}px;position:relative;transform:scale(${escala.toFixed(4)});transform-origin:top left;">
       ${mosaico.teselasHtml}
       <svg width="${mosaico.anchoPx}" height="${mosaico.altoPx}" style="position:absolute;left:0;top:0;">${pines}</svg>
+    </div>
+  </div>`;
+}
+
+/**
+ * Dibuja un POLÍGONO (área medida) sobre un mosaico ya descargado y devuelve
+ * el HTML completo del mapa, ajustado ("contain") dentro de
+ * `maxAnchoPx`×`maxAltoPx`, con el mismo criterio de escala que
+ * `dibujarPuntosEnMosaico`.
+ *
+ * Se usa en el PDF de la Visita Técnica v2 para que el área a intervenir se
+ * imprima igual que la ve el técnico en el mapa en vivo: fondo satélite,
+ * contorno del polígono y un punto por vértice (el primero en verde oscuro).
+ */
+export function dibujarPoligonoEnMosaico(
+  mosaico: MosaicoMapa,
+  puntos: { latitud: number; longitud: number }[],
+  maxAnchoPx: number,
+  maxAltoPx: number
+): string {
+  const escala = Math.min(maxAnchoPx / mosaico.anchoPx, maxAltoPx / mosaico.altoPx);
+  const anchoDestinoPx = Math.round(mosaico.anchoPx * escala);
+  const altoDestinoPx = Math.round(mosaico.altoPx * escala);
+
+  const proyecto = (p: { latitud: number; longitud: number }) => ({
+    x: lon2x(p.longitud, mosaico.zoom) * TAMANO_TESELA - mosaico.xMin * TAMANO_TESELA,
+    y: lat2y(p.latitud, mosaico.zoom) * TAMANO_TESELA - mosaico.yMin * TAMANO_TESELA,
+  });
+
+  const vertices = puntos.map(proyecto);
+  const cadena = vertices.map((v) => `${v.x.toFixed(1)},${v.y.toFixed(1)}`).join(' ');
+
+  // Con 3+ puntos es un área (rellena); con 2 solo hay una línea medida.
+  const figura =
+    vertices.length >= 3
+      ? `<polygon points="${cadena}" fill="rgba(27,94,32,0.25)" stroke="#1B5E20" stroke-width="3" />`
+      : vertices.length === 2
+        ? `<polyline points="${cadena}" fill="none" stroke="#1B5E20" stroke-width="3" />`
+        : '';
+
+  const marcas = vertices
+    .map(
+      (v, i) =>
+        `<circle cx="${v.x.toFixed(1)}" cy="${v.y.toFixed(1)}" r="${i === 0 ? 7 : 5}" fill="${i === 0 ? '#1B5E20' : '#ffffff'}" stroke="#1B5E20" stroke-width="2" />`
+    )
+    .join('');
+
+  return `<div style="width:${anchoDestinoPx}px;height:${altoDestinoPx}px;overflow:hidden;border-radius:8px;border:1px solid #d0d0d0;position:relative;margin:0 auto;">
+    <div style="width:${mosaico.anchoPx}px;height:${mosaico.altoPx}px;position:relative;transform:scale(${escala.toFixed(4)});transform-origin:top left;">
+      ${mosaico.teselasHtml}
+      <svg width="${mosaico.anchoPx}" height="${mosaico.altoPx}" style="position:absolute;left:0;top:0;">${figura}${marcas}</svg>
     </div>
   </div>`;
 }

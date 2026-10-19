@@ -17,6 +17,12 @@ import {
   SeccionResuelta,
 } from '../utils/encuestaSchema';
 import { membreteAperturaHtml, membreteCierreHtml, membreteCss, MembreteVariante } from '../utils/membrete';
+import { esVisitaTecnicaV2 } from '../utils/visitaTecnica';
+import {
+  construirMosaicoMapa,
+  dibujarPoligonoEnMosaico,
+  bboxDePuntos,
+} from '../utils/staticMap';
 import { cabecerasDeArchivo, resolverFirmasRemotas, FirmaResuelta } from './archivos.service';
 
 /**
@@ -86,9 +92,9 @@ async function descargarImagenPublicaComoDataUri(url: string): Promise<string | 
 }
 
 // Mismo servidor de teselas raster satélite que usa MapViewOffline.tsx
-// (estilo "satelite"). Se eligió satélite y no el estilo "relieve" (Canvas/
-// World_Light_Gray_Base) porque ese último no tiene datos vectoriales para
-// zonas rurales como el Caquetá: a partir de zoom ~12 devuelve una tesela
+// (estilo "satelite"). Se eligió satélite y no el estilo "terreno" (Esri
+// World_Topo_Map) porque ese último no tiene datos vectoriales para zonas
+// rurales como el Caquetá: a partir de zoom ~12 devuelve una tesela
 // placeholder ("Map data not yet available") en vez de mapa real, incluso
 // con conexión. El satélite (World_Imagery) sí tiene cobertura fotográfica
 // real en todo el planeta.
@@ -164,6 +170,36 @@ async function construirMapaEstaticoHtml(lat?: number, lon?: number, ubicacionTe
 }
 
 /**
+ * Mapa satélite con el ÁREA de la visita dibujada encima (polígono medido).
+ *
+ * Se resuelve con las utilidades compartidas de `utils/staticMap.ts` — las
+ * mismas que pinta `MedicionCaptura` en pantalla — para que la imagen impresa
+ * se vea igual que la que el técnico vio al medir: mismas teselas satélite y
+ * mismo contorno del polígono con un punto por vértice.
+ *
+ * Retorna '' si no hay puntos suficientes o si no se pudo descargar ninguna
+ * tesela (sin señal): el PDF debe generarse igual, con el resto del contenido.
+ */
+async function construirMapaPoligonoHtml(
+  puntos: { latitud: number; longitud: number }[],
+  maxAnchoPx = 460,
+  maxAltoPx = 240
+): Promise<string> {
+  const validos = (puntos || []).filter(
+    (p) => Number.isFinite(p?.latitud) && Number.isFinite(p?.longitud)
+  );
+  if (validos.length === 0) return '';
+
+  const bbox = bboxDePuntos(validos);
+  if (!bbox) return '';
+
+  const mosaico = await construirMosaicoMapa(bbox, 'satelite');
+  if (!mosaico) return '';
+
+  return dibujarPoligonoEnMosaico(mosaico, validos, maxAnchoPx, maxAltoPx);
+}
+
+/**
  * Generar PDF local con fotos, firmas y huella embebidas.
  *
  * Siempre lleva el membrete de Ejecución (ACPR) — caracterización y visita
@@ -230,6 +266,12 @@ export const construirHtmlFormulario = async (
   // 4. Construir HTML completo según el tipo de formulario
   if (formulario.tipo === 'caracterizacion' && (formulario as any).caracterizacion_nueva) {
     return await construirHTMLCaracterizacion(formulario, fotosHtml, firmaBenefHtml, firmaTecHtml, selloBiometricoHtml);
+  }
+  // Visita Técnica formato nuevo (v2): layout propio, en el orden de sus 10
+  // ítems y con las imágenes de ubicación/área medidas. El formato antiguo
+  // (y cualquier otro formulario) sigue usando `construirHTML` intacto.
+  if (esVisitaTecnicaV2(formulario.actividad)) {
+    return await construirHTMLVisitaV2(formulario, fotosHtml, firmaBenefHtml, firmaTecHtml, selloBiometricoHtml);
   }
   return construirHTML(formulario, fotosHtml, firmaBenefHtml, firmaTecHtml, selloBiometricoHtml);
 };
@@ -2387,6 +2429,365 @@ function construirHTML(
   </div>
 
   <!-- ANEXO: Videos -->
+  ${anexoVideosHtml}
+
+  <div class="footer">
+    <p>Documento generado por GEODAILY — ${new Date().toISOString()}</p>
+    <p>Este es un documento digital válido como evidencia de campo.</p>
+  </div>
+  ${membreteCierreHtml()}
+</body>
+</html>`;
+}
+
+// ============================================================
+// construirHTMLVisitaV2 — Visita Técnica formato nuevo (v2)
+// ============================================================
+// El formato v2 tiene 10 ítems y muchos menos datos que el formulario
+// antiguo, así que reusar `construirHTML` obligaba a imprimir secciones
+// vacías (Clima, Sociodemográfico, Georeferencia, Actividad) y a perder las
+// imágenes del área medida. Este builder arma el documento en el MISMO orden
+// en que el técnico diligencia el formulario (ítems 1 → 10) y agrega dos
+// mapas estáticos: la ubicación capturada con GPS y el polígono del área
+// medida. El PDF del formato antiguo y el de caracterización no cambian.
+async function construirHTMLVisitaV2(
+  form: Formulario,
+  fotosHtml: string,
+  firmaBenefHtml: string,
+  firmaTecHtml: string,
+  huellaHtml: string
+): Promise<string> {
+  const act = form.actividad;
+  const coordenadas = form.coordenadas;
+  const medicion = act.medicion_historial;
+
+  const esPuntoValido = (p?: { latitud: number; longitud: number }) =>
+    p != null && Number.isFinite(p.latitud) && Number.isFinite(p.longitud);
+  const puntosPoligono = (act.poligono || []).filter(esPuntoValido);
+  const puntosMedicion = (medicion?.puntos || []).filter(esPuntoValido);
+
+  // Punto de la visita: la coordenada del formulario (ítem 4) o, si no
+  // viajó, el primer vértice del polígono.
+  const primerPunto = puntosPoligono[0];
+  const latVisita = coordenadas?.latitud != null ? coordenadas.latitud : primerPunto?.latitud;
+  const lonVisita = coordenadas?.longitud != null ? coordenadas.longitud : primerPunto?.longitud;
+
+  // Área: la medición del historial manda (es la que el técnico eligió);
+  // si no adjuntó ninguna, se dibuja el polígono del ítem 4.
+  const puntosArea = puntosMedicion.length > 0 ? puntosMedicion : puntosPoligono;
+
+  const ubicacionTexto =
+    [form.beneficiario?.municipio, form.beneficiario?.vereda || form.beneficiario?.corregimiento]
+      .filter(Boolean)
+      .join(' · ') || undefined;
+
+  // Las dos descargas van en paralelo y ninguna puede romper el PDF: si no
+  // hay señal, cada helper devuelve '' y esa imagen simplemente no sale.
+  const [mapaUbicacionHtml, mapaAreaHtml] = await Promise.all([
+    construirMapaEstaticoHtml(latVisita, lonVisita, ubicacionTexto),
+    construirMapaPoligonoHtml(puntosArea),
+  ]);
+
+  // --- Ítem 6: valoración del cumplimiento (barra 0–100) ---
+  const valoracionNumero = (() => {
+    const crudo = act.valoracion_cumplimiento;
+    if (crudo == null || String(crudo).trim() === '') return null;
+    const n = Number(String(crudo).replace(',', '.'));
+    if (!Number.isFinite(n)) return null;
+    return Math.min(100, Math.max(0, Math.round(n)));
+  })();
+  const valoracionHtml = valoracionNumero != null
+    ? `<div class="v2-barra-wrap">
+         <div class="v2-barra"><div class="v2-barra-fill" style="width:${valoracionNumero}%;"></div></div>
+         <div class="v2-barra-valor">${valoracionNumero}% de cumplimiento</div>
+       </div>`
+    : '<p class="no-data">Sin valorar</p>';
+
+  // --- Ítem 8: compromisos para la próxima visita ---
+  const compromisos = (act.compromisos_siguiente_visita || []).filter(
+    (c) => String(c || '').trim() !== ''
+  );
+  const compromisosHtml = compromisos.length > 0
+    ? `<ul class="v2-lista">${compromisos
+        .map((c) => `<li>${escapeHtml(String(c))}</li>`)
+        .join('')}</ul>`
+    : '<p class="no-data">Sin compromisos registrados</p>';
+
+  // --- Anexo de videos (no se pueden incrustar en el PDF) ---
+  const videos = (form.fotos || []).filter((f) => f.tipo === 'video');
+  const anexoVideosHtml = videos.length > 0 ? `
+    <div class="section annex-videos">
+      <h2>📎 ANEXO — VIDEOS DE LA VISITA (${videos.length})</h2>
+      <p class="annex-note">Los videos no pueden incrustarse en el PDF. Quedan almacenados en el servidor (MinIO, carpeta videos/) como evidencia complementaria.</p>
+      ${videos.map((v, i) => `
+        <div class="video-ref">
+          <span class="video-num">Video ${i + 1}</span>
+          <span class="video-info">${formatFecha(v.timestamp)} · 📍 ${v.coordenadas ? `${v.coordenadas.latitud?.toFixed(6)}, ${v.coordenadas.longitud?.toFixed(6)}` : '—'}</span>
+        </div>`).join('')}
+    </div>` : '';
+
+  // --- Ítem 4: datos de la ubicación ---
+  const ubicacionRows = card('📍 Coordenadas de la visita', [
+    r('Latitud', latVisita != null ? Number(latVisita).toFixed(6) : null),
+    r('Longitud', lonVisita != null ? Number(lonVisita).toFixed(6) : null),
+    coordenadas?.altitud != null ? r('Altitud', `${Number(coordenadas.altitud).toFixed(1)} m`) : '',
+    coordenadas?.precision_gps != null ? r('Precisión GPS', `±${Math.round(Number(coordenadas.precision_gps))} m`) : '',
+    coordenadas?.lugar || ubicacionTexto ? r('Lugar', coordenadas?.lugar || ubicacionTexto) : '',
+  ].join(''));
+
+  const areaRows = card('📐 Área registrada', [
+    r('Área a intervenir', act.area_intervencion ? `${escapeHtml(act.area_intervencion)} ha` : null),
+    medicion?.nombre ? r('Medición', medicion.nombre) : '',
+    medicion?.area_hectareas != null ? r('Área medida', `${Number(medicion.area_hectareas).toFixed(2)} ha`) : '',
+    medicion?.perimetro_metros != null ? r('Perímetro', `${Math.round(Number(medicion.perimetro_metros))} m`) : '',
+    r('Vértices del área', puntosArea.length > 0 ? `${puntosArea.length}` : null),
+  ].join(''));
+
+  const mapaUbicacionBloque = mapaUbicacionHtml
+    ? `<div class="v2-mapa"><div class="v2-mapa-wrap">${mapaUbicacionHtml}</div></div>`
+    : '';
+
+  const mapaAreaBloque = mapaAreaHtml
+    ? `<div class="v2-mapa">
+         <p class="v2-mapa-titulo">Área medida / a intervenir</p>
+         <div class="v2-mapa-wrap">${mapaAreaHtml}</div>
+       </div>`
+    : '';
+
+  return `<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <title>Visita Técnica 2 — ${escapeHtml(form.beneficiario?.nombre || 'Beneficiario')}</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    ${membreteCss()}
+    body {
+      font-family: 'Arial Narrow', Arial, sans-serif;
+      margin: 0;
+      color: #2d3436;
+      line-height: 1.4;
+    }
+    .doc-titulo {
+      text-align: center;
+      border-bottom: 2px solid #1B5E20;
+      padding-bottom: 6px;
+      margin-bottom: 12px;
+    }
+    .doc-titulo h1 { color: #1B5E20; font-size: 13pt; letter-spacing: 0.3px; margin-bottom: 3px; }
+    .doc-titulo p { color: #444; font-size: 8.5pt; }
+    .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 12px; }
+    .card {
+      background: #f8f9fa;
+      border-radius: 8px;
+      padding: 12px 14px;
+      border-left: 4px solid #1B5E20;
+      break-inside: avoid;
+    }
+    .card-title {
+      color: #1B5E20; font-size: 12.5px; font-weight: bold;
+      border-bottom: 1px solid #e0e0e0; padding-bottom: 5px; margin-bottom: 6px;
+    }
+    .row { display: flex; font-size: 11.5px; margin: 2px 0; }
+    .label { font-weight: bold; color: #555; min-width: 110px; flex-shrink: 0; }
+    .value { flex: 1; color: #2d3436; }
+    .section {
+      margin: 12px 0;
+      padding: 12px 14px;
+      background: #f8f9fa;
+      border-radius: 8px;
+      border-left: 4px solid #1B5E20;
+      break-inside: avoid;
+    }
+    .section h2 {
+      color: #1B5E20; font-size: 13px; margin-bottom: 8px;
+      border-bottom: 1px solid #e0e0e0; padding-bottom: 5px;
+    }
+    .desc-detallada {
+      font-size: 12px; color: #2d3436; background: #fff;
+      padding: 8px 10px; border-radius: 4px; border: 1px solid #e0e0e0;
+      margin-top: 4px; line-height: 1.5;
+    }
+    /* --- Valoración del cumplimiento (ítem 6) --- */
+    .v2-barra-wrap { display: flex; align-items: center; gap: 10px; margin-top: 4px; }
+    .v2-barra {
+      flex: 1; height: 14px; background: #dfe6e9; border-radius: 7px; overflow: hidden;
+    }
+    .v2-barra-fill { height: 100%; background: #1B5E20; }
+    .v2-barra-valor { font-size: 12px; font-weight: bold; color: #1B5E20; min-width: 130px; text-align: right; }
+    /* --- Listas (compromisos) --- */
+    .v2-lista { margin: 4px 0 0 18px; font-size: 12px; }
+    .v2-lista li { margin-bottom: 4px; }
+    /* --- Mapas estáticos --- */
+    .v2-mapa { text-align: center; margin-top: 10px; break-inside: avoid; }
+    .v2-mapa-titulo { font-size: 11px; font-weight: bold; color: #1B5E20; margin: 8px 0 2px; }
+    .v2-mapa-wrap { display: inline-block; }
+    /* --- Fotografías y firmas (mismos criterios que el PDF antiguo) --- */
+    .photo-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    .foto-item { padding: 10px; background: #fff; border-radius: 6px; border: 1px solid #e0e0e0; break-inside: avoid; }
+    .evidencia-label { font-size: 11px; color: #0984e3; font-weight: bold; margin-bottom: 6px; }
+    .foto-img { width: 100%; height: 5.2cm; object-fit: contain; background: #f4f4f4; border-radius: 4px; display: block; }
+    .foto-coords, .foto-heading { font-size: 10px; color: #636e72; font-family: monospace; margin-top: 3px; }
+    .firmas-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 8px; }
+    .firma-item { padding: 12px; background: #fff; border-radius: 6px; border: 1px solid #e0e0e0; break-inside: avoid; }
+    .firma-item .evidencia-label { font-size: 11px; color: #6c5ce7; }
+    .firma-img {
+      width: 100%; height: 2.6cm; object-fit: contain; background: #fff;
+      border: 1px dashed #b2bec3; border-radius: 4px; padding: 6px;
+      display: block; margin: 0 auto;
+    }
+    .huella-wrap { display: flex; justify-content: center; margin-top: 8px; }
+    .huella-sello { max-width: 480px; break-inside: avoid; }
+    .huella-sello-inner {
+      background: linear-gradient(135deg, #f0fdf4 0%, #dcfce7 100%);
+      border: 2px solid #1B5E20; border-radius: 12px; padding: 16px;
+      box-shadow: 0 2px 8px rgba(27, 94, 32, 0.15);
+    }
+    .huella-sello-header {
+      display: flex; align-items: center; gap: 14px;
+      border-bottom: 1px solid #bbf7d0; padding-bottom: 10px; margin-bottom: 10px;
+    }
+    .huella-sello-img { width: 52px; height: 52px; flex-shrink: 0; }
+    .huella-sello-titles { flex: 1; }
+    .huella-sello-verificado { font-size: 18px; font-weight: bold; color: #15803d; }
+    .huella-sello-label { font-size: 12px; color: #16a34a; }
+    .huella-sello-body { margin-bottom: 10px; }
+    .huella-sello-table { width: 100%; border-collapse: collapse; }
+    .huella-sello-table td { padding: 3px 6px; font-size: 12px; }
+    .huella-sello-label-cell { color: #555; font-weight: bold; width: 110px; }
+    .huella-sello-value-cell { color: #2d3436; }
+    .huella-sello-exitoso { display: inline-block; background: #15803d; color: #fff; font-size: 11px; font-weight: bold; padding: 2px 10px; border-radius: 10px; }
+    .huella-sello-footer { text-align: center; border-top: 1px solid #bbf7d0; padding-top: 8px; }
+    .huella-sello-stamp { display: inline-block; font-size: 12px; font-weight: bold; color: #15803d; letter-spacing: 1px; border: 2px solid #15803d; border-radius: 6px; padding: 3px 14px; transform: rotate(-2deg); }
+    /* --- Anexo videos --- */
+    .annex-videos { border-left-color: #0984e3 !important; }
+    .annex-note { font-size: 11px; color: #636e72; margin-bottom: 8px; }
+    .video-ref { display: flex; gap: 12px; font-size: 11px; padding: 4px 0; border-bottom: 1px dotted #e0e0e0; }
+    .video-num { font-weight: bold; color: #0984e3; min-width: 60px; }
+    .video-info { color: #636e72; }
+    .no-data { font-size: 11px; color: #b2bec3; font-style: italic; padding: 4px 0; }
+    .footer {
+      margin-top: 26px; padding-top: 12px; border-top: 1px solid #e0e0e0;
+      text-align: center; font-size: 10px; color: #b2bec3;
+    }
+    @media print {
+      .grid-2 { break-inside: auto; }
+      .card, .section, .v2-mapa, .foto-item, .firma-item { break-inside: avoid; }
+      .photo-grid { break-inside: auto; }
+    }
+  </style>
+</head>
+<body>
+  ${membreteAperturaHtml('ejecucion', 'tecnica')}
+
+  <div class="doc-titulo">
+    <h1>FORMULARIO DE VISITA TÉCNICA 2</h1>
+    <p><strong>Beneficiario:</strong> ${escapeHtml(form.beneficiario?.nombre || '—')}
+       &nbsp;·&nbsp; <strong>C.C.:</strong> ${escapeHtml(form.beneficiario?.cedula || '—')}
+       &nbsp;·&nbsp; <strong>Vereda:</strong> ${escapeHtml(form.beneficiario?.vereda || form.beneficiario?.corregimiento || '—')}
+       &nbsp;·&nbsp; <strong>Fecha:</strong> ${formatFecha(form.created_at)}</p>
+  </div>
+
+  ${grid2(
+    card('👤 Técnico', [
+      r('Nombre', form.tecnico?.nombre),
+      r('Cédula', form.tecnico?.cedula),
+      r('Teléfono', form.tecnico?.telefono),
+    ].join('')),
+    card('👥 Beneficiario', [
+      r('Nombre', form.beneficiario?.nombre),
+      r('Cédula', form.beneficiario?.cedula),
+      r('Municipio', form.beneficiario?.municipio),
+      r('Vereda', form.beneficiario?.vereda),
+      r('Finca', form.beneficiario?.finca),
+    ].join(''))
+  )}
+
+  <!-- ÍTEM 1 -->
+  <div class="section">
+    <h2>1. No. IDENTIFICACIÓN</h2>
+    ${act.no_identificacion
+      ? `<div class="desc-detallada">${escapeHtml(act.no_identificacion)}</div>`
+      : '<p class="no-data">Sin registrar</p>'}
+  </div>
+
+  <!-- ÍTEM 2 -->
+  <div class="section">
+    <h2>2. OBJETIVO DE LA VISITA</h2>
+    ${act.objetivo
+      ? `<div class="desc-detallada">${escapeHtml(act.objetivo)}</div>`
+      : '<p class="no-data">Sin registrar</p>'}
+  </div>
+
+  <!-- ÍTEM 3 -->
+  <div class="section">
+    <h2>3. DESCRIPCIÓN DE LA VISITA</h2>
+    ${act.descripcion_detallada || act.descripcion
+      ? `<div class="desc-detallada">${escapeHtml(act.descripcion_detallada || act.descripcion || '')}</div>`
+      : '<p class="no-data">Sin registrar</p>'}
+  </div>
+
+  <!-- ÍTEM 4: georreferenciación + área medida (con imágenes) -->
+  <div class="section">
+    <h2>4. GEORREFERENCIACIÓN DEL ÁREA</h2>
+    ${grid2(ubicacionRows, areaRows)}
+    ${mapaUbicacionBloque}
+    ${mapaAreaBloque}
+    ${!mapaUbicacionHtml && !mapaAreaHtml
+      ? '<p class="no-data">No fue posible generar las imágenes del mapa (sin conexión al momento de crear el PDF). Las coordenadas quedan registradas arriba.</p>'
+      : ''}
+  </div>
+
+  <!-- ÍTEM 5 -->
+  <div class="section">
+    <h2>5. SEGUIMIENTO A COMPROMISOS</h2>
+    ${act.seguimiento_compromisos
+      ? `<div class="desc-detallada">${escapeHtml(act.seguimiento_compromisos)}</div>`
+      : '<p class="no-data">Sin registrar</p>'}
+  </div>
+
+  <!-- ÍTEM 6 -->
+  <div class="section">
+    <h2>6. VALORACIÓN DEL CUMPLIMIENTO</h2>
+    ${valoracionHtml}
+  </div>
+
+  <!-- ÍTEM 7 -->
+  <div class="section">
+    <h2>7. RECOMENDACIONES</h2>
+    ${act.recomendaciones
+      ? `<div class="desc-detallada">${escapeHtml(act.recomendaciones)}</div>`
+      : '<p class="no-data">Sin registrar</p>'}
+  </div>
+
+  <!-- ÍTEM 8 -->
+  <div class="section">
+    <h2>8. COMPROMISOS PARA LA PRÓXIMA VISITA</h2>
+    ${compromisosHtml}
+  </div>
+
+  <!-- ÍTEM 9: registro fotográfico y evidencias -->
+  <div class="section">
+    <h2>9. REGISTRO FOTOGRÁFICO Y EVIDENCIAS</h2>
+    <p style="font-size:12px;font-weight:bold;color:#0984e3;margin:6px 0 4px;">Fotografías</p>
+    <div class="photo-grid">${fotosHtml}</div>
+    <p style="font-size:12px;font-weight:bold;color:#6c5ce7;margin:14px 0 4px;">Firmas</p>
+    <div class="firmas-grid">
+      ${firmaBenefHtml}
+      ${firmaTecHtml}
+    </div>
+    <p style="font-size:12px;font-weight:bold;color:#15803d;margin:14px 0 4px;">Registro Biométrico</p>
+    <div class="huella-wrap">${huellaHtml}</div>
+  </div>
+
+  <!-- ÍTEM 10 -->
+  <div class="section">
+    <h2>10. OBSERVACIONES DE LA VISITA</h2>
+    ${act.observaciones
+      ? `<div class="desc-detallada">${escapeHtml(act.observaciones)}</div>`
+      : '<p class="no-data">Sin registrar</p>'}
+  </div>
+
   ${anexoVideosHtml}
 
   <div class="footer">

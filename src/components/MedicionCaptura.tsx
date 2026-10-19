@@ -42,6 +42,12 @@ interface Props {
   mostrarAcciones?: boolean;
   /** Título opcional encima de la captura. */
   titulo?: string;
+  /**
+   * Texto que reemplaza la línea de métricas (área/perímetro/nº de puntos)
+   * del pie. Se usa cuando la captura representa un PUNTO de ubicación en
+   * vez de un área medida: ahí el área y el perímetro no aplican.
+   */
+  subtexto?: string;
 }
 
 const formatearNumero = (valor?: number, decimales = 1) =>
@@ -54,6 +60,7 @@ const MedicionCaptura: React.FC<Props> = ({
   altura = 180,
   mostrarAcciones = true,
   titulo,
+  subtexto,
 }) => {
   const [ancho, setAncho] = useState(0);
   const [teselasConError, setTeselasConError] = useState(0);
@@ -234,11 +241,12 @@ const MedicionCaptura: React.FC<Props> = ({
             {medicion.nombre || 'Medición de terreno'}
           </Text>
           <Text style={styles.pieDetalle} numberOfLines={1}>
-            {typeof medicion.area_hectareas === 'number' && medicion.area_hectareas > 0
-              ? `📐 ${formatearNumero(medicion.area_hectareas, 2)} ha · perímetro ${formatearNumero(medicion.perimetro_metros, 0)} m`
-              : `📏 ${formatearNumero(medicion.perimetro_metros, 0)} m`}
-            {' · '}
-            {puntos.length} punto(s)
+            {subtexto
+              ? subtexto
+              : typeof medicion.area_hectareas === 'number' && medicion.area_hectareas > 0
+                ? `📐 ${formatearNumero(medicion.area_hectareas, 2)} ha · perímetro ${formatearNumero(medicion.perimetro_metros, 0)} m`
+                : `📏 ${formatearNumero(medicion.perimetro_metros, 0)} m`}
+            {subtexto ? '' : ` · ${puntos.length} punto(s)`}
           </Text>
           {!!centro && (
             <Text style={styles.pieCoordenadas} numberOfLines={1}>
