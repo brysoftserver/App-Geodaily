@@ -63,6 +63,7 @@ import * as DocumentPicker from 'expo-document-picker';
 import * as LocalAuthentication from 'expo-local-authentication';
 import { COLORS, FONTS, SPACING, BORDER_RADIUS, SHADOWS } from '../theme';
 import { useAuth } from '../store/AuthContext';
+import { puedeElegirOrigenEvidencia } from '../utils/permisosFormulario';
 import { useSync } from '../store/SyncContext';
 import {
   saveSeguimientoLocal,
@@ -104,6 +105,10 @@ const SeguimientoCoordinacionSection: React.FC<SeguimientoCoordinacionSectionPro
   embedded = false,
 }) => {
   const { isInterventor, user } = useAuth();
+  // Solo el admin (oficina) puede elegir entre cámara y almacenamiento. El
+  // coordinador y el interventor deben capturar con la cámara para que la
+  // evidencia conserve la ubicación real de la visita.
+  const puedeElegirAlmacenamiento = puedeElegirOrigenEvidencia(user?.rol);
   const { syncNow } = useSync();
   const insets = useSafeAreaInsets();
   const idRef = useRef(seguimientoId || generarId());
@@ -304,6 +309,20 @@ const SeguimientoCoordinacionSection: React.FC<SeguimientoCoordinacionSectionPro
   };
 
   const tomarFoto = async () => {
+    // Solo el admin (oficina) puede adjuntar desde el carrete; coordinador e
+    // interventor deben capturar en el momento para conservar la ubicación.
+    if (!puedeElegirAlmacenamiento) {
+      await capturarFotoConCamara();
+      return;
+    }
+    Alert.alert('Agregar foto', 'Elige de dónde quieres obtener la foto.', [
+      { text: 'Cancelar', style: 'cancel' },
+      { text: '📷 Cámara', onPress: () => { void capturarFotoConCamara(); } },
+      { text: '🖼️ Almacenamiento', onPress: () => { void adjuntarDesdeAlmacenamiento('foto'); } },
+    ]);
+  };
+
+  const capturarFotoConCamara = async () => {
     const permiso = await ImagePicker.requestCameraPermissionsAsync();
     if (!permiso.granted) {
       Alert.alert('Permiso requerido', 'Se necesita acceso a la cámara para tomar la foto.');
@@ -318,11 +337,48 @@ const SeguimientoCoordinacionSection: React.FC<SeguimientoCoordinacionSectionPro
     // porque el seguimiento puede quedar días sin sincronizar en campo.
     const fotoId = `foto-${Date.now()}`;
     const uriPersistente = await persistirEvidencia(resultado.assets[0].uri, fotoId);
-    const nuevaFoto: FotoSeguimientoLocal = { id: fotoId, uri: uriPersistente };
+    const nuevaFoto: FotoSeguimientoLocal = { id: fotoId, uri: uriPersistente, origen: 'camara' };
     const fotosActualizadas = [...fotos, nuevaFoto];
     setFotos(fotosActualizadas);
     if (!(await guardarBorrador({ fotos: fotosActualizadas }))) {
       Alert.alert('Foto sin respaldo', 'La foto sigue en esta pantalla, pero no quedó registrada localmente. Guarda el seguimiento antes de salir.');
+    }
+  };
+
+  /**
+   * Adjunta la evidencia desde el almacenamiento del dispositivo (SOLO admin).
+   * Se marca con `origen: 'almacenamiento'` para que al sincronizar se suba
+   * sin coordenadas ni marca de agua: son datos de captura que no
+   * corresponden a esta visita.
+   */
+  const adjuntarDesdeAlmacenamiento = async (tipo: 'foto' | 'video') => {
+    const permiso = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (!permiso.granted) {
+      Alert.alert('Permiso requerido', 'Se necesita acceso a tus archivos para adjuntar la evidencia.');
+      return;
+    }
+    const resultado = await ImagePicker.launchImageLibraryAsync(
+      tipo === 'foto'
+        ? { mediaTypes: ['images'], quality: 0.6 }
+        : { mediaTypes: ['videos'], videoMaxDuration: 30 }
+    );
+    if (resultado.canceled || !resultado.assets?.[0]?.uri) return;
+
+    const evidenciaId = `${tipo}-${Date.now()}`;
+    const uriPersistente = await persistirEvidencia(resultado.assets[0].uri, evidenciaId, tipo === 'video');
+    const nuevo: FotoSeguimientoLocal = { id: evidenciaId, uri: uriPersistente, origen: 'almacenamiento' };
+    if (tipo === 'foto') {
+      const fotosActualizadas = [...fotos, nuevo];
+      setFotos(fotosActualizadas);
+      if (!(await guardarBorrador({ fotos: fotosActualizadas }))) {
+        Alert.alert('Foto sin respaldo', 'La foto sigue en esta pantalla, pero no quedó registrada localmente. Guarda el seguimiento antes de salir.');
+      }
+    } else {
+      const videosActualizados = [...videos, nuevo];
+      setVideos(videosActualizados);
+      if (!(await guardarBorrador({ videos: videosActualizados }))) {
+        Alert.alert('Video sin respaldo', 'El video sigue en esta pantalla, pero no quedó registrado localmente. Guarda el seguimiento antes de salir.');
+      }
     }
   };
 
@@ -342,6 +398,19 @@ const SeguimientoCoordinacionSection: React.FC<SeguimientoCoordinacionSectionPro
   };
 
   const grabarVideo = async () => {
+    // Ver nota en tomarFoto: el selector de origen es exclusivo del admin.
+    if (!puedeElegirAlmacenamiento) {
+      await capturarVideoConCamara();
+      return;
+    }
+    Alert.alert('Agregar video', 'Elige de dónde quieres obtener el video.', [
+      { text: 'Cancelar', style: 'cancel' },
+      { text: '🎥 Cámara', onPress: () => { void capturarVideoConCamara(); } },
+      { text: '🖼️ Almacenamiento', onPress: () => { void adjuntarDesdeAlmacenamiento('video'); } },
+    ]);
+  };
+
+  const capturarVideoConCamara = async () => {
     const permiso = await ImagePicker.requestCameraPermissionsAsync();
     if (!permiso.granted) {
       Alert.alert('Permiso requerido', 'Se necesita acceso a la cámara para grabar el video.');
@@ -354,7 +423,7 @@ const SeguimientoCoordinacionSection: React.FC<SeguimientoCoordinacionSectionPro
     // antes de registrarlo (esVideo=true para el respaldo de extensión .mp4).
     const videoId = `video-${Date.now()}`;
     const uriPersistente = await persistirEvidencia(resultado.assets[0].uri, videoId, true);
-    const nuevoVideo: FotoSeguimientoLocal = { id: videoId, uri: uriPersistente };
+    const nuevoVideo: FotoSeguimientoLocal = { id: videoId, uri: uriPersistente, origen: 'camara' };
     const videosActualizados = [...videos, nuevoVideo];
     setVideos(videosActualizados);
     if (!(await guardarBorrador({ videos: videosActualizados }))) {
