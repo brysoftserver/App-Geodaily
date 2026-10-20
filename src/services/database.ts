@@ -2645,6 +2645,14 @@ export interface FotoSeguimientoLocal {
   uri: string;
   /** Presente una vez que la foto se subió a MinIO durante la sincronización */
   archivo_id?: string;
+  /**
+   * De dónde salió el archivo: 'camara' (capturado en el momento) o
+   * 'almacenamiento' (elegido de la galería por el admin). Se persiste dentro
+   * del JSON para que el sincronizador sepa si debe mandar coordenadas o no;
+   * las del almacenamiento se suben sin ubicación ni marca de agua.
+   * Ausente en evidencias antiguas → se asume cámara.
+   */
+  origen?: 'camara' | 'almacenamiento';
 }
 
 export interface SeguimientoLocal {

@@ -27,7 +27,9 @@ export const uploadVideo = async (
    * fotos de galería, se sube sin latitud ni longitud (no se capturó en
    * esta visita, así que no tiene geotag propio).
    */
-  origen?: 'camara' | 'almacenamiento'
+  origen?: 'camara' | 'almacenamiento',
+  /** Ver nota en photos.service.ts — atribuye el video al autor del seguimiento. */
+  seguimientoId?: string
 ): Promise<{ id: string; estado: string; ruta?: string; filename?: string } | null> => {
   try {
     const formData = new FormData();
@@ -51,6 +53,7 @@ export const uploadVideo = async (
     if (beneficiarioNombre) formData.append('beneficiario_nombre', beneficiarioNombre);
     if (tipoFormulario) formData.append('tipo_formulario', tipoFormulario);
     if (formularioId) formData.append('formulario_id', formularioId);
+    if (seguimientoId) formData.append('seguimiento_id', seguimientoId);
     if (evidenciaId) formData.append('evidencia_id', evidenciaId);
 
     const response = await apiClient.post(

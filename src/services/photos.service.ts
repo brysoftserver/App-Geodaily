@@ -40,7 +40,14 @@ export const uploadPhoto = async (
    * imagen, y el admin pidió expresamente que estas fotos "se suban solitas
    * sin datos adicionales".
    */
-  origen?: 'camara' | 'almacenamiento'
+  origen?: 'camara' | 'almacenamiento',
+  /**
+   * Seguimiento de Coordinación/Interventoría al que pertenece la foto. El
+   * backend lo usa para atribuir el archivo a su AUTOR (el dueño original del
+   * seguimiento) en vez de a quien lo sube, igual que hace `formularioId` con
+   * las visitas del técnico.
+   */
+  seguimientoId?: string
 ): Promise<{ id: string; estado: string; ruta?: string; filename?: string } | null> => {
   try {
     const formData = new FormData();
@@ -69,6 +76,7 @@ export const uploadPhoto = async (
     if (beneficiarioNombre) formData.append('beneficiario_nombre', beneficiarioNombre);
     if (tipoFormulario) formData.append('tipo_formulario', tipoFormulario);
     if (formularioId) formData.append('formulario_id', formularioId);
+    if (seguimientoId) formData.append('seguimiento_id', seguimientoId);
     if (evidenciaId) formData.append('evidencia_id', evidenciaId);
 
     const response = await apiClient.post(

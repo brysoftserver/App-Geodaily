@@ -592,7 +592,13 @@ export const SyncProvider: React.FC<{ children: React.ReactNode }> = ({
               s.created_at,
               'seguimiento',
               undefined,
-              foto.id
+              foto.id,
+              // 'almacenamiento' = la adjuntó el admin desde el carrete: se
+              // sube sin coordenadas ni marca de agua (ver photos.js).
+              foto.origen === 'almacenamiento' ? 'almacenamiento' : 'camara',
+              // Atribuye el archivo al AUTOR del seguimiento, no al admin que
+              // lo esta subiendo (evita evidencias huerfanas en su carpeta).
+              s.id
             );
             // 410 → eliminada en el servidor: se omite del seguimiento en
             // vez de dejar el envío bloqueado reintentando para siempre.
@@ -635,7 +641,11 @@ export const SyncProvider: React.FC<{ children: React.ReactNode }> = ({
               s.beneficiario_nombre || undefined,
               'seguimiento',
               undefined,
-              video.id
+              video.id,
+              // Ver nota en las fotos de seguimiento: origen + autor del
+              // seguimiento para no dejarlo huerfano en la carpeta del admin.
+              video.origen === 'almacenamiento' ? 'almacenamiento' : 'camara',
+              s.id
             );
             // 410 → eliminado en el servidor (ver fotos de seguimiento arriba).
             if (subida?.estado === 'eliminado') {

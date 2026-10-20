@@ -50,6 +50,7 @@ import { generarId } from '../../utils/formatters';
 import { formatFecha } from '../../utils/formatters';
 import {
   puedeEditarRespuestasFormulario,
+  puedeElegirOrigenEvidencia,
   puedeGestionarEvidenciasFormulario,
   resolverDuenoFormulario,
 } from '../../utils/permisosFormulario';
@@ -960,6 +961,15 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
    */
   const puedeAgregarEvidencias = puedeEliminarEvidencias;
   /**
+   * Solo el admin puede elegir si la evidencia se toma con la cámara o se
+   * adjunta desde el almacenamiento del teléfono. El resto de roles debe
+   * capturarla en el momento, para que quede con su ubicación real: adjuntar
+   * una foto vieja del carrete permitiría "fabricar" la visita sin haber
+   * estado en la finca. Regla pedida por el admin y centralizada en
+   * `puedeElegirOrigenEvidencia` para que no se desalinee entre pantallas.
+   */
+  const puedeElegirAlmacenamiento = puedeElegirOrigenEvidencia(rolActual);
+  /**
    * ¿Esta evidencia todavía no existe en el servidor? (capturada en este
    * teléfono y pendiente de subir). Sirve para marcarla en pantalla y para
    * descartarla sin llamar a la API.
@@ -1308,6 +1318,18 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
    */
   const agregarDesdeAlmacenamiento = async (tipo: 'foto' | 'video') => {
     if (agregandoDesdeGaleria) return;
+    // Defensa en profundidad: el botón de origen solo se ofrece al admin
+    // (ver `puedeElegirAlmacenamiento`), pero si por cualquier vía se llega
+    // aquí con otro rol se rechaza en vez de subir una evidencia sin
+    // ubicación desde un teléfono que no es del admin.
+    if (!puedeElegirAlmacenamiento) {
+      Alert.alert(
+        'Solo el administrador',
+        'Únicamente el administrador puede adjuntar fotos o videos desde el almacenamiento del dispositivo. ' +
+          'Toma la foto o el video con la cámara para que quede registrada su ubicación.'
+      );
+      return;
+    }
     const esVideo = tipo === 'video';
     try {
       const permiso = await ImagePicker.requestMediaLibraryPermissionsAsync();
@@ -1404,8 +1426,21 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
     }
   };
 
-  /** Android Alert admite como máximo tres botones: el origen va en otro diálogo. */
+  /**
+   * Origen de la FOTO.
+   *
+   * - admin: se le pregunta (cámara o almacenamiento), porque corrige desde
+   *   la oficina visitas ya cerradas.
+   * - cualquier otro rol: va directo a la cámara. No se le ofrece el
+   *   almacenamiento para que la evidencia quede con la ubicación real de la
+   *   visita; si además se ocultara la opción dentro del diálogo, el técnico
+   *   perdería un toque por cada foto.
+   */
   const elegirOrigenFoto = () => {
+    if (!puedeElegirAlmacenamiento) {
+      agregarEvidencia('photo');
+      return;
+    }
     Alert.alert(
       'Agregar foto',
       'Elige de dónde quieres obtener la foto para esta visita.',
@@ -1417,8 +1452,12 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
     );
   };
 
-  /** Menú del video: cámara (con geotag) o almacenamiento (sin datos). */
+  /** Menú del video: solo el admin elige el origen (ver elegirOrigenFoto). */
   const elegirOrigenVideo = () => {
+    if (!puedeElegirAlmacenamiento) {
+      agregarEvidencia('video');
+      return;
+    }
     Alert.alert(
       'Agregar video',
       'Elige de dónde quieres obtener el video para esta visita.',
@@ -1430,7 +1469,7 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
     );
   };
 
-  /** Menú para elegir foto o video; cada uno abre su selector de origen. */
+  /** Menú para elegir foto o video; el origen depende del rol. */
   const elegirTipoEvidencia = () => {
     Alert.alert(
       'Agregar evidencia',

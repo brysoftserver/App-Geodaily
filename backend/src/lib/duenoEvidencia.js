@@ -70,6 +70,50 @@ const resolverDuenoDeFormulario = async (formularioId) => {
 };
 
 /**
+ * Dueño efectivo de un seguimiento de Coordinación/Interventoría: su AUTOR
+ * (`seguimientos.autor_id`).
+ *
+ * Mismo razonamiento que con los formularios: cuando el admin adjunta una
+ * foto al seguimiento de un coordinador o interventor, el archivo debe quedar
+ * en el árbol de ese autor (`coordinadores/<usuario>` o
+ * `interventores/<usuario>`) y no en `admin/<usuario>`, para que el autor lo
+ * vea como suyo y no quede huérfano al filtrar por `usuario_id`.
+ *
+ * Nunca lanza: si el seguimiento aún no existe en el servidor (se está
+ * subiendo su evidencia antes del upsert) devuelve `null` y quien llama usa
+ * al usuario autenticado.
+ *
+ * @param {string|null|undefined} seguimientoId
+ * @returns {Promise<{id: string, rol: string, usuario: string}|null>}
+ */
+const resolverDuenoDeSeguimiento = async (seguimientoId) => {
+  if (!seguimientoId || typeof seguimientoId !== 'string' || !seguimientoId.trim()) return null;
+  try {
+    const seguimiento = await db.queryOne(
+      'SELECT autor_id FROM seguimientos WHERE id = $1',
+      [seguimientoId.trim()]
+    );
+    const duenoId = seguimiento && seguimiento.autor_id;
+    if (!duenoId) return null;
+
+    const dueno = await db.queryOne(
+      'SELECT id, rol, usuario FROM usuarios WHERE id = $1',
+      [duenoId]
+    );
+    if (!dueno || !dueno.usuario) return null;
+
+    return {
+      id: String(dueno.id),
+      rol: ROLES_VALIDOS.includes(dueno.rol) ? dueno.rol : 'coordinador',
+      usuario: String(dueno.usuario),
+    };
+  } catch (error) {
+    console.warn('[Evidencias] No se pudo resolver el dueño del seguimiento:', error.message);
+    return null;
+  }
+};
+
+/**
  * ¿La evidencia viene del almacenamiento del dispositivo (galería) y no de
  * la cámara?
  *
@@ -92,6 +136,7 @@ const describirOrigen = (origen) => (esOrigenAlmacenamiento(origen) ? 'almacenam
 
 module.exports = {
   resolverDuenoDeFormulario,
+  resolverDuenoDeSeguimiento,
   esOrigenAlmacenamiento,
   describirOrigen,
 };

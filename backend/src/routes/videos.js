@@ -10,6 +10,7 @@ const db = require('../database');
 const storage = require('../storage');
 const {
   resolverDuenoDeFormulario,
+  resolverDuenoDeSeguimiento,
   esOrigenAlmacenamiento,
 } = require('../lib/duenoEvidencia');
 
@@ -34,7 +35,7 @@ router.post('/subir', authenticateToken, upload.single('archivo'), async (req, r
       return res.status(400).json({ estado: 'error', mensaje: 'Archivo de video requerido' });
     }
 
-    const { descripcion, latitud, longitud, beneficiario_cedula, beneficiario_nombre, tipo_formulario, formulario_id, evidencia_id, origen } = req.body;
+    const { descripcion, latitud, longitud, beneficiario_cedula, beneficiario_nombre, tipo_formulario, formulario_id, evidencia_id, origen, seguimiento_id } = req.body;
     const ext = path.extname(req.file.originalname) || '.mp4';
     const filename = `video_${Date.now()}_${Math.random().toString(36).slice(2, 6)}${ext}`;
 
@@ -46,8 +47,11 @@ router.post('/subir', authenticateToken, upload.single('archivo'), async (req, r
     // ─── Dueño efectivo del formulario (ver lib/duenoEvidencia.js) ───
     // El archivo se guarda en el árbol del DUEÑO del formulario y a su
     // nombre, no en el de quien lo sube: así el técnico de la visita ve su
-    // evidencia y nada queda huérfano en la carpeta del admin.
-    const duenoFormulario = await resolverDuenoDeFormulario(formulario_id);
+    // evidencia y nada queda huérfano en la carpeta del admin. Para
+    // seguimientos se usa el AUTOR (coordinador/interventor).
+    const duenoFormulario =
+      (await resolverDuenoDeFormulario(formulario_id)) ||
+      (await resolverDuenoDeSeguimiento(seguimiento_id));
     const propietarioId = duenoFormulario?.id || req.user.id;
     const userRol = duenoFormulario?.rol || req.user?.rol || 'otros';
     const userUsuario =
@@ -164,6 +168,9 @@ router.post('/subir', authenticateToken, upload.single('archivo'), async (req, r
       // Ver nota en photos.js: la evidencia suele subirse antes que el
       // formulario, así que el vínculo también se guarda en metadata.
       formulario_id: formulario_id || null,
+      // Ver nota en photos.js: el seguimiento va aparte porque es otra tabla
+      // y su evidencia no debe mezclarse con la de la visita del técnico.
+      seguimiento_id: seguimiento_id || null,
       // 'camara' (geotag) o 'almacenamiento' (sin ubicación).
       origen: sinMetadatos ? 'almacenamiento' : 'camara',
       subido_por: subidoPorOtro ? req.user.id : null,

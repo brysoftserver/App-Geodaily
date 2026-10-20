@@ -2,6 +2,7 @@ import { describe, expect, it } from '@jest/globals';
 
 import {
   puedeEditarRespuestasFormulario,
+  puedeElegirOrigenEvidencia,
   puedeGestionarEvidenciasFormulario,
   resolverDuenoFormulario,
 } from '../permisosFormulario';
@@ -147,5 +148,25 @@ describe('puedeGestionarEvidenciasFormulario', () => {
         puedeGestionarEvidenciasFormulario({ rol, usuarioId: 'int-009', duenoFormulario: 'int-009' })
       ).toBe(false);
     }
+  });
+});
+
+/**
+ * Regla del negocio: solo el admin puede adjuntar evidencia desde el
+ * almacenamiento del teléfono. El resto de roles debe tomarla con la cámara
+ * para que quede con su ubicación real.
+ */
+describe('puedeElegirOrigenEvidencia', () => {
+  it('solo el admin puede elegir entre cámara y almacenamiento', () => {
+    expect(puedeElegirOrigenEvidencia('admin')).toBe(true);
+    for (const rol of ['tecnico', 'coordinador', 'interventor', 'gerente', 'supervisor', 'otros']) {
+      expect(puedeElegirOrigenEvidencia(rol)).toBe(false);
+    }
+  });
+
+  it('sin rol o con rol nulo NO se habilita (cámara obligatoria por defecto)', () => {
+    expect(puedeElegirOrigenEvidencia(undefined)).toBe(false);
+    expect(puedeElegirOrigenEvidencia(null)).toBe(false);
+    expect(puedeElegirOrigenEvidencia('')).toBe(false);
   });
 });

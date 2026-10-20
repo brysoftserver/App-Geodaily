@@ -80,3 +80,21 @@ export function puedeGestionarEvidenciasFormulario({
 function esDueno(usuarioId?: string | null, duenoFormulario?: string | null): boolean {
   return !!usuarioId && !!duenoFormulario && usuarioId === duenoFormulario;
 }
+
+/**
+ * ¿Puede elegir entre tomar la foto/video con la cámara o adjuntarlo desde el
+ * almacenamiento del dispositivo?
+ *
+ * SOLO el admin. Regla del negocio: el admin corrige desde la oficina visitas
+ * ya cerradas y a veces recibe la evidencia por WhatsApp o la tiene en el
+ * carrete, así que necesita poder adjuntarla. Cualquier otro rol (técnico,
+ * coordinador, interventor, gerente) debe capturarla con la cámara en el
+ * momento: así la evidencia lleva su ubicación real y no se puede "fabricar"
+ * una visita adjuntando una foto vieja del almacenamiento.
+ *
+ * Estas evidencias del almacenamiento se suben sin GPS y sin marca de agua
+ * (ver `useCamera` con `origen: 'almacenamiento'` y `photos.js`).
+ */
+export function puedeElegirOrigenEvidencia(rol?: string | null): boolean {
+  return rol === 'admin';
+}

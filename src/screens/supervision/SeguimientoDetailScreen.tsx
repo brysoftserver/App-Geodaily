@@ -41,6 +41,7 @@ import { generarPDFSeguimiento, construirHtmlSeguimiento, DatosPDFSeguimiento } 
 import { abrirVentanaDeCarga, imprimirHtmlEnVentana } from '../../utils/printWeb';
 import { persistirEvidencia, eliminarArchivoLocal } from '../../services/mediaStorage.service';
 import { formatFecha, getLocalDateString } from '../../utils/formatters';
+import { puedeElegirOrigenEvidencia } from '../../utils/permisosFormulario';
 import { useAuth } from '../../store/AuthContext';
 import { useSync } from '../../store/SyncContext';
 import MapViewOffline from '../../components/MapViewOffline';
@@ -80,8 +81,13 @@ LocaleConfig.defaultLocale = 'es';
 const SeguimientoDetailScreen: React.FC<SeguimientoDetailScreenProps> = ({ route }) => {
   const { seguimientoId } = route.params;
   const insets = useSafeAreaInsets();
-  const { puedeEditarSeguimiento } = useAuth();
+  const { puedeEditarSeguimiento, user } = useAuth();
   const { syncNow } = useSync();
+
+  // Solo el admin (oficina) puede adjuntar evidencia desde el carrete. El
+  // coordinador y el interventor deben capturarla con la cámara para que
+  // quede registrada la ubicación real de la visita.
+  const puedeElegirAlmacenamiento = puedeElegirOrigenEvidencia(user?.rol);
 
   const [seguimiento, setSeguimiento] = useState<SeguimientoLocal | null>(null);
   const [documentos, setDocumentos] = useState<DocumentoDeFormulario[]>([]);
@@ -375,32 +381,121 @@ const SeguimientoDetailScreen: React.FC<SeguimientoDetailScreenProps> = ({ route
     [aplicarCambio]
   );
 
-  const agregarFoto = useCallback(async () => {
-    if (!seguimiento || capturandoEvidencia) return;
-    setCapturandoEvidencia(true);
-    try {
-      const permiso = await ImagePicker.requestCameraPermissionsAsync();
-      if (!permiso.granted) {
-        Alert.alert('Permiso de cámara', 'Se necesita el permiso de cámara para agregar fotos.');
+  /**
+   * Toma la evidencia con la cámara (comportamiento histórico). Es la única
+   * ruta para quien NO es admin: así la foto/video queda con su ubicación.
+   */
+  const capturarConCamara = useCallback(
+    async (tipo: 'foto' | 'video') => {
+      if (!seguimiento || capturandoEvidencia) return;
+      setCapturandoEvidencia(true);
+      try {
+        const permiso = await ImagePicker.requestCameraPermissionsAsync();
+        if (!permiso.granted) {
+          Alert.alert(
+            'Permiso de cámara',
+            tipo === 'foto'
+              ? 'Se necesita el permiso de cámara para agregar fotos.'
+              : 'Se necesita el permiso de cámara para grabar video.'
+          );
+          return;
+        }
+        const resultado = await ImagePicker.launchCameraAsync(
+          tipo === 'foto'
+            ? { quality: 0.7 }
+            : { mediaTypes: ImagePicker.MediaTypeOptions.Videos, videoMaxDuration: 60 }
+        );
+        if (resultado.canceled || !resultado.assets?.[0]) return;
+        const id = `${tipo}_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+        const uri = await persistirEvidencia(resultado.assets[0].uri, id, tipo === 'video');
+        // Sin campos de servidor a propósito: el PATCH no puede subir el
+        // archivo a MinIO, solo guardaría la ruta local del teléfono (inútil
+        // en los demás dispositivos). Se deja el seguimiento pendiente y se
+        // dispara el sincronizador, que sube la evidencia y obtiene su
+        // archivo_id.
+        const nuevas = tipo === 'foto'
+          ? { fotos: [...seguimiento.fotos, { id, uri, origen: 'camara' as const }] }
+          : { videos: [...seguimiento.videos, { id, uri, origen: 'camara' as const }] };
+        await aplicarCambio(nuevas, {});
+        syncNow().catch(() => { /* el ciclo de sync lo reintenta */ });
+      } catch (error) {
+        Alert.alert('Error', error instanceof Error ? error.message : 'No se pudo agregar la evidencia.');
+      } finally {
+        setCapturandoEvidencia(false);
+      }
+    },
+    [seguimiento, capturandoEvidencia, aplicarCambio, syncNow]
+  );
+
+  /**
+   * Adjunta la evidencia desde el almacenamiento del dispositivo (SOLO admin).
+   *
+   * Se guarda con `origen: 'almacenamiento'`, que el sincronizador envía al
+   * servidor para que el archivo se suba sin coordenadas ni marca de agua: la
+   * foto ya existía antes de la visita, así que sus datos de captura no
+   * corresponden a esta evidencia.
+   */
+  const agregarDesdeAlmacenamiento = useCallback(
+    async (tipo: 'foto' | 'video') => {
+      if (!seguimiento || capturandoEvidencia) return;
+      if (!puedeElegirAlmacenamiento) {
+        Alert.alert(
+          'Solo el administrador',
+          'Toma la foto o el video con la cámara para que quede registrada su ubicación.'
+        );
         return;
       }
-      const resultado = await ImagePicker.launchCameraAsync({ quality: 0.7 });
-      if (resultado.canceled || !resultado.assets?.[0]) return;
-      const id = `foto_${Date.now()}`;
-      const uri = await persistirEvidencia(resultado.assets[0].uri, id, false);
-      const nuevas = [...seguimiento.fotos, { id, uri }];
-      // Sin campos de servidor a propósito: el PATCH no puede subir el
-      // archivo a MinIO, solo guardaría la ruta local del teléfono (inútil en
-      // los demás dispositivos). Se deja el seguimiento pendiente y se dispara
-      // el sincronizador, que sube la evidencia y obtiene su archivo_id.
-      await aplicarCambio({ fotos: nuevas }, {});
-      syncNow().catch(() => { /* el ciclo de sync lo reintenta */ });
-    } catch (error) {
-      Alert.alert('Error', error instanceof Error ? error.message : 'No se pudo agregar la foto.');
-    } finally {
-      setCapturandoEvidencia(false);
+      setCapturandoEvidencia(true);
+      try {
+        const permiso = await ImagePicker.requestMediaLibraryPermissionsAsync();
+        if (!permiso.granted) {
+          Alert.alert(
+            'Permiso de almacenamiento',
+            'Se necesita acceso a tus archivos para adjuntar la evidencia.'
+          );
+          return;
+        }
+        const resultado = await ImagePicker.launchImageLibraryAsync(
+          tipo === 'foto'
+            ? { mediaTypes: ImagePicker.MediaTypeOptions.Images, quality: 0.7 }
+            : { mediaTypes: ImagePicker.MediaTypeOptions.Videos, videoMaxDuration: 60 }
+        );
+        if (resultado.canceled || !resultado.assets?.[0]) return;
+        const id = `${tipo}_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+        const uri = await persistirEvidencia(resultado.assets[0].uri, id, tipo === 'video');
+        const nuevas = tipo === 'foto'
+          ? { fotos: [...seguimiento.fotos, { id, uri, origen: 'almacenamiento' as const }] }
+          : { videos: [...seguimiento.videos, { id, uri, origen: 'almacenamiento' as const }] };
+        await aplicarCambio(nuevas, {});
+        syncNow().catch(() => { /* el ciclo de sync lo reintenta */ });
+      } catch (error) {
+        Alert.alert('Error', error instanceof Error ? error.message : 'No se pudo adjuntar la evidencia.');
+      } finally {
+        setCapturandoEvidencia(false);
+      }
+    },
+    [seguimiento, capturandoEvidencia, puedeElegirAlmacenamiento, aplicarCambio, syncNow]
+  );
+
+  const agregarFoto = useCallback(async () => {
+    if (!seguimiento || capturandoEvidencia) return;
+    // Solo el admin puede adjuntar desde el carrete (ver
+    // `puedeElegirOrigenEvidencia`): el coordinador/interventor debe tomar la
+    // foto en el momento para que quede con su ubicación real.
+    if (!puedeElegirAlmacenamiento) {
+      await capturarConCamara('foto');
+      return;
     }
-  }, [seguimiento, capturandoEvidencia, aplicarCambio, syncNow]);
+    Alert.alert(
+      'Agregar foto',
+      'Elige de dónde quieres obtener la foto para este seguimiento.',
+      [
+        { text: 'Cancelar', style: 'cancel' },
+        { text: '📷 Cámara', onPress: () => void capturarConCamara('foto') },
+        { text: '🖼️ Almacenamiento', onPress: () => void agregarDesdeAlmacenamiento('foto') },
+      ]
+    );
+  }, [seguimiento, capturandoEvidencia, puedeElegirAlmacenamiento, capturarConCamara, agregarDesdeAlmacenamiento]);
 
   const quitarFoto = useCallback(
     (foto: FotoSeguimientoLocal) => {
@@ -423,30 +518,21 @@ const SeguimientoDetailScreen: React.FC<SeguimientoDetailScreenProps> = ({ route
 
   const agregarVideo = useCallback(async () => {
     if (!seguimiento || capturandoEvidencia) return;
-    setCapturandoEvidencia(true);
-    try {
-      const permiso = await ImagePicker.requestCameraPermissionsAsync();
-      if (!permiso.granted) {
-        Alert.alert('Permiso de cámara', 'Se necesita el permiso de cámara para grabar video.');
-        return;
-      }
-      const resultado = await ImagePicker.launchCameraAsync({ mediaTypes: ImagePicker.MediaTypeOptions.Videos, videoMaxDuration: 60 });
-      if (resultado.canceled || !resultado.assets?.[0]) return;
-      const id = `video_${Date.now()}`;
-      const uri = await persistirEvidencia(resultado.assets[0].uri, id, true);
-      const nuevos = [...seguimiento.videos, { id, uri }];
-      // Igual que en agregarFoto: el archivo lo sube el sincronizador (es el
-      // único que obtiene el archivo_id de MinIO). Si se enviara aquí, el
-      // servidor guardaría solo la ruta local del teléfono y los demás
-      // dispositivos verían el video roto o ausente.
-      await aplicarCambio({ videos: nuevos }, {});
-      syncNow().catch(() => { /* el ciclo de sync lo reintenta */ });
-    } catch (error) {
-      Alert.alert('Error', error instanceof Error ? error.message : 'No se pudo grabar el video.');
-    } finally {
-      setCapturandoEvidencia(false);
+    // Ver nota en agregarFoto: el selector de origen es exclusivo del admin.
+    if (!puedeElegirAlmacenamiento) {
+      await capturarConCamara('video');
+      return;
     }
-  }, [seguimiento, capturandoEvidencia, aplicarCambio, syncNow]);
+    Alert.alert(
+      'Agregar video',
+      'Elige de dónde quieres obtener el video para este seguimiento.',
+      [
+        { text: 'Cancelar', style: 'cancel' },
+        { text: '🎥 Cámara', onPress: () => void capturarConCamara('video') },
+        { text: '🖼️ Almacenamiento', onPress: () => void agregarDesdeAlmacenamiento('video') },
+      ]
+    );
+  }, [seguimiento, capturandoEvidencia, puedeElegirAlmacenamiento, capturarConCamara, agregarDesdeAlmacenamiento]);
 
   const quitarVideo = useCallback(
     (video: FotoSeguimientoLocal) => {

@@ -11,6 +11,7 @@ const storage = require('../storage');
 const { aplicarMarcaAgua, normalizarSinMarca } = require('../watermark');
 const {
   resolverDuenoDeFormulario,
+  resolverDuenoDeSeguimiento,
   esOrigenAlmacenamiento,
 } = require('../lib/duenoEvidencia');
 
@@ -35,7 +36,7 @@ router.post('/subir', authenticateToken, upload.single('archivo'), async (req, r
       return res.status(400).json({ estado: 'error', mensaje: 'Archivo requerido' });
     }
 
-    const { latitud, longitud, altitud, nombre, descripcion, beneficiario_cedula, beneficiario_nombre, timestamp_captura, tipo_formulario, formulario_id, evidencia_id, origen } = req.body;
+    const { latitud, longitud, altitud, nombre, descripcion, beneficiario_cedula, beneficiario_nombre, timestamp_captura, tipo_formulario, formulario_id, evidencia_id, origen, seguimiento_id } = req.body;
 
     // ─── Origen de la evidencia ───
     // 'almacenamiento' = la foto ya existía en el teléfono (galería) y el
@@ -52,7 +53,13 @@ router.post('/subir', authenticateToken, upload.single('archivo'), async (req, r
     // técnico no la vería (ver lib/duenoEvidencia.js). Si el formulario aún
     // no existe en el servidor se usa el usuario autenticado (comportamiento
     // anterior) y la evidencia se re-vincula al guardar el formulario.
-    const duenoFormulario = await resolverDuenoDeFormulario(formulario_id);
+    //
+    // Seguimientos de Coordinación/Interventoría: no tienen dueño-técnico,
+    // sino AUTOR (`autor_id`). Se resuelve igual para que el archivo quede
+    // en el árbol del coordinador/interventor y no en el del admin.
+    const duenoFormulario =
+      (await resolverDuenoDeFormulario(formulario_id)) ||
+      (await resolverDuenoDeSeguimiento(seguimiento_id));
     const propietarioId = duenoFormulario?.id || req.user.id;
     const userRol = duenoFormulario?.rol || req.user?.rol || 'otros';
     const userUsuario =
@@ -232,6 +239,10 @@ router.post('/subir', authenticateToken, upload.single('archivo'), async (req, r
       // ANTES de que el formulario exista en el servidor (flujo offline).
       // La columna formulario_id se rellena luego, al guardar el formulario.
       formulario_id: formulario_id || null,
+      // Seguimiento de Coordinación/Interventoría al que pertenece la foto (si
+      // aplica). La columna formulario_id no sirve para esto: el seguimiento
+      // es otra tabla y su evidencia no debe mezclarse con la de la visita.
+      seguimiento_id: seguimiento_id || null,
       // De dónde salió la foto: 'camara' (geotag + marca) o
       // 'almacenamiento' (limpia, sin ubicación). Queda en el registro para
       // poder auditar qué evidencias tienen datos de captura.
