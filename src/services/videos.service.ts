@@ -5,6 +5,7 @@
 
 import apiClient, { isOfflineError } from './api';
 import { API_CONFIG } from '../theme';
+import { recordSyncFailure } from './syncDiagnostics';
 
 /**
  * Subir un video al backend Express, que lo almacena en MinIO (carpeta videos/)
@@ -66,6 +67,8 @@ export const uploadVideo = async (
       return null;
     }
     console.error('[Videos] Error al subir:', error);
+    // Motivo visible en la UI (ver syncDiagnostics).
+    recordSyncFailure('video', error);
     return null;
   }
 };

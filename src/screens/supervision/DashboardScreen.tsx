@@ -16,7 +16,6 @@ import { Formulario } from '../../types';
 import { normalizarVereda } from '../../utils/corregimientos';
 import MetricCard from '../../components/MetricCard';
 import LoadingSpinner from '../../components/LoadingSpinner';
-import MapaVisitasPuertoRico from '../../components/dashboard/MapaVisitasPuertoRico';
 import EncuestaSocialResultados from '../../components/dashboard/EncuestaSocialResultados';
 import ActividadesRecientes from '../../components/dashboard/ActividadesRecientes';
 import BotonPdfDashboard from '../../components/dashboard/BotonPdfDashboard';
@@ -188,16 +187,7 @@ const DashboardScreen: React.FC<DashboardScreenProps> = ({ navigation }) => {
         </View>
       )}
 
-      {/* 1. Mapa interactivo */}
-      <MapaVisitasPuertoRico
-        formularios={formularios}
-        onVerDetalle={irADetalle}
-        isAdmin={isAdmin}
-        puedeEliminarFormulario={puedeEliminarFormulario}
-        onFormularioEliminado={() => loadDashboardData(true)}
-      />
-
-      {/* 2. Tarjetas de métricas */}
+      {/* 1. Tarjetas de métricas */}
       <View style={styles.metricsGrid}>
         <MetricCard
           titulo="Encuesta Social"
@@ -229,7 +219,7 @@ const DashboardScreen: React.FC<DashboardScreenProps> = ({ navigation }) => {
           titulo="Hectáreas medidas"
           valor={`${terreno.hectareas} ha`}
           color={COLORS.primary}
-          icono="📐"
+          icono="◈"
           subtitulo="Área medida con GPS"
         />
         <MetricCard
@@ -239,13 +229,15 @@ const DashboardScreen: React.FC<DashboardScreenProps> = ({ navigation }) => {
           icono="📍"
           subtitulo="Registros de terreno"
         />
-        <MetricCard
+        {/* OCULTO por ahora: el conteo de plantaciones se usará en formularios
+            futuros. Para reactivarlo, descomentar este bloque. */}
+        {/* <MetricCard
           titulo="Plantas sembradas"
           valor={terreno.plantas.toLocaleString()}
           color={COLORS.success}
           icono="🌱"
           subtitulo="Total en plantaciones"
-        />
+        /> */}
       </View>
 
       {/* 3. Resultados de la Encuesta Social AgroAmbiental (Formulario 1) */}

@@ -4,6 +4,7 @@
 
 import apiClient, { isOfflineError } from './api';
 import { API_CONFIG } from '../theme';
+import { recordSyncFailure } from './syncDiagnostics';
 
 /**
  * Subir una firma (base64) al servidor
@@ -31,6 +32,8 @@ export const subirFirma = async (
       return null;
     }
     console.error('[Firmas] Error:', error);
+    // Motivo visible en la UI (ver syncDiagnostics).
+    recordSyncFailure('firma', error);
     return null;
   }
 };

@@ -11,7 +11,7 @@ import PerfilTecnicosScreen from '../screens/gerente/PerfilTecnicosScreen';
 import ConsolidadoScreen from '../screens/gerente/ConsolidadoScreen';
 import CalendarioScreen from '../screens/CalendarioGlobalScreen';
 import ProyeccionScreen from '../screens/gerente/ProyeccionScreen';
-import CapacitacionScreen from '../screens/gerente/CapacitacionScreen';
+import CapacitacionScreen from '../screens/CapacitacionScreen';
 import MapaTecnicosScreen from '../screens/gerente/MapaTecnicosScreen';
 import MapaGeneralScreen from '../screens/MapaGeneralScreen';
 import BaseDatosBeneficiariosScreen from '../screens/supervision/BaseDatosBeneficiariosScreen';

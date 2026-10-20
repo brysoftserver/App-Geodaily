@@ -31,7 +31,7 @@ import ConsentimientoDatosScreen from '../screens/terreno/ConsentimientoDatosScr
 import EvaluacionEcaScreen from '../screens/terreno/EvaluacionEcaScreen';
 import CalendarioScreen from '../screens/CalendarioGlobalScreen';
 import MapaScreen from '../screens/terreno/MapaScreen';
-import CapacitacionScreen from '../screens/terreno/CapacitacionScreen';
+import CapacitacionScreen from '../screens/CapacitacionScreen';
 import { TipoFormulario, DatosBeneficiario, Formulario } from '../types';
 
 export type TerrenoStackParamList = {
@@ -89,8 +89,28 @@ export type TerrenoStackParamList = {
    * Mapa de trazado de polígonos. Recibe el beneficiario para poder nombrar
    * el KML exportado («Beneficiario - Medición» / «Beneficiario - Conteo»),
    * que antes salía siempre como `Medicion_<fecha>` y no se distinguía.
+   *
+   * También recibe vereda/corregimiento/formularioId para que la medición
+   * quede amarrada a la visita del beneficiario (antes solo las plantaciones
+   * guardaban esa atribución y en el mapa general los polígonos de medición
+   * aparecían sin dueño).
    */
-  TerrenoMapa: { beneficiarioNombre?: string; beneficiarioCedula?: string } | undefined;
+  TerrenoMapa:
+    | {
+        beneficiarioNombre?: string;
+        beneficiarioCedula?: string;
+        vereda?: string;
+        corregimiento?: string;
+        formularioId?: string;
+        visitaNumero?: number;
+        /**
+         * Modo consulta: el mapa solo muestra los polígonos ya recolectados.
+         * Se activa al abrirlo desde el menú del técnico (no desde un
+         * formulario), donde no debe poder trazar mediciones ni conteos.
+         */
+        soloLectura?: boolean;
+      }
+    | undefined;
   TerrenoCapacitacion: undefined;
 };
 

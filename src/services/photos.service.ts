@@ -4,6 +4,7 @@
 
 import apiClient, { isOfflineError } from './api';
 import { API_CONFIG } from '../theme';
+import { recordSyncFailure } from './syncDiagnostics';
 
 /**
  * Subir una foto georreferenciada al backend Express, que la almacena en MinIO
@@ -79,6 +80,9 @@ export const uploadPhoto = async (
       return null;
     }
     console.error('[Fotos] Error:', error);
+    // El motivo se reporta a la UI (ver syncDiagnostics): antes solo quedaba
+    // en la consola y el usuario veía un conteo genérico sin explicación.
+    recordSyncFailure('foto', error);
     return null;
   }
 };

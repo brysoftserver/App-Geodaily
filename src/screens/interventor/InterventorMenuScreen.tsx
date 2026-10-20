@@ -20,6 +20,7 @@ import { useAuth } from '../../store/AuthContext';
 import { useAvatar } from '../../hooks/useAvatar';
 import CambiarContrasenaModal from '../../components/CambiarContrasenaModal';
 import AjustesMenu from '../../components/AjustesMenu';
+import SincronizacionModal from '../../components/SincronizacionModal';
 import NotificacionBell from '../../components/NotificacionBell';
 import AvatarViewerModal from '../../components/AvatarViewerModal';
 
@@ -84,14 +85,17 @@ const MENU_ITEMS = [
     color: COLORS.roleInterventor,
     screen: 'BaseDatosBeneficiarios',
   },
-  {
-    id: 'plantaciones',
-    title: 'Áreas de Plantación',
-    subtitle: 'Áreas marcadas por técnico, vereda y beneficiario',
-    icon: '🌱',
-    color: COLORS.success,
-    screen: 'InterventorPlantacionesPorTecnico',
-  },
+  // OCULTO por ahora: el conteo de plantaciones se usará en formularios
+  // futuros. La pantalla y la ruta siguen existiendo; solo se esconde la
+  // entrada del menú. Para reactivarla, descomentar este bloque.
+  // {
+  //   id: 'plantaciones',
+  //   title: 'Áreas de Plantación',
+  //   subtitle: 'Áreas marcadas por técnico, vereda y beneficiario',
+  //   icon: '🌱',
+  //   color: COLORS.success,
+  //   screen: 'InterventorPlantacionesPorTecnico',
+  // },
   {
     id: 'anexos',
     title: 'Revisar Anexos',
@@ -107,6 +111,10 @@ const InterventorMenuScreen: React.FC<InterventorMenuScreenProps> = ({ navigatio
   const { avatarUri, cambiarAvatar, quitarAvatar, cambiando } = useAvatar();
   const [showPasswordModal, setShowPasswordModal] = useState(false);
   const [showAvatarViewer, setShowAvatarViewer] = useState(false);
+  // Acceso directo al estado de sincronización desde el menú principal —
+  // antes el interventor solo podía sincronizar entrando a Seguimiento,
+  // así que no encontraba el botón donde lo buscaba.
+  const [showSyncModal, setShowSyncModal] = useState(false);
   const insets = useSafeAreaInsets();
 
   return (
@@ -147,6 +155,7 @@ const InterventorMenuScreen: React.FC<InterventorMenuScreenProps> = ({ navigatio
           <NotificacionBell navigation={navigation} formularioDetailScreen="InterventorFormularioDetail" />
           <AjustesMenu
             opciones={[
+              { id: 'sincronizar', label: 'Sincronizar ahora', icon: '🔄', onPress: () => setShowSyncModal(true) },
               { id: 'contrasena', label: 'Cambiar Contraseña', icon: '🔑', onPress: () => setShowPasswordModal(true) },
               { id: 'cerrar', label: 'Cerrar Sesión', icon: '🚪', onPress: logout, destructivo: true },
             ]}
@@ -171,6 +180,7 @@ const InterventorMenuScreen: React.FC<InterventorMenuScreenProps> = ({ navigatio
         </View>
       </ScrollView>
       <CambiarContrasenaModal visible={showPasswordModal} onClose={() => setShowPasswordModal(false)} />
+      <SincronizacionModal visible={showSyncModal} onClose={() => setShowSyncModal(false)} />
       <AvatarViewerModal
         visible={showAvatarViewer}
         avatarUri={avatarUri}

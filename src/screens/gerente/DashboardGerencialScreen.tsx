@@ -177,7 +177,7 @@ const DashboardGerencialScreen: React.FC<DashboardGerencialProps> = ({ navigatio
         <MetricCard
           titulo="Hectáreas medidas"
           valor={`${terreno.hectareas} ha`}
-          icono="📐"
+          icono="◈"
           color={COLORS.primary}
           subtitulo="Área medida con GPS"
         />
@@ -188,13 +188,15 @@ const DashboardGerencialScreen: React.FC<DashboardGerencialProps> = ({ navigatio
           color={COLORS.info}
           subtitulo="Registros de terreno"
         />
-        <MetricCard
+        {/* OCULTO por ahora: el conteo de plantaciones se usará en formularios
+            futuros. Para reactivarlo, descomentar este bloque. */}
+        {/* <MetricCard
           titulo="Plantas sembradas"
           valor={terreno.plantas.toLocaleString()}
           icono="🌱"
           color={COLORS.success}
           subtitulo="Total en plantaciones"
-        />
+        /> */}
       </View>
 
       {/* Accesos rápidos */}

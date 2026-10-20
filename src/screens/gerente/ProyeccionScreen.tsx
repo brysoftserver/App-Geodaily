@@ -143,6 +143,10 @@ const ProyeccionScreen: React.FC<ProyeccionProps> = ({ navigation: _navigation }
   const totalMediciones = mediciones.length;
 
   // Plantas sembradas (suma de cantidad) y desglose por especie.
+  // OCULTO por ahora: el conteo de plantaciones se usará en formularios
+  // futuros. El cálculo se mantiene intacto; solo se silencia el aviso de
+  // "variable sin usar" mientras la UI está comentada.
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const { totalPlantas, plantasPorEspecie } = useMemo(() => {
     const porEspecie = new Map<string, number>();
     let total = 0;
@@ -247,7 +251,7 @@ const ProyeccionScreen: React.FC<ProyeccionProps> = ({ navigation: _navigation }
       <Text style={styles.sectionTitle}>Datos reales de terreno</Text>
       <View style={styles.estimationGrid}>
         <View style={styles.estCard}>
-          <Text style={styles.estIcon}>📐</Text>
+          <Text style={styles.estIcon}>◈</Text>
           <Text style={styles.estLabel}>Hectáreas medidas</Text>
           <Text style={[styles.estValor, { color: COLORS.primary }]}>{hectareasMedidas} ha</Text>
         </View>
@@ -256,11 +260,13 @@ const ProyeccionScreen: React.FC<ProyeccionProps> = ({ navigation: _navigation }
           <Text style={styles.estLabel}>Mediciones</Text>
           <Text style={[styles.estValor, { color: COLORS.primary }]}>{totalMediciones}</Text>
         </View>
-        <View style={styles.estCard}>
+        {/* OCULTO por ahora: el conteo de plantaciones se usará en formularios
+            futuros. Para reactivarlo, descomentar este bloque. */}
+        {/* <View style={styles.estCard}>
           <Text style={styles.estIcon}>🌱</Text>
           <Text style={styles.estLabel}>Plantas sembradas</Text>
           <Text style={[styles.estValor, { color: COLORS.success }]}>{totalPlantas.toLocaleString()}</Text>
-        </View>
+        </View> */}
         <View style={styles.estCard}>
           <Text style={styles.estIcon}>⚖️</Text>
           <Text style={styles.estLabel}>Diferencia vs registrado</Text>
@@ -274,8 +280,8 @@ const ProyeccionScreen: React.FC<ProyeccionProps> = ({ navigation: _navigation }
         declarada en las caracterizaciones ({areaHa} ha).
       </Text>
 
-      {/* Plantas por especie */}
-      {plantasPorEspecie.length > 0 && (
+      {/* Plantas por especie — OCULTO por ahora (ver nota arriba) */}
+      {/* {plantasPorEspecie.length > 0 && (
         <View style={styles.infoCard}>
           <Text style={styles.infoTitle}>Plantas sembradas por especie</Text>
           {plantasPorEspecie.map(({ especie, cantidad }) => (
@@ -289,7 +295,7 @@ const ProyeccionScreen: React.FC<ProyeccionProps> = ({ navigation: _navigation }
             <Text style={styles.infoValueTotal}>{totalPlantas.toLocaleString()}</Text>
           </View>
         </View>
-      )}
+      )} */}
 
       {/* Gráfico de proyección */}
       <View style={styles.chartCard}>

@@ -27,7 +27,8 @@ import { COLORS, FONTS, SPACING, BORDER_RADIUS, SHADOWS } from '../../theme';
 import { useAuth } from '../../store/AuthContext';
 import { useSync } from '../../store/SyncContext';
 import { useGPS } from '../../store/GPSContext';
-import MapViewOffline from '../../components/MapViewOffline';
+import MapViewOffline, { esCoordenadaValida } from '../../components/MapViewOffline';
+import type { MapBaseStyle } from '../../components/mapa/MapToolbar';
 import { calcularArea, exportarKML, importarKML } from '../../services/kml.service';
 import {
   savePlantacion,
@@ -63,11 +64,43 @@ const PUERTO_RICO_CENTRO: Coordenadas = { latitud: 1.914, longitud: -75.145 };
 type ModoMapa = 'medir' | 'contar';
 
 /**
+ * FEATURE FLAG — Conteo de plantaciones.
+ *
+ * El conteo de plantaciones (dibujar el área, elegir especie y guardar) se
+ * deja OCULTO por ahora: se usará en formularios futuros. Todo el código
+ * sigue intacto (estado, handlers, guardado, sincronización, polígonos
+ * guardados) y solo se esconde la interfaz. Para reactivarlo basta con
+ * poner esta constante en `true`.
+ */
+const MOSTRAR_CONTEO_PLANTACIONES = false;
+
+/**
  * Parámetros con los que se abre el mapa (ver `TerrenoStackParamList`).
  * El nombre del beneficiario llega desde el formulario de visita técnica
  * («Abrir mapa para trazar el área») para poder nombrar el KML exportado.
+ *
+ * Además del nombre se recibe la atribución completa (cédula, vereda,
+ * corregimiento) y el `formularioId` de la visita: antes el polígono se
+ * guardaba «suelto» y en el mapa general aparecía sin dueño, mientras que
+ * las plantaciones sí quedaban amarradas al beneficiario.
  */
-type MapaRouteParams = { beneficiarioNombre?: string; beneficiarioCedula?: string } | undefined;
+type MapaRouteParams =
+  | {
+      beneficiarioNombre?: string;
+      beneficiarioCedula?: string;
+      vereda?: string;
+      corregimiento?: string;
+      formularioId?: string;
+      visitaNumero?: number;
+      /**
+       * Modo consulta: el mapa solo sirve para VER los polígonos ya
+       * recolectados. No se pueden trazar mediciones ni conteos.
+       * Se activa cuando el técnico abre el mapa desde el menú general
+       * (no desde un formulario).
+       */
+      soloLectura?: boolean;
+    }
+  | undefined;
 
 /**
  * Sufijo automático que se agrega al final del nombre de cada KML para
@@ -83,9 +116,16 @@ const limpiarNombreKML = (texto: string): string => texto.replace(/\s+/g, ' ').t
 
 const MapaScreen: React.FC = () => {
   const insets = useSafeAreaInsets();
-  const { user } = useAuth();
+  const { user, isAdmin, isCoordinador, isInterventor, isGerente } = useAuth();
+  // Los roles superiores ven todas las mediciones (con su atribución); el
+  // técnico solo las suyas.
+  const canViewAll = isAdmin || isCoordinador || isInterventor || isGerente;
   const { syncNow } = useSync();
   const route = useRoute<RouteProp<{ TerrenoMapa: MapaRouteParams }, 'TerrenoMapa'>>();
+  // El mapa abierto desde el menú general es de solo lectura: el técnico
+  // consulta sus polígonos pero no puede trazar. El trazado solo se habilita
+  // cuando se entra desde un formulario (Visita Técnica 2).
+  const soloLectura = route.params?.soloLectura === true;
   const [modo, setModo] = useState<ModoMapa>('medir');
   const [ultimoPunto, setUltimoPunto] = useState<{ lat: number; lon: number } | null>(null);
   const [locating, setLocating] = useState(false);
@@ -247,6 +287,19 @@ const MapaScreen: React.FC = () => {
   const [accionNombre, setAccionNombre] = useState<'exportar' | 'guardar'>('exportar');
   /** Nombre del beneficiario recibido desde el formulario de visita técnica. */
   const beneficiarioNombreRuta = limpiarNombreKML(route.params?.beneficiarioNombre ?? '');
+  /**
+   * Atribución de la visita desde la que se abrió el mapa. Se guarda junto a
+   * cada medición para que el polígono quede amarrado al beneficiario y los
+   * roles superiores puedan ver de quién es en el mapa general.
+   */
+  const atribucionVisita = useRef({
+    cedula: route.params?.beneficiarioCedula || null,
+    nombre: route.params?.beneficiarioNombre || null,
+    vereda: route.params?.vereda || null,
+    corregimiento: route.params?.corregimiento || null,
+    formularioId: route.params?.formularioId || null,
+    visitaNumero: route.params?.visitaNumero ?? null,
+  });
 
   // --- Historial de mediciones (áreas/distancias guardadas) ---
   const [mostrarHistorialMediciones, setMostrarHistorialMediciones] = useState(false);
@@ -266,8 +319,8 @@ const MapaScreen: React.FC = () => {
    *  el panel de conteo está creando una nueva. */
   const [plantacionEditandoId, setPlantacionEditandoId] = useState<string | null>(null);
 
-  // --- Tipo de mapa: relieve (CartoDB) o satélite ---
-  const [tipoMapa, setTipoMapa] = useState<'relieve' | 'satelite'>('relieve');
+  // --- Tipo de mapa: Terreno/Calles (Esri Topo), Satélite HD o Satélite Relieve (Sentinel-2 2025) ---
+  const [tipoMapa, setTipoMapa] = useState<MapBaseStyle>('terreno');
 
   // --- Descarga de mapa offline (solo disponible con dev client / build nativo) ---
   const [descargandoMapa, setDescargandoMapa] = useState(false);
@@ -472,11 +525,19 @@ const MapaScreen: React.FC = () => {
             // (ya eliminados). Si viene un valor inválido, caemos a 'medir'
             // para no dejar la pantalla en un modo inexistente.
             if (estado.modo === 'medir' || estado.modo === 'contar') {
-              setModo(estado.modo);
+              // Con el conteo oculto, un estado guardado en 'contar' dejaría
+              // la pantalla en un modo sin interfaz: caemos a 'medir'.
+              setModo(
+                estado.modo === 'contar' && !MOSTRAR_CONTEO_PLANTACIONES
+                  ? 'medir'
+                  : estado.modo
+              );
             } else if (estado.modo) {
               setModo('medir');
             }
-            if (estado.tipoMapa) setTipoMapa(estado.tipoMapa);
+            if (estado.tipoMapa === 'terreno' || estado.tipoMapa === 'satelite' || estado.tipoMapa === 'satelite-reciente') {
+              setTipoMapa(estado.tipoMapa);
+            }
             if (estado.mapCenter) setMapCenter(estado.mapCenter);
           }
         } catch (e) {
@@ -582,6 +643,18 @@ const MapaScreen: React.FC = () => {
   // Manejar tap en el mapa
   const handleMapPress = useCallback(
     (latitud: number, longitud: number) => {
+      // En modo consulta el mapa no captura toques para trazar.
+      if (soloLectura) return;
+      // Un toque fuera de Colombia (p. ej. el mapa quedó en otro continente
+      // por un encuadre corrupto) NO debe crear un vértice: en la base real
+      // hay 9 mediciones con puntos en Madrid que rompían el mapa general.
+      if (!esCoordenadaValida(latitud, longitud)) {
+        Alert.alert(
+          '📍 Fuera de la zona',
+          'Ese punto está fuera de Colombia. Centra el mapa en tu ubicación (📍) y vuelve a tocar.'
+        );
+        return;
+      }
       setUltimoPunto({ lat: latitud, lon: longitud });
 
       if (modo === 'medir') {
@@ -599,7 +672,7 @@ const MapaScreen: React.FC = () => {
         ]);
       }
     },
-    [modo]
+    [modo, soloLectura]
   );
 
   // Mover un punto ya puesto (arrastrar para corregir un error sin borrar
@@ -676,10 +749,16 @@ const MapaScreen: React.FC = () => {
       saveMedicion({
         id: idMedicion,
         usuario_id: user?.id,
+        formulario_id: atribucionVisita.current.formularioId || undefined,
         area_hectareas: 0,
         area_metros2: 0,
         perimetro_metros: d,
         puntos: poligono.map((p) => ({ latitud: p.latitud, longitud: p.longitud })),
+        beneficiario_cedula: atribucionVisita.current.cedula,
+        beneficiario_nombre: atribucionVisita.current.nombre,
+        vereda: atribucionVisita.current.vereda,
+        corregimiento: atribucionVisita.current.corregimiento,
+        usuario_nombre: user?.nombre || null,
         sincronizado: false,
       })
         .then(() => {
@@ -689,7 +768,11 @@ const MapaScreen: React.FC = () => {
         .catch((e) => {
           console.warn('[Mapa] No se pudo guardar la distancia:', e);
           setMedicionPersistida(false);
-          Alert.alert('Medición no guardada', 'La distancia se calculó, pero no quedó guardada en el dispositivo. Inténtalo de nuevo.');
+          const detalle = e instanceof Error ? e.message : String(e);
+          Alert.alert(
+            'Medición no guardada',
+            `La distancia se calculó, pero no quedó guardada en el dispositivo. Inténtalo de nuevo.\n\nDetalle: ${detalle}`
+          );
         });
     } else {
       // Área (3+ puntos)
@@ -700,10 +783,16 @@ const MapaScreen: React.FC = () => {
       saveMedicion({
         id: idMedicion,
         usuario_id: user?.id,
+        formulario_id: atribucionVisita.current.formularioId || undefined,
         area_hectareas: area.areaHectareas,
         area_metros2: area.areaMetros2,
         perimetro_metros: area.perimetroMetros,
         puntos: poligono.map(p => ({ latitud: p.latitud, longitud: p.longitud })),
+        beneficiario_cedula: atribucionVisita.current.cedula,
+        beneficiario_nombre: atribucionVisita.current.nombre,
+        vereda: atribucionVisita.current.vereda,
+        corregimiento: atribucionVisita.current.corregimiento,
+        usuario_nombre: user?.nombre || null,
         sincronizado: false,
       }).then(() => {
         // Intentar sincronizar al servidor si hay conexión
@@ -712,12 +801,16 @@ const MapaScreen: React.FC = () => {
       }).catch(err => {
         console.warn('[Mapa] Error al persistir medición:', err);
         setMedicionPersistida(false);
-        Alert.alert('Medición no guardada', 'El área se calculó, pero no quedó guardada en el dispositivo. Inténtalo de nuevo.');
+        const detalle = err instanceof Error ? err.message : String(err);
+        Alert.alert(
+          'Medición no guardada',
+          `El área se calculó, pero no quedó guardada en el dispositivo. Inténtalo de nuevo.\n\nDetalle: ${detalle}`
+        );
       });
     }
     setMostrarResultado(true);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [poligono, calcularDistanciaHaversine, user?.id]);
+  }, [poligono, calcularDistanciaHaversine, user?.id, user?.nombre]);
 
   const limpiarPoligono = useCallback(() => {
     setPoligono([]);
@@ -924,6 +1017,29 @@ const MapaScreen: React.FC = () => {
     plantacionBeneficiarioNombre,
   ]);
 
+  /**
+   * Botón único «Calcular y guardar».
+   *
+   * Antes el técnico tenía que pulsar «Calcular» (que ya persistía la fila en
+   * SQLite) y luego buscar el botón «Guardar» dentro del recuadro de
+   * resultado para ponerle nombre. Muchos no lo encontraban y las mediciones
+   * quedaban como «Medición sin nombre». Ahora un solo botón calcula, guarda
+   * y abre el modal de nombre.
+   */
+  const calcularYGuardar = useCallback(() => {
+    if (poligono.length < 2) {
+      Alert.alert('Insuficiente', 'Se necesitan al menos 2 puntos para medir una distancia.');
+      return;
+    }
+    calcularMedicion();
+    // El modal de nombre se abre en el siguiente tick, cuando
+    // `medicionPersistida`/`idMedicionActual` ya fueron actualizados por
+    // `calcularMedicion` (ambos son estado de React).
+    setTimeout(() => {
+      abrirModalNombreMedicion('guardar');
+    }, 0);
+  }, [poligono.length, calcularMedicion, abrirModalNombreMedicion]);
+
   /** Exporta el polígono actual a .kml (no toca la medición guardada). */
   const handleExportarKML = useCallback(async () => {
     const puntos = modo === 'contar' ? plantacionPoligono : poligono;
@@ -1041,11 +1157,15 @@ const MapaScreen: React.FC = () => {
     setMostrarHistorialMediciones(true);
     try {
       const todas = await getMediciones();
-      setMedicionesGuardadas(todas.filter((m) => !user?.id || m.usuario_id === user.id));
+      // El técnico solo ve sus propias mediciones; los roles superiores ven
+      // todas (con la atribución de beneficiario/vereda de cada una).
+      setMedicionesGuardadas(
+        canViewAll ? todas : todas.filter((m) => !user?.id || m.usuario_id === user.id)
+      );
     } finally {
       setCargandoHistorialMediciones(false);
     }
-  }, [user?.id]);
+  }, [user?.id, canViewAll]);
 
   // "Revive" una medición guardada: la carga en el polígono editable para
   // poder seguir moviendo/agregando/quitando puntos y recalcular. Antes solo
@@ -1115,6 +1235,7 @@ const MapaScreen: React.FC = () => {
   // (especie, cantidad, polígono y beneficiario) para poder modificarla y
   // volver a guardarla. Antes solo se podía centrar el mapa en ella.
   const revivirPlantacion = useCallback((pl: Plantacion) => {
+    if (!MOSTRAR_CONTEO_PLANTACIONES) return;
     setModo('contar');
     setPlantaSeleccionada(pl.especie);
     setCantidadInput(String(pl.cantidad ?? ''));
@@ -1159,6 +1280,8 @@ const MapaScreen: React.FC = () => {
   // Cambiar modo
   const cambiarModo = useCallback(
     (nuevoModo: ModoMapa) => {
+      // Conteo oculto (feature flag): no se puede entrar a ese modo.
+      if (nuevoModo === 'contar' && !MOSTRAR_CONTEO_PLANTACIONES) return;
       setModo(nuevoModo);
       if (nuevoModo !== 'medir') {
         setMostrarResultado(false);
@@ -1195,21 +1318,21 @@ const MapaScreen: React.FC = () => {
               longitud: p.longitud,
               title: `Punto ${p.orden} (mantén presionado para moverlo)`,
               color: modo === 'medir' ? COLORS.secondary : COLORS.primary,
-              draggable: modo === 'medir',
+              draggable: modo === 'medir' && !soloLectura,
             })),
             // Puntos del polígono de plantación (conteo) — igual, arrastrables
-            ...plantacionPoligono.map((p) => ({
+            ...(MOSTRAR_CONTEO_PLANTACIONES ? plantacionPoligono.map((p) => ({
               id: `pp_${p.orden}`,
               latitud: p.latitud,
               longitud: p.longitud,
               title: `Área punto ${p.orden} (mantén presionado para moverlo)`,
               color: '#FF6D00',
-              draggable: modo === 'contar',
-            })),
+              draggable: modo === 'contar' && !soloLectura,
+            })) : []),
             // Centroide del polígono de plantación (icono difuminado) — solo
             // aparece cuando el técnico ya eligió qué está plantando (panel
             // de especie abierto), no automáticamente al llegar a 3 puntos.
-            ...(mostrarPanelConteo && getPlantacionCentroide() ? [{
+            ...(MOSTRAR_CONTEO_PLANTACIONES && mostrarPanelConteo && getPlantacionCentroide() ? [{
               // El id incluye la especie: MLAnnotation (anotación nativa)
               // no refresca el ícono si solo cambia el contenido hijo —
               // necesita un id distinto para remontarse y capturar el
@@ -1220,19 +1343,19 @@ const MapaScreen: React.FC = () => {
               title: 'Centro del área',
               icon: getIconoEspecie(plantaSeleccionada),
             }] : []),
-            // Plantaciones guardadas
-            ...plantaciones.map((pl) => ({
+            // Plantaciones guardadas (ocultas junto con el conteo)
+            ...(MOSTRAR_CONTEO_PLANTACIONES ? plantaciones.map((pl) => ({
               id: pl.id,
               latitud: pl.latitud,
               longitud: pl.longitud,
               title: `${pl.especie}: ${pl.cantidad} plantas`,
               icon: pl.icono || getIconoEspecie(pl.especie),
-            })),
+            })) : []),
           ]}
           polyline={
             modo === 'medir' && poligono.length >= 2
               ? poligono.map(p => ({ latitud: p.latitud, longitud: p.longitud }))
-              : modo === 'contar' && !mostrarPanelConteo && plantacionPoligono.length >= 2
+              : MOSTRAR_CONTEO_PLANTACIONES && modo === 'contar' && !mostrarPanelConteo && plantacionPoligono.length >= 2
               ? plantacionPoligono.map(p => ({ latitud: p.latitud, longitud: p.longitud }))
               : undefined
           }
@@ -1320,7 +1443,7 @@ const MapaScreen: React.FC = () => {
                   properties: { especie: pl.especie },
                 };
               });
-            if (featuresGuardadas.length > 0) {
+            if (featuresGuardadas.length > 0 && MOSTRAR_CONTEO_PLANTACIONES) {
               layers.push({
                 id: 'plantaciones-guardadas',
                 features: featuresGuardadas,
@@ -1337,14 +1460,14 @@ const MapaScreen: React.FC = () => {
           showUserLocation={true}
           userLocation={userLocation}
           interactive={true}
-          onMapPress={handleMapPress}
-          onMarkerDragEnd={moverPuntoPoligono}
+          onMapPress={soloLectura ? undefined : handleMapPress}
+          onMarkerDragEnd={soloLectura ? undefined : moverPuntoPoligono}
           onMarkerPress={handleMarkerPress}
           foco={foco}
         />
 
         {/* Banner de medición revivida desde el historial (editable) */}
-        {medicionPreview && (
+        {medicionPreview && !soloLectura && (
           <View style={styles.previewBanner}>
             <Text style={styles.previewBannerText}>
               ✏️ Editando medición guardada — mueve, agrega o quita puntos
@@ -1355,10 +1478,19 @@ const MapaScreen: React.FC = () => {
           </View>
         )}
 
+        {/* Banner de modo consulta */}
+        {soloLectura && (
+          <View style={styles.readOnlyBanner} pointerEvents="none">
+            <Text style={styles.readOnlyBannerText}>
+              👁️ Modo consulta — solo lectura. Para trazar, abre el mapa desde el formulario.
+            </Text>
+          </View>
+        )}
+
         {/* Aviso inicial: cómo empezar a medir (sin puntos aún) */}
-        {modo === 'medir' && poligono.length === 0 && !mostrarResultado && (
+        {!soloLectura && modo === 'medir' && poligono.length === 0 && !mostrarResultado && (
           <View style={styles.startHintOverlay} pointerEvents="none">
-            <Text style={styles.startHintIcon}>📐</Text>
+            <Text style={styles.startHintIcon}>◈</Text>
             <Text style={styles.startHintTitle}>Toca el mapa para iniciar la medición</Text>
             <Text style={styles.startHintText}>
               2 puntos = distancia · 3+ puntos = área
@@ -1367,7 +1499,7 @@ const MapaScreen: React.FC = () => {
         )}
 
         {/* Aviso inicial: cómo empezar a contar (sin puntos aún) */}
-        {modo === 'contar' && plantacionPoligono.length === 0 && !mostrarPanelConteo && (
+        {MOSTRAR_CONTEO_PLANTACIONES && !soloLectura && modo === 'contar' && plantacionPoligono.length === 0 && !mostrarPanelConteo && (
           <View style={styles.startHintOverlay} pointerEvents="none">
             <Text style={styles.startHintIcon}>🌱</Text>
             <Text style={styles.startHintTitle}>Toca el mapa para iniciar el conteo</Text>
@@ -1381,7 +1513,11 @@ const MapaScreen: React.FC = () => {
         {ultimoPunto && (
           <View style={styles.coordsOverlay}>
             <Text style={styles.coordsLabel}>
-              {modo === 'medir' ? `Punto #${poligono.length}` : modo === 'contar' ? `Área punto #${plantacionPoligono.length}` : 'Coordenadas'}
+              {modo === 'medir'
+                ? `Punto #${poligono.length}`
+                : MOSTRAR_CONTEO_PLANTACIONES && modo === 'contar'
+                ? `Área punto #${plantacionPoligono.length}`
+                : 'Coordenadas'}
             </Text>
             <Text style={styles.coordsValue}>
               Lat: {ultimoPunto.lat.toFixed(6)}
@@ -1398,7 +1534,7 @@ const MapaScreen: React.FC = () => {
                   : 'Toca el mapa para agregar puntos al polígono'}
               </Text>
             )}
-            {modo === 'contar' && plantacionPoligono.length > 0 && (
+            {MOSTRAR_CONTEO_PLANTACIONES && modo === 'contar' && plantacionPoligono.length > 0 && (
               <Text style={styles.coordsHint}>
                 {plantacionPoligono.length < 3
                   ? `Toca el mapa para definir el área (${plantacionPoligono.length}/3 puntos)`
@@ -1411,7 +1547,7 @@ const MapaScreen: React.FC = () => {
         {/* Resultado de medición */}
         {mostrarResultado && resultadoArea && (
           <View style={styles.resultOverlay}>
-            <Text style={styles.resultTitle}>📐 Resultado</Text>
+            <Text style={styles.resultTitle}>◈ Resultado</Text>
             <View style={styles.resultRow}>
               <Text style={styles.resultLabel}>Área:</Text>
               <Text style={styles.resultValue}>
@@ -1441,7 +1577,7 @@ const MapaScreen: React.FC = () => {
                 style={[styles.resultBtn, styles.resultBtnSecondary]}
                 onPress={() => abrirModalNombreMedicion('guardar')}
               >
-                <Text style={styles.resultBtnTextSecondary}>Guardar</Text>
+                <Text style={styles.resultBtnTextSecondary}>💾 Guardar</Text>
               </TouchableOpacity>
             </View>
           </View>
@@ -1464,21 +1600,27 @@ const MapaScreen: React.FC = () => {
                 style={[styles.resultBtn, styles.resultBtnSecondary]}
                 onPress={() => abrirModalNombreMedicion('guardar')}
               >
-                <Text style={styles.resultBtnTextSecondary}>Guardar</Text>
+                <Text style={styles.resultBtnTextSecondary}>💾 Guardar</Text>
               </TouchableOpacity>
             </View>
           </View>
         )}
 
-        {/* Botón toggle tipo de mapa */}
+        {/* Botón toggle tipo de mapa — cicla Terreno/Calles → Satélite HD → Satélite Relieve */}
         <TouchableOpacity
           style={styles.mapTypeButton}
           onPress={() =>
-            setTipoMapa((prev) => (prev === 'relieve' ? 'satelite' : 'relieve'))
+            setTipoMapa((prev) =>
+              prev === 'terreno'
+                ? 'satelite'
+                : prev === 'satelite'
+                  ? 'satelite-reciente'
+                  : 'terreno'
+            )
           }
         >
           <Text style={styles.mapTypeButtonText}>
-            {tipoMapa === 'relieve' ? '🛰️' : '🗺️'}
+            {tipoMapa === 'terreno' ? '🛰️' : tipoMapa === 'satelite' ? '📅' : '⛰️'}
           </Text>
         </TouchableOpacity>
 
@@ -1495,7 +1637,7 @@ const MapaScreen: React.FC = () => {
         </TouchableOpacity>
 
         {/* Panel de finalización de área (modo conteo — polígono listo) */}
-        {modo === 'contar' && plantacionPoligono.length >= 3 && !mostrarPanelConteo && (
+        {MOSTRAR_CONTEO_PLANTACIONES && !soloLectura && modo === 'contar' && plantacionPoligono.length >= 3 && !mostrarPanelConteo && (
           <View style={styles.conteoPanelSimple}>
             <Text style={styles.conteoTitle}>🌱 Área de plantación</Text>
             <Text style={styles.conteoSubtitle}>
@@ -1513,7 +1655,7 @@ const MapaScreen: React.FC = () => {
         )}
 
         {/* Panel de conteo (selector de especie + cantidad) */}
-        {mostrarPanelConteo && ultimoPunto && (
+        {MOSTRAR_CONTEO_PLANTACIONES && !soloLectura && mostrarPanelConteo && ultimoPunto && (
           <View style={styles.conteoPanel}>
             <View style={styles.conteoHeader}>
               <View>
@@ -1643,7 +1785,8 @@ const MapaScreen: React.FC = () => {
         )}
       </View>
 
-      {/* Barra de herramientas inferior */}
+      {/* Barra de herramientas inferior — oculta en modo consulta */}
+      {!soloLectura && (
       <View style={styles.toolbar}>
         {modo === 'medir' && (
           <>
@@ -1685,9 +1828,9 @@ const MapaScreen: React.FC = () => {
                   </TouchableOpacity>
                   <TouchableOpacity
                     style={[styles.toolBtn, styles.toolBtnPrimary]}
-                    onPress={calcularMedicion}
+                    onPress={calcularYGuardar}
                   >
-                    <Text style={styles.toolBtnLabelPrimary}>Calcular</Text>
+                    <Text style={styles.toolBtnLabelPrimary}>💾 Calcular y guardar</Text>
                   </TouchableOpacity>
                   <TouchableOpacity style={styles.toolBtn} onPress={limpiarPoligono}>
                     <Text style={styles.toolBtnLabel}>✕ Limpiar</Text>
@@ -1697,7 +1840,7 @@ const MapaScreen: React.FC = () => {
               {poligono.length === 0 && (
                 <TouchableOpacity
                   style={[styles.toolBtn, styles.toolBtnPrimary]}
-                  onPress={() => Alert.alert('📐 Modo Medición', 'Toca el mapa para comenzar a medir. Con 2 puntos obtienes la distancia y con 3+ el área del polígono.')}
+                  onPress={() => Alert.alert('◈ Modo Medición', 'Toca el mapa para comenzar a medir. Con 2 puntos obtienes la distancia y con 3+ el área del polígono.')}
                 >
                   <Text style={styles.toolBtnLabelPrimary}>📍 Toca el mapa</Text>
                 </TouchableOpacity>
@@ -1706,7 +1849,7 @@ const MapaScreen: React.FC = () => {
           </>
         )}
 
-        {modo === 'contar' && (
+        {MOSTRAR_CONTEO_PLANTACIONES && modo === 'contar' && (
           <>
             <View style={styles.toolInfo}>
               <Text style={styles.toolInfoText} numberOfLines={1}>
@@ -1776,28 +1919,34 @@ const MapaScreen: React.FC = () => {
           </>
         )}
       </View>
+      )}
 
-      {/* Selector de modo (barra inferior) */}
+      {/* Selector de modo (barra inferior) — oculto en modo consulta */}
+      {!soloLectura && (
       <View style={[styles.modeSelector, { paddingBottom: insets.bottom + SPACING.xs }]}>
         <TouchableOpacity
           style={[styles.modeBtn, modo === 'medir' && styles.modeBtnActiveMedir]}
           onPress={() => cambiarModo('medir')}
         >
-          <Text style={styles.modeIcon}>📐</Text>
+          <Text style={styles.modeIcon}>◈</Text>
           <Text style={[styles.modeLabel, modo === 'medir' && styles.modeLabelActive]}>
             Medición
           </Text>
         </TouchableOpacity>
-        <TouchableOpacity
-          style={[styles.modeBtn, modo === 'contar' && styles.modeBtnActiveContar]}
-          onPress={() => cambiarModo('contar')}
-        >
-          <Text style={styles.modeIcon}>🌱</Text>
-          <Text style={[styles.modeLabel, modo === 'contar' && styles.modeLabelActive]}>
-            Conteo
-          </Text>
-        </TouchableOpacity>
+        {/* Conteo de plantaciones oculto por ahora (ver MOSTRAR_CONTEO_PLANTACIONES) */}
+        {MOSTRAR_CONTEO_PLANTACIONES && (
+          <TouchableOpacity
+            style={[styles.modeBtn, modo === 'contar' && styles.modeBtnActiveContar]}
+            onPress={() => cambiarModo('contar')}
+          >
+            <Text style={styles.modeIcon}>🌱</Text>
+            <Text style={[styles.modeLabel, modo === 'contar' && styles.modeLabelActive]}>
+              Conteo
+            </Text>
+          </TouchableOpacity>
+        )}
       </View>
+      )}
 
       {/* Modal KML — un solo <Modal> con dos pasos (menú / nombre).
           Antes eran dos <Modal> separados: al cerrar el del menú y abrir el
@@ -1833,7 +1982,9 @@ const MapaScreen: React.FC = () => {
                     maxLength={80}
                   />
                   {/* El origen se agrega solo, el técnico no lo puede borrar por error */}
-                  <Text style={styles.kmlSufijo} numberOfLines={1}>- {sufijoKML}</Text>
+                  <Text style={styles.kmlSufijo} numberOfLines={1}>
+                    - {MOSTRAR_CONTEO_PLANTACIONES ? sufijoKML : 'Medicion'}
+                  </Text>
                 </View>
                 <Text style={styles.kmlPreview} numberOfLines={2}>
                   {accionNombre === 'guardar'
@@ -1897,7 +2048,7 @@ const MapaScreen: React.FC = () => {
               <ActivityIndicator color={COLORS.primary} style={{ marginVertical: SPACING.lg }} />
             ) : medicionesGuardadas.length === 0 ? (
               <Text style={styles.emptyPacksText}>
-                Todavía no tienes mediciones guardadas. Marca un área o distancia y presiona &quot;Calcular&quot;.
+                Todavía no hay mediciones guardadas. Marca un área o distancia y presiona &quot;Calcular y guardar&quot;.
               </Text>
             ) : (
               <ScrollView style={styles.historialScroll}>
@@ -1916,9 +2067,23 @@ const MapaScreen: React.FC = () => {
                       </Text>
                       <Text style={styles.historialItemDetalle}>
                         {m.area_hectareas > 0
-                          ? `📐 ${m.area_hectareas} ha · ${(m.puntos || []).length} pts`
+                          ? `◈ ${m.area_hectareas} ha · ${(m.puntos || []).length} pts`
                           : `📏 ${(m.perimetro_metros || 0).toFixed(1)} m (distancia)`}
                       </Text>
+                      {/* Atribución: de qué beneficiario y vereda es el polígono.
+                          Antes el historial solo mostraba área y fecha, así que
+                          dos mediciones del mismo tamaño eran indistinguibles. */}
+                      {!!(m.beneficiario_nombre || m.beneficiario_cedula) && (
+                        <Text style={styles.historialItemAtribucion} numberOfLines={2}>
+                          👤 {m.beneficiario_nombre || 'Sin nombre'}
+                          {m.beneficiario_cedula ? ` · C.C. ${m.beneficiario_cedula}` : ''}
+                        </Text>
+                      )}
+                      {!!(m.vereda || m.corregimiento) && (
+                        <Text style={styles.historialItemAtribucion} numberOfLines={2}>
+                          📍 {[m.vereda, m.corregimiento].filter(Boolean).join(' — ')}
+                        </Text>
+                      )}
                     </View>
                     <View style={styles.historialItemAcciones}>
                       <TouchableOpacity onPress={() => verMedicionPreview(m)} style={styles.historialAccionBtn}>
@@ -1977,7 +2142,7 @@ const MapaScreen: React.FC = () => {
       </Modal>
 
       {/* Modal: Historial de Plantaciones */}
-      <Modal visible={mostrarHistorialPlantaciones} transparent animationType="fade">
+      <Modal visible={MOSTRAR_CONTEO_PLANTACIONES && mostrarHistorialPlantaciones} transparent animationType="fade">
         <View style={styles.modalOverlay}>
           <View style={[styles.modalContent, styles.modalContentHistorial]}>
             <Text style={styles.modalTitle}>📋 Historial de Áreas de Plantación</Text>
@@ -2030,7 +2195,7 @@ const MapaScreen: React.FC = () => {
 
       {/* Modal: Confirmar eliminación de plantación (Alert.alert no muestra
           botones en web, por eso usamos un modal propio). */}
-      <Modal visible={!!confirmarEliminarPlantacion} transparent animationType="fade">
+      <Modal visible={MOSTRAR_CONTEO_PLANTACIONES && !!confirmarEliminarPlantacion} transparent animationType="fade">
         <View style={styles.modalOverlay}>
           <View style={styles.modalContent}>
             <Text style={styles.modalTitle}>🗑️ Eliminar área de plantación</Text>
@@ -2055,7 +2220,7 @@ const MapaScreen: React.FC = () => {
       </Modal>
 
       {/* Modal: detalle de una plantación tocada en el mapa */}
-      <Modal visible={!!plantacionSeleccionada} transparent animationType="fade">
+      <Modal visible={MOSTRAR_CONTEO_PLANTACIONES && !!plantacionSeleccionada} transparent animationType="fade">
         <View style={styles.modalOverlay}>
           <View style={styles.modalContent}>
             <Text style={styles.modalTitle}>
@@ -2112,7 +2277,11 @@ const MapaScreen: React.FC = () => {
                   <View style={styles.packInfo}>
                     <Text style={styles.packName} numberOfLines={1}>{formatearZonaPack(pack)}</Text>
                     <Text style={styles.packMeta} numberOfLines={1}>
-                      {pack.metadata?.tipo === 'satelite' ? '🛰️ Satélite' : '🗺️ Relieve'} · Descargado: {formatearFechaPack(pack.metadata?.creado)}
+                      {pack.metadata?.tipo === 'satelite'
+                        ? '🛰️ Satélite HD'
+                        : pack.metadata?.tipo === 'satelite-reciente'
+                          ? '📅 Satélite Relieve'
+                          : '⛰️ Terreno/Calles'} · Descargado: {formatearFechaPack(pack.metadata?.creado)}
                     </Text>
                   </View>
                   <TouchableOpacity onPress={() => handleActualizarPaquete(pack)} style={styles.packActionBtn}>
@@ -2221,6 +2390,23 @@ const styles = StyleSheet.create({
     color: COLORS.textOnPrimary,
     fontWeight: FONTS.weights.bold,
     fontSize: FONTS.sizes.sm,
+  },
+  readOnlyBanner: {
+    position: 'absolute',
+    top: SPACING.sm,
+    left: SPACING.sm,
+    right: SPACING.sm,
+    backgroundColor: 'rgba(27, 94, 32, 0.92)',
+    paddingHorizontal: SPACING.md,
+    paddingVertical: SPACING.sm,
+    borderRadius: BORDER_RADIUS.md,
+    ...SHADOWS.sm,
+  },
+  readOnlyBannerText: {
+    color: COLORS.textOnPrimary,
+    fontWeight: FONTS.weights.semibold,
+    fontSize: FONTS.sizes.sm,
+    textAlign: 'center',
   },
   coordsLabel: {
     fontSize: FONTS.sizes.xs,
@@ -2804,6 +2990,11 @@ const styles = StyleSheet.create({
   historialItemDetalle: {
     fontSize: FONTS.sizes.xs,
     color: COLORS.textSecondary,
+    marginTop: 2,
+  },
+  historialItemAtribucion: {
+    fontSize: FONTS.sizes.xs,
+    color: COLORS.textLight,
     marginTop: 2,
   },
   historialItemAcciones: {

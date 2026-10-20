@@ -2,9 +2,8 @@
 // GEODAILY — Exportar cronograma de visitas planificadas a Excel
 // ============================================================
 // Genera un .xlsx real (vía SheetJS) con las visitas planificadas de una
-// sola persona (técnico, coordinador o interventor) y lo comparte con el
-// visor/apps del dispositivo — mismo patrón de escritura base64 +
-// expo-sharing que ya usa mediaPackage.service.ts para los .zip.
+// sola persona (técnico, coordinador o interventor) y lo guarda en el
+// dispositivo — ver `guardarXlsxEnDispositivo`.
 
 import { Alert, Platform } from 'react-native';
 import * as XLSX from 'xlsx';
@@ -29,6 +28,60 @@ const ETIQUETA_ESTADO: Record<string, string> = {
   realizada: 'Realizada',
   cancelada: 'Cancelada',
 };
+
+/**
+ * Guarda el libro .xlsx en el dispositivo.
+ *
+ * Antes se usaba `Sharing.shareAsync` (menú de compartir). En Android eso
+ * abría el selector de apps y, al elegir una app de Excel, esta intentaba
+ * ABRIR el archivo en vez de descargarlo — el usuario veía "se abre otra
+ * app" y ningún archivo guardado. Ahora:
+ *  - Android: selector nativo de carpetas (Storage Access Framework) para
+ *    elegir dónde guardar el archivo — es una descarga real.
+ *  - iOS: no hay SAF; se mantiene el menú de compartir ("Guardar en
+ *    Archivos" / enviar por correo, etc.).
+ */
+async function guardarXlsxEnDispositivo(
+  wb: XLSX.WorkBook,
+  nombreArchivo: string,
+  dialogTitle: string
+): Promise<void> {
+  const base64 = XLSX.write(wb, { type: 'base64', bookType: 'xlsx' });
+  const uri = `${FileSystem.cacheDirectory}${nombreArchivo}`;
+  await FileSystem.writeAsStringAsync(uri, base64, { encoding: FileSystem.EncodingType.Base64 });
+
+  if (Platform.OS === 'android') {
+    try {
+      const permiso = await FileSystem.StorageAccessFramework.requestDirectoryPermissionsAsync();
+      if (permiso.granted) {
+        const destino = await FileSystem.StorageAccessFramework.createFileAsync(
+          permiso.directoryUri,
+          nombreArchivo.replace(/\.xlsx$/i, ''),
+          MIME_XLSX
+        );
+        await FileSystem.writeAsStringAsync(destino, base64, {
+          encoding: FileSystem.EncodingType.Base64,
+        });
+        Alert.alert('Excel descargado', `El archivo se guardó como ${nombreArchivo}.`);
+        return;
+      }
+      // El usuario canceló el selector de carpetas: no se hace nada más.
+      return;
+    } catch (error) {
+      console.warn('[CronogramaExcel] No se pudo guardar con el selector de carpetas:', error);
+    }
+  }
+
+  if (await Sharing.isAvailableAsync()) {
+    await Sharing.shareAsync(uri, {
+      mimeType: MIME_XLSX,
+      dialogTitle,
+      UTI: 'org.openxmlformats.spreadsheetml.sheet',
+    });
+  } else {
+    Alert.alert('Excel generado', `Archivo guardado en: ${uri}`);
+  }
+}
 
 /**
  * Genera el cronograma de `visitas` (ya filtradas a una sola persona) como
@@ -80,19 +133,7 @@ export async function generarYCompartirCronogramaExcel(
       return;
     }
 
-    const base64 = XLSX.write(wb, { type: 'base64', bookType: 'xlsx' });
-    const uri = `${FileSystem.cacheDirectory}${nombreArchivo}`;
-    await FileSystem.writeAsStringAsync(uri, base64, { encoding: FileSystem.EncodingType.Base64 });
-
-    if (await Sharing.isAvailableAsync()) {
-      await Sharing.shareAsync(uri, {
-        mimeType: MIME_XLSX,
-        dialogTitle: 'Descargar cronograma',
-        UTI: 'org.openxmlformats.spreadsheetml.sheet',
-      });
-    } else {
-      Alert.alert('Cronograma generado', `Archivo guardado en: ${uri}`);
-    }
+    await guardarXlsxEnDispositivo(wb, nombreArchivo, 'Descargar cronograma');
   } catch (error) {
     console.error('[CronogramaExcel] Error generando el Excel:', error);
     Alert.alert('Error', 'No se pudo generar el cronograma en Excel. Intenta de nuevo.');
@@ -113,9 +154,35 @@ export interface PersonaReporteExcel {
 }
 
 /**
- * Escribe el libro como .xlsx y lo comparte (móvil) o lo descarga (web) —
- * misma mecánica base64 + expo-sharing para todas las exportaciones del
- * calendario, así no se duplica la rama de plataforma en cada reporte.
+ * Beneficiario incluido en un reporte. `tecnicoId` / `tecnicoNombre` dicen a
+ * qué técnico pertenece, para que el filtro no mezcle beneficiarios con el
+ * mismo nombre o cédula asignados a técnicos distintos.
+ */
+export interface BeneficiarioReporteExcel {
+  cedula: string;
+  nombre: string;
+  tecnicoId?: string;
+  tecnicoNombre?: string;
+}
+
+/** Normaliza texto para comparar nombres/cédulas sin tildes ni mayúsculas. */
+const normalizarTexto = (valor?: string | null): string =>
+  (valor || '')
+    .toString()
+    .trim()
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/\s+/g, ' ');
+
+/** Cédula comparable: solo dígitos (el backend a veces la guarda con puntos). */
+const normalizarCedula = (valor?: string | null): string =>
+  (valor || '').toString().replace(/\D/g, '');
+
+/**
+ * Escribe el libro como .xlsx y lo guarda (móvil) o lo descarga (web) —
+ * misma mecánica para todas las exportaciones del calendario, así no se
+ * duplica la rama de plataforma en cada reporte.
  */
 async function compartirLibroXlsx(
   wb: XLSX.WorkBook,
@@ -128,19 +195,7 @@ async function compartirLibroXlsx(
     return;
   }
 
-  const base64 = XLSX.write(wb, { type: 'base64', bookType: 'xlsx' });
-  const uri = `${FileSystem.cacheDirectory}${nombreArchivo}`;
-  await FileSystem.writeAsStringAsync(uri, base64, { encoding: FileSystem.EncodingType.Base64 });
-
-  if (await Sharing.isAvailableAsync()) {
-    await Sharing.shareAsync(uri, {
-      mimeType: MIME_XLSX,
-      dialogTitle,
-      UTI: 'org.openxmlformats.spreadsheetml.sheet',
-    });
-  } else {
-    Alert.alert('Reporte generado', `Archivo guardado en: ${uri}`);
-  }
+  await guardarXlsxEnDispositivo(wb, nombreArchivo, dialogTitle);
 }
 
 /**
@@ -154,7 +209,9 @@ function construirLibroReporteVisitas(
   tituloDetalle: string,
   nombreHojaResumen: string,
   realizadas: Formulario[],
-  planificadas: VisitaProgramada[]
+  planificadas: VisitaProgramada[],
+  /** Si viene, se agrega una hoja extra "Resumen por beneficiario". */
+  incluirResumenBeneficiarios = false
 ): XLSX.WorkBook {
   const porTecnico = new Map<string, { realizadas: number; planificadas: number }>();
 
@@ -229,6 +286,69 @@ function construirLibroReporteVisitas(
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, wsResumen, nombreHojaResumen);
   XLSX.utils.book_append_sheet(wb, wsDetalle, 'Detalle de visitas');
+
+  if (incluirResumenBeneficiarios) {
+    // Resumen por beneficiario: cuántas visitas realizadas/planificadas tiene
+    // cada uno y con qué técnico. Sirve para el desglose técnico → beneficiario.
+    const porBeneficiario = new Map<
+      string,
+      { nombre: string; cedula: string; tecnico: string; realizadas: number; planificadas: number }
+    >();
+
+    const claveBeneficiario = (nombre?: string, cedula?: string) =>
+      `${normalizarCedula(cedula)}|${normalizarTexto(nombre)}`;
+
+    for (const form of realizadas) {
+      const nombre = form.beneficiario?.nombre || 'Sin beneficiario';
+      const cedula = form.beneficiario?.cedula || '';
+      const clave = claveBeneficiario(nombre, cedula);
+      const datos =
+        porBeneficiario.get(clave) ||
+        { nombre, cedula, tecnico: form.tecnico?.nombre || 'Sin técnico', realizadas: 0, planificadas: 0 };
+      datos.realizadas += 1;
+      porBeneficiario.set(clave, datos);
+    }
+    for (const visita of planificadas) {
+      const nombre = visita.beneficiario_nombre || 'Sin beneficiario';
+      const cedula = visita.beneficiario_cedula || '';
+      const clave = claveBeneficiario(nombre, cedula);
+      const datos =
+        porBeneficiario.get(clave) ||
+        {
+          nombre,
+          cedula,
+          tecnico: visita.usuario_nombre || 'Sin técnico asignado',
+          realizadas: 0,
+          planificadas: 0,
+        };
+      datos.planificadas += 1;
+      porBeneficiario.set(clave, datos);
+    }
+
+    const filasBeneficiarios: (string | number)[][] = [
+      [`Resumen por beneficiario — ${encabezadoResumen[1]}`],
+      [],
+      ['Beneficiario', 'Cédula', 'Técnico', 'Visitas realizadas', 'Visitas planificadas', 'Total'],
+      ...Array.from(porBeneficiario.values())
+        .sort((a, b) => a.nombre.localeCompare(b.nombre))
+        .map((d) => [
+          d.nombre,
+          d.cedula,
+          d.tecnico,
+          d.realizadas,
+          d.planificadas,
+          d.realizadas + d.planificadas,
+        ]),
+    ];
+
+    const wsBeneficiarios = XLSX.utils.aoa_to_sheet(filasBeneficiarios);
+    wsBeneficiarios['!cols'] = [
+      { wch: 34 }, { wch: 16 }, { wch: 28 }, { wch: 18 }, { wch: 20 }, { wch: 10 },
+    ];
+    wsBeneficiarios['!merges'] = [{ s: { r: 0, c: 0 }, e: { r: 0, c: 5 } }];
+    XLSX.utils.book_append_sheet(wb, wsBeneficiarios, 'Resumen por beneficiario');
+  }
+
   return wb;
 }
 
@@ -269,33 +389,82 @@ export async function generarYCompartirReporteSemanalExcel(
  * exactamente el mismo formato de 2 hojas que el semanal, pero:
  *  - el rango es el mes completo visible (01 al último día del mes);
  *  - solo entran las visitas de las personas marcadas (por `usuario_id`,
- *    con respaldo por nombre para registros locales aún sin sincronizar).
+ *    con respaldo por nombre para registros locales aún sin sincronizar);
+ *  - si se pasan `beneficiarios`, además se limita a esos beneficiarios
+ *    (desglose técnico → beneficiario) y se agrega la hoja
+ *    "Resumen por beneficiario". Sin ese parámetro el reporte sale igual
+ *    que siempre.
  */
 export async function generarYCompartirReporteMensualExcel(
   formularios: Formulario[],
   visitasProgramadas: VisitaProgramada[],
   rango: RangoSemanaCalendario,
   nombreMes: string,
-  personas: PersonaReporteExcel[]
+  personas: PersonaReporteExcel[],
+  beneficiarios?: BeneficiarioReporteExcel[]
 ): Promise<void> {
   try {
     const idsSeleccionados = new Set(personas.map((p) => p.id).filter(Boolean));
-    const nombresSeleccionados = new Set(personas.map((p) => p.nombre).filter(Boolean));
+    const nombresSeleccionados = new Set(personas.map((p) => normalizarTexto(p.nombre)).filter(Boolean));
 
     const esDelPersonal = (usuarioId?: string, nombre?: string) =>
       (!!usuarioId && idsSeleccionados.has(usuarioId)) ||
-      (!!nombre && nombresSeleccionados.has(nombre));
+      (!!nombre && nombresSeleccionados.has(normalizarTexto(nombre)));
+
+    // Filtro por beneficiario: se compara por cédula (solo dígitos) y, si no
+    // hay cédula, por nombre normalizado. Cuando el beneficiario trae su
+    // técnico, también se exige que coincida, para no mezclar homónimos.
+    const filtroBeneficiarios = beneficiarios && beneficiarios.length > 0 ? beneficiarios : null;
+    const cedulasFiltro = new Set(
+      (filtroBeneficiarios || []).map((b) => normalizarCedula(b.cedula)).filter(Boolean)
+    );
+    const nombresFiltro = new Set(
+      (filtroBeneficiarios || []).map((b) => normalizarTexto(b.nombre)).filter(Boolean)
+    );
+
+    const esDelBeneficiario = (nombre?: string, cedula?: string, tecnicoNombre?: string) => {
+      if (!filtroBeneficiarios) return true;
+      const cedulaNorm = normalizarCedula(cedula);
+      const nombreNorm = normalizarTexto(nombre);
+      const coincide =
+        (!!cedulaNorm && cedulasFiltro.has(cedulaNorm)) ||
+        (!!nombreNorm && nombresFiltro.has(nombreNorm));
+      if (!coincide) return false;
+      // Si el beneficiario seleccionado tiene técnico asignado, exigir que la
+      // visita sea de ese técnico (evita homónimos entre técnicos).
+      const tecnicoNorm = normalizarTexto(tecnicoNombre);
+      const tecnicosDelBeneficiario = (filtroBeneficiarios || [])
+        .filter(
+          (b) =>
+            (!!cedulaNorm && normalizarCedula(b.cedula) === cedulaNorm) ||
+            (!!nombreNorm && normalizarTexto(b.nombre) === nombreNorm)
+        )
+        .map((b) => normalizarTexto(b.tecnicoNombre))
+        .filter(Boolean);
+      if (tecnicosDelBeneficiario.length === 0) return true;
+      return tecnicosDelBeneficiario.includes(tecnicoNorm);
+    };
 
     const realizadas = formularios.filter((form) => {
       const fecha = (form.created_at || '').split('T')[0];
       if (!(fecha >= rango.inicio && fecha <= rango.fin)) return false;
-      return esDelPersonal(form.usuario_id, form.tecnico?.nombre);
+      if (!esDelPersonal(form.usuario_id, form.tecnico?.nombre)) return false;
+      return esDelBeneficiario(
+        form.beneficiario?.nombre,
+        form.beneficiario?.cedula,
+        form.tecnico?.nombre
+      );
     });
 
     const planificadas = visitasProgramadas.filter((visita) => {
       if (visita.estado !== 'pendiente') return false;
       if (!(visita.fecha >= rango.inicio && visita.fecha <= rango.fin)) return false;
-      return esDelPersonal(visita.usuario_id, visita.usuario_nombre);
+      if (!esDelPersonal(visita.usuario_id, visita.usuario_nombre)) return false;
+      return esDelBeneficiario(
+        visita.beneficiario_nombre,
+        visita.beneficiario_cedula,
+        visita.usuario_nombre
+      );
     });
 
     const wb = construirLibroReporteVisitas(
@@ -303,10 +472,17 @@ export async function generarYCompartirReporteMensualExcel(
       `Detalle de visitas — ${nombreMes}`,
       'Resumen mensual',
       realizadas,
-      planificadas
+      planificadas,
+      !!filtroBeneficiarios
     );
 
-    const nombreArchivo = `Reporte_Mensual_${nombreMes.replace(/\s+/g, '_')}.xlsx`;
+    // Nombre del archivo: si el filtro deja un solo beneficiario, se nombra
+    // con su nombre para que sea fácil identificarlo en Descargas.
+    const sufijoBeneficiario =
+      filtroBeneficiarios && filtroBeneficiarios.length === 1
+        ? `_${filtroBeneficiarios[0].nombre.replace(/\s+/g, '_')}`
+        : '';
+    const nombreArchivo = `Reporte_Mensual_${nombreMes.replace(/\s+/g, '_')}${sufijoBeneficiario}.xlsx`;
     await compartirLibroXlsx(wb, nombreArchivo, 'Descargar reporte mensual');
   } catch (error) {
     console.error('[CronogramaExcel] Error generando reporte mensual:', error);

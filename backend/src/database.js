@@ -286,6 +286,17 @@ async function initSchema() {
       eliminado_at TIMESTAMPTZ DEFAULT NOW()
     )`,
 
+    // "Tumbas" de seguimientos borrados (mismo criterio que
+    // formularios_eliminados). POST /api/seguimientos es un upsert por id:
+    // sin este registro, un dispositivo que aún conserve en su SQLite un
+    // seguimiento que el admin ya eliminó lo vuelve a crear en su próximo
+    // ciclo de sync (p. ej. si estaba esperando subir un video grande).
+    `CREATE TABLE IF NOT EXISTS seguimientos_eliminados (
+      id VARCHAR(100) PRIMARY KEY,
+      eliminado_por VARCHAR(20),
+      eliminado_at TIMESTAMPTZ DEFAULT NOW()
+    )`,
+
     `CREATE TABLE IF NOT EXISTS formularios_borradores (
       id VARCHAR(100) PRIMARY KEY,
       usuario_id VARCHAR(20) NOT NULL REFERENCES usuarios(id) ON DELETE CASCADE,
@@ -709,12 +720,79 @@ async function initSchema() {
     }
   }
 
+  // Migración: `actividad`, `beneficiario_nombre` y `autor_nombre` se crearon
+  // como VARCHAR(200), pero son texto libre escrito por el coordinador o el
+  // interventor en campo. Un texto de más de 200 caracteres hacía que
+  // PostgreSQL abortara el INSERT con `value too long for type character
+  // varying(200)` (error 22001) → POST /api/seguimientos devolvía 500 y el
+  // seguimiento quedaba atrapado en el teléfono reintentando para siempre
+  // (caso real: interventor alex.perdomo, 19:38 y 20:33 del 19-oct). Se pasan
+  // a TEXT: no hay razón funcional para limitar un campo libre que la propia
+  // app deja escribir sin `maxLength`.
+  for (const col of ['actividad', 'beneficiario_nombre', 'autor_nombre']) {
+    try {
+      await query(`ALTER TABLE seguimientos ALTER COLUMN ${col} TYPE TEXT`);
+    } catch (err) {
+      if (!err.message.includes('does not exist')) {
+        console.error(`[DB] Error ampliando seguimientos.${col} a TEXT:`, err.message);
+      }
+    }
+  }
+  console.log('[DB] ✅ Columnas de texto de seguimientos verificadas');
+
   // Índice de formulario_id: después de la migración para que la columna
   // exista sí o sí (ver nota arriba).
   try {
     await query(`CREATE INDEX IF NOT EXISTS idx_seguimientos_formulario ON seguimientos(formulario_id)`);
   } catch (err) {
     console.error('[DB] Error creando idx_seguimientos_formulario:', err.message);
+  }
+
+  // Migración: columnas de `mediciones` que la app móvil envía en /sync.
+  // La tabla se creó solo con (id, usuario_id, tipo_medicion, valor, unidad,
+  // latitud, longitud, datos, timestamp_dispositivo, created_at), pero el
+  // endpoint POST /api/mediciones/sync escribe formulario_id, metadata_json,
+  // timestamp y sincronizado → sin estas columnas el sync fallaba y los
+  // polígonos del Formulario 2 nunca llegaban al servidor (por eso el mapa
+  // general no los mostraba a los roles superiores).
+  for (const [col, tipo] of [
+    ['formulario_id', 'VARCHAR(100)'],
+    ['metadata_json', "JSONB DEFAULT '{}'"],
+    ['timestamp', 'TIMESTAMPTZ'],
+    ['sincronizado', 'BOOLEAN DEFAULT TRUE'],
+  ]) {
+    try {
+      await query(`ALTER TABLE mediciones ADD COLUMN IF NOT EXISTS ${col} ${tipo}`);
+    } catch (err) {
+      if (!err.message.includes('already exists')) {
+        console.error(`[DB] Error agregando ${col} a mediciones:`, err.message);
+      }
+    }
+  }
+  console.log('[DB] ✅ Columnas de mediciones verificadas');
+
+  // Backfill: las mediciones viejas guardaban todo en `datos`; se copia a
+  // `metadata_json` para que el GET pueda aplanarlo igual que las nuevas.
+  // Solo se intenta si la columna `datos` existe: en las instalaciones nuevas
+  // no existe y el UPDATE fallaba en CADA arranque con
+  // `column "datos" does not exist`, ensuciando el log y ocultando errores
+  // reales.
+  try {
+    const existeDatos = await queryOne(
+      `SELECT 1 AS ok FROM information_schema.columns
+        WHERE table_name = 'mediciones' AND column_name = 'datos' LIMIT 1`
+    );
+    if (existeDatos) {
+      await query(`
+        UPDATE mediciones
+           SET metadata_json = datos
+         WHERE (metadata_json IS NULL OR metadata_json = '{}'::jsonb)
+           AND datos IS NOT NULL
+           AND datos <> '{}'::jsonb
+      `);
+    }
+  } catch (err) {
+    console.error('[DB] Error en backfill de mediciones.metadata_json:', err.message);
   }
 
   await seedBeneficiarios();

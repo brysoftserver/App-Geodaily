@@ -57,7 +57,6 @@ import MedicionCaptura from '../../components/MedicionCaptura';
 import {
   guardarBorrador,
   getBorrador,
-  cargarBorradores,
   eliminarBorrador,
   obtenerUltimoErrorBorrador,
   FormDraft,
@@ -290,6 +289,13 @@ const VisitaTecnicaFormScreen: React.FC<Props> = ({ navigation, route }) => {
 
   const formIdRef = useRef<string>(draftId || `visita-${Date.now()}`);
   const completadoRef = useRef(false);
+  /**
+   * false hasta que terminó la carga inicial. Sin esto, el autoguardado con
+   * debounce podía dispararse ANTES de que el borrador terminara de cargar y
+   * escribir el beneficiario que venía por parámetros/contexto encima del
+   * beneficiario real del borrador.
+   */
+  const borradorListoRef = useRef(false);
   const autoguardarRef = useRef<(() => void) | null>(null);
   const autoguardadoDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -301,15 +307,28 @@ const VisitaTecnicaFormScreen: React.FC<Props> = ({ navigation, route }) => {
 
   const totalFotosCtx = formularioActual?.fotos?.length ?? 0;
 
+  /**
+   * Beneficiario guardado en el borrador que se está retomando. Cuando se
+   * llega con `draftId` ("Formularios Incompletos") ESTE es el que manda:
+   * antes ganaba el parámetro de navegación y el contexto, así que el
+   * borrador de un beneficiario se completaba a nombre de otro.
+   */
+  const [beneficiarioBorrador, setBeneficiarioBorrador] = useState<DatosBeneficiario | undefined>(
+    undefined
+  );
+
   // El beneficiario puede venir del detalle (params), de lo ya precargado en
   // el contexto por `SeleccionarVisitaTecnica`, o del borrador que se retoma
   // (que `aplicarBorrador` deja en el contexto). Se resuelve por prioridad y
   // descartando objetos vacíos: antes bastaba con que llegara un objeto sin
   // nombre ni cédula para que el ítem 1 se diera por no diligenciado.
-  const beneficiario = resolverBeneficiarioVisita(
-    beneficiarioParam,
-    formularioActual?.beneficiario
-  );
+  const beneficiario = draftId
+    ? resolverBeneficiarioVisita(
+        beneficiarioBorrador,
+        beneficiarioParam,
+        formularioActual?.beneficiario
+      )
+    : resolverBeneficiarioVisita(beneficiarioParam, formularioActual?.beneficiario);
 
   // ─── Identificación (ítem 1: "desplegable con los datos") ─
   // El ítem pide un desplegable con los datos del beneficiario. Antes solo
@@ -423,8 +442,26 @@ const VisitaTecnicaFormScreen: React.FC<Props> = ({ navigation, route }) => {
       // otro beneficiario), así que el ítem 1 quedaba sin diligenciar y al
       // completar aparecía "Beneficiario (ítem 1)" aunque el dato sí estaba
       // guardado en el borrador.
+      //
+      // ⚠️ El borrador es la fuente autoritativa: se refleja en el estado
+      // local (`beneficiarioBorrador`, que `beneficiario` resuelve PRIMERO)
+      // y en el contexto. Si el borrador no trae beneficiario, se LIMPIA el
+      // del contexto para no arrastrar el de un formulario anterior — antes
+      // ese arrastre hacía que la visita quedara a nombre de otro productor.
       if (tieneDatosBeneficiario(draft.beneficiario)) {
+        setBeneficiarioBorrador(draft.beneficiario);
         setBeneficiario(draft.beneficiario);
+      } else {
+        setBeneficiarioBorrador(undefined);
+        setBeneficiario({
+          nombre: '',
+          cedula: '',
+          telefono: '',
+          departamento: '',
+          municipio: '',
+          vereda: '',
+          finca: '',
+        });
       }
       setData(hidratarEstado(draft.actividad, draft.actividad?.visita_numero ?? visitaNumero));
       if (draft.fotos?.length) {
@@ -438,53 +475,26 @@ const VisitaTecnicaFormScreen: React.FC<Props> = ({ navigation, route }) => {
 
     const init = async () => {
       if (draftId) {
-        const draft = await getBorrador(draftId);
+        const draft = await getBorrador(draftId).catch(() => null);
         if (draft) {
           aplicarBorrador(draft);
-          return;
+        } else {
+          // El borrador ya no existe: seguir con un formulario nuevo.
+          formIdRef.current = draftId;
+          iniciarFormulario('visita_tecnica', draftId);
         }
-        // El borrador ya no existe: seguir con un formulario nuevo.
-        formIdRef.current = draftId;
-        iniciarFormulario('visita_tecnica', draftId);
       }
 
-      // Sin `draftId`: buscar un borrador propio de ESTA visita sin terminar.
-      // El técnico suele salir de la pantalla sin querer y, al volver, veía
-      // un formulario vacío ("se me borró todo"). Ahora se le ofrece
-      // continuarlo (el borrador NO se borra si dice que no).
-      try {
-        const borradores = await cargarBorradores();
-        const propios = borradores
-          .filter((d) => d.tipo === 'visita_tecnica')
-          .filter((d) => (d.actividad?.formato_visita === 'v2'))
-          .filter((d) => (d.actividad?.visita_numero ?? 2) === visitaNumero)
-          .filter((d) => {
-            const t = d.tecnico || ({} as FormDraft['tecnico']);
-            if (user?.id && t.usuario_id) return t.usuario_id === user.id;
-            if (user?.cedula && t.cedula) return t.cedula === user.cedula;
-            return !t.usuario_id && !t.cedula;
-          })
-          .sort((a, b) => (b.updated_at || '').localeCompare(a.updated_at || ''));
-
-        const candidato = propios[0];
-        if (candidato) {
-          const nombre = candidato.beneficiario?.nombre || 'sin nombre';
-          const cuando = candidato.updated_at
-            ? new Date(candidato.updated_at).toLocaleString()
-            : 'hace un momento';
-          Alert.alert(
-            '📝 Tienes una visita sin terminar',
-            `Se encontró una "${visitaDef?.titulo || 'Visita Técnica'}" guardada de "${nombre}" del ${cuando}.\n\n¿Quieres continuar donde la dejaste?`,
-            [
-              { text: 'Empezar de cero', style: 'cancel' },
-              { text: 'Continuar', onPress: () => aplicarBorrador(candidato) },
-            ],
-            { cancelable: false }
-          );
-        }
-      } catch (e) {
-        console.warn('[VisitaTecnica] No se pudo buscar borradores pendientes:', e);
-      }
+      // Formulario NUEVO (sin `draftId`): no se busca ni se ofrece ningún
+      // borrador. Los incompletos viven en "Formularios Incompletos" y el
+      // técnico los retoma desde allí eligiéndolos explícitamente. Ofrecerlos
+      // aquí era lo que cargaba el borrador de un beneficiario dentro del
+      // formulario de otro.
+      //
+      // Se habilita el autoguardado solo cuando la carga inicial terminó (si
+      // venía un borrador, ya está aplicado): así el debounce de 1.5 s no
+      // puede guardar el formulario con el beneficiario equivocado.
+      borradorListoRef.current = true;
     };
 
     init();
@@ -649,6 +659,9 @@ const VisitaTecnicaFormScreen: React.FC<Props> = ({ navigation, route }) => {
     autoguardarRef.current = async () => {
       try {
         if (completadoRef.current) return;
+        // La carga inicial (borrador/precarga de beneficiario) aún no terminó:
+        // guardar ahora escribiría el beneficiario equivocado en el borrador.
+        if (!borradorListoRef.current) return;
         const id = formIdRef.current || formularioActual?.id;
         if (!id) return;
         if (!hayContenido()) return;
@@ -686,6 +699,7 @@ const VisitaTecnicaFormScreen: React.FC<Props> = ({ navigation, route }) => {
   // Autoguardado reactivo (debounce 1.5 s sobre cada cambio)
   useEffect(() => {
     if (completadoRef.current) return;
+    if (!borradorListoRef.current) return;
     if (!hayContenido()) return;
 
     if (autoguardadoDebounceRef.current) {
@@ -1087,6 +1101,13 @@ const VisitaTecnicaFormScreen: React.FC<Props> = ({ navigation, route }) => {
                 // pueda distinguir de los demás.
                 beneficiarioNombre: beneficiario?.nombre,
                 beneficiarioCedula: beneficiario?.cedula,
+                // Atribución geográfica y vínculo con la visita: así el
+                // polígono trazado queda amarrado al beneficiario y los roles
+                // superiores pueden ver de quién es en el mapa general.
+                vereda: beneficiario?.vereda,
+                corregimiento: beneficiario?.corregimiento,
+                formularioId: formIdRef.current,
+                visitaNumero,
               })
             }
             activeOpacity={0.7}
@@ -1476,7 +1497,7 @@ const VisitaTecnicaFormScreen: React.FC<Props> = ({ navigation, route }) => {
                       <Text style={styles.selectorItemMeta}>
                         {fecha ? `${fecha} · ` : ''}
                         {esArea
-                          ? `📐 ${Number(m.area_hectareas || 0).toFixed(2)} ha`
+                          ? `◈ ${Number(m.area_hectareas || 0).toFixed(2)} ha`
                           : `📏 ${Number(m.perimetro_metros || 0).toFixed(0)} m`}
                         {` · ${puntos.length} pts`}
                       </Text>

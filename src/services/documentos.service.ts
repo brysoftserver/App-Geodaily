@@ -4,6 +4,7 @@
 
 import apiClient, { isOfflineError } from './api';
 import { API_CONFIG } from '../theme';
+import { recordSyncFailure } from './syncDiagnostics';
 
 /**
  * Subir un documento (anexo) al servidor
@@ -62,6 +63,8 @@ export const subirDocumento = async (
       return null;
     }
     console.error('[Documentos] Error:', error);
+    // Motivo visible en la UI (ver syncDiagnostics).
+    recordSyncFailure('documento', error);
     return null;
   }
 };

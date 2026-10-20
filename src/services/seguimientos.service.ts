@@ -97,6 +97,23 @@ export const fetchSeguimientos = async (): Promise<Seguimiento[]> => {
   return seguimientos;
 };
 
+/**
+ * Marca de "el servidor ya no tiene este seguimiento" (HTTP 410).
+ *
+ * Se usa una propiedad en el Error (no una subclase) porque `instanceof`
+ * puede fallar tras un recargado en caliente del bundle en React Native.
+ * El sincronizador y el detalle lo consultan para descartar la copia local
+ * en vez de reintentar para siempre.
+ */
+export const esSeguimientoEliminado = (error: unknown): boolean =>
+  !!(error as { seguimientoEliminado?: boolean })?.seguimientoEliminado;
+
+const errorEliminado = (mensaje?: string): Error => {
+  const err = new Error(mensaje || 'Este seguimiento fue eliminado en el servidor.');
+  (err as Error & { seguimientoEliminado?: boolean }).seguimientoEliminado = true;
+  return err;
+};
+
 /** Registrar un nuevo seguimiento. Lanza Error con mensaje claro si el servidor lo rechaza o no hay red. */
 export const registrarSeguimiento = async (datos: NuevoSeguimiento): Promise<Seguimiento> => {
   try {
@@ -104,6 +121,9 @@ export const registrarSeguimiento = async (datos: NuevoSeguimiento): Promise<Seg
     return response.data.seguimiento;
   } catch (error: any) {
     const mensajeServidor = error?.response?.data?.mensaje;
+    // 410 = un admin/coordinador lo eliminó (tumba en seguimientos_eliminados).
+    // No es un fallo de red: se marca para que el sync descarte la copia local.
+    if (error?.response?.status === 410) throw errorEliminado(mensajeServidor);
     if (mensajeServidor) throw new Error(mensajeServidor);
     throw new Error('No se pudo registrar el seguimiento — verifica tu conexión a internet.');
   }
@@ -114,6 +134,10 @@ export const eliminarSeguimiento = async (id: string): Promise<void> => {
   try {
     await apiClient.delete(`/api/seguimientos/${encodeURIComponent(id)}`);
   } catch (error: any) {
+    const status = error?.response?.status;
+    // 404/410 = ya no existe en el servidor: el objetivo del borrado está
+    // cumplido, así que se considera exitoso en vez de mostrar un error.
+    if (status === 404 || status === 410) return;
     const mensajeServidor = error?.response?.data?.mensaje;
     if (mensajeServidor) throw new Error(mensajeServidor);
     throw new Error('No se pudo eliminar el seguimiento — verifica tu conexión a internet.');
@@ -144,6 +168,9 @@ export const actualizarSeguimiento = async (
     return response.data.seguimiento;
   } catch (error: any) {
     const mensajeServidor = error?.response?.data?.mensaje;
+    // 410 = el seguimiento fue eliminado en el servidor: la corrección ya no
+    // aplica y la copia local debe descartarse.
+    if (error?.response?.status === 410) throw errorEliminado(mensajeServidor);
     if (mensajeServidor) throw new Error(mensajeServidor);
     throw new Error('No se pudo actualizar el seguimiento — verifica tu conexión a internet.');
   }

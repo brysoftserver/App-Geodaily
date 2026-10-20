@@ -232,9 +232,13 @@ export const GPSProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
         const sub = await Location.watchPositionAsync(
           {
-            accuracy: Location.Accuracy.Balanced,
-            timeInterval: 15000,
-            distanceInterval: 10,
+            // `Balanced` + 15 s era demasiado lento para el mapa en campo:
+            // el punto azul se quedaba atrás mientras el técnico caminaba.
+            // `High` con 5 s / 5 m da seguimiento casi en tiempo real y
+            // sigue funcionando sin internet (el GPS del teléfono es local).
+            accuracy: Location.Accuracy.High,
+            timeInterval: 5000,
+            distanceInterval: 5,
           },
           (newPos) => {
             const { latitude, longitude, accuracy, altitude, heading } = newPos.coords;

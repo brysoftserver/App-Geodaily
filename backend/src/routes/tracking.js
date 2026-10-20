@@ -50,17 +50,29 @@ router.post('/sync', authenticateToken, async (req, res) => {
 });
 
 // GET /api/tracking/ultimas — Última posición de cada técnico
+// FIX: antes devolvía una fila por CADA usuario con tracking (admin,
+// coordinadores, interventores, técnicos inactivos y posiciones de hace
+// semanas), y el mapa los pintaba todos como "técnicos" (18 pines).
+// Ahora solo técnicos ACTIVOS con posición de los últimos 2 días.
+const DIAS_VIGENCIA_POSICION = 2;
+
 router.get('/ultimas', authenticateToken, async (req, res) => {
   try {
-    const posiciones = await db.queryAll(`
+    const posiciones = await db.queryAll(
+      `
       SELECT DISTINCT ON (t.usuario_id)
         t.id, t.usuario_id, t.latitud, t.longitud, t.altitud,
         t.precision_metros, t.velocidad, t.timestamp, t.created_at,
         u.nombre AS usuario_nombre, u.usuario AS usuario_login
       FROM tracking t
       JOIN usuarios u ON u.id = t.usuario_id
+      WHERE u.rol = 'tecnico'
+        AND u.activo = true
+        AND t.created_at > NOW() - ($1 || ' days')::interval
       ORDER BY t.usuario_id, t.created_at DESC
-    `);
+      `,
+      [DIAS_VIGENCIA_POSICION]
+    );
 
     res.json({
       estado: 'ok',

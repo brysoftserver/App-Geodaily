@@ -10,7 +10,7 @@
 // ============================================================
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { View, Text, TouchableOpacity, StyleSheet, Alert } from 'react-native';
+import { View, Text, TouchableOpacity, StyleSheet, Alert, TextInput } from 'react-native';
 import * as Location from 'expo-location';
 import MapViewOffline from './MapViewOffline';
 import { useGPS } from '../store/GPSContext';
@@ -58,12 +58,30 @@ interface CapturaGPSPrecisaProps {
   /**
    * Municipio/vereda del formulario, para mostrarlo como referencia sobre
    * el mapa. El mapa satelital no tiene etiquetas de lugar (y el estilo
-   * "relieve" con etiquetas no tiene cobertura en veredas rurales — ver
+   * "terreno" con etiquetas no tiene cobertura en veredas rurales — ver
    * nota en pdfLocal.service.ts), así que en vez de depender de que el
    * mapa muestre el nombre, se usa el dato que el formulario ya conoce.
    */
   ubicacionTexto?: string;
   onCapture: (latitud: string, longitud: string, altitud: string, precision: string) => void;
+  /**
+   * Permite ESCRIBIR las coordenadas a mano, además de capturarlas con GPS.
+   *
+   * Se usa en la corrección desde el detalle del formulario (admin): quien
+   * revisa no está en la finca, así que no puede volver a caminar hasta el
+   * punto a tomar la coordenada. Sin esto, la única forma de corregir una
+   * coordenada mal tomada era volver al sitio.
+   *
+   * Por defecto está desactivado: el técnico en campo sigue capturando con
+   * GPS de alta precisión, sin poder teclear un punto que no visitó.
+   */
+  permitirEdicionManual?: boolean;
+  /**
+   * Cambio hecho a mano en los campos de latitud/longitud/altitud. Se emite
+   * con cada tecla para que el padre mantenga su estado sincronizado (y así
+   * el botón Guardar se habilite/deshabilite con los valores reales).
+   */
+  onChangeManual?: (latitud: string, longitud: string, altitud: string) => void;
 }
 
 const CapturaGPSPrecisa: React.FC<CapturaGPSPrecisaProps> = ({
@@ -74,6 +92,8 @@ const CapturaGPSPrecisa: React.FC<CapturaGPSPrecisaProps> = ({
   precision,
   ubicacionTexto,
   onCapture,
+  permitirEdicionManual = false,
+  onChangeManual,
 }) => {
   const [capturando, setCapturando] = useState(false);
   const [segundosRestantes, setSegundosRestantes] = useState(DURACION_CAPTURA_SEG);
@@ -249,6 +269,23 @@ const CapturaGPSPrecisa: React.FC<CapturaGPSPrecisaProps> = ({
 
   const hayCaptura = !!(latitud && longitud);
 
+  /**
+   * Edición manual (solo cuando `permitirEdicionManual`): se escribe la
+   * coordenada tal cual, sin pasar por el GPS. Se valida el rango para no
+   * dejar guardar un punto imposible (lat fuera de ±90, lon fuera de ±180).
+   */
+  const latNum = Number(String(latitud ?? '').replace(',', '.'));
+  const lonNum = Number(String(longitud ?? '').replace(',', '.'));
+  const latValida = String(latitud ?? '').trim() !== '' && Number.isFinite(latNum) && Math.abs(latNum) <= 90;
+  const lonValida = String(longitud ?? '').trim() !== '' && Number.isFinite(lonNum) && Math.abs(lonNum) <= 180;
+  const rangoInvalido =
+    (String(latitud ?? '').trim() !== '' && !latValida) ||
+    (String(longitud ?? '').trim() !== '' && !lonValida);
+
+  const emitirManual = (nuevaLat: string, nuevaLon: string, nuevaAlt: string) => {
+    onChangeManual?.(nuevaLat, nuevaLon, nuevaAlt);
+  };
+
   return (
     <View style={styles.fieldContainer}>
       <Text style={styles.fieldLabel}>{label}</Text>
@@ -257,6 +294,60 @@ const CapturaGPSPrecisa: React.FC<CapturaGPSPrecisaProps> = ({
         <TouchableOpacity style={styles.gpsButton} onPress={iniciarCaptura} activeOpacity={0.7}>
           <Text style={styles.gpsButtonText}>{hayCaptura ? '🔄 Volver a capturar' : '📍 Capturar ubicación'}</Text>
         </TouchableOpacity>
+      )}
+
+      {permitirEdicionManual && !capturando && (
+        <View style={styles.manualContainer}>
+          <Text style={styles.manualHint}>
+            ✍️ También puedes escribir la coordenada a mano (corrección desde oficina).
+          </Text>
+          <View style={styles.manualRow}>
+            <View style={styles.manualField}>
+              <Text style={styles.manualLabel}>Latitud</Text>
+              <TextInput
+                style={styles.manualInput}
+                value={String(latitud ?? '')}
+                onChangeText={(t) => emitirManual(t, String(longitud ?? ''), String(altitud ?? ''))}
+                placeholder="Ej. 8.123456"
+                placeholderTextColor={COLORS.textLight}
+                keyboardType="numbers-and-punctuation"
+                autoCorrect={false}
+                accessibilityLabel="Latitud"
+              />
+            </View>
+            <View style={styles.manualField}>
+              <Text style={styles.manualLabel}>Longitud</Text>
+              <TextInput
+                style={styles.manualInput}
+                value={String(longitud ?? '')}
+                onChangeText={(t) => emitirManual(String(latitud ?? ''), t, String(altitud ?? ''))}
+                placeholder="Ej. -76.123456"
+                placeholderTextColor={COLORS.textLight}
+                keyboardType="numbers-and-punctuation"
+                autoCorrect={false}
+                accessibilityLabel="Longitud"
+              />
+            </View>
+          </View>
+          <View style={styles.manualField}>
+            <Text style={styles.manualLabel}>Altitud (m, opcional)</Text>
+            <TextInput
+              style={styles.manualInput}
+              value={String(altitud ?? '')}
+              onChangeText={(t) => emitirManual(String(latitud ?? ''), String(longitud ?? ''), t)}
+              placeholder="Ej. 120"
+              placeholderTextColor={COLORS.textLight}
+              keyboardType="numbers-and-punctuation"
+              autoCorrect={false}
+              accessibilityLabel="Altitud"
+            />
+          </View>
+          {rangoInvalido && (
+            <Text style={styles.manualError}>
+              Revisa el valor: la latitud va de -90 a 90 y la longitud de -180 a 180.
+            </Text>
+          )}
+        </View>
       )}
 
       {capturando && (
@@ -354,6 +445,47 @@ const styles = StyleSheet.create({
     fontSize: FONTS.sizes.xs,
     color: COLORS.textPrimary,
     fontWeight: FONTS.weights.medium,
+  },
+  manualContainer: {
+    marginTop: SPACING.sm,
+    padding: SPACING.sm,
+    borderRadius: BORDER_RADIUS.md,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    backgroundColor: COLORS.surfaceAlt,
+  },
+  manualHint: {
+    fontSize: FONTS.sizes.xs,
+    color: COLORS.textSecondary,
+    marginBottom: SPACING.xs,
+  },
+  manualRow: {
+    flexDirection: 'row',
+    gap: SPACING.sm,
+  },
+  manualField: {
+    flex: 1,
+    marginBottom: SPACING.xs,
+  },
+  manualLabel: {
+    fontSize: FONTS.sizes.xs,
+    color: COLORS.textSecondary,
+    marginBottom: 2,
+  },
+  manualInput: {
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    borderRadius: BORDER_RADIUS.sm,
+    paddingHorizontal: SPACING.sm,
+    paddingVertical: SPACING.xs,
+    fontSize: FONTS.sizes.sm,
+    color: COLORS.textPrimary,
+    backgroundColor: COLORS.surface,
+  },
+  manualError: {
+    fontSize: FONTS.sizes.xs,
+    color: COLORS.error,
+    marginTop: SPACING.xs,
   },
 });
 

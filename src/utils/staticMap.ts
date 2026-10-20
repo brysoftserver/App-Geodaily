@@ -17,28 +17,42 @@ import { Platform } from 'react-native';
 import * as FileSystem from 'expo-file-system/legacy';
 
 const TAMANO_TESELA = 256;
-/** Tiles ArcGIS "Canvas" (relieve claro, sin key) — mismo servidor que MapViewOffline.tsx usa para mapStyle="relieve". */
+/**
+ * Tiles OpenStreetMap (terreno, sin key) — el mismo servidor que
+ * MapViewOffline.tsx usa para mapStyle="terreno" (Terreno/Calles).
+ *
+ * OJO: en zona rural de Caquetá OSM no tiene datos por encima de zoom ~15
+ * (devuelve teselas vacías), así que el mosaico del PDF se limita a ese zoom
+ * y se ve borroso al acercar — igual que en el mapa en vivo.
+ */
 const URL_TESELA = (z: number, x: number, y: number) =>
-  `https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Light_Gray_Base/MapServer/tile/${z}/${y}/${x}`;
+  `https://tile.openstreetmap.org/${z}/${x}/${y}.png`;
 
 /**
  * Teselas ArcGIS "World Imagery" (satélite, sin key) — el mismo mapa que
  * MapViewOffline.tsx pinta con mapStyle="satelite", que es el que el técnico
  * ve mientras traza y guarda el polígono.
  *
- * OJO: `Canvas/World_Light_Gray_Base` (relieve) solo tiene datos hasta zoom
- * 16 en buena parte del país; a partir de 17 Esri devuelve la tesela gris
- * «Map data not yet available». Por eso la captura de la medición usa
- * satélite: así el fondo se ve igual que en el mapa en vivo.
+ * OJO: el fondo de terreno solo tiene datos hasta zoom 16 en buena parte del
+ * país; a partir de 17 Esri devuelve la tesela gris «Map data not yet
+ * available». Por eso la captura de la medición usa satélite: así el fondo se
+ * ve igual que en el mapa en vivo.
  */
 export const URL_TESELA_SATELITE = (z: number, x: number, y: number) =>
   `https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/${z}/${y}/${x}`;
 
 /** Estilo de teselas de la vista estática. */
-export type EstiloTesela = 'relieve' | 'satelite';
+export type EstiloTesela = 'terreno' | 'satelite';
 
 const urlTeselaSegunEstilo = (estilo: EstiloTesela) =>
-  estilo === 'relieve' ? URL_TESELA : URL_TESELA_SATELITE;
+  estilo === 'terreno' ? URL_TESELA : URL_TESELA_SATELITE;
+
+/**
+ * Zoom máximo con datos reales en OSM para la zona rural de Puerto Rico
+ * (Caquetá). Por encima de esto el servidor devuelve teselas vacías, así que
+ * el mosaico se limita a este nivel (se ve borroso, pero no en blanco).
+ */
+const ZOOM_MAX_TERRENO = 15;
 
 /** Máximo de teselas a descargar (ancho × alto) — límite de costo/tiempo razonable para un mapa impreso. */
 const MAX_TESELAS_LADO = 6;
@@ -65,8 +79,8 @@ function lat2y(lat: number, z: number): number {
 }
 
 /** Elige el mayor zoom (más detalle) cuyo mosaico no exceda MAX_TESELAS_LADO de ancho/alto. */
-function elegirZoom(bbox: BBox): number {
-  for (let z = 14; z >= 3; z--) {
+function elegirZoom(bbox: BBox, zoomMax: number = 18): number {
+  for (let z = Math.min(zoomMax, 18); z >= 3; z--) {
     const xMin = Math.floor(lon2x(bbox.oeste, z));
     const xMax = Math.floor(lon2x(bbox.este, z));
     const yMin = Math.floor(lat2y(bbox.norte, z));
@@ -112,54 +126,9 @@ export interface MosaicoMapa {
   yMin: number;
 }
 
-export type { BBox };
-
-/**
- * Caja geográfica (con margen y un mínimo) que contiene todos los puntos.
- * Sirve para pedir el mosaico de teselas de un polígono medido sin tener
- * que repetir la matemática de Web Mercator en cada llamador.
- * Devuelve `null` si no hay ningún punto válido.
- */
-export function bboxDePuntos(
-  puntos: { latitud: number; longitud: number }[],
-  margen = 0.2
-): BBox | null {
-  const validos = (puntos || []).filter(
-    (p) => Number.isFinite(p?.latitud) && Number.isFinite(p?.longitud)
-  );
-  if (validos.length === 0) return null;
-
-  const lats = validos.map((p) => p.latitud);
-  const lons = validos.map((p) => p.longitud);
-  let norte = Math.max(...lats);
-  let sur = Math.min(...lats);
-  let este = Math.max(...lons);
-  let oeste = Math.min(...lons);
-
-  const spanLat = Math.max(norte - sur, SPAN_MINIMO_GRADOS);
-  const spanLon = Math.max(este - oeste, SPAN_MINIMO_GRADOS);
-  norte += spanLat * margen;
-  sur -= spanLat * margen;
-  este += spanLon * margen;
-  oeste -= spanLon * margen;
-
-  return { norte, sur, este, oeste };
-}
-
-/**
- * Descarga el mosaico de teselas para una región fija (sin puntos aún) — se
- * calcula una sola vez y se reutiliza para varios mapas (una ronda de visitas
- * por sección) marcando puntos distintos sobre el mismo fondo.
- *
- * `estilo` permite pedir el fondo satélite (el mismo que el técnico ve al
- * trazar el área); el valor por defecto sigue siendo el relieve claro, así
- * que los PDF que ya usaban esta función no cambian.
- */
-export async function construirMosaicoMapa(
-  bbox: BBox,
-  estilo: EstiloTesela = 'relieve'
-): Promise<MosaicoMapa | null> {
-  const zoom = elegirZoom(bbox);
+/** Descarga el mosaico de teselas para una región fija (sin puntos aún) — se calcula una sola vez y se reutiliza para varios mapas (una ronda de visitas por sección) marcando puntos distintos sobre el mismo fondo. */
+export async function construirMosaicoMapa(bbox: BBox): Promise<MosaicoMapa | null> {
+  const zoom = elegirZoom(bbox, ZOOM_MAX_TERRENO);
   const xMin = Math.floor(lon2x(bbox.oeste, zoom));
   const xMax = Math.floor(lon2x(bbox.este, zoom));
   const yMin = Math.floor(lat2y(bbox.norte, zoom));
@@ -172,8 +141,7 @@ export async function construirMosaicoMapa(
     }
   }
 
-  const urlTesela = urlTeselaSegunEstilo(estilo);
-  const descargas = await Promise.all(coords.map((c) => descargarComoDataUri(urlTesela(zoom, c.x, c.y))));
+  const descargas = await Promise.all(coords.map((c) => descargarComoDataUri(URL_TESELA(zoom, c.x, c.y))));
   if (descargas.every((d) => !d)) return null; // sin internet o servicio caído — ninguna tesela cargó
 
   const teselasHtml = coords
@@ -232,57 +200,6 @@ export function dibujarPuntosEnMosaico(
   </div>`;
 }
 
-/**
- * Dibuja un POLÍGONO (área medida) sobre un mosaico ya descargado y devuelve
- * el HTML completo del mapa, ajustado ("contain") dentro de
- * `maxAnchoPx`×`maxAltoPx`, con el mismo criterio de escala que
- * `dibujarPuntosEnMosaico`.
- *
- * Se usa en el PDF de la Visita Técnica v2 para que el área a intervenir se
- * imprima igual que la ve el técnico en el mapa en vivo: fondo satélite,
- * contorno del polígono y un punto por vértice (el primero en verde oscuro).
- */
-export function dibujarPoligonoEnMosaico(
-  mosaico: MosaicoMapa,
-  puntos: { latitud: number; longitud: number }[],
-  maxAnchoPx: number,
-  maxAltoPx: number
-): string {
-  const escala = Math.min(maxAnchoPx / mosaico.anchoPx, maxAltoPx / mosaico.altoPx);
-  const anchoDestinoPx = Math.round(mosaico.anchoPx * escala);
-  const altoDestinoPx = Math.round(mosaico.altoPx * escala);
-
-  const proyecto = (p: { latitud: number; longitud: number }) => ({
-    x: lon2x(p.longitud, mosaico.zoom) * TAMANO_TESELA - mosaico.xMin * TAMANO_TESELA,
-    y: lat2y(p.latitud, mosaico.zoom) * TAMANO_TESELA - mosaico.yMin * TAMANO_TESELA,
-  });
-
-  const vertices = puntos.map(proyecto);
-  const cadena = vertices.map((v) => `${v.x.toFixed(1)},${v.y.toFixed(1)}`).join(' ');
-
-  // Con 3+ puntos es un área (rellena); con 2 solo hay una línea medida.
-  const figura =
-    vertices.length >= 3
-      ? `<polygon points="${cadena}" fill="rgba(27,94,32,0.25)" stroke="#1B5E20" stroke-width="3" />`
-      : vertices.length === 2
-        ? `<polyline points="${cadena}" fill="none" stroke="#1B5E20" stroke-width="3" />`
-        : '';
-
-  const marcas = vertices
-    .map(
-      (v, i) =>
-        `<circle cx="${v.x.toFixed(1)}" cy="${v.y.toFixed(1)}" r="${i === 0 ? 7 : 5}" fill="${i === 0 ? '#1B5E20' : '#ffffff'}" stroke="#1B5E20" stroke-width="2" />`
-    )
-    .join('');
-
-  return `<div style="width:${anchoDestinoPx}px;height:${altoDestinoPx}px;overflow:hidden;border-radius:8px;border:1px solid #d0d0d0;position:relative;margin:0 auto;">
-    <div style="width:${mosaico.anchoPx}px;height:${mosaico.altoPx}px;position:relative;transform:scale(${escala.toFixed(4)});transform-origin:top left;">
-      ${mosaico.teselasHtml}
-      <svg width="${mosaico.anchoPx}" height="${mosaico.altoPx}" style="position:absolute;left:0;top:0;">${figura}${marcas}</svg>
-    </div>
-  </div>`;
-}
-
 // ============================================================
 // Vista de mapa para una MEDICIÓN (componente en pantalla)
 // ============================================================
@@ -314,8 +231,8 @@ const SPAN_MINIMO_GRADOS = 0.001;
  * margen del 20 %. Devuelve `null` si no hay puntos.
  *
  * `estilo` decide el fondo: `satelite` (por defecto) es el mismo que ve el
- * técnico al trazar el área en el mapa en vivo; `relieve` es el claro que
- * usan los PDF.
+ * técnico al trazar el área en el mapa en vivo; `terreno` es el topográfico
+ * que usan los PDF.
  */
 export function construirVistaMapa(
   puntos: { latitud: number; longitud: number }[],
@@ -343,7 +260,7 @@ export function construirVistaMapa(
   oeste -= spanLon * 0.2;
 
   const bbox: BBox = { norte, sur, este, oeste };
-  const zoom = elegirZoomConLimite(bbox, maxTeselasLado);
+  const zoom = elegirZoomConLimite(bbox, maxTeselasLado, estilo === 'terreno' ? ZOOM_MAX_TERRENO : 18);
   const xMin = Math.floor(lon2x(oeste, zoom));
   const xMax = Math.floor(lon2x(este, zoom));
   const yMin = Math.floor(lat2y(norte, zoom));
@@ -369,9 +286,9 @@ export function construirVistaMapa(
 }
 
 /** Igual que `elegirZoom` pero con un límite de teselas configurable. */
-function elegirZoomConLimite(bbox: BBox, maxTeselasLado: number): number {
+function elegirZoomConLimite(bbox: BBox, maxTeselasLado: number, zoomMax: number = 18): number {
   const limite = Math.max(1, Math.min(maxTeselasLado, MAX_TESELAS_LADO));
-  for (let z = 18; z >= 3; z--) {
+  for (let z = Math.min(zoomMax, 18); z >= 3; z--) {
     const xMin = Math.floor(lon2x(bbox.oeste, z));
     const xMax = Math.floor(lon2x(bbox.este, z));
     const yMin = Math.floor(lat2y(bbox.norte, z));

@@ -155,12 +155,47 @@ async function obtenerClimaEnMomento(lat, lon, fechaISO) {
   const fechaValida = !isNaN(fecha.getTime()) ? fecha : new Date();
   const fechaStr = fechaValida.toISOString().split('T')[0];
 
-  const url =
+  const construirUrl = (dia) =>
     `https://api.open-meteo.com/v1/forecast?latitude=${latNum}&longitude=${lonNum}` +
     `&hourly=temperature_2m,relative_humidity_2m,apparent_temperature,weather_code,cloud_cover,pressure_msl,wind_speed_10m,wind_direction_10m,visibility` +
-    `&start_date=${fechaStr}&end_date=${fechaStr}&timezone=auto`;
+    `&start_date=${dia}&end_date=${dia}&timezone=auto`;
 
-  const response = await fetchConTimeout(url, {}, FETCH_TIMEOUT_MS);
+  let fechaConsulta = fechaStr;
+  let aproximado = false;
+
+  let response = await fetchConTimeout(construirUrl(fechaConsulta), {}, FETCH_TIMEOUT_MS);
+
+  // Open-Meteo solo acepta fechas dentro de una ventana móvil (~92 días
+  // atrás / ~16 adelante). Un formulario capturado hace más tiempo —el caso
+  // normal cuando el técnico sincroniza semanas después— recibía HTTP 400
+  // "start_date is out of allowed range…" y su clima NUNCA se resolvía, por
+  // más reintentos que hiciera la app. Aquí se lee el rango que informa la
+  // propia API, se acota la fecha al extremo más cercano y se reintenta una
+  // vez. El resultado se marca `aproximado: true` para que quede claro que
+  // no es el clima exacto del día de la visita.
+  if (!response.ok && response.status === 400) {
+    let detalle = '';
+    try {
+      detalle = await response.text();
+    } catch { /* sin cuerpo */ }
+
+    const rango = /allowed range from (\d{4}-\d{2}-\d{2}) to (\d{4}-\d{2}-\d{2})/.exec(detalle);
+    if (rango) {
+      const [, desde, hasta] = rango;
+      const acotada = fechaStr < desde ? desde : fechaStr > hasta ? hasta : null;
+      if (acotada) {
+        console.warn(
+          `[Climate] Fecha ${fechaStr} fuera de la ventana de Open-Meteo (${desde}..${hasta}); se consulta ${acotada}`,
+        );
+        fechaConsulta = acotada;
+        aproximado = true;
+        response = await fetchConTimeout(construirUrl(fechaConsulta), {}, FETCH_TIMEOUT_MS);
+      }
+    } else {
+      throw new Error(`Open-Meteo respondió HTTP ${response.status}: ${detalle.slice(0, 160)}`);
+    }
+  }
+
   if (!response.ok) {
     throw new Error(`Open-Meteo respondió HTTP ${response.status}`);
   }
@@ -190,6 +225,12 @@ async function obtenerClimaEnMomento(lat, lon, fechaISO) {
 
   return {
     timestamp: horas[mejorIdx] ? new Date(horas[mejorIdx]).toISOString() : fechaValida.toISOString(),
+    // Si la fecha pedida estaba fuera de la ventana de Open-Meteo se consultó
+    // el extremo más cercano: se informa para no presentarlo como el clima
+    // exacto de la visita.
+    aproximado,
+    fecha_consulta: fechaConsulta,
+    fecha_solicitada: fechaStr,
     temperatura: {
       actual: data.hourly.temperature_2m?.[mejorIdx] ?? null,
       sensacion_termica: data.hourly.apparent_temperature?.[mejorIdx] ?? null,

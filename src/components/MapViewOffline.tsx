@@ -8,10 +8,11 @@
 // de salir a campo. Sin ese módulo nativo (ej. Expo Go), cae al fallback
 // WebView/Leaflet de más abajo, que siempre depende de internet.
 //
-// El estilo definido aquí (MAP_STYLE_RELIEVE/SATELITE) debe coincidir
-// exactamente con el que sirve backend/src/routes/maps.js en
-// GET /api/maps/style/:tipo — es lo que OfflineManager descarga; si
-// difieren, las teselas cacheadas no calzan con lo que se renderiza.
+// Los estilos definidos aquí (MAP_STYLE_TERRENO / MAP_STYLE_SATELITE /
+// MAP_STYLE_SATELITE_RECIENTE) deben coincidir exactamente con los que sirve
+// backend/src/routes/maps.js en GET /api/maps/style/:tipo — es lo que
+// OfflineManager descarga; si difieren, las teselas cacheadas no calzan con
+// lo que se renderiza.
 // ============================================================
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -21,6 +22,26 @@ import Svg, { Path, Circle } from 'react-native-svg';
 import NetInfo from '@react-native-community/netinfo';
 import { COLORS, FONTS, SPACING, BORDER_RADIUS } from '../theme';
 import { Coordenadas } from '../types';
+
+// ============================================================
+// VALIDACIÓN DE COORDENADAS
+// ============================================================
+// Caja envolvente de Colombia (con margen). Cualquier punto fuera de aquí es
+// un dato corrupto: en la base real hay 9 mediciones con vértices en Madrid
+// (lat ≈ 40.4, lng ≈ -3.7) que hacían que `fitBounds` encuadrara medio
+// Atlántico y el mapa pareciera vacío/roto al seleccionar a ese técnico.
+const COORD_BOUNDS = { minLat: -5, maxLat: 14, minLng: -82, maxLng: -66 };
+
+/** true si la coordenada es un número finito y cae dentro de Colombia. */
+export const esCoordenadaValida = (lat: unknown, lng: unknown): boolean =>
+  typeof lat === 'number' && typeof lng === 'number' &&
+  Number.isFinite(lat) && Number.isFinite(lng) &&
+  lat >= COORD_BOUNDS.minLat && lat <= COORD_BOUNDS.maxLat &&
+  lng >= COORD_BOUNDS.minLng && lng <= COORD_BOUNDS.maxLng;
+
+/** Filtra una lista de puntos dejando solo los que están dentro de Colombia. */
+export const filtrarPuntosValidos = <T extends { latitud: number; longitud: number }>(puntos: T[]): T[] =>
+  (puntos || []).filter((p) => esCoordenadaValida(p?.latitud, p?.longitud));
 
 /** Pin de mapa clásico (gota + punto blanco), tamaño 28×36, usado por markers con tipoIcono:'pin'. */
 const PinIcon: React.FC<{ color: string }> = ({ color }) => (
@@ -60,6 +81,8 @@ interface MarkerData {
   color?: string;
   /** Emoji icon para mostrar en vez de círculo (ej: 🌱) */
   icon?: string;
+  /** Si es true, el `icon` se pinta con `color` y un halo blanco (útil para glifos como ◈). */
+  iconColoreado?: boolean;
   /** 'pin' dibuja un pin de mapa clásico (gota + punto blanco) en vez de emoji/círculo, coloreado con `color`. */
   tipoIcono?: 'pin';
   /** Si es true, el técnico puede mantener presionado el marcador y arrastrarlo a una nueva posición (ver `onMarkerDragEnd`). */
@@ -72,8 +95,15 @@ interface MapViewOfflineProps {
   /** Altura del mapa en píxels. Usar '100%' para que ocupe todo el contenedor flex */
   height?: number | '100%';
   markers?: MarkerData[];
-  /** Tipo de mapa: relieve (CartoDB) o satélite (Esri) */
-  mapStyle?: 'relieve' | 'satelite';
+  /**
+   * Tipo de mapa base:
+   * - `terreno`: Esri World Topo Map (relieve + curvas de nivel + drenajes + vías).
+   *   Se muestra como «Terreno/Calles».
+   * - `satelite`: Esri World Imagery (satélite nítido, ~0.5 m, hasta zoom 18)
+   * - `satelite-reciente`: Sentinel-2 cloudless 2025 (imagen reciente, ~10 m/píxel).
+   *   Se muestra como «Satélite Relieve».
+   */
+  mapStyle?: 'terreno' | 'satelite' | 'satelite-reciente';
   /** Array de puntos para dibujar una polyline (ruta GPS) */
   polyline?: { latitud: number; longitud: number }[];
   /** Color de la polyline (por defecto verde #1B5E20). Usar naranja/amarillo en terreno con bosque. */
@@ -119,71 +149,145 @@ interface MapViewOfflineProps {
    * contar) y no quiere que la cámara se resetee sola.
    */
   foco?: { coords: Coordenadas; nonce: number } | null;
+  /**
+   * Reset explícito de cámara (botón "Puerto Rico"): cuando `nonce` cambia,
+   * se aplica `center` + `zoom` IGNORANDO el hecho de que el usuario haya
+   * hecho zoom/pan manual. Sin esto, el reset no tendría efecto una vez que
+   * el usuario exploró el mapa.
+   */
+  resetNonce?: number;
+  /**
+   * Encuadre automático de un conjunto de puntos (ej: los polígonos de las
+   * mediciones de los técnicos seleccionados). Cuando `nonce` cambia, la
+   * cámara se ajusta para que TODOS los puntos queden visibles. Es
+   * independiente de `center`/`zoom` y no se re-aplica en cada render.
+   */
+  fitBounds?: { points: Coordenadas[]; nonce: number } | null;
+  /**
+   * Recentrado puntual SIN tocar el zoom (botón "Centrar" del mapa general).
+   * Cuando `nonce` cambia, la cámara se mueve a `coords` conservando el nivel
+   * de zoom que el usuario tenía. Es el equivalente de `foco` para el mapa
+   * general, donde el centro es la ubicación GPS y no debe reimponer zoom.
+   */
+  recentrar?: { coords: Coordenadas; nonce: number } | null;
 }
 
 // ============================================================
 // ESTILOS DE MAPA
 // ============================================================
 
-// Estilo: Relieve — raster Esri World Light Gray Base.
-// IMPORTANTE: debe ser exactamente el mismo estilo (misma fuente/URL de
-// teselas) que backend/src/routes/maps.js sirve en GET /api/maps/style/relieve,
-// que es lo que OfflineManager.createPack() descarga para uso sin conexión —
-// si difieren, las teselas cacheadas offline no coinciden con las que este
-// componente pide al renderizar, y el mapa se ve en blanco igual estando
-// "descargado". Antes esta capa tenía además una fuente vectorial que
-// apuntaba a una ruta backend inexistente (/tesela) y una capa "background"
-// opaca que tapaba por completo el raster — ambas eliminadas.
-// Se migró de CartoDB (a.basemaps.cartocdn.com) a Esri porque CARTO retiró
-// su CDN de teselas anónimas y ahora exige API key (watermark "API KEY
-// REQUIRED" en el mapa).
-const MAP_STYLE_RELIEVE = {
+// Estilo: Terreno/Calles — raster OpenStreetMap (tile.openstreetmap.org).
+// Los cascos urbanos y las vías se ven mucho mejor que con Esri Topo, que es
+// la razón por la que se cambió. Contra conocida y aceptada: en zona rural
+// de Caquetá OSM no tiene datos por encima de zoom ~15 (verificado: teselas
+// de 103 bytes = PNG vacío en z16–z18), así que al acercar mucho el mapa se
+// ve borroso (Leaflet estira la última tesela buena) en vez de blanco.
+// Debe coincidir con backend/src/routes/maps.js GET /api/maps/style/terreno.
+const MAP_STYLE_TERRENO = {
   version: 8 as const,
-  name: 'GEODAILY - Relieve',
+  name: 'GEODAILY - Terreno/Calles (OpenStreetMap)',
   sources: {
-    'esri-light-gray': {
+    osm: {
       type: 'raster' as const,
-      tiles: ['https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Light_Gray_Base/MapServer/tile/{z}/{y}/{x}'],
+      tiles: ['https://tile.openstreetmap.org/{z}/{x}/{y}.png'],
       tileSize: 256,
       minzoom: 0,
-      maxzoom: 16,
-      attribution: '© Esri, HERE, Garmin, © OpenStreetMap contributors',
+      maxzoom: 19,
+      attribution: '© OpenStreetMap contributors',
     },
   },
   layers: [
-    { id: 'esri-bg', source: 'esri-light-gray', type: 'raster' as const, paint: { 'raster-opacity': 1 } },
+    { id: 'osm-bg', source: 'osm', type: 'raster' as const, paint: { 'raster-opacity': 1 } },
   ],
 };
 
-// Estilo: Satélite — raster desde Esri World Imagery
+// Estilo: Satélite HD — raster Esri World Imagery.
+// Es el satélite NÍTIDO: ~0.5 m/píxel y con datos hasta zoom 18, así que al
+// acercar a nivel de potrero/lote se sigue viendo definido (a diferencia de
+// Sentinel-2, que a ~10 m/píxel se ve borroso desde zoom 15). Contra: en
+// Puerto Rico, Caquetá la imagen es de ENERO 2020 (verificado con el endpoint
+// /identify del MapServer: DATE 20200104, RESOLUTION 0.5, WV02). Debe
+// coincidir con backend/src/routes/maps.js GET /api/maps/style/satelite.
 const MAP_STYLE_SATELITE = {
   version: 8 as const,
-  name: 'GEODAILY - Satélite',
+  name: 'GEODAILY - Satélite HD (Esri World Imagery)',
   sources: {
-    'satellite': {
+    'esri-imagery': {
       type: 'raster' as const,
-      tiles: [
-        'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
-      ],
+      tiles: ['https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'],
       tileSize: 256,
+      minzoom: 0,
+      maxzoom: 18,
       attribution: '© Esri, Maxar, Earthstar Geographics',
     },
   },
   layers: [
-    {
-      id: 'satellite-layer',
+    { id: 'esri-imagery-bg', source: 'esri-imagery', type: 'raster' as const, paint: { 'raster-opacity': 1 } },
+  ],
+};
+
+// Estilo: Satélite Relieve — Sentinel-2 cloudless 2025 (EOX).
+// Se refresca cada año, así que sirve para ver cambios de cobertura recientes
+// (potreros nuevos, rastrojos, tala). Contra: ~10 m/píxel — al acercar a
+// nivel de lote se ve borroso porque el servidor no tiene más detalle y el
+// cliente termina estirando la misma tesela. Debe coincidir con
+// backend/src/routes/maps.js GET /api/maps/style/satelite-reciente.
+const MAP_STYLE_SATELITE_RECIENTE = {
+  version: 8 as const,
+  name: 'GEODAILY - Satélite Relieve (Sentinel-2 2025)',
+  sources: {
+    's2cloudless': {
       type: 'raster' as const,
-      source: 'satellite',
-      paint: {
-        'raster-opacity': 1,
-      },
+      tiles: ['https://tiles.maps.eox.at/wmts/1.0.0/s2cloudless-2025_3857/default/g/{z}/{y}/{x}.jpg'],
+      tileSize: 256,
+      minzoom: 0,
+      maxzoom: 16,
+      attribution: 'Sentinel-2 cloudless 2025 © EOX IT Services GmbH (CC BY-NC-SA 4.0)',
     },
+  },
+  layers: [
+    { id: 's2cloudless-bg', source: 's2cloudless', type: 'raster' as const, paint: { 'raster-opacity': 1 } },
   ],
 };
 
 const MAP_STYLES = {
-  relieve: MAP_STYLE_RELIEVE,
+  terreno: MAP_STYLE_TERRENO,
   satelite: MAP_STYLE_SATELITE,
+  'satelite-reciente': MAP_STYLE_SATELITE_RECIENTE,
+};
+
+/**
+ * Tesela + límites de zoom de cada mapa base para el fallback Leaflet.
+ * `maxNativeZoom` es el último zoom que el servidor realmente tiene: por
+ * encima de eso Leaflet estira la última tesela (mapa borroso). Antes estaba
+ * fijo en 16 para todos, lo que desperdiciaba el detalle de Esri hasta 18.
+ */
+const WEB_TILE_CONFIG: Record<
+  'terreno' | 'satelite' | 'satelite-reciente',
+  { url: string; attribution: string; maxZoom: number; maxNativeZoom: number }
+> = {
+  terreno: {
+    // OpenStreetMap. maxNativeZoom 15: por encima de ese zoom OSM no tiene
+    // datos en la zona rural de Puerto Rico (Caquetá) y devuelve teselas
+    // vacías — con 15 Leaflet estira la última buena y el mapa queda
+    // borroso pero visible en vez de blanco.
+    url: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+    attribution: '© OpenStreetMap contributors',
+    maxZoom: 19,
+    maxNativeZoom: 15,
+  },
+  satelite: {
+    url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+    attribution: '© Esri, Maxar, Earthstar Geographics',
+    maxZoom: 19,
+    maxNativeZoom: 18,
+  },
+  'satelite-reciente': {
+    url: 'https://tiles.maps.eox.at/wmts/1.0.0/s2cloudless-2025_3857/default/g/{z}/{y}/{x}.jpg',
+    attribution: 'Sentinel-2 cloudless 2025 © EOX IT Services GmbH',
+    maxZoom: 16,
+    maxNativeZoom: 16,
+  },
 };
 
 const MapViewOffline: React.FC<MapViewOfflineProps> = ({
@@ -191,7 +295,7 @@ const MapViewOffline: React.FC<MapViewOfflineProps> = ({
   zoom = 14,
   height = 300,
   markers = [],
-  mapStyle = 'relieve',
+  mapStyle = 'terreno',
   polyline,
   polylineColor,
   startMarker,
@@ -205,6 +309,9 @@ const MapViewOffline: React.FC<MapViewOfflineProps> = ({
   onMarkerDragEnd,
   onMapPress,
   foco,
+  resetNonce,
+  fitBounds,
+  recentrar,
 }) => {
   const cameraRef = useRef<Record<string, any> | null>(null);
   const [isLoaded, setIsLoaded] = useState(false);
@@ -252,6 +359,53 @@ const MapViewOffline: React.FC<MapViewOfflineProps> = ({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [foco?.nonce, isLoaded]);
 
+  // Recentrado sin zoom (mapa general): mismo comportamiento que `foco` pero
+  // con un prop propio para no mezclar semánticas.
+  useEffect(() => {
+    if (isLoaded && cameraRef.current && recentrar) {
+      cameraRef.current.setCamera({
+        centerCoordinate: [recentrar.coords.longitud, recentrar.coords.latitud],
+        animationDuration: 500,
+      });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [recentrar?.nonce, isLoaded]);
+
+  // Encuadre automático (ej: mediciones de los técnicos seleccionados).
+  // Se calcula el bounding box de los puntos y se centra la cámara con un
+  // zoom aproximado según el tamaño del área. Solo corre cuando cambia el
+  // `nonce`, para no pelear con el zoom/pan manual del usuario.
+  useEffect(() => {
+    if (!isLoaded || !cameraRef.current || !fitBounds) return;
+    // Solo puntos dentro de Colombia: un vértice corrupto (p. ej. en Madrid)
+    // estiraba el bounding box hasta medio Atlántico y el mapa abría en
+    // zoom 3 sin mostrar nada útil.
+    const pts = filtrarPuntosValidos(fitBounds.points || []);
+    if (pts.length === 0) return;
+    let minLat = pts[0].latitud, maxLat = pts[0].latitud;
+    let minLng = pts[0].longitud, maxLng = pts[0].longitud;
+    pts.forEach((p) => {
+      if (p.latitud < minLat) minLat = p.latitud;
+      if (p.latitud > maxLat) maxLat = p.latitud;
+      if (p.longitud < minLng) minLng = p.longitud;
+      if (p.longitud > maxLng) maxLng = p.longitud;
+    });
+    const centerLat = (minLat + maxLat) / 2;
+    const centerLng = (minLng + maxLng) / 2;
+    const span = Math.max(maxLat - minLat, maxLng - minLng);
+    // Aproximación: ~0.02° de span ≈ zoom 13; cada duplicación del span
+    // baja un nivel de zoom. Se acota entre 8 y 17.
+    const zoomLevel = span <= 0
+      ? 16
+      : Math.min(17, Math.max(8, Math.round(13 - Math.log2(span / 0.02))));
+    cameraRef.current.setCamera({
+      centerCoordinate: [centerLng, centerLat],
+      zoomLevel,
+      animationDuration: 600,
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fitBounds?.nonce, isLoaded]);
+
   // ========================================================
   // WebView + Leaflet (Fallback para Expo Go / Testing)
   // ========================================================
@@ -260,7 +414,15 @@ const MapViewOffline: React.FC<MapViewOfflineProps> = ({
 
   // Web: iframe ref + ready state
   const webIframeRef = useRef<HTMLIFrameElement>(null);
-  const [webIframeReady, setWebIframeReady] = useState(false);
+  // Contador de generación del iframe. El iframe se RECREA cada vez que
+  // cambia el mapa base (el srcDoc cambia), así que un booleano "listo"
+  // no sirve: al pasar de false→true en el mismo tick React 18 agrupa las
+  // actualizaciones y el estado no cambia → los efectos de sincronización
+  // no se volvían a ejecutar y el mapa nuevo quedaba SIN capas (técnicos,
+  // mediciones, etc.). Con un contador que siempre incrementa, cada
+  // `mapReady` garantiza que los efectos se re-ejecuten.
+  const [iframeGen, setIframeGen] = useState(0);
+  const webIframeReady = iframeGen > 0;
 
   // Fallback (WebView/iframe) depende 100% de internet (Leaflet + teselas
   // externas) — si no carga en unos segundos, lo más probable es que no
@@ -282,6 +444,94 @@ const MapViewOffline: React.FC<MapViewOfflineProps> = ({
     } catch { /* iframe no disponible */ }
   }, []);
 
+  // Cámara que el usuario tenía ANTES de recrear el iframe (cambio de mapa
+  // base). El iframe se destruye y se crea de nuevo, así que Leaflet pierde
+  // el centro/zoom que el usuario había elegido. Se guarda aquí y se
+  // restaura en el primer `mapReady` del iframe nuevo.
+  const camaraPreviaRef = useRef<{ lat: number; lng: number; zoom: number } | null>(null);
+
+  // Web: reenvía TODO el estado al documento del iframe. Se llama en cada
+  // `mapReady` (el iframe se recrea al cambiar de mapa base) y también desde
+  // los efectos de sincronización. Usa refs para leer siempre los valores
+  // más recientes sin depender de que React vuelva a ejecutar los efectos.
+  const syncAllRef = useRef<() => void>(() => {});
+  syncAllRef.current = () => {
+    if (Platform.OS !== 'web') return;
+    postMsg({ type: 'setMarkers', markers: markers.map(m => ({ id: m.id, lat: m.latitud, lng: m.longitud, title: m.title, color: m.color, icon: m.icon, iconColoreado: m.iconColoreado, tipoIcono: m.tipoIcono, draggable: m.draggable, onClickMsg: !!onMarkerPress })) });
+    postMsg({ type: 'setPolyline', polyline: polyline?.map(p => ({ lat: p.latitud, lng: p.longitud })) || [], color: polylineColor });
+    postMsg({ type: 'setStartMarker', data: startMarker ? { lat: startMarker.latitud, lng: startMarker.longitud } : null });
+    postMsg({ type: 'setEndMarker', data: endMarker ? { lat: endMarker.latitud, lng: endMarker.longitud } : null });
+    postMsg({ type: 'setGeoJSONLayers', layers: (geojsonLayers || []).map(l => ({
+      id: l.id,
+      fillColor: l.fillColor || '#1B5E20',
+      fillOpacity: l.fillOpacity ?? 0.15,
+      strokeColor: l.strokeColor || '#1B5E20',
+      strokeWidth: l.strokeWidth || 2,
+      strokeOpacity: l.strokeOpacity ?? 0.6,
+      features: l.features,
+    })) });
+    const loc = userLocation || center;
+    if (loc) postMsg({ type: 'setUserLocation', data: { lat: loc.latitud, lng: loc.longitud } });
+
+    // Cámara: si venimos de un cambio de mapa base, se restaura EXACTAMENTE
+    // la vista que el usuario tenía (centro + zoom). Antes se enviaba
+    // `resetView` con el centro/zoom por defecto y luego `fitBounds`, lo que
+    // producía dos saltos visibles (zoom 13 → 10 → 13) cada vez que se
+    // cambiaba entre Terreno/Calles, Satélite HD y Satélite Relieve.
+    //
+    // La cámara NO se consume aquí: el iframe emite `mapReady` varias veces
+    // (load, readyState, retry 300/900 ms) y los efectos con `iframeGen`
+    // vuelven a llamar a `syncAll`. Si se anulara en la primera llamada, las
+    // siguientes reenviaban `resetView` + `fitBounds` y el mapa saltaba de
+    // nuevo. Se mantiene hasta que el usuario interactúe con el mapa.
+    const camara = camaraPreviaRef.current;
+    if (camara) {
+      postMsg({ type: 'restaurarCamara', lat: camara.lat, lng: camara.lng, zoom: camara.zoom });
+      return; // no se re-encuadra: se respeta la vista del usuario
+    }
+
+    if (center) postMsg({ type: 'resetView', lat: center.latitud, lng: center.longitud, zoom });
+    const ptsFit = filtrarPuntosValidos(fitBounds?.points || []);
+    if (ptsFit.length > 0) {
+      postMsg({ type: 'fitBounds', points: ptsFit.map(p => ({ lat: p.latitud, lng: p.longitud })) });
+    }
+  };
+
+  // Web: antes de que el iframe se recree por cambio de mapa base, se pide
+  // al iframe actual su centro/zoom reales y se guardan en `camaraPreviaRef`.
+  // Se hace en el render (no en un efecto) para que el valor esté listo
+  // antes de que el nuevo iframe emita su primer `mapReady`.
+  const mapStylePrevRef = useRef(mapStyle);
+  if (Platform.OS === 'web' && mapStylePrevRef.current !== mapStyle) {
+    mapStylePrevRef.current = mapStyle;
+    try {
+      const win = webIframeRef.current?.contentWindow as any;
+      const m = win?.map;
+      if (m && typeof m.getCenter === 'function') {
+        const c = m.getCenter();
+        camaraPreviaRef.current = { lat: c.lat, lng: c.lng, zoom: m.getZoom() };
+      }
+    } catch { /* iframe no accesible */ }
+  }
+
+  // La cámara guardada se descarta cuando el usuario interactúa con el mapa
+  // (arrastra, hace zoom o toca un marcador) o cuando el componente cambia
+  // de centro/zoom por una acción explícita (botón "Puerto Rico", GPS).
+  // Así la restauración no se aplica indefinidamente.
+  useEffect(() => {
+    if (Platform.OS !== 'web') return;
+    const handler = (event: MessageEvent) => {
+      try {
+        const msg = typeof event.data === 'string' ? JSON.parse(event.data) : event.data;
+        if (msg && (msg.type === 'mapPress' || msg.type === 'markerPress' || msg.type === 'markerDragEnd')) {
+          camaraPreviaRef.current = null;
+        }
+      } catch { /* ignorar */ }
+    };
+    window.addEventListener('message', handler);
+    return () => window.removeEventListener('message', handler);
+  }, []);
+
   // Web: listener de mensajes desde el iframe
   useEffect(() => {
     if (Platform.OS !== 'web') return;
@@ -289,7 +539,19 @@ const MapViewOffline: React.FC<MapViewOfflineProps> = ({
       try {
         const msg = typeof event.data === 'string' ? JSON.parse(event.data) : event.data;
         if (msg.type === 'mapReady') {
-          setWebIframeReady(true);
+          // El iframe se recrea cada vez que cambia el mapa base (srcDoc
+          // distinto). Se incrementa la generación para que los efectos de
+          // sincronización reenvíen marcadores, capas y cámara al nuevo
+          // documento — si no, el mapa nuevo quedaba vacío.
+          setIframeGen(g => g + 1);
+          // Además se reenvía el estado completo de inmediato (no depende de
+          // que React vuelva a ejecutar los efectos). El iframe emite
+          // `mapReady` varias veces (load, readyState, retry 400 ms), así que
+          // se reintenta un par de veces para cubrir el momento en que
+          // Leaflet termina de montar el contenedor.
+          syncAllRef.current();
+          setTimeout(() => syncAllRef.current(), 300);
+          setTimeout(() => syncAllRef.current(), 900);
         } else if (msg.type === 'mapPress' && onMapPress) {
           onMapPress(msg.latitud, msg.longitud);
         } else if (msg.type === 'markerPress' && onMarkerPress) {
@@ -308,46 +570,79 @@ const MapViewOffline: React.FC<MapViewOfflineProps> = ({
   // Web: sincronizar marcadores
   useEffect(() => {
     if (Platform.OS !== 'web' || !webIframeReady) return;
-    postMsg({ type: 'setMarkers', markers: markers.map(m => ({ id: m.id, lat: m.latitud, lng: m.longitud, title: m.title, color: m.color, icon: m.icon, tipoIcono: m.tipoIcono, draggable: m.draggable, onClickMsg: !!onMarkerPress })) });
-  }, [webIframeReady, markers, postMsg, onMarkerPress]);
+    postMsg({ type: 'setMarkers', markers: markers.map(m => ({ id: m.id, lat: m.latitud, lng: m.longitud, title: m.title, color: m.color, icon: m.icon, iconColoreado: m.iconColoreado, tipoIcono: m.tipoIcono, draggable: m.draggable, onClickMsg: !!onMarkerPress })) });
+  }, [iframeGen, markers, postMsg, onMarkerPress]);
 
   // Web: sincronizar polyline
   useEffect(() => {
     if (Platform.OS !== 'web' || !webIframeReady) return;
     postMsg({ type: 'setPolyline', polyline: polyline?.map(p => ({ lat: p.latitud, lng: p.longitud })) || [], color: polylineColor });
-  }, [webIframeReady, polyline, polylineColor, postMsg]);
+  }, [iframeGen, polyline, polylineColor, postMsg]);
 
   // Web: sincronizar marcador inicio
   useEffect(() => {
     if (Platform.OS !== 'web' || !webIframeReady) return;
     postMsg({ type: 'setStartMarker', data: startMarker ? { lat: startMarker.latitud, lng: startMarker.longitud } : null });
-  }, [webIframeReady, startMarker, postMsg]);
+  }, [iframeGen, startMarker, postMsg]);
 
   // Web: sincronizar marcador final
   useEffect(() => {
     if (Platform.OS !== 'web' || !webIframeReady) return;
     postMsg({ type: 'setEndMarker', data: endMarker ? { lat: endMarker.latitud, lng: endMarker.longitud } : null });
-  }, [webIframeReady, endMarker, postMsg]);
+  }, [iframeGen, endMarker, postMsg]);
 
-  // Web: sincronizar centro/zoom
+  // Web: sincronizar centro/zoom.
+  // OJO: NO se reenvía `zoom` aquí. Este efecto se dispara cada vez que el
+  // iframe se recrea (cambio de mapa base) y, si reimponía el zoom, pisaba
+  // el nivel que el técnico tenía. El zoom inicial ya viene inyectado en el
+  // HTML (ver `webMapHtml`) y el botón "Puerto Rico" lo fija vía resetView.
   useEffect(() => {
     if (Platform.OS !== 'web' || !webIframeReady || !center) return;
-    postMsg({ type: 'setView', lat: center.latitud, lng: center.longitud, zoom });
-  }, [webIframeReady, center, zoom, postMsg]);
+    postMsg({ type: 'setView', lat: center.latitud, lng: center.longitud });
+  }, [iframeGen, center, postMsg]);
+
+  // Web: al cambiar el mapa base (terreno ↔ satélite) el iframe se recrea
+  // (el srcDoc cambia). El centro/zoom reales ya se inyectan en el HTML
+  // generado, así que Leaflet arranca directamente en la ubicación correcta
+  // (antes arrancaba en Bogotá hardcodeado y el mapa "saltaba" a otra
+  // ciudad). Además se reenvía un `resetView` por si el centro cambió entre
+  // el render del HTML y el `mapReady`.
+  //
+  // IMPORTANTE: si venimos de un cambio de mapa base, NO se reenvía
+  // `resetView` — `syncAllRef` ya restauró la cámara exacta del usuario.
+  // Reenviarlo aquí pisaba esa restauración y provocaba el salto de zoom.
+  const centerRef = useRef(center);
+  const zoomRef = useRef(zoom);
+  centerRef.current = center;
+  zoomRef.current = zoom;
+  useEffect(() => {
+    if (Platform.OS !== 'web' || !webIframeReady) return;
+    if (camaraPreviaRef.current) return; // hay restauración pendiente
+    const c = centerRef.current;
+    if (!c) return;
+    postMsg({ type: 'resetView', lat: c.latitud, lng: c.longitud, zoom: zoomRef.current });
+  }, [iframeGen, postMsg]);
+
+  // Web: reset explícito de cámara (botón "Puerto Rico")
+  useEffect(() => {
+    if (Platform.OS !== 'web' || !webIframeReady || !center || !resetNonce) return;
+    postMsg({ type: 'resetView', lat: center.latitud, lng: center.longitud, zoom });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [iframeGen, resetNonce, postMsg]);
 
   // Web: centrado puntual sin zoom (botón "Centrar")
   useEffect(() => {
     if (Platform.OS !== 'web' || !webIframeReady || !foco) return;
     postMsg({ type: 'centrarSinZoom', lat: foco.coords.latitud, lng: foco.coords.longitud });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [webIframeReady, foco?.nonce, postMsg]);
+  }, [iframeGen, foco?.nonce, postMsg]);
 
   // Web: sincronizar ubicación usuario
   useEffect(() => {
     if (Platform.OS !== 'web' || !webIframeReady) return;
     const loc = userLocation || center;
     if (loc) postMsg({ type: 'setUserLocation', data: { lat: loc.latitud, lng: loc.longitud } });
-  }, [webIframeReady, userLocation, center, postMsg]);
+  }, [iframeGen, userLocation, center, postMsg]);
 
   // Web: sincronizar capas GeoJSON
   useEffect(() => {
@@ -361,22 +656,39 @@ const MapViewOffline: React.FC<MapViewOfflineProps> = ({
       strokeOpacity: l.strokeOpacity ?? 0.6,
       features: l.features,
     })) });
-  }, [webIframeReady, geojsonLayers, postMsg]);
+  }, [iframeGen, geojsonLayers, postMsg]);
 
-  // HTML base del mapa — SOLO con valores estáticos. 
-  // El centro/zoom se actualiza via injectJS para NO recargar el WebView.
+  // Web: encuadre automático (mediciones de los técnicos seleccionados)
+  // Se omite cuando hay una cámara pendiente de restaurar (cambio de mapa
+  // base): re-encuadrar ahí deshacía la vista que el usuario tenía.
+  useEffect(() => {
+    if (Platform.OS !== 'web' || !webIframeReady || !fitBounds) return;
+    if (camaraPreviaRef.current) return;
+    const pts = filtrarPuntosValidos(fitBounds.points || []);
+    if (pts.length === 0) return;
+    postMsg({ type: 'fitBounds', points: pts.map(p => ({ lat: p.latitud, lng: p.longitud })) });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [iframeGen, fitBounds?.nonce, postMsg]);
+
+  // Web: recentrado sin zoom (botón "Centrar" del mapa general)
+  useEffect(() => {
+    if (Platform.OS !== 'web' || !webIframeReady || !recentrar) return;
+    postMsg({ type: 'centrarSinZoom', lat: recentrar.coords.latitud, lng: recentrar.coords.longitud });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [iframeGen, recentrar?.nonce, postMsg]);
+
+  // HTML base del mapa. El centro/zoom iniciales se inyectan con los valores
+  // reales del prop para que, al recrearse el iframe (cambio de mapa base),
+  // Leaflet arranque ya en la ubicación correcta en vez de en un punto fijo
+  // (antes Bogotá hardcodeado → el mapa "saltaba" a otra ciudad).
   const webMapHtml = useMemo(() => {
-    const lat = 4.711;
-    const lon = -74.072;
-    const initialZoom = 14;
+    const lat = center?.latitud ?? 1.914;
+    const lon = center?.longitud ?? -75.145;
+    const initialZoom = zoom ?? 14;
 
-    const tileUrl = mapStyle === 'satelite'
-      ? `'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'`
-      : `'https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Light_Gray_Base/MapServer/tile/{z}/{y}/{x}'`;
-
-    const tileAttribution = mapStyle === 'satelite'
-      ? `'© Esri, Maxar, Earthstar Geographics'`
-      : `'© Esri, HERE, Garmin, © OpenStreetMap contributors'`;
+    const tileCfg = WEB_TILE_CONFIG[mapStyle] || WEB_TILE_CONFIG.terreno;
+    const tileUrl = `'${tileCfg.url}'`;
+    const tileAttribution = `'${tileCfg.attribution}'`;
 
     return `
 <!DOCTYPE html>
@@ -396,11 +708,24 @@ const MapViewOffline: React.FC<MapViewOfflineProps> = ({
   <div id="map"></div>
   <script>
     var map = L.map('map', { zoomControl: false, attributionControl: false });
+    // maxNativeZoom = último zoom que el servidor realmente tiene. Por encima
+    // de eso Leaflet estira la última tesela (mapa borroso al acercar). Antes
+    // estaba fijo en 16 para todos los mapas base, lo que desperdiciaba el
+    // detalle de Esri World Imagery hasta zoom 18.
     L.tileLayer(${tileUrl}, {
-      maxZoom: 19,
+      maxZoom: ${tileCfg.maxZoom},
+      maxNativeZoom: ${tileCfg.maxNativeZoom},
       attribution: ${tileAttribution}
     }).addTo(map);
     map.setView([${lat}, ${lon}], ${initialZoom});
+
+    // El usuario tomó el control de la cámara (zoom/pan manual). Mientras
+    // esté en true, _setView NO reimpone el zoom — solo recentra si el
+    // centro pedido difiere del actual. Sin esto, cada tick de polling o
+    // cada lectura GPS reseteaba el zoom al valor por defecto.
+    window._userMovedMap = false;
+    map.on('zoomstart', function() { window._userMovedMap = true; });
+    map.on('dragstart', function() { window._userMovedMap = true; });
 
       // --- Almacenes dinámicos (se actualizan vía injectJavaScript) ---
     window._markers = {};
@@ -433,10 +758,13 @@ const MapViewOffline: React.FC<MapViewOfflineProps> = ({
             })
           }).addTo(map);
         } else if (m.icon) {
+          var iconHtml = m.iconColoreado
+            ? '<span style="font-size:22px;line-height:1;color:' + (m.color || '#1B5E20') + ';text-shadow:0 0 2px #fff,0 0 2px #fff,0 0 3px #fff">' + m.icon + '</span>'
+            : '<span style="font-size:24px;line-height:1">' + m.icon + '</span>';
           layer = L.marker([m.lat, m.lng], {
             draggable: !!m.draggable,
             icon: L.divIcon({
-              html: '<span style="font-size:24px;line-height:1">' + m.icon + '</span>',
+              html: iconHtml,
               className: '',
               iconSize: [24, 24],
               iconAnchor: [12, 12]
@@ -558,16 +886,55 @@ const MapViewOffline: React.FC<MapViewOfflineProps> = ({
       });
     };
 
+    // Encuadre automático. Se descartan los puntos fuera de Colombia (datos
+    // corruptos: había mediciones con vértices en Madrid que estiraban el
+    // encuadre hasta medio Atlántico y dejaban el mapa "vacío" en zoom 3).
+    // Además se acota el zoom mínimo a 5 para no alejarse más de lo útil.
     window._fitBounds = function(data) {
       var bounds = [];
-      data.forEach(function(p) { bounds.push([p.lat, p.lng]); });
+      (data || []).forEach(function(p) {
+        if (typeof p.lat !== 'number' || typeof p.lng !== 'number') return;
+        if (p.lat < ${COORD_BOUNDS.minLat} || p.lat > ${COORD_BOUNDS.maxLat}) return;
+        if (p.lng < ${COORD_BOUNDS.minLng} || p.lng > ${COORD_BOUNDS.maxLng}) return;
+        bounds.push([p.lat, p.lng]);
+      });
       if (bounds.length > 1) {
-        map.fitBounds(bounds, { padding: [40, 40] });
+        map.fitBounds(bounds, { padding: [40, 40], maxZoom: 17 });
+        if (map.getZoom() < 5) map.setZoom(5);
+      } else if (bounds.length === 1) {
+        map.setView(bounds[0], Math.max(map.getZoom(), 15), { animate: true });
       }
     };
 
+    // Recentrar sin destruir la exploración del usuario:
+    //  - Si el usuario ya movió el mapa, se conserva SU zoom y solo se
+    //    recentra si el centro pedido está lejos (> ~50 m) del actual.
+    //  - Si no lo ha movido, se aplica centro + zoom como antes.
     window._setView = function(lat, lng, z) {
+      var cur = map.getCenter();
+      var moved = Math.abs(cur.lat - lat) > 0.0005 || Math.abs(cur.lng - lng) > 0.0005;
+      if (window._userMovedMap) {
+        if (moved) map.panTo([lat, lng], { animate: true });
+        return;
+      }
       map.setView([lat, lng], z, { animate: true });
+    };
+
+    // Fuerza centro + zoom ignorando el flag (botón "Puerto Rico").
+    window._resetView = function(lat, lng, z) {
+      window._userMovedMap = false;
+      map.setView([lat, lng], z, { animate: true });
+    };
+
+    // Restaura la cámara EXACTA que el usuario tenía antes de cambiar de
+    // mapa base. El iframe se recrea (nuevo srcDoc) y Leaflet arranca con
+    // los valores por defecto; sin esto el mapa "saltaba" de zoom al pasar
+    // de Terreno/Calles a Satélite HD o Satélite Relieve y viceversa.
+    // Se marca _userMovedMap = true para que los setView posteriores
+    // (polling, GPS) no vuelvan a pisar el zoom elegido.
+    window._restaurarCamara = function(lat, lng, z) {
+      window._userMovedMap = true;
+      map.setView([lat, lng], z, { animate: false });
     };
 
     // Centrado puntual sin tocar el zoom (botón "Centrar" manual) — panTo
@@ -590,7 +957,8 @@ const MapViewOffline: React.FC<MapViewOfflineProps> = ({
   </script>
 </body>
 </html>`;
-  }, [mapStyle, interactive]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mapStyle, interactive, center?.latitud, center?.longitud, zoom]);
 
   // Inyectar datos dinámicos cuando el WebView está listo o cambian
   const injectJS = useCallback((js: string) => {
@@ -603,7 +971,7 @@ const MapViewOffline: React.FC<MapViewOfflineProps> = ({
     if (!webViewReady) return;
     const data = markers.map(m => ({
       id: m.id, lat: m.latitud, lng: m.longitud,
-      title: m.title, color: m.color, icon: m.icon,
+      title: m.title, color: m.color, icon: m.icon, iconColoreado: m.iconColoreado,
       tipoIcono: m.tipoIcono, draggable: m.draggable, onClickMsg: !!onMarkerPress,
     }));
     injectJS(`window._setMarkers(${JSON.stringify(data)});true;`);
@@ -654,12 +1022,35 @@ const MapViewOffline: React.FC<MapViewOfflineProps> = ({
     injectJS(`window._setView(${center.latitud}, ${center.longitud}, ${zoom});true;`);
   }, [webViewReady, center, zoom, injectJS, hasNativeModule]);
 
+  // Reset explícito de cámara (botón "Puerto Rico")
+  useEffect(() => {
+    if (!webViewReady || hasNativeModule || !center || !resetNonce) return;
+    injectJS(`window._resetView(${center.latitud}, ${center.longitud}, ${zoom});true;`);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [webViewReady, resetNonce, injectJS, hasNativeModule]);
+
   // Centrado puntual sin zoom (botón "Centrar")
   useEffect(() => {
     if (!webViewReady || hasNativeModule || !foco) return;
     injectJS(`window._centrarSinZoom(${foco.coords.latitud}, ${foco.coords.longitud});true;`);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [webViewReady, foco?.nonce, injectJS, hasNativeModule]);
+
+  // Encuadre automático (WebView/Leaflet): reutiliza window._fitBounds
+  useEffect(() => {
+    if (!webViewReady || hasNativeModule || !fitBounds) return;
+    const pts = filtrarPuntosValidos(fitBounds.points || []).map(p => ({ lat: p.latitud, lng: p.longitud }));
+    if (pts.length === 0) return;
+    injectJS(`window._fitBounds(${JSON.stringify(pts)});true;`);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [webViewReady, fitBounds?.nonce, injectJS, hasNativeModule]);
+
+  // Recentrado sin zoom (WebView/Leaflet)
+  useEffect(() => {
+    if (!webViewReady || hasNativeModule || !recentrar) return;
+    injectJS(`window._centrarSinZoom(${recentrar.coords.latitud}, ${recentrar.coords.longitud});true;`);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [webViewReady, recentrar?.nonce, injectJS, hasNativeModule]);
 
   // Inyectar capas GeoJSON (veredas)
   useEffect(() => {
@@ -689,8 +1080,9 @@ const MapViewOffline: React.FC<MapViewOfflineProps> = ({
     }
     if (startMarker) points.push({ lat: startMarker.latitud, lng: startMarker.longitud });
     if (endMarker) points.push({ lat: endMarker.latitud, lng: endMarker.longitud });
-    if (points.length > 1) {
-      injectJS(`window._fitBounds(${JSON.stringify(points)});true;`);
+    const validos = points.filter(p => esCoordenadaValida(p.lat, p.lng));
+    if (validos.length > 1) {
+      injectJS(`window._fitBounds(${JSON.stringify(validos)});true;`);
     }
   }, [webViewReady, polyline, startMarker, endMarker, injectJS]);
 
@@ -757,6 +1149,8 @@ const MapViewOffline: React.FC<MapViewOfflineProps> = ({
         case 'setEndMarker': window._setEndMarker(data.data); break;
         case 'setUserLocation': window._setUserLocation(data.data); break;
         case 'setView': window._setView(data.lat, data.lng, data.zoom); break;
+        case 'resetView': window._resetView(data.lat, data.lng, data.zoom); break;
+        case 'restaurarCamara': window._restaurarCamara(data.lat, data.lng, data.zoom); break;
         case 'centrarSinZoom': window._centrarSinZoom(data.lat, data.lng); break;
         case 'setGeoJSONLayers': window._setGeoJSONLayers(data.layers); break;
         case 'fitBounds': window._fitBounds(data.points); break;
@@ -768,6 +1162,13 @@ const MapViewOffline: React.FC<MapViewOfflineProps> = ({
     if (document.readyState === 'complete') {
       window.parent.postMessage(JSON.stringify({ type: 'mapReady' }), '*');
     }
+    // Reintento: el primer aviso de "mapa listo" puede llegar antes de que
+    // Leaflet termine de inicializar el contenedor (el iframe se recrea al
+    // cambiar de mapa base). Se reenvía una vez más para que el padre
+    // sincronice cámara, marcadores y capas sobre el mapa ya montado.
+    setTimeout(function() {
+      window.parent.postMessage(JSON.stringify({ type: 'mapReady' }), '*');
+    }, 400);
     var map = L.map(`
       );
 
@@ -839,13 +1240,15 @@ const MapViewOffline: React.FC<MapViewOfflineProps> = ({
             : undefined
         }
       >
-        {/* Cámara inicial */}
+        {/* Cámara inicial. El fallback es Puerto Rico (Caquetá), igual que
+            el del iframe web: antes caía en Bogotá y el mapa abría a ~300 km
+            de la zona de trabajo. */}
         <MLCamera
           ref={cameraRef}
           defaultSettings={{
             centerCoordinate: center
               ? [center.longitud, center.latitud]
-              : [-74.072, 4.711],
+              : [-75.145, 1.914],
             zoomLevel: zoom,
           }}
         />

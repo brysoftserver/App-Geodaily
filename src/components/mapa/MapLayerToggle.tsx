@@ -22,10 +22,18 @@ interface MapLayerToggleProps {
 }
 
 const CAPAS: CapaInfo[] = [
-  { key: 'plantaciones', label: 'Plantaciones', icono: '🌱', conteo: 0 },
-  { key: 'tecnicos', label: 'Técnicos', icono: '👤', conteo: 0 },
-  { key: 'mediciones', label: 'Mediciones', icono: '📐', conteo: 0 },
-  { key: 'veredas', label: 'Veredas', icono: '🗺️', conteo: 0 },
+  // La capa de plantaciones está oculta por ahora (se usará en formularios
+  // futuros). Para mostrarla de nuevo, poner en `true` el flag de
+  // MapaGeneralScreen (MOSTRAR_CAPA_PLANTACIONES) y descomentar esta línea.
+  // { key: 'plantaciones', label: 'Plantaciones', icono: '🌱', conteo: 0 },
+  // La capa de técnicos está oculta por ahora: los técnicos se eligen desde
+  // el selector horizontal que aparece al activar "Mediciones". Para
+  // mostrarla de nuevo, descomentar esta línea.
+  // { key: 'tecnicos', label: 'Técnicos', icono: '👤', conteo: 0 },
+  { key: 'mediciones', label: 'Mediciones', icono: '◈', conteo: 0 },
+  // La capa de veredas está oculta por ahora. Para mostrarla de nuevo,
+  // descomentar esta línea (el resto de la lógica sigue intacta).
+  // { key: 'veredas', label: 'Veredas', icono: '🗺️', conteo: 0 },
 ];
 
 const MapLayerToggle: React.FC<MapLayerToggleProps> = ({ capasActivas, onToggle, conteos }) => {

@@ -41,10 +41,13 @@ const MENU_ITEMS = [
   {
     id: 'mapa',
     title: 'Mapa y Ubicación',
-    subtitle: 'Mapa interactivo con GPS y mediciones',
+    subtitle: 'Consulta tus polígonos y tu ubicación GPS',
     icon: '🗺️',
     color: COLORS.success,
     screen: 'TerrenoMapa',
+    // Desde el menú el mapa es de solo lectura: para trazar hay que entrar
+    // desde el formulario (Visita Técnica 2).
+    params: { soloLectura: true },
   },
   {
     id: 'listado',
@@ -99,7 +102,7 @@ const TerrenoMenuScreen: React.FC<TerrenoMenuProps> = ({ navigation }) => {
   const [borradorCount, setBorradorCount] = useState(0);
 
   const handlePress = (item: (typeof MENU_ITEMS)[0]) => {
-    navigation.navigate(item.screen as string);
+    navigation.navigate(item.screen as string, (item as { params?: Record<string, any> }).params);
   };
 
   // Cuenta los borradores del técnico para mostrarlos en la tarjeta

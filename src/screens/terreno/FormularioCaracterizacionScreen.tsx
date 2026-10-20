@@ -15,7 +15,6 @@ import {
   Platform,
   ActivityIndicator,
   AppState,
-  Switch,
 } from 'react-native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { RouteProp, useFocusEffect } from '@react-navigation/native';
@@ -67,7 +66,7 @@ import {
   MANEJO_RESIDUOS_OPTS,
   INGRESOS_SALARIOS_OPTS,
 } from '../../utils/constants';
-import { guardarBorrador, getBorrador, cargarBorradores, FormDraft, obtenerUltimoErrorBorrador } from '../../store/FormDraftStore';
+import { guardarBorrador, getBorrador, FormDraft, obtenerUltimoErrorBorrador } from '../../store/FormDraftStore';
 import {
   saveFormularioLocal,
   getFormularioById,
@@ -302,6 +301,12 @@ const EncuestaSocialAgroambientalScreen: React.FC<Props> = ({ navigation, route 
   const [documentosCount, setDocumentosCount] = useState(0);
 
   const formIdRef = useRef<string>('');
+  /**
+   * false hasta que terminó la carga inicial (borrador o precarga del
+   * beneficiario). Evita que el autoguardado con debounce escriba el
+   * formulario con un beneficiario que todavía no corresponde.
+   */
+  const borradorListoRef = useRef(false);
   const formularioRef = useRef(formularioActual);
   useEffect(() => { formularioRef.current = formularioActual; }, [formularioActual]);
   /** Se activa al completar con éxito para que el autoguardado (interval,
@@ -336,6 +341,13 @@ const EncuestaSocialAgroambientalScreen: React.FC<Props> = ({ navigation, route 
       // suman. No reordenar este bloque.
       formIdRef.current = draft.id;
       iniciarFormulario('caracterizacion', draft.id);
+      // El beneficiario del borrador es el que manda. `iniciarFormulario`
+      // conserva el beneficiario que ya estuviera en el contexto, así que al
+      // retomar un borrador venido de otro beneficiario el formulario podía
+      // quedar asociado al equivocado.
+      if (draft.beneficiario?.nombre || draft.beneficiario?.cedula) {
+        setBeneficiario(draft.beneficiario);
+      }
 
       if (draft.caracterizacion_nueva) {
         const d = draft.caracterizacion_nueva as unknown as Partial<EncuestaSocialAgroAmbiental>;
@@ -373,7 +385,7 @@ const EncuestaSocialAgroambientalScreen: React.FC<Props> = ({ navigation, route 
       if (draft.datosBloqueados) setDatosBloqueados(true);
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [addFoto, setFirmaBeneficiario, setFirmaTecnico, setHuella, setCoordenadas, iniciarFormulario]
+    [addFoto, setFirmaBeneficiario, setFirmaTecnico, setHuella, setCoordenadas, setBeneficiario, iniciarFormulario]
   );
 
   // ─── Inicializar ──────────────────────────────────────────
@@ -390,57 +402,24 @@ const EncuestaSocialAgroambientalScreen: React.FC<Props> = ({ navigation, route 
     }
 
     const init = async () => {
-      // Cargar borrador si existe
+      // Cargar borrador si existe (solo se llega con `draftId` desde
+      // "Formularios Incompletos", que es donde el técnico elige qué
+      // borrador retomar).
       if (draftId) {
-        const draft = await getBorrador(draftId);
+        const draft = await getBorrador(draftId).catch(() => null);
         if (draft) {
-          // ⚠️ ORDEN CRÍTICO: fijar el id del borrador ANTES de restaurar
-          // evidencias. Si se hiciera al final, el reducer recrearía el
-          // formulario y borraría las fotos/firmas recién restauradas. Mismo
-          // motivo que en `aplicarBorrador`.
-          formIdRef.current = draft.id;
-          iniciarFormulario('caracterizacion', draft.id);
+          // Restauración en un solo sitio: datos, evidencias, firmas,
+          // coordenadas y beneficiario. Antes esta rama era una copia del
+          // mismo código y podía desincronizarse de `aplicarBorrador`.
+          aplicarBorrador(draft);
         }
-        if (draft?.caracterizacion_nueva) {
-          // Fusión profunda con los EMPTY_*: los borradores creados con la
-          // versión anterior de la encuesta no traen los campos nuevos y
-          // dejarían inputs sin controlar (undefined).
-          const d = draft.caracterizacion_nueva as unknown as Partial<EncuestaSocialAgroAmbiental>;
-          setData({
-            ...EMPTY_ENCUESTA,
-            ...d,
-            componente_social: { ...EMPTY_SOCIAL, ...(d.componente_social || {}) },
-            caracterizacion_finca: { ...EMPTY_FINCA, ...(d.caracterizacion_finca || {}) },
-            componente_productivo: { ...EMPTY_PRODUCTIVO, ...(d.componente_productivo || {}) },
-            analisis_suelo: { ...EMPTY_ANALISIS, ...(d.analisis_suelo || {}) },
-            componente_agroambiental: { ...EMPTY_AGROAMBIENTAL, ...(d.componente_agroambiental || {}) },
-            recomendaciones: { ...EMPTY_RECOMENDACIONES, ...(d.recomendaciones || {}) },
-            acompaniamiento: { ...EMPTY_ACOMPANAMIENTO, ...(d.acompaniamiento || {}) },
-          });
-          if ((draft.caracterizacion_nueva as any).municipio) {
-            setSelectedMunicipio((draft.caracterizacion_nueva as any).municipio);
-          }
-        }
-        // Restaurar evidencias guardadas en el borrador
-        if (draft?.fotos && draft.fotos.length > 0) {
-          for (const foto of draft.fotos) {
-            addFoto(foto);
-          }
-        }
-        if (draft?.firma_beneficiario) setFirmaBeneficiario(draft.firma_beneficiario);
-        if (draft?.firma_tecnico) setFirmaTecnico(draft.firma_tecnico);
-        if (draft?.huella_beneficiario) setHuella(true);
-        // La ubicación capturada también se restauraba a medias: el borrador
-        // la guardaba, pero al reabrir se volvía a pedir GPS y se perdía la
-        // original si no había señal.
-        if (draft?.coordenadas) {
-          coordsDeBorradorRef.current = draft.coordenadas;
-          setCoordenadas(draft.coordenadas);
-        }
-        if (draft?.datosBloqueados) setDatosBloqueados(true);
       } else {
-        // Si NO hay borrador pero viene beneficiario precargado desde
-        // SeleccionarTipoFormulario, pre-llenar nombre y documento
+        // Formulario NUEVO: no se busca ni se ofrece ningún borrador. Los
+        // incompletos viven en "Formularios Incompletos" y el técnico los
+        // retoma desde allí. Preguntar aquí era lo que metía el borrador de
+        // un beneficiario dentro del formulario de otro.
+        // Solo se pre-llena el beneficiario precargado (ficha del
+        // beneficiario → "Diligenciar").
         const benefPrecargado = formularioActual?.beneficiario;
         if (benefPrecargado?.nombre || benefPrecargado?.cedula) {
           setData(prev => ({
@@ -453,56 +432,12 @@ const EncuestaSocialAgroambientalScreen: React.FC<Props> = ({ navigation, route 
           if (benefPrecargado.vereda || benefPrecargado.corregimiento) {
             setDatosBloqueados(true);
           }
-        } else {
-          // ─── Recuperación del trabajo en curso ──────────────────────────
-          // Antes, entrar a una encuesta NUEVA (sin `draftId` en la ruta)
-          // nunca buscaba un borrador existente: se creaba un formulario en
-          // blanco y el borrador anterior quedaba huérfano. El técnico veía
-          // un formulario vacío "como si lo hubiera abierto por primera vez"
-          // y su trabajo parecía borrado. Ahora, si existe un borrador
-          // propio reciente, se le ofrece continuarlo.
-          try {
-            const borradores = await cargarBorradores();
-            const propios = borradores
-              .filter((d) => d.tipo === 'caracterizacion')
-              .filter((d) => {
-                // Los borradores sin dueño asignado (creados mientras la
-                // sesión todavía se restauraba) también se ofrecen: es
-                // preferible recuperar de más que dejar trabajo perdido.
-                const t = d.tecnico || ({} as FormDraft['tecnico']);
-                if (user?.id && t.usuario_id) return t.usuario_id === user.id;
-                if (user?.cedula && t.cedula) return t.cedula === user.cedula;
-                return true;
-              })
-              .sort((a, b) => (b.updated_at || '').localeCompare(a.updated_at || ''));
-
-            const candidato = propios[0];
-            if (candidato) {
-              const nombre = candidato.beneficiario?.nombre || 'sin nombre';
-              const vereda = candidato.beneficiario?.vereda || '';
-              const cuando = candidato.updated_at
-                ? new Date(candidato.updated_at).toLocaleString()
-                : 'hace un momento';
-              Alert.alert(
-                '📝 Tienes un formulario sin terminar',
-                `Se encontró una encuesta guardada de "${nombre}"${vereda ? ` (${vereda})` : ''} del ${cuando}.\n\n¿Quieres continuar donde la dejaste?`,
-                [
-                  {
-                    // El borrador NO se borra: sigue disponible en
-                    // "Formularios Incompletos" por si se arrepiente.
-                    text: 'Empezar de cero',
-                    style: 'cancel',
-                  },
-                  { text: 'Continuar', onPress: () => aplicarBorrador(candidato) },
-                ],
-                { cancelable: false }
-              );
-            }
-          } catch (e) {
-            console.warn('[Encuesta] No se pudo buscar borradores pendientes:', e);
-          }
         }
       }
+
+      // A partir de aquí ya se puede autoguardar: si venía un borrador, sus
+      // datos y su beneficiario ya están aplicados.
+      borradorListoRef.current = true;
 
       // Capturar ubicación. Si el GPSContext ya tiene una lectura reciente
       // (<60 s) se reutiliza: evita un fix nuevo que puede tardar o colgarse.
@@ -852,6 +787,9 @@ const EncuestaSocialAgroambientalScreen: React.FC<Props> = ({ navigation, route 
     autoguardarRef.current = async () => {
       try {
         if (completadoRef.current) return;
+        // La carga inicial (borrador/precarga) aún no terminó: guardar ahora
+        // escribiría el beneficiario equivocado en el borrador.
+        if (!borradorListoRef.current) return;
         const draftIdActual = formIdRef.current || formularioActual?.id;
         if (!draftIdActual) return;
         // Nada que guardar todavía: evita crear borradores vacíos
@@ -938,6 +876,7 @@ const EncuestaSocialAgroambientalScreen: React.FC<Props> = ({ navigation, route 
 
   useEffect(() => {
     if (completadoRef.current) return;
+    if (!borradorListoRef.current) return;
     // Nada que guardar todavía: evita crear borradores vacíos al abrir
     if (!data.productor_nombre?.trim() && !data.documento?.trim()) return;
 

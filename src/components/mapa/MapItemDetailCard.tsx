@@ -21,6 +21,19 @@ const timeAgo = (iso?: string): string => {
   return `hace ${days}d`;
 };
 
+const formatCreationDate = (value?: string): string => {
+  if (!value) return '—';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '—';
+  return date.toLocaleString('es-CO', {
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+};
+
 interface MapItemDetailCardProps {
   item: Record<string, any>;
   plantaciones: Record<string, any>[];
@@ -97,28 +110,37 @@ const MapItemDetailCard: React.FC<MapItemDetailCardProps> = ({
         </>
       )}
 
-      {isMedicion && (
-        <>
-          <Text style={styles.title}>📐 Medición de Terreno</Text>
-          <DetailRow
-            label="Área"
-            value={`${mediciones.find((m: Record<string, any>) => m.id === realId)?.area_hectareas?.toFixed(2) || '?'} ha`}
-          />
-          <DetailRow
-            label="Perímetro"
-            value={`${mediciones.find((m: Record<string, any>) => m.id === realId)?.perimetro_metros?.toFixed(1) || '?'} m`}
-          />
-          {canViewAll && (
+      {isMedicion && (() => {
+        const med = mediciones.find((m: Record<string, any>) => m.id === realId);
+        const nombre = med?.nombre || item.nombre || null;
+        const beneficiario = med?.beneficiario_nombre || item.beneficiario_nombre || null;
+        const cedula = med?.beneficiario_cedula || item.beneficiario_cedula || null;
+        const vereda = med?.vereda || item.vereda || null;
+        const corregimiento = med?.corregimiento || item.corregimiento || null;
+        const tecnico = med?.usuario_nombre || item.usuario_nombre || null;
+        const area = med?.area_hectareas ?? item.area_hectareas;
+        const perimetro = med?.perimetro_metros ?? item.perimetro_metros;
+        const fechaCreacion = med?.timestamp || med?.created_at || item.timestamp || item.created_at;
+        return (
+          <>
+            <Text style={styles.title}>◈ Medición de Terreno</Text>
+            {!!nombre && <DetailRow label="Nombre" value={nombre} />}
+            <DetailRow label="Área" value={`${area?.toFixed(2) || '?'} ha`} />
+            <DetailRow label="Perímetro" value={`${perimetro?.toFixed(1) || '?'} m`} />
+            <DetailRow label="Fecha de creación" value={formatCreationDate(fechaCreacion)} />
+            <DetailRow label="Beneficiario" value={beneficiario || '—'} />
+            {!!cedula && <DetailRow label="Cédula" value={cedula} />}
             <DetailRow
-              label="Técnico"
-              value={mediciones.find((m: Record<string, any>) => m.id === realId)?.usuario_nombre || '—'}
+              label="Vereda"
+              value={[vereda, corregimiento].filter(Boolean).join(' — ') || '—'}
             />
-          )}
-          {isAdmin && (
-            <DeleteButton label="🗑 Eliminar medición" onPress={() => onDelete('medición', realId)} />
-          )}
-        </>
-      )}
+            {canViewAll && <DetailRow label="Técnico" value={tecnico || '—'} />}
+            {isAdmin && (
+              <DeleteButton label="🗑 Eliminar medición" onPress={() => onDelete('medición', realId)} />
+            )}
+          </>
+        );
+      })()}
 
       {isTecnico && (
         <>

@@ -69,11 +69,14 @@ function calcularBounds(center: Coordenadas, radioKm: number): [[number, number]
   return [noreste, suroeste];
 }
 
+/** Estilos de mapa base que se pueden descargar como paquete offline. */
+export type TipoMapaOffline = 'terreno' | 'satelite' | 'satelite-reciente';
+
 /** Crea (o recrea) un paquete offline con bounds ya calculados — usado tanto por el modo radio como por el modo bounds explícitos. */
 async function crearPaquete(
   name: string,
   bounds: [[number, number], [number, number]],
-  tipo: 'relieve' | 'satelite',
+  tipo: TipoMapaOffline,
   maxZoom: number,
   metadataExtra: Record<string, any>,
   onProgress?: (percentage: number) => void
@@ -135,7 +138,7 @@ async function crearPaquete(
 export const descargarMapaOffline = async (
   center: Coordenadas,
   radioKm: number,
-  tipo: 'relieve' | 'satelite',
+  tipo: TipoMapaOffline,
   onProgress?: (percentage: number) => void
 ): Promise<{ success: boolean; error?: string }> => {
   const name = `geodaily-${tipo}-${Math.round(center.latitud * 1000)}-${Math.round(center.longitud * 1000)}`;
@@ -151,7 +154,7 @@ export const descargarMapaOffline = async (
  */
 export const descargarMapaOfflinePorBounds = async (
   bounds: [[number, number], [number, number]],
-  tipo: 'relieve' | 'satelite',
+  tipo: TipoMapaOffline,
   nombreZona: string,
   maxZoom: number = ZOOM_DESCARGA.municipioCompleto,
   onProgress?: (percentage: number) => void

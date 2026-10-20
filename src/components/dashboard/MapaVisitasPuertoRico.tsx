@@ -51,6 +51,14 @@ const PUERTO_RICO_CENTER = { latitud: 1.914, longitud: -75.145 };
 const ZOOM_MUNICIPIO = 13;
 const REFRESCO_PLANTACIONES_MS = 45000;
 
+/**
+ * FEATURE FLAG — Áreas de cultivo (plantaciones) en este mapa.
+ * El conteo de plantaciones se usará en formularios futuros, así que por
+ * ahora se OCULTAN los pines, polígonos y el contador. Todo el código sigue
+ * intacto: para reactivarlo basta con poner esta constante en `true`.
+ */
+const MOSTRAR_PLANTACIONES = false;
+
 const etiquetaTipo = (formulario: Formulario) =>
   formulario.tipo === 'visita_tecnica'
     ? tituloVisitaTecnica(formulario.actividad?.visita_numero)
@@ -147,15 +155,19 @@ const MapaVisitasPuertoRico: React.FC<MapaVisitasPuertoRicoProps> = ({
 
   const plantacionMarkers = useMemo(
     () =>
-      (plantaciones as Plantacion[])
-        .filter((p) => typeof p.latitud === 'number' && typeof p.longitud === 'number')
-        .map((p) => ({
-          id: `plantacion-${p.id}`,
-          latitud: p.latitud,
-          longitud: p.longitud,
-          title: `${p.cantidad}x ${p.especie}`,
-          icon: getIconoEspecie(p.especie),
-        })),
+      // OCULTO por ahora: el conteo de plantaciones se usará en formularios
+      // futuros. Para reactivarlo, poner MOSTRAR_PLANTACIONES en `true`.
+      !MOSTRAR_PLANTACIONES
+        ? []
+        : (plantaciones as Plantacion[])
+            .filter((p) => typeof p.latitud === 'number' && typeof p.longitud === 'number')
+            .map((p) => ({
+              id: `plantacion-${p.id}`,
+              latitud: p.latitud,
+              longitud: p.longitud,
+              title: `${p.cantidad}x ${p.especie}`,
+              icon: getIconoEspecie(p.especie),
+            })),
     [plantaciones]
   );
 
@@ -164,6 +176,7 @@ const MapaVisitasPuertoRico: React.FC<MapaVisitasPuertoRicoProps> = ({
   // Polígonos rellenos de las áreas de cultivo que tienen forma trazada
   // (no solo un punto) — mismo estilo que MapaScreen.tsx del técnico.
   const plantacionPoligonos = useMemo(() => {
+    if (!MOSTRAR_PLANTACIONES) return [];
     const features = (plantaciones as Plantacion[])
       .filter((p) => (p.poligono?.length ?? 0) >= 3)
       .map((p) => {
@@ -214,8 +227,14 @@ const MapaVisitasPuertoRico: React.FC<MapaVisitasPuertoRicoProps> = ({
     <View style={styles.card}>
       <Text style={styles.titulo}>Mapa — Puerto Rico (Caquetá)</Text>
       <Text style={styles.subtitulo}>
-        {totalConCoordenadas} {totalConCoordenadas === 1 ? 'visita' : 'visitas'} · {plantacionMarkers.length}{' '}
-        {plantacionMarkers.length === 1 ? 'área de cultivo' : 'áreas de cultivo'} · toca un punto para ver el detalle
+        {totalConCoordenadas} {totalConCoordenadas === 1 ? 'visita' : 'visitas'}
+        {MOSTRAR_PLANTACIONES && (
+          <>
+            {' · '}{plantacionMarkers.length}{' '}
+            {plantacionMarkers.length === 1 ? 'área de cultivo' : 'áreas de cultivo'}
+          </>
+        )}
+        {' · '}toca un punto para ver el detalle
       </Text>
 
       <MapViewOffline
@@ -223,7 +242,7 @@ const MapaVisitasPuertoRico: React.FC<MapaVisitasPuertoRicoProps> = ({
         zoom={ZOOM_MUNICIPIO}
         height={340}
         markers={allMarkers}
-        mapStyle="relieve"
+        mapStyle="terreno"
         showUserLocation={false}
         onMarkerPress={handleMarkerPress}
         geojsonLayers={plantacionPoligonos}

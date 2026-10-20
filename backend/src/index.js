@@ -69,6 +69,31 @@ const corsOptions = {
 app.use(cors(corsOptions));
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
+
+// --- Traza de peticiones (diagnóstico de sincronización) ---
+// Antes el log SOLO mostraba lo que cada ruta decidía imprimir: un POST que
+// moría con 400/401/413 (validación, token, cuerpo demasiado grande) no dejaba
+// NINGUNA huella, y desde el servidor era imposible saber si el teléfono de un
+// usuario (p. ej. un interventor que "no puede subir sus formularios") siquiera
+// estaba enviando algo. Esta traza imprime método, ruta, código de respuesta,
+// usuario autenticado (si lo hay) y duración, y deja una línea aparte cuando la
+// respuesta es de error para que se vea con `journalctl | grep '✖'`.
+const METODOS_SIN_RUIDO = new Set(['GET', 'HEAD', 'OPTIONS']);
+app.use((req, res, next) => {
+  const inicio = Date.now();
+  res.on('finish', () => {
+    const ms = Date.now() - inicio;
+    const status = res.statusCode;
+    // Los GET se registran solo si fallan (evita llenar el log con listados).
+    if (METODOS_SIN_RUIDO.has(req.method) && status < 400) return;
+    const usuario = req.user?.usuario || req.user?.id || 'anónimo';
+    const linea = `[Req] ${req.method} ${req.originalUrl} → ${status} (${usuario}, ${ms} ms)`;
+    if (status >= 400) console.warn(`✖ ${linea}`);
+    else console.log(linea);
+  });
+  next();
+});
+
 app.use('/uploads', express.static(path.join(__dirname, '..', process.env.UPLOAD_DIR || './uploads')));
 
 // --- Rutas ---

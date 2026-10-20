@@ -44,16 +44,18 @@ import {
   deleteFormularioLocal,
   getSeguimientosNoSincronizados,
   saveSeguimientoLocal,
+  eliminarSeguimientoLocal,
   deleteEvidenciaLocal,
 } from '../services/database';
 import { uploadPhoto } from '../services/photos.service';
 import { uploadVideo } from '../services/videos.service';
 import { subirDocumento } from '../services/documentos.service';
 import { subirFirma } from '../services/firmas.service';
-import { registrarSeguimiento } from '../services/seguimientos.service';
+import { registrarSeguimiento, esSeguimientoEliminado } from '../services/seguimientos.service';
 import { generarPDF } from '../services/pdf.service';
-import { limpiarEvidenciasAntiguas } from '../services/mediaStorage.service';
+import { limpiarEvidenciasAntiguas, archivoLocalFaltante } from '../services/mediaStorage.service';
 import { resolverClimaYUbicacion } from '../services/climate.service';
+import { clearSyncFailures, resumirUltimoFallo } from '../services/syncDiagnostics';
 import apiClient from '../services/api';
 import { API_CONFIG } from '../theme';
 
@@ -366,6 +368,15 @@ export const SyncProvider: React.FC<{ children: React.ReactNode }> = ({
 
       for (const foto of fotos) {
         try {
+          // El archivo ya no está en el teléfono (limpieza de caché, app
+          // reinstalada, captura hecha en otro dispositivo): reintentar la
+          // subida fallará en CADA ciclo para siempre. Se retira de la cola
+          // en vez de dejar un pendiente eterno e invisible.
+          if (await archivoLocalFaltante(foto.uri)) {
+            console.warn('[Sync] Foto sin archivo local, se retira de la cola:', foto.id, foto.uri);
+            await markFotoAsSynced(foto.id);
+            continue;
+          }
           // Evidencias capturadas antes de que existiera el formulario en
           // curso llegan aquí con formulario_id = '' (captura en campo con
           // la app recién abierta). Se sube igual —a la carpeta del
@@ -405,6 +416,12 @@ export const SyncProvider: React.FC<{ children: React.ReactNode }> = ({
 
       for (const video of videos) {
         try {
+          // Ver nota en las fotos: sin archivo local no hay nada que subir.
+          if (await archivoLocalFaltante(video.uri)) {
+            console.warn('[Sync] Video sin archivo local, se retira de la cola:', video.id, video.uri);
+            await markVideoAsSynced(video.id);
+            continue;
+          }
           const formIdEvidencia = video.formulario_id || undefined;
           const r = await uploadVideo(
             video.uri,
@@ -458,6 +475,13 @@ export const SyncProvider: React.FC<{ children: React.ReactNode }> = ({
 
       for (const doc of pendientes) {
         try {
+          // Documento capturado en otro dispositivo o cuyo archivo ya no
+          // existe: reintentarlo no puede funcionar nunca.
+          if (await archivoLocalFaltante(doc.uri)) {
+            console.warn('[Sync] Documento sin archivo local, se retira de la cola:', doc.id, doc.uri);
+            await marcarDocumentoSincronizado(doc.id);
+            continue;
+          }
           const mimeType =
             doc.tipo === 'pdf'
               ? 'application/pdf'
@@ -520,7 +544,7 @@ export const SyncProvider: React.FC<{ children: React.ReactNode }> = ({
         try {
           let algunaFallo = false;
 
-          const fotosFinales: { id: string; uri: string; archivo_id?: string }[] = [];
+          const fotosFinales: { id: string; uri: string; archivo_id?: string; perdido?: boolean }[] = [];
           for (const foto of s.fotos || []) {
             if (foto.archivo_id) {
               fotosFinales.push(foto);
@@ -531,6 +555,14 @@ export const SyncProvider: React.FC<{ children: React.ReactNode }> = ({
             // en vez de bloquear el seguimiento reintentando para siempre.
             if (!foto.uri?.startsWith('file://')) {
               console.warn('[Sync] Foto de seguimiento sin archivo local, se descarta:', foto.id);
+              continue;
+            }
+            // El archivo existió pero ya no está en el dispositivo (caché
+            // borrada, app reinstalada). Se marca como perdida para que el
+            // rescate de `getSeguimientosNoSincronizados` deje de pedirla.
+            if (await archivoLocalFaltante(foto.uri)) {
+              console.warn('[Sync] Foto de seguimiento perdida (ya no está en el teléfono):', foto.id);
+              fotosFinales.push({ ...foto, perdido: true });
               continue;
             }
             const subida = await uploadPhoto(
@@ -561,7 +593,7 @@ export const SyncProvider: React.FC<{ children: React.ReactNode }> = ({
             }
           }
 
-          const videosFinales: { id: string; uri: string; archivo_id?: string }[] = [];
+          const videosFinales: { id: string; uri: string; archivo_id?: string; perdido?: boolean }[] = [];
           for (const video of s.videos || []) {
             if (video.archivo_id) {
               videosFinales.push(video);
@@ -571,6 +603,12 @@ export const SyncProvider: React.FC<{ children: React.ReactNode }> = ({
             // no hay nada que subir desde este dispositivo.
             if (!video.uri?.startsWith('file://')) {
               console.warn('[Sync] Video de seguimiento sin archivo local, se descarta:', video.id);
+              continue;
+            }
+            // Ver nota en las fotos: el archivo ya no está en el teléfono.
+            if (await archivoLocalFaltante(video.uri)) {
+              console.warn('[Sync] Video de seguimiento perdido (ya no está en el teléfono):', video.id);
+              videosFinales.push({ ...video, perdido: true });
               continue;
             }
             const subida = await uploadVideo(
@@ -632,28 +670,43 @@ export const SyncProvider: React.FC<{ children: React.ReactNode }> = ({
           // objetivo, descripción, observaciones, geo, beneficiario) se sube
           // siempre; las evidencias que falten se reintentan en el próximo
           // ciclo sin bloquear el registro.
-          const guardadoEnServidor = await registrarSeguimiento({
-            id: s.id,
-            actividad: s.actividad,
-            objetivo_visita: s.objetivo_visita,
-            descripcion_actividad: s.descripcion_actividad,
-            observaciones: s.observaciones,
-            fotos: fotosFinales.filter((f) => f.archivo_id).map((f) => ({ archivo_id: f.archivo_id as string, uri: f.uri })),
-            videos: videosFinales.filter((v) => v.archivo_id).map((v) => ({ archivo_id: v.archivo_id as string, uri: v.uri })),
-            firma_beneficiario: firmaBeneficiarioFinal,
-            firma_autor: firmaAutorFinal,
-            geo_latitud: s.geo_latitud,
-            geo_longitud: s.geo_longitud,
-            geo_altitud: s.geo_altitud,
-            geo_precision: s.geo_precision,
-            huella_beneficiario: s.huella_beneficiario,
-            beneficiario_cedula: s.beneficiario_cedula,
-            beneficiario_nombre: s.beneficiario_nombre,
-            formulario_id: s.formulario_id,
-            // Respetar la fecha corregida (o la de creación offline) en vez de
-            // dejar que el servidor use NOW() al re-sincronizar.
-            created_at: s.created_at,
-          });
+          //
+          // 410 = el seguimiento fue eliminado en el servidor (tumba en
+          // `seguimientos_eliminados`). No se reintenta ni se recrea: se
+          // descarta la copia local. Las evidencias ya subidas se conservan
+          // en MinIO a propósito, por si la documentación se necesita después.
+          let guardadoEnServidor: Awaited<ReturnType<typeof registrarSeguimiento>> | undefined;
+          try {
+            guardadoEnServidor = await registrarSeguimiento({
+              id: s.id,
+              actividad: s.actividad,
+              objetivo_visita: s.objetivo_visita,
+              descripcion_actividad: s.descripcion_actividad,
+              observaciones: s.observaciones,
+              fotos: fotosFinales.filter((f) => f.archivo_id).map((f) => ({ archivo_id: f.archivo_id as string, uri: f.uri })),
+              videos: videosFinales.filter((v) => v.archivo_id).map((v) => ({ archivo_id: v.archivo_id as string, uri: v.uri })),
+              firma_beneficiario: firmaBeneficiarioFinal,
+              firma_autor: firmaAutorFinal,
+              geo_latitud: s.geo_latitud,
+              geo_longitud: s.geo_longitud,
+              geo_altitud: s.geo_altitud,
+              geo_precision: s.geo_precision,
+              huella_beneficiario: s.huella_beneficiario,
+              beneficiario_cedula: s.beneficiario_cedula,
+              beneficiario_nombre: s.beneficiario_nombre,
+              formulario_id: s.formulario_id,
+              // Respetar la fecha corregida (o la de creación offline) en vez de
+              // dejar que el servidor use NOW() al re-sincronizar.
+              created_at: s.created_at,
+            });
+          } catch (errRegistro) {
+            if (esSeguimientoEliminado(errRegistro)) {
+              console.warn('[Sync] Seguimiento eliminado en el servidor — se descarta la copia local:', s.id);
+              await eliminarSeguimientoLocal(s.id);
+              continue;
+            }
+            throw errRegistro;
+          }
 
           if (algunaFallo) {
             // El registro ya está en el servidor, pero quedan evidencias
@@ -1074,6 +1127,42 @@ export const SyncProvider: React.FC<{ children: React.ReactNode }> = ({
 
     dispatch({ type: 'SET_SYNCING' });
     const failedIds: string[] = [];
+    // Avisos NO críticos (hoy: clima/ubicación). No se cuentan como fallo
+    // porque no bloquean nada: el formulario, sus fotos y su PDF ya se
+    // subieron. Antes el clima entraba en `failedIds`, así que un formulario
+    // viejo —cuya fecha ya está fuera de la ventana de Open-Meteo y nunca
+    // podrá resolver su clima— mantenía el mensaje "no se sincronizaron"
+    // en pantalla para siempre, aunque todo lo importante estuviera subido.
+    const warnings: string[] = [];
+    // Limpiar el motivo del ciclo anterior para que el mensaje de la UI
+    // refleje lo que está fallando AHORA.
+    clearSyncFailures();
+
+    // Guardia offline: la app funciona sin internet, así que pulsar
+    // "Sincronizar" sin señal NO debe sentirse como un fallo del sistema
+    // (ni gastar intentos de backoff). Todo lo capturado ya está guardado en
+    // SQLite y se sube solo cuando vuelve la red (ver el listener
+    // offline→online más abajo). Se muestra un mensaje tranquilizador en vez
+    // del genérico "no se sincronizaron".
+    try {
+      const conexion = await NetInfo.fetch();
+      const sinRed = !conexion.isConnected || conexion.isInternetReachable === false;
+      if (sinRed) {
+        console.log('[Sync] Sin conexión — no se intenta subir; quedará pendiente.');
+        isSyncing.current = false;
+        dispatch({
+          type: 'SYNC_ERROR',
+          error:
+            'Sin conexión a internet. Lo que registró quedó guardado en el dispositivo ' +
+            'y se enviará automáticamente cuando vuelva la señal.',
+        });
+        await checkPending();
+        scheduleSyncRetry();
+        return;
+      }
+    } catch {
+      // Si NetInfo no responde no se bloquea el sync: se intenta igual.
+    }
 
     try {
       const [pendingForms, pendingPlantaciones, pendingMediciones, pendingTracking, pendingVisitas, pendingDocumentos, pendingEvidencias, climaPendientes, pendingSeguimientos] = await Promise.all([
@@ -1146,7 +1235,13 @@ export const SyncProvider: React.FC<{ children: React.ReactNode }> = ({
         console.log(`[Sync] Resolviendo clima/ubicación de ${climaPendientes.length} formulario(s)`);
         dispatch({ type: 'SET_STAGE', stage: 'Resolviendo ubicación y clima...' });
         const climaFallidos = await resolverClimaPendiente(climaPendientes);
-        failedIds.push(...climaFallidos.map(id => `clima-${id}`));
+        // NO crítico: se reintenta en silencio en el próximo ciclo.
+        warnings.push(...climaFallidos.map(id => `clima-${id}`));
+        if (climaFallidos.length > 0) {
+          console.warn(
+            `[Sync] Clima/ubicación sin resolver en ${climaFallidos.length} formulario(s) — se reintentará sin bloquear el sync`,
+          );
+        }
       }
 
       // 4. Sincronizar formularios (uno por uno con backoff)
@@ -1204,14 +1299,25 @@ export const SyncProvider: React.FC<{ children: React.ReactNode }> = ({
       // Resultado final
       if (failedIds.length === 0) {
         retryCount.current = 0;
+        if (warnings.length > 0) {
+          // Se completa el sync aunque queden avisos: nada crítico falló.
+          console.log(
+            `[Sync] Ciclo completado con ${warnings.length} aviso(s) no crítico(s): ${warnings.slice(0, 5).join(', ')}`,
+          );
+        }
         dispatch({
           type: 'SYNC_SUCCESS',
           timestamp: new Date().toISOString(),
         });
       } else {
+        // Motivo real del fallo (registrado por los servicios de subida).
+        // Sin esto el usuario solo veía un conteo, sin ninguna pista.
+        const motivo = resumirUltimoFallo();
         dispatch({
           type: 'SYNC_ERROR',
-          error: `${failedIds.length} elemento(s) no se sincronizaron. Se conservaron en el dispositivo; se reintentará automáticamente.`,
+          error:
+            `${failedIds.length} elemento(s) no se sincronizaron. Se conservaron en el dispositivo; se reintentará automáticamente.` +
+            (motivo ? ` Motivo: ${motivo}.` : ''),
         });
         dispatch({ type: 'SET_FAILED', ids: failedIds });
         scheduleSyncRetry();

@@ -92,14 +92,17 @@ const MENU_ITEMS = [
     color: COLORS.roleGerente,
     screen: 'BaseDatosBeneficiarios',
   },
-  {
-    id: 'plantaciones',
-    title: 'Áreas de Plantación',
-    subtitle: 'Áreas marcadas por técnico, vereda y beneficiario',
-    icon: '🌱',
-    color: COLORS.success,
-    screen: 'GerentePlantacionesPorTecnico',
-  },
+  // OCULTO por ahora: el conteo de plantaciones se usará en formularios
+  // futuros. La pantalla y la ruta siguen existiendo; solo se esconde la
+  // entrada del menú. Para reactivarla, descomentar este bloque.
+  // {
+  //   id: 'plantaciones',
+  //   title: 'Áreas de Plantación',
+  //   subtitle: 'Áreas marcadas por técnico, vereda y beneficiario',
+  //   icon: '🌱',
+  //   color: COLORS.success,
+  //   screen: 'GerentePlantacionesPorTecnico',
+  // },
   {
     id: 'anexos',
     title: 'Revisar Anexos',

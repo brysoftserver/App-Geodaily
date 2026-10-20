@@ -37,9 +37,12 @@ import {
   generarYCompartirReporteMensualExcel,
   generarYCompartirReporteSemanalExcel,
   RangoSemanaCalendario,
+  BeneficiarioReporteExcel,
 } from '../services/cronogramaExcel.service';
-import CronogramaPersonalModal from '../components/CronogramaPersonalModal';
-import { getBeneficiarios } from '../services/beneficiariosDB.service';
+import CronogramaPersonalModal, {
+  BeneficiarioCronograma,
+} from '../components/CronogramaPersonalModal';
+import { getBeneficiarios, fetchBeneficiariosDelServidor } from '../services/beneficiariosDB.service';
 import { BeneficiarioDB } from '../types';
 import { tituloVisitaTecnica } from '../utils/visitaTecnica';
 
@@ -95,6 +98,9 @@ const CalendarioGlobalScreen: React.FC<CalendarioGlobalScreenProps> = ({ navigat
   const [cronogramaModalVisible, setCronogramaModalVisible] = useState(false);
   const [cargandoPersonal, setCargandoPersonal] = useState(false);
   const [personalCronograma, setPersonalCronograma] = useState<PersonalCronograma[]>([]);
+  // Beneficiarios del servidor (funciona también en web, donde SQLite no existe)
+  const [beneficiariosServidor, setBeneficiariosServidor] = useState<BeneficiarioDB[]>([]);
+  const [cargandoBeneficiarios, setCargandoBeneficiarios] = useState(false);
 
   const lastLoadRef = useRef(0);
   /** Evita solapar peticiones: con el refresco cada 30 s, una carga lenta
@@ -501,6 +507,7 @@ const CalendarioGlobalScreen: React.FC<CalendarioGlobalScreenProps> = ({ navigat
 
     setCronogramaModalVisible(true);
     setCargandoPersonal(true);
+    setCargandoBeneficiarios(true);
     try {
       const personal = await getPersonalCronograma();
       setPersonalCronograma(personal);
@@ -511,18 +518,124 @@ const CalendarioGlobalScreen: React.FC<CalendarioGlobalScreenProps> = ({ navigat
     } finally {
       setCargandoPersonal(false);
     }
+
+    // El desglose de beneficiarios es opcional: si falla, el modal sigue
+    // funcionando igual que antes (solo selección de personas).
+    try {
+      const lista = await fetchBeneficiariosDelServidor();
+      setBeneficiariosServidor(lista);
+    } catch (e) {
+      console.warn('[Calendario] Error cargando beneficiarios para cronograma:', e);
+    } finally {
+      setCargandoBeneficiarios(false);
+    }
   };
 
-  const handleConfirmarCronograma = async (personas: PersonalCronograma[]) => {
+  const handleConfirmarCronograma = async (
+    personas: PersonalCronograma[],
+    beneficiariosSeleccionados: BeneficiarioReporteExcel[] = []
+  ) => {
     setCronogramaModalVisible(false);
     await generarYCompartirReporteMensualExcel(
       todasLasVisitas,
       visitasProgramadas,
       rangoMesVisible,
       nombreMesVisible,
-      personas
+      personas,
+      beneficiariosSeleccionados.length > 0 ? beneficiariosSeleccionados : undefined
     );
   };
+
+  /**
+   * Desglose técnico → beneficiarios para el modal de descarga.
+   * Une dos fuentes: (a) beneficiarios asignados al técnico en la base y
+   * (b) beneficiarios que aparecen en las visitas del mes (realizadas o
+   * planificadas), para que un técnico sin asignación formal pero con
+   * visitas también muestre su lista. Se deduplica por cédula/nombre.
+   */
+  const beneficiariosPorTecnico = useMemo<Record<string, BeneficiarioCronograma[]>>(() => {
+    const normalizar = (valor?: string | null) =>
+      (valor || '')
+        .toString()
+        .trim()
+        .toLowerCase()
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .replace(/\s+/g, ' ');
+    const soloDigitos = (valor?: string | null) => (valor || '').toString().replace(/\D/g, '');
+
+    const inicioMes = rangoMesVisible.inicio;
+    const finMes = rangoMesVisible.fin;
+    const dentroDelMes = (fecha?: string | null) => {
+      const dia = (fecha || '').slice(0, 10);
+      return !!dia && dia >= inicioMes && dia <= finMes;
+    };
+
+    const resultado: Record<string, BeneficiarioCronograma[]> = {};
+
+    for (const persona of personalCronograma) {
+      const mapa = new Map<string, BeneficiarioCronograma>();
+      const agregar = (nombre?: string | null, cedula?: string | null) => {
+        const nombreLimpio = (nombre || '').toString().trim();
+        const cedulaLimpia = soloDigitos(cedula);
+        if (!nombreLimpio && !cedulaLimpia) return;
+        const clave = `${cedulaLimpia}|${normalizar(nombreLimpio)}`;
+        const existente = mapa.get(clave);
+        if (existente) {
+          existente.visitas += 1;
+          return;
+        }
+        mapa.set(clave, { nombre: nombreLimpio || cedulaLimpia, cedula: cedulaLimpia, visitas: 1 });
+      };
+
+      // (a) Asignados en la base (servidor o local)
+      const fuenteAsignados = beneficiariosServidor.length > 0 ? beneficiariosServidor : beneficiarios;
+      for (const b of fuenteAsignados) {
+        const porId = !!b.tecnico_asignado_id && b.tecnico_asignado_id === persona.id;
+        const porNombre =
+          !b.tecnico_asignado_id && normalizar(b.tecnico_asignado_nombre) === normalizar(persona.nombre);
+        if (!porId && !porNombre) continue;
+        const clave = `${soloDigitos(b.cedula)}|${normalizar(b.nombre_completo)}`;
+        if (!mapa.has(clave)) {
+          mapa.set(clave, {
+            nombre: (b.nombre_completo || '').toString().trim() || b.cedula,
+            cedula: soloDigitos(b.cedula),
+            visitas: 0,
+          });
+        }
+      }
+
+      // (b) Visitas realizadas del mes
+      for (const f of todasLasVisitas) {
+        if (normalizar(f.tecnico?.nombre) !== normalizar(persona.nombre)) continue;
+        if (!dentroDelMes(f.created_at)) continue;
+        agregar(f.beneficiario?.nombre, f.beneficiario?.cedula);
+      }
+
+      // (c) Visitas planificadas del mes
+      for (const v of visitasProgramadas) {
+        const esDelTecnico =
+          (!!v.usuario_id && v.usuario_id === persona.id) ||
+          normalizar(v.usuario_nombre) === normalizar(persona.nombre);
+        if (!esDelTecnico) continue;
+        if (!dentroDelMes(v.fecha)) continue;
+        agregar(v.beneficiario_nombre, v.beneficiario_cedula);
+      }
+
+      resultado[persona.id] = Array.from(mapa.values()).sort((a, b) =>
+        a.nombre.localeCompare(b.nombre, 'es')
+      );
+    }
+
+    return resultado;
+  }, [
+    personalCronograma,
+    beneficiariosServidor,
+    beneficiarios,
+    todasLasVisitas,
+    visitasProgramadas,
+    rangoMesVisible,
+  ]);
 
   // --- ELIMINAR VISITA REALIZADA (solo admin) ---
   // Borra el formulario y TODO su árbol (revisiones, notificaciones,
@@ -1051,6 +1164,8 @@ const CalendarioGlobalScreen: React.FC<CalendarioGlobalScreenProps> = ({ navigat
           cargando={cargandoPersonal}
           personal={personalCronograma}
           rangoTexto={textoRangoMes}
+          beneficiariosPorTecnico={beneficiariosPorTecnico}
+          cargandoBeneficiarios={cargandoBeneficiarios}
           onCancelar={() => setCronogramaModalVisible(false)}
           onConfirmar={handleConfirmarCronograma}
         />

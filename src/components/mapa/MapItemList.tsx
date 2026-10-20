@@ -91,16 +91,32 @@ const MapItemList: React.FC<MapItemListProps> = ({
         if (isMedicion) {
           const m = mediciones.find((x: Record<string, any>) => x.id === realId);
           if (!m) return null;
+          const atribucion = [m.beneficiario_nombre, m.vereda, m.corregimiento]
+            .filter(Boolean)
+            .join(' · ');
           return (
             <TouchableOpacity
               key={item.id}
               style={styles.item}
               onPress={() => onSelect(item)}
             >
-              <Text style={styles.icon}>📐</Text>
+              <Text style={styles.icon}>◈</Text>
               <View style={styles.contentCol}>
-                <Text style={styles.title}>{m.area_hectareas?.toFixed(2)} ha</Text>
+                <Text style={styles.title}>
+                  {m.nombre ? `${m.nombre} — ` : ''}
+                  {m.area_hectareas?.toFixed(2)} ha
+                </Text>
                 <Text style={styles.subtitle}>Perímetro: {m.perimetro_metros?.toFixed(1)} m</Text>
+                {!!atribucion && (
+                  <Text style={styles.subtitle} numberOfLines={1}>
+                    👤 {atribucion}
+                  </Text>
+                )}
+                {!!m.usuario_nombre && (
+                  <Text style={styles.subtitle} numberOfLines={1}>
+                    🧑‍🌾 Técnico: {m.usuario_nombre}
+                  </Text>
+                )}
               </View>
               {isAdmin && (
                 <TouchableOpacity onPress={() => onDelete('medición', realId)}>

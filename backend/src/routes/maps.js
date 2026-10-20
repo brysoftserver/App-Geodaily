@@ -281,45 +281,77 @@ router.delete('/veredas/:id', authenticateToken, async (req, res) => {
 // ============================================================
 
 const MAP_STYLES = {
-  relieve: {
+  // Terreno/Calles: OpenStreetMap (tile.openstreetmap.org). Los cascos
+  // urbanos y las vías se ven mucho mejor que con Esri Topo. Contra conocida:
+  // en zona rural de Caquetá OSM no tiene datos por encima de zoom ~15
+  // (teselas vacías), así que al acercar mucho el mapa se ve borroso.
+  // Debe coincidir con MAP_STYLE_TERRENO en src/components/MapViewOffline.tsx.
+  terreno: {
     version: 8,
-    name: 'GEODAILY - Relieve',
+    name: 'GEODAILY - Terreno/Calles (OpenStreetMap)',
     sources: {
-      'esri-light-gray': {
+      osm: {
         type: 'raster',
-        tiles: ['https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Light_Gray_Base/MapServer/tile/{z}/{y}/{x}'],
+        tiles: ['https://tile.openstreetmap.org/{z}/{x}/{y}.png'],
         tileSize: 256,
         minzoom: 0,
-        maxzoom: 16,
-        attribution: '© Esri, HERE, Garmin, © OpenStreetMap contributors',
+        maxzoom: 19,
+        attribution: '© OpenStreetMap contributors',
       },
     },
     layers: [
-      { id: 'esri-bg', source: 'esri-light-gray', type: 'raster', paint: { 'raster-opacity': 1 } },
+      { id: 'osm-bg', source: 'osm', type: 'raster', paint: { 'raster-opacity': 1 } },
     ],
   },
+  // Satélite HD: Esri World Imagery. Es el satélite NÍTIDO (~0.5 m/píxel,
+  // datos hasta zoom 18) — el que se usa para medir y trazar lotes. Contra:
+  // en Puerto Rico, Caquetá la imagen es de enero 2020.
+  // Debe coincidir con MAP_STYLE_SATELITE en src/components/MapViewOffline.tsx.
   satelite: {
     version: 8,
-    name: 'GEODAILY - Satélite',
+    name: 'GEODAILY - Satélite HD (Esri World Imagery)',
     sources: {
-      satellite: {
+      'esri-imagery': {
         type: 'raster',
         tiles: ['https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'],
         tileSize: 256,
+        minzoom: 0,
+        maxzoom: 18,
         attribution: '© Esri, Maxar, Earthstar Geographics',
       },
     },
     layers: [
-      { id: 'satellite-layer', source: 'satellite', type: 'raster', paint: { 'raster-opacity': 1 } },
+      { id: 'esri-imagery-bg', source: 'esri-imagery', type: 'raster', paint: { 'raster-opacity': 1 } },
+    ],
+  },
+  // Satélite Relieve: Sentinel-2 cloudless 2025 (EOX). Se refresca cada año
+  // (sirve para ver cambios de cobertura), pero a ~10 m/píxel se ve borroso
+  // al acercar a nivel de lote.
+  // Debe coincidir con MAP_STYLE_SATELITE_RECIENTE en src/components/MapViewOffline.tsx.
+  'satelite-reciente': {
+    version: 8,
+    name: 'GEODAILY - Satélite Relieve (Sentinel-2 2025)',
+    sources: {
+      s2cloudless: {
+        type: 'raster',
+        tiles: ['https://tiles.maps.eox.at/wmts/1.0.0/s2cloudless-2025_3857/default/g/{z}/{y}/{x}.jpg'],
+        tileSize: 256,
+        minzoom: 0,
+        maxzoom: 16,
+        attribution: 'Sentinel-2 cloudless 2025 © EOX IT Services GmbH (CC BY-NC-SA 4.0)',
+      },
+    },
+    layers: [
+      { id: 's2cloudless-bg', source: 's2cloudless', type: 'raster', paint: { 'raster-opacity': 1 } },
     ],
   },
 };
 
-// GET /api/maps/style/:tipo — Estilo de mapa (relieve | satelite)
+// GET /api/maps/style/:tipo — Estilo de mapa (terreno | satelite | satelite-reciente)
 router.get('/style/:tipo', (req, res) => {
   const estilo = MAP_STYLES[req.params.tipo];
   if (!estilo) {
-    return res.status(404).json({ estado: 'error', mensaje: 'Estilo no encontrado. Usa "relieve" o "satelite".' });
+    return res.status(404).json({ estado: 'error', mensaje: 'Estilo no encontrado. Usa "terreno", "satelite" o "satelite-reciente".' });
   }
   res.json(estilo);
 });

@@ -132,17 +132,6 @@ const LoginScreen: React.FC = () => {
             </View>
           )}
           </View>
-
-          {/* Usuarios de prueba — solo visible en desarrollo */}
-          {__DEV__ && (
-            <View style={styles.testUsers}>
-              <Text style={styles.testUsersTitle}>Usuarios de prueba:</Text>
-              <Text style={styles.testUser}>Técnico: tecnico1 / 123456</Text>
-              <Text style={styles.testUser}>Coordinador/a: supervisor1 / 123456</Text>
-              <Text style={styles.testUser}>Gerente: gerente1 / 123456</Text>
-              <Text style={styles.testUser}>Admin: admin1 / admin123</Text>
-            </View>
-          )}
         </ScrollView>
         </KeyboardAvoidingView>
       </View>
@@ -264,20 +253,6 @@ const styles = StyleSheet.create({
     fontSize: FONTS.sizes.xs,
     textAlign: 'center',
     lineHeight: 16,
-  },
-  testUsers: {
-    marginTop: SPACING.lg,
-    alignItems: 'center',
-  },
-  testUsersTitle: {
-    fontSize: FONTS.sizes.sm,
-    color: COLORS.textOnPrimary + 'CC',
-    marginBottom: SPACING.xs,
-  },
-  testUser: {
-    fontSize: FONTS.sizes.xs,
-    color: COLORS.textOnPrimary + 'AA',
-    fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
   },
 });
 

@@ -312,6 +312,17 @@ export const saveFormularioLocal = async (
       ]
     );
 
+    try {
+      await database.runAsync(
+        `UPDATE mediciones_terreno
+         SET formulario_id = ?, formulario_id_pendiente = NULL, sincronizado = 0
+         WHERE formulario_id_pendiente = ?`,
+        [formulario.id, formulario.id]
+      );
+    } catch (error) {
+      console.warn('[DB] No se pudo vincular la medición pendiente al formulario:', error);
+    }
+
     // Si no está sincronizado, añadir a la cola
     if (!formulario.sincronizado) {
       await addToSyncQueue(formulario.id, 'crear', formulario);
@@ -1336,15 +1347,24 @@ export const runMigrations = async (): Promise<void> => {
       );
 
       -- Mediciones de terreno (Shoelace)
+      -- Las columnas de beneficiario/vereda/corregimiento amarran la medición
+      -- a la visita del beneficiario (antes solo las plantaciones lo hacían).
+      -- El formulario puede seguir como borrador en AsyncStorage.
       CREATE TABLE IF NOT EXISTS mediciones_terreno (
         id TEXT PRIMARY KEY,
-        formulario_id TEXT NOT NULL,
+        formulario_id TEXT,
+        formulario_id_pendiente TEXT,
         usuario_id TEXT,
         area_hectareas REAL NOT NULL,
         area_metros2 REAL NOT NULL,
         perimetro_metros REAL NOT NULL,
         puntos_json TEXT NOT NULL,
         nombre TEXT DEFAULT NULL,
+        beneficiario_cedula TEXT DEFAULT NULL,
+        beneficiario_nombre TEXT DEFAULT NULL,
+        vereda TEXT DEFAULT NULL,
+        corregimiento TEXT DEFAULT NULL,
+        usuario_nombre TEXT DEFAULT NULL,
         created_at TEXT NOT NULL,
         sincronizado INTEGER DEFAULT 0,
         FOREIGN KEY (formulario_id) REFERENCES formularios(id)
@@ -1597,6 +1617,25 @@ export const runMigrations = async (): Promise<void> => {
       // Ya existe, ignorar
     }
 
+    // Migración: amarrar la medición al beneficiario de la visita técnica.
+    // Antes `mediciones_terreno` solo guardaba formulario_id/usuario_id, así
+    // que en el mapa general no se sabía de qué beneficiario, vereda o
+    // corregimiento era cada polígono (las plantaciones sí lo guardaban).
+    for (const col of [
+      'beneficiario_cedula',
+      'beneficiario_nombre',
+      'vereda',
+      'corregimiento',
+      'usuario_nombre',
+    ]) {
+      try {
+        await db.runAsync(`ALTER TABLE mediciones_terreno ADD COLUMN ${col} TEXT DEFAULT NULL`);
+        console.log(`[DB] Columna ${col} agregada a mediciones_terreno`);
+      } catch {
+        // Ya existe, ignorar
+      }
+    }
+
     // Migración: agregar columna sincronizado a plantaciones si no existe (BDs antiguas)
     try {
       await db.runAsync('ALTER TABLE plantaciones ADD COLUMN sincronizado INTEGER DEFAULT 0');
@@ -1700,6 +1739,124 @@ export const runMigrations = async (): Promise<void> => {
       console.log('[DB] ✅ Columna completado agregada a seguimientos_locales (backfill: registros previos marcados como completados)');
     } catch {
       // Ya existe, ignorar
+    }
+
+    // Un borrador vive en AsyncStorage y aún no existe en `formularios`.
+    // La medición se guarda sin FK hasta que el formulario real se persista;
+    // el id pendiente permite restablecer el vínculo después sin perderlo.
+    const columnasMediciones = await db.getAllAsync<{ name: string; notnull: number }>(
+      'PRAGMA table_info(mediciones_terreno)'
+    );
+    const formularioNoNullable = columnasMediciones.find((col) => col.name === 'formulario_id')?.notnull === 1;
+    const tieneFormularioPendiente = columnasMediciones.some((col) => col.name === 'formulario_id_pendiente');
+    if (formularioNoNullable) {
+      await db.execAsync('BEGIN IMMEDIATE');
+      try {
+        await db.execAsync(`
+          DROP TABLE IF EXISTS mediciones_terreno_migracion;
+          CREATE TABLE mediciones_terreno_migracion (
+            id TEXT PRIMARY KEY,
+            formulario_id TEXT,
+            formulario_id_pendiente TEXT,
+            usuario_id TEXT,
+            area_hectareas REAL NOT NULL,
+            area_metros2 REAL NOT NULL,
+            perimetro_metros REAL NOT NULL,
+            puntos_json TEXT NOT NULL,
+            nombre TEXT DEFAULT NULL,
+            beneficiario_cedula TEXT DEFAULT NULL,
+            beneficiario_nombre TEXT DEFAULT NULL,
+            vereda TEXT DEFAULT NULL,
+            corregimiento TEXT DEFAULT NULL,
+            usuario_nombre TEXT DEFAULT NULL,
+            created_at TEXT NOT NULL,
+            sincronizado INTEGER DEFAULT 0,
+            FOREIGN KEY (formulario_id) REFERENCES formularios(id)
+          );
+          INSERT INTO mediciones_terreno_migracion (
+            id, formulario_id, formulario_id_pendiente, usuario_id,
+            area_hectareas, area_metros2, perimetro_metros, puntos_json,
+            nombre, beneficiario_cedula, beneficiario_nombre, vereda,
+            corregimiento, usuario_nombre, created_at, sincronizado
+          )
+          SELECT
+            m.id,
+            CASE WHEN EXISTS (SELECT 1 FROM formularios f WHERE f.id = m.formulario_id)
+              THEN m.formulario_id ELSE NULL END,
+            CASE WHEN m.formulario_id IS NOT NULL
+              AND m.formulario_id NOT IN ('', 'mapa_directo')
+              AND NOT EXISTS (SELECT 1 FROM formularios f WHERE f.id = m.formulario_id)
+              THEN m.formulario_id ELSE NULL END,
+            m.usuario_id, m.area_hectareas, m.area_metros2, m.perimetro_metros,
+            m.puntos_json, m.nombre, m.beneficiario_cedula,
+            m.beneficiario_nombre, m.vereda, m.corregimiento, m.usuario_nombre,
+            m.created_at,
+            CASE WHEN m.formulario_id IS NOT NULL
+              AND m.formulario_id NOT IN ('', 'mapa_directo')
+              AND NOT EXISTS (SELECT 1 FROM formularios f WHERE f.id = m.formulario_id)
+              THEN 0 ELSE m.sincronizado END
+          FROM mediciones_terreno m;
+          DROP TABLE mediciones_terreno;
+          ALTER TABLE mediciones_terreno_migracion RENAME TO mediciones_terreno;
+        `);
+        await db.execAsync('COMMIT');
+        console.log('[DB] mediciones_terreno migrada: vínculo de formulario opcional');
+      } catch (error) {
+        await db.execAsync('ROLLBACK');
+        throw error;
+      }
+    } else if (!tieneFormularioPendiente) {
+      await db.runAsync('ALTER TABLE mediciones_terreno ADD COLUMN formulario_id_pendiente TEXT');
+    }
+
+    // Backfill: las mediciones creadas ANTES de que existieran las columnas
+    // de beneficiario quedaron sin dueño. Se infieren a partir del formulario
+    // de visita al que pertenecen (formulario_id) y del usuario que las trazó.
+    // Se marcan como no sincronizadas para que el próximo sync envíe la
+    // atribución al servidor.
+    try {
+      const pendientes = await db.getAllAsync<Record<string, any>>(
+        `SELECT id, formulario_id, usuario_id FROM mediciones_terreno
+         WHERE beneficiario_cedula IS NULL
+           AND formulario_id IS NOT NULL
+           AND formulario_id <> 'mapa_directo'`
+      );
+      let rellenadas = 0;
+      for (const med of pendientes) {
+        try {
+          const form = await db.getFirstAsync<Record<string, any>>(
+            `SELECT beneficiario_cedula, beneficiario_nombre, vereda, corregimiento
+             FROM formularios WHERE id = ?`,
+            [med.formulario_id]
+          );
+          if (!form) continue;
+          // El nombre del técnico no se puede inferir localmente (no hay tabla
+          // de usuarios en SQLite): el servidor lo completa con el JOIN de
+          // `usuarios` en el próximo fetch. Aquí solo se rellena el beneficiario.
+          await db.runAsync(
+            `UPDATE mediciones_terreno
+             SET beneficiario_cedula = ?, beneficiario_nombre = ?,
+                 vereda = ?, corregimiento = ?,
+                 sincronizado = 0
+             WHERE id = ?`,
+            [
+              form.beneficiario_cedula || null,
+              form.beneficiario_nombre || null,
+              form.vereda || null,
+              form.corregimiento || null,
+              med.id,
+            ]
+          );
+          rellenadas++;
+        } catch {
+          // Fila problemática — se deja como está, no se pierde nada
+        }
+      }
+      if (rellenadas > 0) {
+        console.log(`[DB] Backfill: ${rellenadas} medición(es) vinculadas a su beneficiario`);
+      }
+    } catch (e) {
+      console.warn('[DB] No se pudo hacer backfill de mediciones_terreno:', e);
     }
 
     console.log('[DB] Migraciones ejecutadas correctamente');
@@ -2027,6 +2184,14 @@ export const getMedicionesNoSincronizadas = async (): Promise<Record<string, any
           // el historial). Va en metadata para no requerir migrar la tabla
           // `mediciones` del servidor.
           nombre: row.nombre || null,
+          // Atribución: de qué beneficiario/vereda/corregimiento es el
+          // polígono y quién lo trazó. Sin esto el mapa general mostraba
+          // polígonos sin dueño.
+          beneficiario_cedula: row.beneficiario_cedula || null,
+          beneficiario_nombre: row.beneficiario_nombre || null,
+          vereda: row.vereda || null,
+          corregimiento: row.corregimiento || null,
+          usuario_nombre: row.usuario_nombre || null,
           area_hectareas: areaHectareas,
           area_metros2: Number(row.area_metros2) || 0,
           perimetro_metros: Number(row.perimetro_metros) || 0,
@@ -2221,7 +2386,12 @@ export const getMediciones = async (): Promise<Record<string, any>[]> => {
       id: r.id,
       formulario_id: r.formulario_id,
       usuario_id: r.usuario_id,
+      usuario_nombre: r.usuario_nombre || null,
       nombre: r.nombre || null,
+      beneficiario_cedula: r.beneficiario_cedula || null,
+      beneficiario_nombre: r.beneficiario_nombre || null,
+      vereda: r.vereda || null,
+      corregimiento: r.corregimiento || null,
       area_hectareas: r.area_hectareas,
       area_metros2: r.area_metros2,
       perimetro_metros: r.perimetro_metros,
@@ -2245,6 +2415,13 @@ export const saveMedicion = async (
     usuario_id?: string;
     /** Nombre que identifica la medición en el historial (opcional). */
     nombre?: string | null;
+    /** Datos del beneficiario de la visita (amarran la medición al padrón). */
+    beneficiario_cedula?: string | null;
+    beneficiario_nombre?: string | null;
+    vereda?: string | null;
+    corregimiento?: string | null;
+    /** Nombre del técnico que trazó el polígono. */
+    usuario_nombre?: string | null;
     area_hectareas: number;
     area_metros2: number;
     perimetro_metros: number;
@@ -2255,20 +2432,40 @@ export const saveMedicion = async (
   const database = await ensureDb();
   if (!database) throw new Error('La base de datos local no está disponible; la medición no se guardó');
   try {
+    const formularioSolicitado = data.formulario_id?.trim();
+    let formularioId: string | null = null;
+    let formularioIdPendiente: string | null = null;
+    if (formularioSolicitado && formularioSolicitado !== 'mapa_directo') {
+      const formulario = await database.getFirstAsync<{ id: string }>(
+        'SELECT id FROM formularios WHERE id = ?',
+        [formularioSolicitado]
+      );
+      if (formulario) formularioId = formularioSolicitado;
+      else formularioIdPendiente = formularioSolicitado;
+    }
+
     await database.runAsync(
       `INSERT OR REPLACE INTO mediciones_terreno (
-        id, formulario_id, usuario_id, area_hectareas, area_metros2,
-        perimetro_metros, puntos_json, nombre, created_at, sincronizado
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        id, formulario_id, formulario_id_pendiente, usuario_id, area_hectareas, area_metros2,
+        perimetro_metros, puntos_json, nombre, beneficiario_cedula,
+        beneficiario_nombre, vereda, corregimiento, usuario_nombre,
+        created_at, sincronizado
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         data.id,
-        data.formulario_id || 'mapa_directo',
+        formularioId,
+        formularioIdPendiente,
         data.usuario_id || null,
         data.area_hectareas,
         data.area_metros2,
         data.perimetro_metros,
         JSON.stringify(data.puntos),
         data.nombre || null,
+        data.beneficiario_cedula || null,
+        data.beneficiario_nombre || null,
+        data.vereda || null,
+        data.corregimiento || null,
+        data.usuario_nombre || null,
         new Date().toISOString(),
         data.sincronizado ? 1 : 0,
       ]

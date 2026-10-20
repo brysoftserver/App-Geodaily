@@ -175,7 +175,7 @@ const PlantacionesPorTecnicoScreen: React.FC<PlantacionesPorTecnicoScreenProps> 
               <View style={styles.areaInfo}>
                 <Text style={styles.areaEspecie}>{item.cantidad}x {item.especie}</Text>
                 <Text style={styles.areaMeta}>
-                  {item.area_trazada ? '📐 Área trazada' : '📍 Punto'}
+                  {item.area_trazada ? '◈ Área trazada' : '📍 Punto'}
                   {item.created_at ? ` · ${new Date(item.created_at).toLocaleDateString('es-CO')}` : ''}
                 </Text>
                 {!!item.beneficiario_nombre && (

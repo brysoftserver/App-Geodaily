@@ -98,6 +98,32 @@ export const persistirEvidencia = async (
 export const esEvidenciaPersistente = (uri?: string): boolean =>
   !!uri && !!EVIDENCIAS_DIR && uri.startsWith(EVIDENCIAS_DIR);
 
+/**
+ * ¿Se puede AFIRMAR que el archivo local ya no existe?
+ *
+ * Se usa antes de reintentar una subida: si el archivo desapareció del
+ * teléfono (limpieza de caché, app reinstalada, evidencia capturada en otro
+ * dispositivo) la subida fallará en CADA ciclo de sincronización para
+ * siempre, sin que nadie lo note. Con esta comprobación la evidencia se
+ * puede retirar de la cola en vez de reintentarse eternamente.
+ *
+ * Criterio conservador: solo devuelve `true` cuando hay certeza de que el
+ * archivo NO está. Si la URI no es local, o si FileSystem falla, devuelve
+ * `false` (se sigue intentando) — nunca se descarta una evidencia por un
+ * error al consultar el disco.
+ */
+export const archivoLocalFaltante = async (
+  uri?: string | null,
+): Promise<boolean> => {
+  if (!uri || !uri.startsWith('file://')) return false;
+  try {
+    const info = await FileSystem.getInfoAsync(uri);
+    return info.exists !== true;
+  } catch {
+    return false;
+  }
+};
+
 /** Borrar un archivo de evidencia (best-effort) */
 export const eliminarArchivoLocal = async (uri: string): Promise<void> => {
   if (!uri || !uri.startsWith('file://')) return;

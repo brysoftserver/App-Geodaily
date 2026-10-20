@@ -27,7 +27,7 @@ import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { RouteProp, useFocusEffect } from '@react-navigation/native';
 import { WebView } from 'react-native-webview';
 import { COLORS, FONTS, SPACING, BORDER_RADIUS, SHADOWS, API_CONFIG } from '../../theme';
-import { Formulario, DatosCaracterizacionNueva, FotoGeotag } from '../../types';
+import { Formulario, DatosCaracterizacionNueva, FotoGeotag, DocumentoFinca } from '../../types';
 import VideoPlayerModal from '../../components/VideoPlayerModal';
 import CapturaGPSPrecisa from '../../components/CapturaGPSPrecisa';
 import SignaturePad from '../../components/SignaturePad';
@@ -39,10 +39,14 @@ import {
   FirmaResuelta,
   eliminarEvidenciaRemota,
 } from '../../services/archivos.service';
-import { deleteEvidenciaLocal, saveFormularioLocal, getUnsyncedPhotos, getUnsyncedVideos } from '../../services/database';
-import { eliminarArchivoLocal } from '../../services/mediaStorage.service';
+import { deleteEvidenciaLocal, saveFormularioLocal, getUnsyncedPhotos, getUnsyncedVideos, saveFotoLocal, saveDocumentoLocal, marcarDocumentoSincronizado } from '../../services/database';
+import { eliminarArchivoLocal, persistirEvidencia } from '../../services/mediaStorage.service';
 import { useSync } from '../../store/SyncContext';
-import { fetchDocumentosDeFormulario, fetchDocumentosDeBeneficiario, DocumentoDeFormulario } from '../../services/documentos.service';
+import { fetchDocumentosDeFormulario, fetchDocumentosDeBeneficiario, subirDocumento, DocumentoDeFormulario } from '../../services/documentos.service';
+import { useCamera } from '../../hooks/useCamera';
+import * as ImagePicker from 'expo-image-picker';
+import * as DocumentPicker from 'expo-document-picker';
+import { generarId } from '../../utils/formatters';
 import { formatFecha } from '../../utils/formatters';
 import {
   puedeEditarRespuestasFormulario,
@@ -877,6 +881,8 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
    * formulario.
    */
   const { syncNow } = useSync();
+  /** Geotag de fotos elegidas del almacenamiento (mismo camino que la cámara) */
+  const { capturarFoto } = useCamera();
   const [generatingPdf, setGeneratingPdf] = useState(false);
   const [descargandoMedia, setDescargandoMedia] = useState(false);
   const [pdfUri, setPdfUri] = useState<string | null>(null);
@@ -904,6 +910,10 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
   /** Documentos de finca vinculados a este formulario — visibles para todos los roles */
   const [documentos, setDocumentos] = useState<DocumentoDeFormulario[]>([]);
   const [abriendoDocumentoId, setAbriendoDocumentoId] = useState<string | null>(null);
+  /** Subida de un documento de finca en curso (spinner en el botón) */
+  const [subiendoDocumento, setSubiendoDocumento] = useState(false);
+  /** Foto elegida de la galería que se está registrando como evidencia */
+  const [agregandoDesdeGaleria, setAgregandoDesdeGaleria] = useState(false);
   /**
    * Firmas listas para <Image>: URI + cabeceras si hace falta autenticación.
    * null = no registrada; undefined (estado inicial) = aún resolviendo.
@@ -995,6 +1005,20 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
     }
   };
 
+  /**
+   * ¿La coordenada del modal es válida para guardar? Se acepta tanto la
+   * capturada con GPS como la escrita a mano (admin), siempre que esté en
+   * rango. Se usa para habilitar el botón Guardar.
+   */
+  const coordenadaValida = (() => {
+    const lat = (gpsCaptura?.lat || '').trim().replace(',', '.');
+    const lon = (gpsCaptura?.lon || '').trim().replace(',', '.');
+    if (!lat || !lon) return false;
+    const latNum = Number(lat);
+    const lonNum = Number(lon);
+    return Number.isFinite(latNum) && Math.abs(latNum) <= 90 && Number.isFinite(lonNum) && Math.abs(lonNum) <= 180;
+  })();
+
   /** Marca/desmarca una opción cuando la pregunta es de respuesta múltiple */
   const toggleValorMultiple = (opt: string) => {
     setValorRespuesta((prev) => {
@@ -1053,10 +1077,21 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
   const guardarRespuestaGPS = async () => {
     if (!respuestaEditando?.espec?.gpsCampos) return;
     const campos = respuestaEditando.espec.gpsCampos;
-    const lat = (gpsCaptura?.lat || '').trim();
-    const lon = (gpsCaptura?.lon || '').trim();
+    const lat = (gpsCaptura?.lat || '').trim().replace(',', '.');
+    const lon = (gpsCaptura?.lon || '').trim().replace(',', '.');
     if (!lat || !lon) {
       Alert.alert('Sin coordenada', 'Captura la ubicación antes de guardar.');
+      return;
+    }
+    // Validación de rango: aplica sobre todo a la coordenada escrita a mano
+    // (admin). Un punto fuera de rango rompería el mapa y el PDF.
+    const latNum = Number(lat);
+    const lonNum = Number(lon);
+    if (!Number.isFinite(latNum) || Math.abs(latNum) > 90 || !Number.isFinite(lonNum) || Math.abs(lonNum) > 180) {
+      Alert.alert(
+        'Coordenada inválida',
+        'La latitud debe estar entre -90 y 90 y la longitud entre -180 y 180.'
+      );
       return;
     }
     setGuardandoRespuesta(true);
@@ -1065,7 +1100,7 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
       const aGuardar: Array<[string, string]> = [[campos.latitud, lat]];
       if (campos.longitud) aGuardar.push([campos.longitud, lon]);
       if (campos.altitud && (gpsCaptura?.alt || '').trim()) {
-        aGuardar.push([campos.altitud, (gpsCaptura?.alt || '').trim()]);
+        aGuardar.push([campos.altitud, (gpsCaptura?.alt || '').trim().replace(',', '.')]);
       }
       for (const [path, value] of aGuardar) {
         await actualizarRespuestaFormulario(formulario.id, path, value, modo);
@@ -1235,14 +1270,104 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
     });
   };
 
-  /** Menú para elegir foto o video al agregar evidencia */
+  /**
+   * Agregar una foto que YA existe en el teléfono (galería / almacenamiento).
+   *
+   * Caso real: en oficina el admin corrige una visita y necesita adjuntar una
+   * foto que el técnico le envió por WhatsApp o que ya está en el carrete; no
+   * puede volver a la finca a tomarla. La foto se geotaggea igual que una de
+   * cámara (GPS fresco, o sin ubicación marcada si no hay señal), se guarda en
+   * almacenamiento persistente y se encola en `fotos_locales` contra ESTE
+   * formulario, así que funciona sin conexión y se sube en el próximo sync.
+   */
+  const agregarFotoDesdeGaleria = async () => {
+    if (agregandoDesdeGaleria) return;
+    try {
+      const permiso = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (!permiso.granted) {
+        Alert.alert(
+          'Permiso requerido',
+          'Para elegir una foto del almacenamiento hay que permitir el acceso a las imágenes del dispositivo.'
+        );
+        return;
+      }
+
+      const resultado = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ['images'],
+        quality: 0.8,
+        allowsMultipleSelection: false,
+      });
+      if (resultado.canceled || !resultado.assets?.length) return;
+
+      const asset = resultado.assets[0];
+      setAgregandoDesdeGaleria(true);
+
+      // Mismo camino que la cámara: geotag + persistencia del archivo.
+      const foto = await capturarFoto(asset.uri, undefined, false);
+      if (!foto) {
+        Alert.alert('Error', 'No se pudo procesar la imagen seleccionada.');
+        return;
+      }
+
+      // Se encola contra este formulario (no contra el formulario en curso).
+      await saveFotoLocal(
+        foto.id,
+        formulario.id,
+        foto.uri,
+        foto.coordenadas,
+        {
+          cedula: formulario.beneficiario?.cedula,
+          nombre: formulario.beneficiario?.nombre,
+        },
+        formulario.tipo
+      );
+
+      // Intento inmediato de subida; si no hay señal queda en la cola.
+      void syncNow();
+      // La foto ya está en `fotos_locales` (pendiente de subir), así que se
+      // muestra de inmediato aunque el sync no haya terminado.
+      setEvidenciasPendientes((prev) =>
+        prev.some((p) => String(p.id) === String(foto.id))
+          ? prev
+          : [...prev, foto]
+      );
+      await cargarEvidenciasYDocumentos();
+
+      Alert.alert(
+        '✅ Foto agregada',
+        foto.metadata?.sinUbicacion
+          ? 'La foto quedó guardada en esta visita, pero no se pudo obtener la ubicación GPS en este momento.'
+          : 'La foto quedó guardada en esta visita con su ubicación GPS.'
+      );
+    } catch (e) {
+      console.warn('[Detalle] Error agregando foto desde galería:', e);
+      Alert.alert('Error', 'No se pudo agregar la foto desde el almacenamiento.');
+    } finally {
+      setAgregandoDesdeGaleria(false);
+    }
+  };
+
+  /** Android Alert admite como máximo tres botones: el origen de foto va en otro diálogo. */
+  const elegirOrigenFoto = () => {
+    Alert.alert(
+      'Agregar foto',
+      'Elige de dónde quieres obtener la foto para esta visita.',
+      [
+        { text: 'Cancelar', style: 'cancel' },
+        { text: '📷 Cámara', onPress: () => agregarEvidencia('photo') },
+        { text: '🖼️ Almacenamiento', onPress: () => void agregarFotoDesdeGaleria() },
+      ],
+    );
+  };
+
+  /** Menú para elegir foto o video; la foto abre el selector de origen. */
   const elegirTipoEvidencia = () => {
     Alert.alert(
       'Agregar evidencia',
-      '¿Qué deseas capturar? Se guardará con ubicación GPS y quedará vinculada a esta visita.',
+      '¿Qué deseas agregar a esta visita?',
       [
         { text: 'Cancelar', style: 'cancel' },
-        { text: '📷 Foto', onPress: () => agregarEvidencia('photo') },
+        { text: '📷 Foto', onPress: elegirOrigenFoto },
         { text: '🎥 Video', onPress: () => agregarEvidencia('video') },
       ],
     );
@@ -1420,6 +1545,85 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
       Alert.alert('Error', 'No se pudo abrir el documento. Verifica tu conexión.');
     } finally {
       setAbriendoDocumentoId(null);
+    }
+  };
+
+  /**
+   * Subir un documento de la finca desde el detalle de la visita.
+   *
+   * Caso real: el admin/coordinador corrige una visita en oficina y necesita
+   * adjuntar el título, la cédula escaneada o un soporte que le enviaron por
+   * correo. Antes solo se podía desde la pantalla "Documentos", fuera del
+   * detalle. Se guarda SIEMPRE primero en SQLite (`documentos_finca`) y luego
+   * se intenta subir; sin señal queda en la cola y SyncContext lo reintenta.
+   */
+  const subirDocumentoFinca = async () => {
+    if (subiendoDocumento) return;
+    try {
+      const resultado = await DocumentPicker.getDocumentAsync({
+        type: ['application/pdf', 'image/*'],
+        copyToCacheDirectory: true,
+      });
+      if (resultado.canceled || !resultado.assets?.length) return;
+
+      const asset = resultado.assets[0];
+      setSubiendoDocumento(true);
+
+      const esPdf =
+        asset.mimeType?.includes('pdf') || asset.name?.toLowerCase().endsWith('.pdf');
+      const docId = generarId();
+      const nombreDoc = asset.name || `documento_${Date.now()}`;
+
+      // DocumentPicker copia a caché: se mueve a almacenamiento persistente
+      // antes de registrarlo, o Android puede borrarlo sin avisar.
+      const uriPersistente = await persistirEvidencia(asset.uri, docId);
+
+      const nuevoDoc: DocumentoFinca = {
+        id: docId,
+        formulario_id: formulario.id,
+        beneficiario_cedula: formulario.beneficiario?.cedula || undefined,
+        tipo: esPdf ? 'pdf' : 'foto',
+        uri: uriPersistente,
+        nombre: nombreDoc,
+        descripcion: '',
+        created_at: new Date().toISOString(),
+      };
+
+      // 1. Local primero: es la copia que garantiza que no se pierde.
+      await saveDocumentoLocal(nuevoDoc);
+
+      // 2. Intento de subida. Si falla (sin señal), queda en la cola.
+      const subido = await subirDocumento(
+        uriPersistente,
+        undefined,
+        nuevoDoc.tipo,
+        nombreDoc,
+        formulario.beneficiario?.cedula,
+        formulario.beneficiario?.nombre,
+        formulario.tipo,
+        esPdf ? 'application/pdf' : asset.mimeType || 'image/jpeg',
+        formulario.id,
+        docId
+      );
+      if (subido) {
+        await marcarDocumentoSincronizado(docId);
+      } else {
+        void syncNow();
+      }
+
+      await cargarEvidenciasYDocumentos();
+
+      Alert.alert(
+        '✅ Documento guardado',
+        subido
+          ? `${nombreDoc} se guardó en el dispositivo y en el servidor.`
+          : `${nombreDoc} se guardó en el dispositivo. Se subirá al servidor automáticamente cuando haya conexión.`
+      );
+    } catch (e) {
+      console.warn('[Detalle] Error subiendo documento de finca:', e);
+      Alert.alert('Error', 'No se pudo agregar el documento.');
+    } finally {
+      setSubiendoDocumento(false);
     }
   };
   const { height: SCREEN_HEIGHT } = Dimensions.get('window');
@@ -2504,6 +2708,23 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
               </TouchableOpacity>
             ))
           )}
+          {/* Subir un documento nuevo (PDF o imagen) desde el almacenamiento.
+              Mismos permisos que agregar evidencia: admin/coordinador y el
+              técnico dueño de la visita. Se guarda local primero, así que
+              funciona sin conexión. */}
+          {puedeAgregarEvidencias && (
+            <TouchableOpacity
+              style={styles.subirDocumentoBtn}
+              onPress={() => void subirDocumentoFinca()}
+              disabled={subiendoDocumento}
+              accessibilityRole="button"
+              accessibilityLabel="Subir documento de la finca"
+            >
+              <Text style={styles.subirDocumentoBtnText}>
+                {subiendoDocumento ? '⏳ Subiendo…' : '＋ Subir documento (PDF o imagen)'}
+              </Text>
+            </TouchableOpacity>
+          )}
           {renderMiniRevision('Documentos')}
         </View>
 
@@ -2546,6 +2767,20 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
                 precision={gpsCaptura?.precision}
                 ubicacionTexto={ubicacionGPSTexto}
                 onCapture={(lat, lon, alt, precision) => setGpsCaptura({ lat, lon, alt, precision })}
+                // Corrección desde oficina: quien revisa no puede volver a la
+                // finca a tomar la coordenada, así que puede escribirla a mano.
+                // El técnico en campo sigue capturando solo con GPS.
+                permitirEdicionManual={puedeCompletarRespuestas}
+                onChangeManual={(lat, lon, alt) =>
+                  setGpsCaptura((prev) => ({
+                    lat,
+                    lon,
+                    alt,
+                    // La precisión deja de ser válida si el punto se escribió a
+                    // mano: no se conserva un "±5 m" que ya no corresponde.
+                    precision: prev?.precision && prev.lat === lat && prev.lon === lon ? prev.precision : '',
+                  }))
+                }
               />
             ) : respuestaEditando?.espec?.tipo === 'seleccion' || respuestaEditando?.espec?.tipo === 'multiple' ? (
               <>
@@ -2609,7 +2844,7 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
                 onPress={respuestaEditando?.espec?.tipo === 'gps' ? guardarRespuestaGPS : guardarRespuestaAdmin}
                 disabled={
                   guardandoRespuesta ||
-                  (respuestaEditando?.espec?.tipo === 'gps' && (!gpsCaptura?.lat || !gpsCaptura?.lon))
+                  (respuestaEditando?.espec?.tipo === 'gps' && !coordenadaValida)
                 }
               >
                 <Text style={styles.adminSaveText}>{guardandoRespuesta ? 'Guardando...' : 'Guardar'}</Text>
@@ -2908,6 +3143,20 @@ const styles = StyleSheet.create({
   agregarEvidenciaBtnText: {
     color: COLORS.surface,
     fontSize: FONTS.sizes.xs,
+    fontWeight: FONTS.weights.bold,
+  },
+  /** Botón "＋ Subir documento" bajo la lista de documentos de la finca */
+  subirDocumentoBtn: {
+    backgroundColor: COLORS.primary,
+    paddingHorizontal: SPACING.sm,
+    paddingVertical: SPACING.sm,
+    borderRadius: BORDER_RADIUS.sm,
+    marginTop: SPACING.xs,
+    alignItems: 'center',
+  },
+  subirDocumentoBtnText: {
+    color: COLORS.surface,
+    fontSize: FONTS.sizes.sm,
     fontWeight: FONTS.weights.bold,
   },
   evidenciasVacias: {

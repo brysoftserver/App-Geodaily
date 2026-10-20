@@ -33,10 +33,10 @@ import { Calendar, DateData, LocaleConfig } from 'react-native-calendars';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { COLORS, FONTS, SPACING, BORDER_RADIUS, SHADOWS, API_CONFIG } from '../../theme';
-import { getSeguimientoLocalById, saveSeguimientoLocal, SeguimientoLocal, FotoSeguimientoLocal } from '../../services/database';
+import { getSeguimientoLocalById, saveSeguimientoLocal, eliminarSeguimientoLocal, SeguimientoLocal, FotoSeguimientoLocal } from '../../services/database';
 import { fetchDocumentosDeFormulario, DocumentoDeFormulario } from '../../services/documentos.service';
 import { cabecerasDeArchivo, fuenteConAuth } from '../../services/archivos.service';
-import { actualizarPdfSeguimiento, actualizarSeguimiento } from '../../services/seguimientos.service';
+import { actualizarPdfSeguimiento, actualizarSeguimiento, esSeguimientoEliminado } from '../../services/seguimientos.service';
 import { generarPDFSeguimiento, construirHtmlSeguimiento, DatosPDFSeguimiento } from '../../services/pdfLocal.service';
 import { abrirVentanaDeCarga, imprimirHtmlEnVentana } from '../../utils/printWeb';
 import { persistirEvidencia, eliminarArchivoLocal } from '../../services/mediaStorage.service';
@@ -286,6 +286,13 @@ const SeguimientoDetailScreen: React.FC<SeguimientoDetailScreenProps> = ({ route
         await saveSeguimientoLocal(confirmado);
         setSeguimiento(confirmado);
       } catch (error) {
+        if (esSeguimientoEliminado(error)) {
+          // Fue eliminado en el servidor por un rol con permiso de borrado:
+          // la corrección ya no aplica y la copia local debe desaparecer
+          // (si no, el sync la reintentaría para siempre).
+          await eliminarSeguimientoLocal(seguimiento.id);
+          throw error;
+        }
         console.warn('[SeguimientoDetail] Edición guardada localmente, se subirá al sincronizar:', error);
       }
     },

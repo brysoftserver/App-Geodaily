@@ -100,6 +100,24 @@ router.post('/', authenticateToken, async (req, res) => {
     }
     const seguimientoId = id || `seg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
+    // ─── Anti-resurrección ────────────────────────────────────────────────
+    // Este POST es un upsert por id. Si un admin/coordinador/interventor ya
+    // eliminó el seguimiento, un dispositivo que todavía lo tenga pendiente
+    // de sincronizar (con fotos/videos sin subir) lo recrearía como si nada.
+    // La tumba hace que el servidor responda 410 y la app descarte su copia
+    // local en vez de reintentar para siempre.
+    const tumba = await db.queryOne(
+      'SELECT id FROM seguimientos_eliminados WHERE id = $1',
+      [seguimientoId]
+    );
+    if (tumba) {
+      console.log(`[Seguimientos] POST rechazado — el seguimiento fue eliminado en el servidor: ${seguimientoId}`);
+      return res.status(410).json({
+        estado: 'eliminado',
+        mensaje: 'Este seguimiento fue eliminado en el servidor',
+      });
+    }
+
     // created_at opcional: si el cliente corrigió la fecha del seguimiento
     // (o la creó offline) se respeta; si viene vacía/ inválida se deja que la
     // columna use su DEFAULT NOW() (insert) o conserve la existente (upsert).
@@ -212,6 +230,20 @@ router.delete('/:id', authenticateToken, async (req, res) => {
       return res.status(403).json({ estado: 'error', mensaje: 'No tienes permiso para eliminar este seguimiento' });
     }
     await db.query('DELETE FROM seguimientos WHERE id = $1', [req.params.id]);
+    // Tumba: impide que otro dispositivo lo recree con su POST de sincronización.
+    // Los objetos en MinIO NO se borran a propósito: se conservan por si la
+    // documentación se solicita después.
+    try {
+      await db.query(
+        `INSERT INTO seguimientos_eliminados (id, eliminado_por)
+         VALUES ($1, $2)
+         ON CONFLICT (id) DO UPDATE SET eliminado_por = $2, eliminado_at = NOW()`,
+        [req.params.id, req.user.id]
+      );
+    } catch (tumbaErr) {
+      // No bloquear el borrado si la tumba falla.
+      console.warn('[Seguimientos] No se pudo registrar la tumba:', tumbaErr.message);
+    }
     console.log(`[Seguimientos] Eliminado por ${req.user.usuario}: ${req.params.id}`);
     res.json({ estado: 'ok', mensaje: 'Seguimiento eliminado' });
   } catch (error) {
@@ -275,6 +307,12 @@ router.patch('/:id', authenticateToken, async (req, res) => {
     const { id: usuarioId, rol } = req.user;
     const fila = await db.queryOne('SELECT autor_id FROM seguimientos WHERE id = $1', [req.params.id]);
     if (!fila) {
+      // Si no existe porque fue eliminado a propósito, 410 para que el
+      // dispositivo que intenta corregirlo descarte su copia local.
+      const tumba = await db.queryOne('SELECT id FROM seguimientos_eliminados WHERE id = $1', [req.params.id]);
+      if (tumba) {
+        return res.status(410).json({ estado: 'eliminado', mensaje: 'Este seguimiento fue eliminado en el servidor' });
+      }
       return res.status(404).json({ estado: 'error', mensaje: 'Seguimiento no encontrado' });
     }
     // Puede editar el autor del seguimiento o cualquier rol supervisor
