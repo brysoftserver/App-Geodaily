@@ -39,7 +39,7 @@ import {
   FirmaResuelta,
   eliminarEvidenciaRemota,
 } from '../../services/archivos.service';
-import { deleteEvidenciaLocal, saveFormularioLocal, getUnsyncedPhotos, getUnsyncedVideos, saveFotoLocal, saveDocumentoLocal, marcarDocumentoSincronizado } from '../../services/database';
+import { deleteEvidenciaLocal, saveFormularioLocal, getUnsyncedPhotos, getUnsyncedVideos, saveFotoLocal, saveVideoLocal, saveDocumentoLocal, marcarDocumentoSincronizado } from '../../services/database';
 import { eliminarArchivoLocal, persistirEvidencia } from '../../services/mediaStorage.service';
 import { useSync } from '../../store/SyncContext';
 import { fetchDocumentosDeFormulario, fetchDocumentosDeBeneficiario, subirDocumento, DocumentoDeFormulario } from '../../services/documentos.service';
@@ -1255,6 +1255,23 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
   );
 
   /**
+   * "  ·  📍 lat, lon" solo si la evidencia trae una ubicación REAL.
+   *
+   * Las evidencias agregadas desde el ALMACENAMIENTO del dispositivo se suben
+   * sin datos de captura (no se consultó el GPS), pero la cola local las
+   * representa con 0,0. Ese 0,0 no es una ubicación: mostrarlo como si lo
+   * fuera confundiría al revisor, así que se omite.
+   */
+  const sufijoUbicacion = (c?: { latitud?: number; longitud?: number } | null) => {
+    const lat = c?.latitud;
+    const lon = c?.longitud;
+    if (typeof lat !== 'number' || typeof lon !== 'number') return '';
+    if (!Number.isFinite(lat) || !Number.isFinite(lon)) return '';
+    if (lat === 0 && lon === 0) return '';
+    return `  ·  📍 ${lat.toFixed(6)}, ${lon.toFixed(6)}`;
+  };
+
+  /**
    * Agregar evidencia nueva a esta visita ya completada. Abre la cámara en
    * modo "evidencia dirigida": la captura se encola contra ESTE formulario
    * (no contra el formulario en curso del FormContext). Al volver, se
@@ -1271,83 +1288,123 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
   };
 
   /**
-   * Agregar una foto que YA existe en el teléfono (galería / almacenamiento).
+   * Agregar una foto o un video que YA existe en el teléfono (galería /
+   * almacenamiento del dispositivo).
    *
    * Caso real: en oficina el admin corrige una visita y necesita adjuntar una
-   * foto que el técnico le envió por WhatsApp o que ya está en el carrete; no
-   * puede volver a la finca a tomarla. La foto se geotaggea igual que una de
-   * cámara (GPS fresco, o sin ubicación marcada si no hay señal), se guarda en
-   * almacenamiento persistente y se encola en `fotos_locales` contra ESTE
-   * formulario, así que funciona sin conexión y se sube en el próximo sync.
+   * foto —o un video— que el técnico le envió por WhatsApp o que ya está en
+   * el carrete; no puede volver a la finca a tomarla.
+   *
+   * Diferencia clave con la cámara (pedido explícito del admin): estas
+   * evidencias NO llevan datos de captura. No se consulta el GPS ni se
+   * manda fecha de captura, así que el backend las guarda limpias (sin
+   * marca de agua con coordenadas). La imagen no se tomó en esta visita:
+   * escribirle un geotag sería un dato falso.
+   *
+   * El archivo se persiste fuera de la caché, se encola en `fotos_locales`
+   * / `videos_locales` contra ESTE formulario (funciona sin conexión), y en
+   * el servidor queda amarrado al dueño de la visita y a la carpeta del
+   * beneficiario — nunca suelto.
    */
-  const agregarFotoDesdeGaleria = async () => {
+  const agregarDesdeAlmacenamiento = async (tipo: 'foto' | 'video') => {
     if (agregandoDesdeGaleria) return;
+    const esVideo = tipo === 'video';
     try {
       const permiso = await ImagePicker.requestMediaLibraryPermissionsAsync();
       if (!permiso.granted) {
         Alert.alert(
           'Permiso requerido',
-          'Para elegir una foto del almacenamiento hay que permitir el acceso a las imágenes del dispositivo.'
+          esVideo
+            ? 'Para elegir un video del almacenamiento hay que permitir el acceso a los videos del dispositivo.'
+            : 'Para elegir una foto del almacenamiento hay que permitir el acceso a las imágenes del dispositivo.'
         );
         return;
       }
 
-      const resultado = await ImagePicker.launchImageLibraryAsync({
-        mediaTypes: ['images'],
-        quality: 0.8,
-        allowsMultipleSelection: false,
-      });
+      const resultado = esVideo
+        ? await ImagePicker.launchImageLibraryAsync({
+            mediaTypes: ['videos'],
+            allowsMultipleSelection: false,
+          })
+        : await ImagePicker.launchImageLibraryAsync({
+            mediaTypes: ['images'],
+            quality: 0.8,
+            allowsMultipleSelection: false,
+          });
       if (resultado.canceled || !resultado.assets?.length) return;
 
       const asset = resultado.assets[0];
       setAgregandoDesdeGaleria(true);
 
-      // Mismo camino que la cámara: geotag + persistencia del archivo.
-      const foto = await capturarFoto(asset.uri, undefined, false);
-      if (!foto) {
-        Alert.alert('Error', 'No se pudo procesar la imagen seleccionada.');
+      // `origen: 'almacenamiento'` = persistir el archivo SIN consultar el
+      // GPS ni generar metadatos de captura.
+      const evidencia = await capturarFoto(asset.uri, undefined, esVideo, {
+        origen: 'almacenamiento',
+      });
+      if (!evidencia) {
+        Alert.alert('Error', 'No se pudo procesar el archivo seleccionado.');
         return;
       }
 
-      // Se encola contra este formulario (no contra el formulario en curso).
-      await saveFotoLocal(
-        foto.id,
-        formulario.id,
-        foto.uri,
-        foto.coordenadas,
-        {
-          cedula: formulario.beneficiario?.cedula,
-          nombre: formulario.beneficiario?.nombre,
-        },
-        formulario.tipo
-      );
+      const beneficiario = {
+        cedula: formulario.beneficiario?.cedula,
+        nombre: formulario.beneficiario?.nombre,
+      };
+
+      // Se encola contra este formulario (no contra el formulario en curso) y
+      // sin coordenadas: `undefined` deja lat/lon NULL en la cola local.
+      if (esVideo) {
+        await saveVideoLocal(
+          evidencia.id,
+          formulario.id,
+          evidencia.uri,
+          undefined,
+          beneficiario,
+          formulario.tipo,
+          'almacenamiento'
+        );
+      } else {
+        await saveFotoLocal(
+          evidencia.id,
+          formulario.id,
+          evidencia.uri,
+          undefined,
+          beneficiario,
+          formulario.tipo,
+          'almacenamiento'
+        );
+      }
 
       // Intento inmediato de subida; si no hay señal queda en la cola.
       void syncNow();
-      // La foto ya está en `fotos_locales` (pendiente de subir), así que se
+      // El archivo ya está en la cola local (pendiente de subir), así que se
       // muestra de inmediato aunque el sync no haya terminado.
       setEvidenciasPendientes((prev) =>
-        prev.some((p) => String(p.id) === String(foto.id))
+        prev.some((p) => String(p.id) === String(evidencia.id))
           ? prev
-          : [...prev, foto]
+          : [...prev, evidencia]
       );
       await cargarEvidenciasYDocumentos();
 
       Alert.alert(
-        '✅ Foto agregada',
-        foto.metadata?.sinUbicacion
-          ? 'La foto quedó guardada en esta visita, pero no se pudo obtener la ubicación GPS en este momento.'
-          : 'La foto quedó guardada en esta visita con su ubicación GPS.'
+        esVideo ? '✅ Video agregado' : '✅ Foto agregada',
+        `El archivo quedó guardado en esta visita y se asociará al beneficiario y al técnico responsable. ` +
+          'No se le agregaron datos de ubicación ni de fecha porque no fue tomado con la cámara en esta visita.'
       );
     } catch (e) {
-      console.warn('[Detalle] Error agregando foto desde galería:', e);
-      Alert.alert('Error', 'No se pudo agregar la foto desde el almacenamiento.');
+      console.warn('[Detalle] Error agregando evidencia desde el almacenamiento:', e);
+      Alert.alert(
+        'Error',
+        esVideo
+          ? 'No se pudo agregar el video desde el almacenamiento.'
+          : 'No se pudo agregar la foto desde el almacenamiento.'
+      );
     } finally {
       setAgregandoDesdeGaleria(false);
     }
   };
 
-  /** Android Alert admite como máximo tres botones: el origen de foto va en otro diálogo. */
+  /** Android Alert admite como máximo tres botones: el origen va en otro diálogo. */
   const elegirOrigenFoto = () => {
     Alert.alert(
       'Agregar foto',
@@ -1355,12 +1412,25 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
       [
         { text: 'Cancelar', style: 'cancel' },
         { text: '📷 Cámara', onPress: () => agregarEvidencia('photo') },
-        { text: '🖼️ Almacenamiento', onPress: () => void agregarFotoDesdeGaleria() },
+        { text: '🖼️ Almacenamiento', onPress: () => void agregarDesdeAlmacenamiento('foto') },
       ],
     );
   };
 
-  /** Menú para elegir foto o video; la foto abre el selector de origen. */
+  /** Menú del video: cámara (con geotag) o almacenamiento (sin datos). */
+  const elegirOrigenVideo = () => {
+    Alert.alert(
+      'Agregar video',
+      'Elige de dónde quieres obtener el video para esta visita.',
+      [
+        { text: 'Cancelar', style: 'cancel' },
+        { text: '🎥 Cámara', onPress: () => agregarEvidencia('video') },
+        { text: '🖼️ Almacenamiento', onPress: () => void agregarDesdeAlmacenamiento('video') },
+      ],
+    );
+  };
+
+  /** Menú para elegir foto o video; cada uno abre su selector de origen. */
   const elegirTipoEvidencia = () => {
     Alert.alert(
       'Agregar evidencia',
@@ -1368,7 +1438,7 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
       [
         { text: 'Cancelar', style: 'cancel' },
         { text: '📷 Foto', onPress: elegirOrigenFoto },
-        { text: '🎥 Video', onPress: () => agregarEvidencia('video') },
+        { text: '🎥 Video', onPress: elegirOrigenVideo },
       ],
     );
   };
@@ -2887,11 +2957,7 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
         headers={authHeaders}
         subtitulo={
           videoPreview
-            ? `📅 ${formatFecha(videoPreview.timestamp)}${
-                videoPreview.coordenadas
-                  ? `  ·  📍 ${videoPreview.coordenadas.latitud?.toFixed(6)}, ${videoPreview.coordenadas.longitud?.toFixed(6)}`
-                  : ''
-              }${
+            ? `📅 ${formatFecha(videoPreview.timestamp)}${sufijoUbicacion(videoPreview.coordenadas)}${
                 formulario.coordenadas?.lugar || formulario.clima?.actual?.ubicacion?.nombre
                   ? `  ·  🏙️ ${formulario.coordenadas?.lugar || formulario.clima?.actual?.ubicacion?.nombre}`
                   : ''
@@ -2917,9 +2983,7 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
               />
               <Text style={styles.fotoModalInfo}>
                 📅 {formatFecha(fotoPreview.timestamp)}
-                {fotoPreview.coordenadas
-                  ? `  ·  📍 ${fotoPreview.coordenadas.latitud?.toFixed(6)}, ${fotoPreview.coordenadas.longitud?.toFixed(6)}`
-                  : ''}
+                {sufijoUbicacion(fotoPreview.coordenadas)}
                 {/* Municipio de la visita — todas las evidencias de una
                     misma visita están a metros de distancia, comparten lugar */}
                 {(formulario.coordenadas?.lugar || formulario.clima?.actual?.ubicacion?.nombre)

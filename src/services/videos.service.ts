@@ -21,10 +21,17 @@ export const uploadVideo = async (
   /** Vincula la evidencia al formulario para poder recuperarla desde otro dispositivo */
   formularioId?: string,
   /** Ver nota en photos.service.ts — deduplica reintentos de subida. */
-  evidenciaId?: string
+  evidenciaId?: string,
+  /**
+   * 'almacenamiento' = el video ya existía en el teléfono. Igual que las
+   * fotos de galería, se sube sin latitud ni longitud (no se capturó en
+   * esta visita, así que no tiene geotag propio).
+   */
+  origen?: 'camara' | 'almacenamiento'
 ): Promise<{ id: string; estado: string; ruta?: string; filename?: string } | null> => {
   try {
     const formData = new FormData();
+    const desdeAlmacenamiento = origen === 'almacenamiento';
 
     // @ts-expect-error — React Native FormData
     formData.append('archivo', {
@@ -33,8 +40,12 @@ export const uploadVideo = async (
       name: `video_${Date.now()}.mp4`,
     });
 
-    if (latitud !== undefined) formData.append('latitud', String(latitud));
-    if (longitud !== undefined) formData.append('longitud', String(longitud));
+    if (desdeAlmacenamiento) {
+      formData.append('origen', 'almacenamiento');
+    } else {
+      if (latitud !== undefined) formData.append('latitud', String(latitud));
+      if (longitud !== undefined) formData.append('longitud', String(longitud));
+    }
     if (descripcion) formData.append('descripcion', descripcion);
     if (beneficiarioCedula) formData.append('beneficiario_cedula', beneficiarioCedula);
     if (beneficiarioNombre) formData.append('beneficiario_nombre', beneficiarioNombre);

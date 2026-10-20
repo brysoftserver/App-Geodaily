@@ -15,6 +15,20 @@ interface CameraState {
   error: string | null;
 }
 
+/** De dónde sale la evidencia: captura en terreno o archivo ya existente. */
+export type OrigenEvidencia = 'camara' | 'almacenamiento';
+
+export interface OpcionesEvidencia {
+  /**
+   * 'almacenamiento' = la foto/video ya existía en el teléfono (galería).
+   * En ese caso NO se consulta el GPS ni se generan datos de captura: la
+   * imagen no se tomó en esta visita, así que ponerle coordenadas y hora
+   * sería un dato falso (y quedaba quemado en el píxel por la marca de
+   * agua del backend).
+   */
+  origen?: OrigenEvidencia;
+}
+
 export const useCamera = () => {
   const { getCurrentPosition, coordenadas } = useLocation();
   const [state, setState] = useState<CameraState>({
@@ -28,11 +42,44 @@ export const useCamera = () => {
     async (
       uri: string,
       coordsExternas?: Coordenadas,
-      esVideo = false
+      esVideo = false,
+      opciones?: OpcionesEvidencia
     ): Promise<FotoGeotag | null> => {
       setState((prev) => ({ ...prev, isLoading: true, error: null }));
 
+      const desdeAlmacenamiento = opciones?.origen === 'almacenamiento';
+
       try {
+        // Evidencia del almacenamiento: ni GPS ni datos de captura. Se toma
+        // la imagen tal como está en el teléfono.
+        if (desdeAlmacenamiento) {
+          const id = generarId();
+          const uriPersistente = await persistirEvidencia(uri, id, esVideo);
+          const foto: FotoGeotag = {
+            id,
+            uri: uriPersistente,
+            tipo: esVideo ? 'video' : 'foto',
+            // Sin ubicación real: 0,0 nunca se usa para una evidencia de
+            // almacenamiento (no se guarda ni se envía) y la UI lo distingue
+            // por metadata.origen.
+            coordenadas: { latitud: 0, longitud: 0 },
+            timestamp: new Date().toISOString(),
+            metadata: {
+              source: 'storage',
+              origen: 'almacenamiento',
+              sinUbicacion: true,
+              sinMetadatos: true,
+            },
+          };
+          setState((prev) => ({
+            fotoActual: foto,
+            fotos: [...prev.fotos, foto],
+            isLoading: false,
+            error: null,
+          }));
+          return foto;
+        }
+
         // Pedir SIEMPRE una posición fresca. Antes se reutilizaba la caché de
         // `useLocation` (que no tiene watch continuo), así que solo la primera
         // foto consultaba el GPS: el técnico recorría la finca y las 10 fotos

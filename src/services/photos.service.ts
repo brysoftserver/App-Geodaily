@@ -29,10 +29,22 @@ export const uploadPhoto = async (
    * esencial porque un timeout de red no distingue si el servidor ya
    * había recibido y guardado la foto antes de que la respuesta se perdiera.
    */
-  evidenciaId?: string
+  evidenciaId?: string,
+  /**
+   * De dónde salió la foto: 'camara' (evidencia de esta visita, con GPS y
+   * marca de agua) o 'almacenamiento' (archivo ya existente en el teléfono).
+   *
+   * Con 'almacenamiento' NO se envían latitud/longitud/altitud ni la fecha
+   * de captura: el backend guarda la foto limpia. Ponerle coordenadas de la
+   * oficina o del momento de la subida sería un dato falso quemado en la
+   * imagen, y el admin pidió expresamente que estas fotos "se suban solitas
+   * sin datos adicionales".
+   */
+  origen?: 'camara' | 'almacenamiento'
 ): Promise<{ id: string; estado: string; ruta?: string; filename?: string } | null> => {
   try {
     const formData = new FormData();
+    const desdeAlmacenamiento = origen === 'almacenamiento';
 
     // @ts-expect-error — React Native FormData
     formData.append('archivo', {
@@ -41,12 +53,16 @@ export const uploadPhoto = async (
       name: `foto_${Date.now()}.jpg`,
     });
 
-    if (latitud !== undefined) formData.append('latitud', String(latitud));
-    if (longitud !== undefined) formData.append('longitud', String(longitud));
-    if (altitud !== undefined) formData.append('altitud', String(altitud));
-    // Fecha de CAPTURA (no de subida) — el backend la estampa en la marca
-    // de agua; esencial para fotos tomadas offline y sincronizadas después
-    if (timestampCaptura) formData.append('timestamp_captura', timestampCaptura);
+    if (desdeAlmacenamiento) {
+      formData.append('origen', 'almacenamiento');
+    } else {
+      if (latitud !== undefined) formData.append('latitud', String(latitud));
+      if (longitud !== undefined) formData.append('longitud', String(longitud));
+      if (altitud !== undefined) formData.append('altitud', String(altitud));
+      // Fecha de CAPTURA (no de subida) — el backend la estampa en la marca
+      // de agua; esencial para fotos tomadas offline y sincronizadas después
+      if (timestampCaptura) formData.append('timestamp_captura', timestampCaptura);
+    }
     if (nombre) formData.append('nombre', nombre);
     if (descripcion) formData.append('descripcion', descripcion);
     if (beneficiarioCedula) formData.append('beneficiario_cedula', beneficiarioCedula);

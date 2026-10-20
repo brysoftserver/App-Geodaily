@@ -9,6 +9,10 @@ const { authenticateToken } = require('../middleware/auth');
 const db = require('../database');
 const storage = require('../storage');
 const { aplicarMarcaAgua, normalizarSinMarca } = require('../watermark');
+const {
+  resolverDuenoDeFormulario,
+  esOrigenAlmacenamiento,
+} = require('../lib/duenoEvidencia');
 
 const router = express.Router();
 
@@ -31,7 +35,29 @@ router.post('/subir', authenticateToken, upload.single('archivo'), async (req, r
       return res.status(400).json({ estado: 'error', mensaje: 'Archivo requerido' });
     }
 
-    const { latitud, longitud, altitud, nombre, descripcion, beneficiario_cedula, beneficiario_nombre, timestamp_captura, tipo_formulario, formulario_id, evidencia_id } = req.body;
+    const { latitud, longitud, altitud, nombre, descripcion, beneficiario_cedula, beneficiario_nombre, timestamp_captura, tipo_formulario, formulario_id, evidencia_id, origen } = req.body;
+
+    // ─── Origen de la evidencia ───
+    // 'almacenamiento' = la foto ya existía en el teléfono (galería) y el
+    // admin/coordinador la adjunta a la visita. Se sube LIMPIA: sin marca de
+    // agua quemada y sin lat/lon/alt, porque esos datos serían de otro
+    // momento y de otro lugar (la foto no se tomó en esta visita).
+    // 'camara' (o vacío) = captura en terreno: se mantiene la marca completa.
+    const sinMetadatos = esOrigenAlmacenamiento(origen);
+
+    // ─── Dueño efectivo del formulario ───
+    // La evidencia se amarra al DUEÑO DEL FORMULARIO (y al beneficiario), no
+    // a quien la sube: un admin que adjunta una foto en la visita de un
+    // técnico no debe dejarla en su propia carpeta ni a su nombre, porque el
+    // técnico no la vería (ver lib/duenoEvidencia.js). Si el formulario aún
+    // no existe en el servidor se usa el usuario autenticado (comportamiento
+    // anterior) y la evidencia se re-vincula al guardar el formulario.
+    const duenoFormulario = await resolverDuenoDeFormulario(formulario_id);
+    const propietarioId = duenoFormulario?.id || req.user.id;
+    const userRol = duenoFormulario?.rol || req.user?.rol || 'otros';
+    const userUsuario =
+      duenoFormulario?.usuario || req.user?.usuario || req.user?.id?.toString() || 'desconocido';
+    const subidoPorOtro = duenoFormulario && String(duenoFormulario.id) !== String(req.user.id);
 
     // ─── Anti-resurrección: si un admin/coordinador borró esta evidencia
     // desde el detalle del formulario (DELETE /api/archivos/:id), se rechaza
@@ -60,7 +86,7 @@ router.post('/subir', authenticateToken, upload.single('archivo'), async (req, r
     if (evidencia_id) {
       const yaSubida = await db.queryOne(
         `SELECT id, minio_path, filename, size_bytes FROM archivos WHERE usuario_id = $1 AND evidencia_local_id = $2`,
-        [req.user.id, evidencia_id]
+        [propietarioId, evidencia_id]
       );
       if (yaSubida) {
         console.log(`[Photos] Evidencia ${evidencia_id} ya existía (id ${yaSubida.id}) — se omite duplicado`);
@@ -84,11 +110,16 @@ router.post('/subir', authenticateToken, upload.single('archivo'), async (req, r
     // editable, en vez de fijarla en el píxel. Igual se normaliza la
     // orientación EXIF y se re-codifica a JPEG para que la foto salga
     // derecha y liviana.
+    //
+    // EXCEPCIÓN 2 — fotos del ALMACENAMIENTO del dispositivo: tampoco se
+    // marcan. La foto no se tomó en esta visita, así que estamparle el GPS y
+    // la hora del servidor sería quemar un dato FALSO en la evidencia. Se
+    // guardan tal cual (solo se corrige la orientación EXIF y se recomprimen).
     let bufferFinal = req.file.buffer;
     let mimetypeFinal = req.file.mimetype;
     let extFinal = path.extname(req.file.originalname) || '.jpg';
     if (/jpeg|jpg|png|webp/i.test(req.file.mimetype)) {
-      if (tipo_formulario === 'seguimiento') {
+      if (sinMetadatos || tipo_formulario === 'seguimiento') {
         const { buffer: limpia, normalizada } = await normalizarSinMarca(req.file.buffer);
         if (normalizada) {
           bufferFinal = limpia;
@@ -111,10 +142,6 @@ router.post('/subir', authenticateToken, upload.single('archivo'), async (req, r
     }
 
     const filename = `foto_${Date.now()}_${Math.random().toString(36).slice(2, 6)}${extFinal}`;
-
-    // Validar datos de usuario (fallback seguro)
-    const userRol = req.user?.rol || 'otros';
-    const userUsuario = req.user?.usuario || req.user?.id?.toString() || 'desconocido';
 
     // ─── Resolver datos del beneficiario para carpeta en MinIO ───
     let benefItem = null;
@@ -205,6 +232,14 @@ router.post('/subir', authenticateToken, upload.single('archivo'), async (req, r
       // ANTES de que el formulario exista en el servidor (flujo offline).
       // La columna formulario_id se rellena luego, al guardar el formulario.
       formulario_id: formulario_id || null,
+      // De dónde salió la foto: 'camara' (geotag + marca) o
+      // 'almacenamiento' (limpia, sin ubicación). Queda en el registro para
+      // poder auditar qué evidencias tienen datos de captura.
+      origen: sinMetadatos ? 'almacenamiento' : 'camara',
+      // Quién la subió, cuando no es el dueño del formulario (admin o
+      // coordinador adjuntando evidencia a la visita de un técnico).
+      subido_por: subidoPorOtro ? req.user.id : null,
+      subido_por_rol: subidoPorOtro ? req.user.rol || null : null,
     };
 
     // formulario_id permite recuperar la evidencia desde otro dispositivo.
@@ -217,7 +252,7 @@ router.post('/subir', authenticateToken, upload.single('archivo'), async (req, r
          VALUES ($1, (SELECT id FROM formularios WHERE id = $2), $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
          RETURNING id`,
         [
-          req.user.id,
+          propietarioId,
           formulario_id || null,
           'foto',
           filename,
@@ -226,9 +261,11 @@ router.post('/subir', authenticateToken, upload.single('archivo'), async (req, r
           bufferFinal.length,
           minioPath,
           bucket,
-          latitud ? parseFloat(latitud) : null,
-          longitud ? parseFloat(longitud) : null,
-          altitud ? parseFloat(altitud) : null,
+          // Las fotos del almacenamiento NO llevan ubicación: no se tomó
+          // ninguna coordenada para ellas (no se consultó el GPS).
+          sinMetadatos ? null : (latitud ? parseFloat(latitud) : null),
+          sinMetadatos ? null : (longitud ? parseFloat(longitud) : null),
+          sinMetadatos ? null : (altitud ? parseFloat(altitud) : null),
           JSON.stringify(metadataExtra),
           evidencia_id || null,
         ]
@@ -240,7 +277,7 @@ router.post('/subir', authenticateToken, upload.single('archivo'), async (req, r
       if (insertErr.code === '23505' && evidencia_id) {
         const existente = await db.queryOne(
           `SELECT id, minio_path, filename, size_bytes FROM archivos WHERE usuario_id = $1 AND evidencia_local_id = $2`,
-          [req.user.id, evidencia_id]
+          [propietarioId, evidencia_id]
         );
         if (existente) {
           await storage.deleteFile(minioPath);
@@ -270,7 +307,11 @@ router.post('/subir', authenticateToken, upload.single('archivo'), async (req, r
       console.warn('[Photos] No se pudo registrar la actividad:', logErr.message);
     }
 
-    console.log(`[Photos] 📸 Foto subida a MinIO: ${minioPath}`);
+    console.log(
+      `[Photos] 📸 Foto subida a MinIO: ${minioPath}` +
+        (sinMetadatos ? ' (almacenamiento: sin marca ni ubicación)' : '') +
+        (subidoPorOtro ? ` — subida por ${req.user.usuario} para ${userUsuario}` : '')
+    );
 
     res.json({
       estado: 'ok',

@@ -834,7 +834,13 @@ export const saveFotoLocal = async (
   uri: string,
   coordenadas?: Coordenadas,
   beneficiario?: { cedula?: string; nombre?: string },
-  tipoFormulario?: string
+  tipoFormulario?: string,
+  /**
+   * 'almacenamiento' = la foto salió de la galería del teléfono (no de la
+   * cámara). Se guarda para que el sincronizador la suba SIN lat/lon y para
+   * que el backend no le queme marca de agua encima.
+   */
+  origen?: 'camara' | 'almacenamiento'
 ): Promise<void> => {
   const database = await ensureDb();
   if (!database) throw new Error('La base de datos local no está disponible; la foto no quedó en la cola de sincronización');
@@ -848,8 +854,8 @@ export const saveFotoLocal = async (
   // — de ahí las subidas duplicadas que veíamos en el servidor. El UPDATE
   // parcial preserva el estado de sincronización si ya existía.
   await database.runAsync(
-    `INSERT INTO fotos_locales (id, formulario_id, uri, latitud, longitud, altitud, timestamp, beneficiario_cedula, beneficiario_nombre, tipo_formulario)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `INSERT INTO fotos_locales (id, formulario_id, uri, latitud, longitud, altitud, timestamp, beneficiario_cedula, beneficiario_nombre, tipo_formulario, origen)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(id) DO UPDATE SET
        formulario_id = excluded.formulario_id,
        uri = excluded.uri,
@@ -859,7 +865,8 @@ export const saveFotoLocal = async (
        timestamp = excluded.timestamp,
        beneficiario_cedula = excluded.beneficiario_cedula,
        beneficiario_nombre = excluded.beneficiario_nombre,
-       tipo_formulario = excluded.tipo_formulario`,
+       tipo_formulario = excluded.tipo_formulario,
+       origen = COALESCE(excluded.origen, fotos_locales.origen)`,
     [
       id,
       formularioId,
@@ -871,6 +878,7 @@ export const saveFotoLocal = async (
       beneficiario?.cedula || null,
       beneficiario?.nombre || null,
       tipoFormulario || null,
+      origen || null,
     ]
   );
 };
@@ -951,7 +959,9 @@ export const saveVideoLocal = async (
   uri: string,
   coordenadas?: Coordenadas,
   beneficiario?: { cedula?: string; nombre?: string },
-  tipoFormulario?: string
+  tipoFormulario?: string,
+  /** Ver nota en saveFotoLocal: 'almacenamiento' = salió de la galería. */
+  origen?: 'camara' | 'almacenamiento'
 ): Promise<void> => {
   const database = await ensureDb();
   if (!database) throw new Error('La base de datos local no está disponible; el video no quedó en la cola de sincronización');
@@ -959,8 +969,8 @@ export const saveVideoLocal = async (
   // para no resetear sincronizada/archivo_id/ruta_remota de un video que
   // ya se había subido.
   await database.runAsync(
-    `INSERT INTO videos_locales (id, formulario_id, uri, latitud, longitud, timestamp, beneficiario_cedula, beneficiario_nombre, tipo_formulario)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `INSERT INTO videos_locales (id, formulario_id, uri, latitud, longitud, timestamp, beneficiario_cedula, beneficiario_nombre, tipo_formulario, origen)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(id) DO UPDATE SET
        formulario_id = excluded.formulario_id,
        uri = excluded.uri,
@@ -969,7 +979,8 @@ export const saveVideoLocal = async (
        timestamp = excluded.timestamp,
        beneficiario_cedula = excluded.beneficiario_cedula,
        beneficiario_nombre = excluded.beneficiario_nombre,
-       tipo_formulario = excluded.tipo_formulario`,
+       tipo_formulario = excluded.tipo_formulario,
+       origen = COALESCE(excluded.origen, videos_locales.origen)`,
     [
       id,
       formularioId,
@@ -980,6 +991,7 @@ export const saveVideoLocal = async (
       beneficiario?.cedula || null,
       beneficiario?.nombre || null,
       tipoFormulario || null,
+      origen || null,
     ]
   );
 };
@@ -1506,6 +1518,12 @@ export const runMigrations = async (): Promise<void> => {
         'beneficiario_cedula TEXT',
         'beneficiario_nombre TEXT',
         'tipo_formulario TEXT',
+        // De dónde salió la evidencia: 'camara' (geotag + marca de agua) o
+        // 'almacenamiento' (galería del teléfono: se sube limpia, sin
+        // coordenadas). Sin esta columna, el sincronizador no puede saber si
+        // debe mandar lat/lon y el backend terminaría quemandole a la foto
+        // una ubicación que no le corresponde.
+        'origen TEXT',
       ]) {
         try {
           await db.runAsync(`ALTER TABLE ${tabla} ADD COLUMN ${columna}`);

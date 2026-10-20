@@ -241,19 +241,26 @@ export const SyncProvider: React.FC<{ children: React.ReactNode }> = ({
 
         for (const foto of fotosPendientes) {
           try {
+            // Evidencia elegida del almacenamiento del teléfono: se sube sin
+            // ubicación ni fecha de captura (ver photos.service.ts). Antes el
+            // fallback `foto.latitud || form.coordenadas.latitud` le metía a
+            // CUALQUIER foto las coordenadas del formulario, y la marca de
+            // agua las quemaba en la imagen.
+            const desdeAlmacenamiento = foto.origen === 'almacenamiento';
             const resultado = await uploadPhoto(
               foto.uri,
-              foto.latitud || form.coordenadas.latitud,
-              foto.longitud || form.coordenadas.longitud,
-              foto.altitud || form.coordenadas.altitud,
+              desdeAlmacenamiento ? undefined : (foto.latitud || form.coordenadas?.latitud),
+              desdeAlmacenamiento ? undefined : (foto.longitud || form.coordenadas?.longitud),
+              desdeAlmacenamiento ? undefined : (foto.altitud || form.coordenadas?.altitud),
               `Formulario ${form.id}`,
               `Foto de ${form.beneficiario.nombre}`,
               form.beneficiario?.cedula || undefined,
               form.beneficiario?.nombre || undefined,
-              foto.timestamp,
+              desdeAlmacenamiento ? undefined : foto.timestamp,
               form.tipo,
               form.id,
               foto.id,
+              desdeAlmacenamiento ? 'almacenamiento' : 'camara',
             );
 
             // 410 → un admin/coordinador eliminó esta evidencia desde el
@@ -305,16 +312,20 @@ export const SyncProvider: React.FC<{ children: React.ReactNode }> = ({
 
         for (const video of videosPendientes) {
           try {
+            // Ver nota en las fotos: los videos del almacenamiento no llevan
+            // coordenadas.
+            const desdeAlmacenamiento = video.origen === 'almacenamiento';
             const resultado = await uploadVideo(
               video.uri,
-              video.latitud || form.coordenadas.latitud,
-              video.longitud || form.coordenadas.longitud,
+              desdeAlmacenamiento ? undefined : (video.latitud || form.coordenadas?.latitud),
+              desdeAlmacenamiento ? undefined : (video.longitud || form.coordenadas?.longitud),
               `Formulario ${form.id}`,
               form.beneficiario?.cedula || undefined,
               form.beneficiario?.nombre || undefined,
               form.tipo,
               form.id,
               video.id,
+              desdeAlmacenamiento ? 'almacenamiento' : 'camara',
             );
 
             // 410 → evidencia eliminada en el servidor (ver fotos arriba).
@@ -383,19 +394,21 @@ export const SyncProvider: React.FC<{ children: React.ReactNode }> = ({
           // beneficiario si tiene cédula, o a la del técnico— en vez de
           // dejarla sin subir para siempre.
           const formIdEvidencia = foto.formulario_id || undefined;
+          const desdeAlmacenamiento = foto.origen === 'almacenamiento';
           const r = await uploadPhoto(
             foto.uri,
-            foto.latitud ?? undefined,
-            foto.longitud ?? undefined,
-            foto.altitud ?? undefined,
+            desdeAlmacenamiento ? undefined : (foto.latitud ?? undefined),
+            desdeAlmacenamiento ? undefined : (foto.longitud ?? undefined),
+            desdeAlmacenamiento ? undefined : (foto.altitud ?? undefined),
             formIdEvidencia ? `Formulario ${formIdEvidencia}` : 'Evidencia sin formulario asignado',
             undefined,
             foto.beneficiario_cedula ?? undefined,
             foto.beneficiario_nombre ?? undefined,
-            foto.timestamp,
+            desdeAlmacenamiento ? undefined : foto.timestamp,
             foto.tipo_formulario ?? undefined,
             formIdEvidencia,
             foto.id,
+            desdeAlmacenamiento ? 'almacenamiento' : 'camara',
           );
           // 410 → eliminada en el servidor: se borra la copia local.
           if (r?.estado === 'eliminado') {
@@ -423,16 +436,18 @@ export const SyncProvider: React.FC<{ children: React.ReactNode }> = ({
             continue;
           }
           const formIdEvidencia = video.formulario_id || undefined;
+          const desdeAlmacenamiento = video.origen === 'almacenamiento';
           const r = await uploadVideo(
             video.uri,
-            video.latitud ?? undefined,
-            video.longitud ?? undefined,
+            desdeAlmacenamiento ? undefined : (video.latitud ?? undefined),
+            desdeAlmacenamiento ? undefined : (video.longitud ?? undefined),
             formIdEvidencia ? `Formulario ${formIdEvidencia}` : 'Evidencia sin formulario asignado',
             video.beneficiario_cedula ?? undefined,
             video.beneficiario_nombre ?? undefined,
             video.tipo_formulario ?? undefined,
             formIdEvidencia,
             video.id,
+            desdeAlmacenamiento ? 'almacenamiento' : 'camara',
           );
           // 410 → eliminado en el servidor: se borra la copia local.
           if (r?.estado === 'eliminado') {

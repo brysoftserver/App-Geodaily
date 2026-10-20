@@ -8,6 +8,10 @@ const path = require('path');
 const { authenticateToken } = require('../middleware/auth');
 const db = require('../database');
 const storage = require('../storage');
+const {
+  resolverDuenoDeFormulario,
+  esOrigenAlmacenamiento,
+} = require('../lib/duenoEvidencia');
 
 const router = express.Router();
 
@@ -30,9 +34,25 @@ router.post('/subir', authenticateToken, upload.single('archivo'), async (req, r
       return res.status(400).json({ estado: 'error', mensaje: 'Archivo de video requerido' });
     }
 
-    const { descripcion, latitud, longitud, beneficiario_cedula, beneficiario_nombre, tipo_formulario, formulario_id, evidencia_id } = req.body;
+    const { descripcion, latitud, longitud, beneficiario_cedula, beneficiario_nombre, tipo_formulario, formulario_id, evidencia_id, origen } = req.body;
     const ext = path.extname(req.file.originalname) || '.mp4';
     const filename = `video_${Date.now()}_${Math.random().toString(36).slice(2, 6)}${ext}`;
+
+    // ─── Origen de la evidencia (ver nota en photos.js) ───
+    // 'almacenamiento' = el video ya existía en el teléfono y el
+    // admin/coordinador lo adjunta a la visita: se sube sin coordenadas.
+    const sinMetadatos = esOrigenAlmacenamiento(origen);
+
+    // ─── Dueño efectivo del formulario (ver lib/duenoEvidencia.js) ───
+    // El archivo se guarda en el árbol del DUEÑO del formulario y a su
+    // nombre, no en el de quien lo sube: así el técnico de la visita ve su
+    // evidencia y nada queda huérfano en la carpeta del admin.
+    const duenoFormulario = await resolverDuenoDeFormulario(formulario_id);
+    const propietarioId = duenoFormulario?.id || req.user.id;
+    const userRol = duenoFormulario?.rol || req.user?.rol || 'otros';
+    const userUsuario =
+      duenoFormulario?.usuario || req.user?.usuario || req.user?.id?.toString() || 'desconocido';
+    const subidoPorOtro = duenoFormulario && String(duenoFormulario.id) !== String(req.user.id);
 
     // ─── Anti-resurrección: si un admin/coordinador borró este video desde
     // el detalle del formulario (DELETE /api/archivos/:id), se rechaza la
@@ -57,7 +77,7 @@ router.post('/subir', authenticateToken, upload.single('archivo'), async (req, r
     if (evidencia_id) {
       const yaSubido = await db.queryOne(
         `SELECT id, minio_path, filename, size_bytes FROM archivos WHERE usuario_id = $1 AND evidencia_local_id = $2`,
-        [req.user.id, evidencia_id]
+        [propietarioId, evidencia_id]
       );
       if (yaSubido) {
         console.log(`[Videos] Evidencia ${evidencia_id} ya existía (id ${yaSubido.id}) — se omite duplicado`);
@@ -112,8 +132,8 @@ router.post('/subir', authenticateToken, upload.single('archivo'), async (req, r
 
     // Subir a MinIO (con carpeta de beneficiario si aplica)
     await storage.uploadFile(
-      req.user.rol,
-      req.user.usuario,
+      userRol,
+      userUsuario,
       'videos',
       filename,
       req.file.buffer,
@@ -127,7 +147,7 @@ router.post('/subir', authenticateToken, upload.single('archivo'), async (req, r
 
     // Guardar registro en PostgreSQL
     const bucket = process.env.MINIO_BUCKET || 'geodaily-archivos';
-    const basePath = storage.getUserBasePath(req.user.rol, req.user.usuario);
+    const basePath = storage.getUserBasePath(userRol, userUsuario);
     let minioPath;
     const formFolder = storage.getFormTypeFolder(tipoFormularioResuelto);
     if (benefItem && benefNombre) {
@@ -144,6 +164,10 @@ router.post('/subir', authenticateToken, upload.single('archivo'), async (req, r
       // Ver nota en photos.js: la evidencia suele subirse antes que el
       // formulario, así que el vínculo también se guarda en metadata.
       formulario_id: formulario_id || null,
+      // 'camara' (geotag) o 'almacenamiento' (sin ubicación).
+      origen: sinMetadatos ? 'almacenamiento' : 'camara',
+      subido_por: subidoPorOtro ? req.user.id : null,
+      subido_por_rol: subidoPorOtro ? req.user.rol || null : null,
     };
 
     // Ver nota en photos.js: el SELECT evita violar la FK cuando el video
@@ -153,7 +177,7 @@ router.post('/subir', authenticateToken, upload.single('archivo'), async (req, r
         `INSERT INTO archivos (usuario_id, formulario_id, tipo, filename, originalname, mimetype, size_bytes, minio_path, minio_bucket, latitud, longitud, metadata_json, evidencia_local_id)
          VALUES ($1, (SELECT id FROM formularios WHERE id = $2), $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
         [
-          req.user.id,
+          propietarioId,
           formulario_id || null,
           'video',
           filename,
@@ -162,8 +186,10 @@ router.post('/subir', authenticateToken, upload.single('archivo'), async (req, r
           req.file.size,
           minioPath,
           bucket,
-          latitud ? parseFloat(latitud) : null,
-          longitud ? parseFloat(longitud) : null,
+          // Ver nota en photos.js: los archivos del almacenamiento no
+          // llevan ubicación porque no se capturó ninguna.
+          sinMetadatos ? null : (latitud ? parseFloat(latitud) : null),
+          sinMetadatos ? null : (longitud ? parseFloat(longitud) : null),
           JSON.stringify(metadataExtra),
           evidencia_id || null,
         ]
@@ -173,7 +199,7 @@ router.post('/subir', authenticateToken, upload.single('archivo'), async (req, r
       if (insertErr.code === '23505' && evidencia_id) {
         const existente = await db.queryOne(
           `SELECT id, minio_path, filename, size_bytes FROM archivos WHERE usuario_id = $1 AND evidencia_local_id = $2`,
-          [req.user.id, evidencia_id]
+          [propietarioId, evidencia_id]
         );
         if (existente) {
           console.log(`[Videos] Carrera detectada para evidencia ${evidencia_id} — se omite duplicado`);
