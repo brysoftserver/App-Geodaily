@@ -39,6 +39,21 @@ export const subirFirma = async (
 };
 
 /**
+ * El servidor rechazó la firma por PERMISOS (403).
+ *
+ * No es un problema de conexión: la firma NO debe guardarse localmente como
+ * si fuera a sincronizarse después, porque el guardado del formulario la
+ * reenviaría y saltaría la regla que la rechazó. Quien llama debe mostrar el
+ * mensaje del servidor y abortar.
+ */
+export class FirmaNoPermitidaError extends Error {
+  constructor(mensaje: string) {
+    super(mensaje);
+    this.name = 'FirmaNoPermitidaError';
+  }
+}
+
+/**
  * Subir firma y asociarla directamente a un formulario
  */
 export const guardarFirmaEnFormulario = async (
@@ -60,6 +75,14 @@ export const guardarFirmaEnFormulario = async (
     if (isOfflineError(error)) {
       console.warn('[Firmas] Offline — firma no asociada al formulario');
       return null;
+    }
+    // 403: regla del servidor (p. ej. firma faltante y no es admin). Se
+    // propaga para no simular un guardado local que luego el sync reenviaría.
+    const estado = (error as { response?: { status?: number; data?: { mensaje?: string } } })?.response;
+    if (estado?.status === 403) {
+      throw new FirmaNoPermitidaError(
+        estado.data?.mensaje || 'No tienes permiso para registrar esta firma.'
+      );
     }
     console.error('[Firmas] Error:', error);
     return null;

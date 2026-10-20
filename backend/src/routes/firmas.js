@@ -9,6 +9,7 @@ const { authenticateToken } = require('../middleware/auth');
 const db = require('../database');
 const storage = require('../storage');
 const { esTecnicoVigenteDelFormulario } = require('../lib/atribucion');
+const { resolverDuenoDeFormulario } = require('../lib/duenoEvidencia');
 
 const router = express.Router();
 
@@ -218,6 +219,8 @@ router.post('/guardar-en-formulario', authenticateToken, async (req, res) => {
     // visitas heredadas que ya se admite al corregir respuestas.
     const propietario = await db.queryOne(
       `SELECT COALESCE(NULLIF(tecnico_json->>'usuario_id', ''), usuario_id) AS usuario_id,
+              firma_beneficiario,
+              firma_tecnico,
               (SELECT CASE WHEN COUNT(DISTINCT b.tecnico_asignado_id) = 1
                            THEN MIN(b.tecnico_asignado_id) END
                  FROM beneficiarios b
@@ -244,6 +247,38 @@ router.post('/guardar-en-formulario', authenticateToken, async (req, res) => {
         mensaje: 'No autorizado para modificar este formulario',
       });
     }
+
+    // ─── Firma FALTANTE: solo el admin ───
+    // Caso real: el beneficiario o el técnico no estaban en la visita y
+    // vuelven después. La firma se registra con el admin delante, así que es
+    // el admin el ÚNICO que puede añadir una firma donde no había ninguna.
+    // Sin este control, el técnico dueño del formulario podría "conseguir"
+    // una firma en cualquier momento y desde cualquier lugar (solo se le
+    // autoriza a REEMPLAZAR una ya existente).
+    const campoFirma = tipo === 'beneficiario' ? 'firma_beneficiario' : 'firma_tecnico';
+    const firmaPrevia = tipo === 'beneficiario' ? propietario.firma_beneficiario : propietario.firma_tecnico;
+    if (!firmaPrevia && req.user.rol !== 'admin') {
+      return res.status(403).json({
+        estado: 'error',
+        mensaje:
+          'Solo el administrador puede registrar una firma faltante en este formulario',
+      });
+    }
+
+    // ─── Atribución: la firma pertenece al DUEÑO del formulario ───
+    // Si firma el admin (caso habitual aquí), guardar el archivo en
+    // `admin/<usuario>` y a su nombre lo deja invisible para el técnico: la
+    // app resuelve la firma listando `GET /api/archivos/formulario/:id`, que
+    // filtra por `usuario_id` para los roles que no son de coordinación.
+    // Por eso el archivo se guarda en el árbol del dueño, y quién lo firmó
+    // queda en `metadata_json.firmado_por` (trazabilidad).
+    const duenoFormulario = await resolverDuenoDeFormulario(formulario_id);
+    const propietarioArchivo = duenoFormulario || {
+      id: req.user.id,
+      rol: req.user.rol,
+      usuario: req.user.usuario,
+    };
+    const firmadoPorOtro = String(propietarioArchivo.id) !== String(req.user.id);
 
     // Subir firma a MinIO
     const converted = base64ToBuffer(data);
@@ -276,8 +311,8 @@ router.post('/guardar-en-formulario', authenticateToken, async (req, res) => {
     const filename = `firma_${tipo}_${formulario_id}_${timestamp}.png`;
 
     await storage.uploadFile(
-      req.user.rol,
-      req.user.usuario,
+      propietarioArchivo.rol,
+      propietarioArchivo.usuario,
       'firmas',
       filename,
       converted.buffer,
@@ -289,7 +324,7 @@ router.post('/guardar-en-formulario', authenticateToken, async (req, res) => {
       }
     );
 
-    const basePath = storage.getUserBasePath(req.user.rol, req.user.usuario);
+    const basePath = storage.getUserBasePath(propietarioArchivo.rol, propietarioArchivo.usuario);
     let minioPath;
     const formFolder = storage.getFormTypeFolder(tipo_formulario);
     if (benefItem && benefNombre) {
@@ -303,11 +338,11 @@ router.post('/guardar-en-formulario', authenticateToken, async (req, res) => {
 
     // Guardar en archivos
     const archivoResult = await db.queryOne(
-      `INSERT INTO archivos (usuario_id, tipo, filename, originalname, mimetype, size_bytes, minio_path, minio_bucket, metadata_json)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+      `INSERT INTO archivos (usuario_id, formulario_id, tipo, filename, originalname, mimetype, size_bytes, minio_path, minio_bucket, metadata_json)
+       VALUES ($1, (SELECT id FROM formularios WHERE id = $2), $3, $4, $5, $6, $7, $8, $9, $10)
        RETURNING id`,
       [
-        req.user.id, 'firma', filename, `firma_${tipo}.png`,
+        propietarioArchivo.id, formulario_id, 'firma', filename, `firma_${tipo}.png`,
         converted.mimetype, converted.buffer.length,
         minioPath, bucket,
         JSON.stringify({
@@ -315,19 +350,26 @@ router.post('/guardar-en-formulario', authenticateToken, async (req, res) => {
           formulario_id,
           beneficiario_item: benefItem,
           beneficiario_cedula: beneficiario_cedula || null,
+          // Quién firmó: el admin puede registrar una firma faltante a
+          // nombre del beneficiario/técnico, así que se deja constancia.
+          firmado_por: firmadoPorOtro ? req.user.id : null,
+          firmado_por_rol: firmadoPorOtro ? req.user.rol || null : null,
         }),
       ]
     );
     const firmaId = archivoResult?.id || `firma-${timestamp}`;
 
     // La propiedad ya se validó al inicio del handler.
-    const campo = tipo === 'beneficiario' ? 'firma_beneficiario' : 'firma_tecnico';
+    const campo = campoFirma;
     await db.query(
       `UPDATE formularios SET ${campo} = $1, updated_at = NOW() WHERE id = $2`,
       [minioPath, formulario_id]
     );
 
-    console.log(`[Firmas] ✍️ Firma ${tipo} asociada a formulario ${formulario_id}: ${minioPath}`);
+    console.log(
+      `[Firmas] ✍️ Firma ${tipo} ${firmaPrevia ? 'reemplazada' : 'registrada'} en formulario ${formulario_id}: ${minioPath}` +
+        (firmadoPorOtro ? ` — firmada por ${req.user.usuario} (${req.user.rol})` : '')
+    );
 
     res.json({
       estado: 'ok',

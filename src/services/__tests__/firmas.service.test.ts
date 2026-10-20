@@ -12,7 +12,7 @@
 import { describe, expect, it, jest, afterEach } from '@jest/globals';
 import apiClient from '../api';
 import { API_CONFIG } from '../../theme';
-import { guardarFirmaEnFormulario } from '../firmas.service';
+import { guardarFirmaEnFormulario, FirmaNoPermitidaError } from '../firmas.service';
 
 /** Espía sobre la petición HTTP; cada test decide qué responde. */
 const espiarPost = () => jest.spyOn(apiClient, 'post');
@@ -79,14 +79,31 @@ describe('firmas: reemplazar la firma de una visita ya completada', () => {
     ).resolves.toBeNull();
   });
 
-  it('un rechazo del servidor (p. ej. 403 sin autorización) no lanza: devuelve null', async () => {
-    const espiaError = jest.spyOn(console, 'error').mockImplementation(() => {});
+  it('un 403 NO se disfraza de "guardada en el teléfono": se propaga', async () => {
     espiarPost().mockRejectedValue({
-      response: { status: 403, data: { mensaje: 'No autorizado para modificar este formulario' } },
+      response: { status: 403, data: { mensaje: 'Solo el administrador puede registrar una firma faltante en este formulario' } },
     } as never);
+
+    // Si se devolviera null, el detalle daría la firma por "guardada y
+    // pendiente de sincronizar" y el envío del formulario la reenviaría,
+    // saltándose la regla que el servidor acaba de aplicar.
+    await expect(
+      guardarFirmaEnFormulario('form-4', 'tecnico', 'data:image/png;base64,DDD')
+    ).rejects.toBeInstanceOf(FirmaNoPermitidaError);
 
     await expect(
       guardarFirmaEnFormulario('form-4', 'tecnico', 'data:image/png;base64,DDD')
+    ).rejects.toThrow(/administrador/i);
+  });
+
+  it('otros rechazos del servidor (5xx) devuelven null y quedan para el sync', async () => {
+    const espiaError = jest.spyOn(console, 'error').mockImplementation(() => {});
+    espiarPost().mockRejectedValue({
+      response: { status: 500, data: { mensaje: 'Error al guardar firma en formulario' } },
+    } as never);
+
+    await expect(
+      guardarFirmaEnFormulario('form-5', 'beneficiario', 'data:image/png;base64,EEE')
     ).resolves.toBeNull();
 
     expect(espiaError).toHaveBeenCalled();

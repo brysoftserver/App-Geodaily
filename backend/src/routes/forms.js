@@ -335,7 +335,13 @@ router.post('/guardar', authenticateToken, async (req, res) => {
           sociodemografico_json = $6, caracterizacion_nueva_json = $7,
           coordenadas_json = $8, georeferencia_json = $9,
           clima_json = $10, fotos_json = $11,
-          firma_beneficiario = $12, firma_tecnico = $13,
+          -- NULLIF + COALESCE: una firma ya registrada NO se borra cuando
+          -- llega una resincronización con la copia vieja del teléfono (el
+          -- payload viaja sin firma). Antes, un formulario cuya firma la
+          -- registró el admin volvía a quedar sin firma si el técnico
+          -- resincronizaba su copia local anterior.
+          firma_beneficiario = COALESCE(NULLIF($12, ''), firma_beneficiario),
+          firma_tecnico = COALESCE(NULLIF($13, ''), firma_tecnico),
           huella_beneficiario = $14,
           pdf_url = COALESCE($15, pdf_url),
           sincronizado = TRUE,
