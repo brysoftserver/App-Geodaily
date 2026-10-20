@@ -3,7 +3,6 @@ import { describe, expect, it } from '@jest/globals';
 import {
   puedeEditarRespuestasFormulario,
   puedeElegirOrigenEvidencia,
-  puedeFirmarFormulario,
   puedeGestionarEvidenciasFormulario,
   resolverDuenoFormulario,
 } from '../permisosFormulario';
@@ -169,48 +168,5 @@ describe('puedeElegirOrigenEvidencia', () => {
     expect(puedeElegirOrigenEvidencia(undefined)).toBe(false);
     expect(puedeElegirOrigenEvidencia(null)).toBe(false);
     expect(puedeElegirOrigenEvidencia('')).toBe(false);
-  });
-});
-
-/**
- * Regla del negocio: una firma FALTANTE solo la puede registrar el admin.
- * Los casos reales son el beneficiario o el técnico que no estaban en la
- * visita y vuelven después: el admin los tiene enfrente cuando firman, así
- * que la firma se captura bajo su supervisión.
- */
-describe('puedeFirmarFormulario', () => {
-  it('en un campo SIN firma solo el admin puede firmar', () => {
-    expect(
-      puedeFirmarFormulario({ rol: 'admin', usuarioId: 'adm-001', duenoFormulario: 'tec-003', firmaExistente: false })
-    ).toBe(true);
-    for (const rol of ['tecnico', 'coordinador', 'interventor', 'gerente', 'supervisor']) {
-      expect(
-        puedeFirmarFormulario({ rol, usuarioId: 'tec-003', duenoFormulario: 'tec-003', firmaExistente: false })
-      ).toBe(false);
-    }
-  });
-
-  it('sin rol no se puede firmar un campo vacío', () => {
-    expect(puedeFirmarFormulario({ firmaExistente: false })).toBe(false);
-    expect(puedeFirmarFormulario({ rol: null, firmaExistente: false })).toBe(false);
-  });
-
-  it('con firma ya registrada se mantiene la regla de reemplazo', () => {
-    // Admin y coordinador en cualquier formulario; el técnico solo en el suyo.
-    expect(
-      puedeFirmarFormulario({ rol: 'admin', usuarioId: 'adm-001', duenoFormulario: 'tec-003', firmaExistente: true })
-    ).toBe(true);
-    expect(
-      puedeFirmarFormulario({ rol: 'coordinador', usuarioId: 'coo-002', duenoFormulario: 'tec-003', firmaExistente: true })
-    ).toBe(true);
-    expect(
-      puedeFirmarFormulario({ rol: 'tecnico', usuarioId: 'tec-003', duenoFormulario: 'tec-003', firmaExistente: true })
-    ).toBe(true);
-    expect(
-      puedeFirmarFormulario({ rol: 'tecnico', usuarioId: 'tec-010', duenoFormulario: 'tec-003', firmaExistente: true })
-    ).toBe(false);
-    expect(
-      puedeFirmarFormulario({ rol: 'interventor', usuarioId: 'int-009', duenoFormulario: 'int-009', firmaExistente: true })
-    ).toBe(false);
   });
 });

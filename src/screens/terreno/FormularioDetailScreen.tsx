@@ -51,7 +51,6 @@ import { formatFecha } from '../../utils/formatters';
 import {
   puedeEditarRespuestasFormulario,
   puedeElegirOrigenEvidencia,
-  puedeFirmarFormulario,
   puedeGestionarEvidenciasFormulario,
   resolverDuenoFormulario,
 } from '../../utils/permisosFormulario';
@@ -971,25 +970,6 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
    */
   const puedeElegirAlmacenamiento = puedeElegirOrigenEvidencia(rolActual);
   /**
-   * Firmas: una firma FALTANTE solo la puede registrar el admin (el
-   * beneficiario o el técnico que no estaban en la visita vuelven después y
-   * firman con el admin delante). Una firma ya registrada se puede reemplazar
-   * por los mismos roles de siempre. Se calcula por campo porque un
-   * formulario puede tener una firma y faltarle la otra.
-   */
-  const puedeFirmarBeneficiario = puedeFirmarFormulario({
-    rol: rolActual,
-    usuarioId: usuarioActual?.id,
-    duenoFormulario,
-    firmaExistente: !!formulario.firma_beneficiario,
-  });
-  const puedeFirmarTecnico = puedeFirmarFormulario({
-    rol: rolActual,
-    usuarioId: usuarioActual?.id,
-    duenoFormulario,
-    firmaExistente: !!formulario.firma_tecnico,
-  });
-  /**
    * ¿Esta evidencia todavía no existe en el servidor? (capturada en este
    * teléfono y pendiente de subir). Sirve para marcarla en pantalla y para
    * descartarla sin llamar a la API.
@@ -1517,17 +1497,6 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
    */
   const reemplazarFirma = async (tipo: 'beneficiario' | 'tecnico', dataUri: string) => {
     if (guardandoFirma) return;
-    // Defensa en profundidad del permiso por campo (el botón ya está oculto):
-    // registrar una firma que FALTABA es exclusivo del admin.
-    const firmaActual = tipo === 'beneficiario' ? formulario.firma_beneficiario : formulario.firma_tecnico;
-    if (!firmaActual && rolActual !== 'admin') {
-      Alert.alert(
-        'Solo el administrador',
-        'La firma de este formulario solo puede registrarla el administrador, con el beneficiario o el técnico presentes.'
-      );
-      setFirmaEditando(null);
-      return;
-    }
     setGuardandoFirma(true);
     const campo = tipo === 'beneficiario' ? 'firma_beneficiario' : 'firma_tecnico';
     try {
@@ -1581,7 +1550,7 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
       // Rechazo por permisos: el servidor dice por qué y NO se guarda nada
       // localmente (si se guardara, el sync la reenviaría por otra vía).
       if (e instanceof FirmaNoPermitidaError) {
-        Alert.alert('Solo el administrador', e.message);
+        Alert.alert('Sin permiso', e.message);
         return;
       }
       console.warn('[Detalle] No se pudo reemplazar la firma:', e);
@@ -2708,24 +2677,13 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
             de arriba, pero no había forma de VERLAS en la pantalla; solo
             aparecían dentro del PDF. Los roles de supervisión necesitan
             poder revisarlas aquí mismo, sin generar el documento completo. */}
-        {(formulario.firma_beneficiario ||
-          formulario.firma_tecnico ||
-          puedeAgregarEvidencias ||
-          puedeFirmarBeneficiario ||
-          puedeFirmarTecnico) && (
+        {(formulario.firma_beneficiario || formulario.firma_tecnico || puedeAgregarEvidencias) && (
           <View style={styles.fotosSection}>
             <Text style={styles.sectionTitle}>✍️ Firmas</Text>
-            {(puedeFirmarBeneficiario || puedeFirmarTecnico) && (
+            {puedeAgregarEvidencias && (
               <Text style={styles.firmasHint}>
-                {formulario.firma_beneficiario && formulario.firma_tecnico
-                  ? 'Si el técnico de la visita cambió, reemplaza aquí la firma que pida el interventor: se guarda sobre la anterior y sale así en el PDF.'
-                  : 'Una firma que falta solo la puede registrar el administrador, con el beneficiario o el técnico presentes. Si ya está registrada, se puede reemplazar aquí.'}
-              </Text>
-            )}
-            {!puedeFirmarBeneficiario && !puedeFirmarTecnico && (!formulario.firma_beneficiario || !formulario.firma_tecnico) && (
-              <Text style={styles.firmasHint}>
-                Las firmas que faltan solo las registra el administrador, cuando el beneficiario o el
-                técnico están presentes.
+                Si el técnico de la visita cambió, reemplaza aquí la firma que pida el interventor: se
+                guarda sobre la anterior y sale así en el PDF.
               </Text>
             )}
             <View style={styles.firmasRow}>
@@ -2763,7 +2721,7 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
                     <Text style={styles.firmaVaciaTexto}>No se pudo cargar</Text>
                   </View>
                 )}
-                {puedeFirmarBeneficiario && (
+                {puedeAgregarEvidencias && (
                   <TouchableOpacity
                     style={styles.cambiarFirmaBtn}
                     onPress={() => setFirmaEditando('beneficiario')}
@@ -2811,7 +2769,7 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
                     <Text style={styles.firmaVaciaTexto}>No se pudo cargar</Text>
                   </View>
                 )}
-                {puedeFirmarTecnico && (
+                {puedeAgregarEvidencias && (
                   <TouchableOpacity
                     style={styles.cambiarFirmaBtn}
                     onPress={() => setFirmaEditando('tecnico')}

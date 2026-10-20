@@ -248,30 +248,21 @@ router.post('/guardar-en-formulario', authenticateToken, async (req, res) => {
       });
     }
 
-    // ─── Firma FALTANTE: solo el admin ───
-    // Caso real: el beneficiario o el técnico no estaban en la visita y
-    // vuelven después. La firma se registra con el admin delante, así que es
-    // el admin el ÚNICO que puede añadir una firma donde no había ninguna.
-    // Sin este control, el técnico dueño del formulario podría "conseguir"
-    // una firma en cualquier momento y desde cualquier lugar (solo se le
-    // autoriza a REEMPLAZAR una ya existente).
+    // ─── ¿Es una firma nueva o un reemplazo? ───
+    // Solo se usa para el log; los permisos ya se validaron arriba (mismo
+    // criterio para registrar una firma que para reemplazarla).
     const campoFirma = tipo === 'beneficiario' ? 'firma_beneficiario' : 'firma_tecnico';
     const firmaPrevia = tipo === 'beneficiario' ? propietario.firma_beneficiario : propietario.firma_tecnico;
-    if (!firmaPrevia && req.user.rol !== 'admin') {
-      return res.status(403).json({
-        estado: 'error',
-        mensaje:
-          'Solo el administrador puede registrar una firma faltante en este formulario',
-      });
-    }
 
     // ─── Atribución: la firma pertenece al DUEÑO del formulario ───
-    // Si firma el admin (caso habitual aquí), guardar el archivo en
-    // `admin/<usuario>` y a su nombre lo deja invisible para el técnico: la
-    // app resuelve la firma listando `GET /api/archivos/formulario/:id`, que
-    // filtra por `usuario_id` para los roles que no son de coordinación.
-    // Por eso el archivo se guarda en el árbol del dueño, y quién lo firmó
-    // queda en `metadata_json.firmado_por` (trazabilidad).
+    // Si firma alguien distinto del dueño (el admin como último recurso, o un
+    // coordinador que reemplaza la firma), guardar el archivo en
+    // `<rol>/<usuario>` del firmante y a su nombre lo deja invisible para el
+    // técnico: la app resuelve la firma listando
+    // `GET /api/archivos/formulario/:id`, que filtra por `usuario_id` para los
+    // roles que no son de coordinación. Por eso el archivo se guarda en el
+    // árbol del dueño, y quién lo firmó queda en
+    // `metadata_json.firmado_por` (trazabilidad).
     const duenoFormulario = await resolverDuenoDeFormulario(formulario_id);
     const propietarioArchivo = duenoFormulario || {
       id: req.user.id,

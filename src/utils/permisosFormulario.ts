@@ -98,30 +98,3 @@ function esDueno(usuarioId?: string | null, duenoFormulario?: string | null): bo
 export function puedeElegirOrigenEvidencia(rol?: string | null): boolean {
   return rol === 'admin';
 }
-
-/**
- * ¿Puede capturar/reemplazar una firma en el detalle de un formulario?
- *
- * - Firma **faltante** (campo vacío): SOLO el admin. Caso real: el
- *   beneficiario o el técnico no estaban en el momento de la visita y
- *   vuelven después; el admin los tiene enfrente y registra la firma bajo su
- *   supervisión. Si se dejara firmar al técnico dueño, podría “conseguir” una
- *   firma en cualquier momento y desde cualquier lugar, sin que nadie
- *   presencie el acto.
- * - Firma **ya registrada**: se mantiene la regla de reemplazo de siempre
- *   (admin, coordinador y técnico dueño), que cubre el caso del técnico que
- *   cambió o de una firma que salió mal.
- *
- * Debe coincidir con la validación de `POST /api/firmas/guardar-en-formulario`:
- * el servidor rechaza con 403 a quien no sea admin en un campo vacío, aunque
- * el cliente lo intente por otra vía.
- */
-export function puedeFirmarFormulario({
-  rol,
-  usuarioId,
-  duenoFormulario,
-  firmaExistente,
-}: ContextoFormulario & { firmaExistente?: boolean }): boolean {
-  if (!firmaExistente) return rol === 'admin';
-  return puedeGestionarEvidenciasFormulario({ rol, usuarioId, duenoFormulario });
-}
