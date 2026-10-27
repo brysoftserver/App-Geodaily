@@ -1951,8 +1951,12 @@ function bloqueFirmaSeguimiento(titulo: string, dataUri: string | null): string 
 }
 
 async function construirHTMLSeguimiento(datos: DatosPDFSeguimiento, variante: MembreteVariante): Promise<string> {
-  const rolLabel = datos.autorRol === 'interventor' ? 'Interventoría' : 'Coordinación';
-  const tipoFormato = datos.autorRol === 'interventor' ? 'interventoria' : 'supervision';
+  // Los PDF de Interventoría no llevan el nombre del formato en el membrete
+  // ni el título grande del documento: el primero se repetía con el segundo y
+  // ambos quedaban duplicados sobre el encabezado. Coordinación los conserva.
+  const esInterventor = datos.autorRol === 'interventor';
+  const rolLabel = esInterventor ? 'Interventoría' : 'Coordinación';
+  const tipoFormato = esInterventor ? 'interventoria' : 'supervision';
   const fotosHtml = await construirFotosSeguimientoHTML(datos.fotos, datos.fecha);
   const [firmaBeneficiarioUri, firmaAutorUri, mapaUbicacionHtml] = await Promise.all([
     resolverFirmaSeguimientoDataUri(datos.firmaBeneficiario),
@@ -1995,10 +1999,10 @@ async function construirHTMLSeguimiento(datos: DatosPDFSeguimiento, variante: Me
   </style>
 </head>
 <body>
-  ${membreteAperturaHtml(variante, tipoFormato)}
+  ${membreteAperturaHtml(variante, tipoFormato, 1, 1, esInterventor)}
 
   <div class="doc-titulo">
-    <h1>SEGUIMIENTO DE ${rolLabel.toUpperCase()}</h1>
+    ${esInterventor ? '' : `<h1>SEGUIMIENTO DE ${rolLabel.toUpperCase()}</h1>`}
     <p>Registro de acompañamiento en campo — GEODAILY</p>
   </div>
 

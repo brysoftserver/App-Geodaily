@@ -180,10 +180,23 @@ export const membreteAperturaHtml = (
   variante: MembreteVariante = 'ejecucion',
   tipoFormato?: TipoFormatoOficial,
   totalPaginas: number = 1,
-  paginaActual: number = 1
+  paginaActual: number = 1,
+  /**
+   * Omite SOLO la franja con el nombre del formato (ej. "FORMATO INFORME DE
+   * INTERVENTORÍA"). El resto del membrete —logo, razón social, dependencia,
+   * numeración de página y código de control documental— se mantiene igual,
+   * porque `fmt` sigue existiendo y controlando esa retícula.
+   * Lo piden los PDF de Interventoría, donde ese título se repetía con el
+   * encabezado del documento. Los demás formatos no lo activan.
+   */
+  ocultarTituloFormato: boolean = false
 ): string => {
   const ent = ENTIDADES[variante] ?? ENTIDADES.ejecucion;
   const fmt = tipoFormato ? FORMATOS_OFICIALES[tipoFormato] : null;
+  // `fmt` sigue controlando la retícula del encabezado (page row + código),
+  // pero su franja de título es opcional.
+  const tituloFormatoHtml =
+    fmt && !ocultarTituloFormato ? `<div class="mb-titulo">${fmt.titulo}</div>` : '';
   return `
   <table class="mb-doc">
     <thead>
@@ -212,7 +225,7 @@ export const membreteAperturaHtml = (
               <td class="mb-version-celda">${fmt.version}</td>
             </tr>` : ''}
           </table>
-          ${fmt ? `<div class="mb-titulo">${fmt.titulo}</div>` : ''}
+          ${tituloFormatoHtml}
         </div>
       </td></tr>
     </thead>
