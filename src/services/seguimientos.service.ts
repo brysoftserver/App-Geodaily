@@ -57,7 +57,7 @@ export interface NuevoSeguimiento {
   firma_beneficiario?: string;
   /** archivo_id ya subido a MinIO vía /api/firmas */
   firma_autor?: string;
-  /** Georeferencia puntual (captura única de 8s de alta precisión — CapturaGPSPrecisa) */
+  /** Georeferencia puntual (captura de 20s de alta precisión — CapturaGPSPrecisa) */
   geo_latitud?: number;
   geo_longitud?: number;
   geo_altitud?: number;

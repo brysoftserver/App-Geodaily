@@ -1511,7 +1511,7 @@ const MapaScreen: React.FC = () => {
 
         {/* Overlay de coordenadas */}
         {ultimoPunto && (
-          <View style={styles.coordsOverlay}>
+          <View style={[styles.coordsOverlay, (soloLectura || (medicionPreview && !soloLectura)) && styles.coordsOverlayBajoBanner]}>
             <Text style={styles.coordsLabel}>
               {modo === 'medir'
                 ? `Punto #${poligono.length}`
@@ -1620,7 +1620,7 @@ const MapaScreen: React.FC = () => {
           }
         >
           <Text style={styles.mapTypeButtonText}>
-            {tipoMapa === 'terreno' ? '🛰️' : tipoMapa === 'satelite' ? '📅' : '⛰️'}
+            {tipoMapa === 'terreno' ? '🛰️' : tipoMapa === 'satelite' ? '🏔️' : '🗺️'}
           </Text>
         </TouchableOpacity>
 
@@ -2280,7 +2280,7 @@ const MapaScreen: React.FC = () => {
                       {pack.metadata?.tipo === 'satelite'
                         ? '🛰️ Satélite HD'
                         : pack.metadata?.tipo === 'satelite-reciente'
-                          ? '📅 Satélite Relieve'
+                          ? '🏔️ Satélite Relieve'
                           : '⛰️ Terreno/Calles'} · Descargado: {formatearFechaPack(pack.metadata?.creado)}
                     </Text>
                   </View>
@@ -2362,16 +2362,22 @@ const styles = StyleSheet.create({
     position: 'absolute',
     top: SPACING.sm,
     left: SPACING.sm,
+    // Deja libre la columna de botones (tipo de mapa / descarga) a la derecha
+    right: SPACING.sm + 44 + SPACING.sm,
     backgroundColor: COLORS.surface,
     padding: SPACING.sm,
     borderRadius: BORDER_RADIUS.md,
     ...SHADOWS.sm,
   },
+  // Los banners ocupan la parte superior; las coordenadas bajan debajo de ellos
+  coordsOverlayBajoBanner: {
+    top: SPACING.sm + 64,
+  },
   previewBanner: {
     position: 'absolute',
     top: SPACING.sm,
     left: SPACING.sm,
-    right: SPACING.sm,
+    right: SPACING.sm + 44 + SPACING.sm,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
@@ -2395,7 +2401,7 @@ const styles = StyleSheet.create({
     position: 'absolute',
     top: SPACING.sm,
     left: SPACING.sm,
-    right: SPACING.sm,
+    right: SPACING.sm + 44 + SPACING.sm,
     backgroundColor: 'rgba(27, 94, 32, 0.92)',
     paddingHorizontal: SPACING.md,
     paddingVertical: SPACING.sm,

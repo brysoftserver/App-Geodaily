@@ -78,6 +78,13 @@ import {
   resolverBeneficiarioVisita,
   tieneDatosBeneficiario,
 } from '../../utils/visitaTecnica';
+import { construirLlave, llaveCorrespondeACedula } from '../../utils/llaveVisita';
+import {
+  avisarSinCedula,
+  avisarVisitaYaRegistrada,
+  buscarVisitaYaCompletada,
+  resolverEntradaVisita,
+} from '../../services/entradaVisita';
 
 type Props = {
   navigation: NativeStackNavigationProp<Record<string, any>>;
@@ -289,6 +296,9 @@ const VisitaTecnicaFormScreen: React.FC<Props> = ({ navigation, route }) => {
 
   const formIdRef = useRef<string>(draftId || `visita-${Date.now()}`);
   const completadoRef = useRef(false);
+  /** Llave inmutable de la visita (técnico|cédula|vN). Se fija una vez al abrir. */
+  const llaveRef = useRef<string | null>(null);
+  const inicializadoRef = useRef(false);
   /**
    * false hasta que terminó la carga inicial. Sin esto, el autoguardado con
    * debounce podía dispararse ANTES de que el borrador terminara de cargar y
@@ -328,7 +338,9 @@ const VisitaTecnicaFormScreen: React.FC<Props> = ({ navigation, route }) => {
         beneficiarioParam,
         formularioActual?.beneficiario
       )
-    : resolverBeneficiarioVisita(beneficiarioParam, formularioActual?.beneficiario);
+    // Formulario NUEVO: solo el beneficiario elegido en la navegación. El del
+    // contexto global puede ser el de un formulario anterior (otro beneficiario).
+    : resolverBeneficiarioVisita(beneficiarioParam);
 
   // ─── Identificación (ítem 1: "desplegable con los datos") ─
   // El ítem pide un desplegable con los datos del beneficiario. Antes solo
@@ -427,10 +439,18 @@ const VisitaTecnicaFormScreen: React.FC<Props> = ({ navigation, route }) => {
 
   // ─── Restaurar / iniciar ──────────────────────────────────
   useEffect(() => {
+    if (inicializadoRef.current) return;
+    // Formulario nuevo: la llave necesita el id del técnico, así que se espera a la sesión.
+    if (!draftId && !user?.id) return;
+    inicializadoRef.current = true;
+
     // El id del borrador se fija ANTES de restaurar evidencias: si se hiciera
     // al final, el reducer recrearía el formulario y borraría las fotos y
     // firmas recién restauradas (mismo motivo que en la encuesta).
     iniciarFormulario('visita_tecnica', draftId);
+    // `iniciarFormulario` conserva el beneficiario que hubiera en el contexto (puede ser el
+    // de otro formulario): se fija explícitamente el elegido en la navegación.
+    if (!draftId && beneficiarioParam) setBeneficiario(beneficiarioParam);
 
     const aplicarBorrador = (draft: FormDraft) => {
       formIdRef.current = draft.id;
@@ -475,13 +495,41 @@ const VisitaTecnicaFormScreen: React.FC<Props> = ({ navigation, route }) => {
 
     const init = async () => {
       if (draftId) {
+        // Borrador retomado por su id (Formularios Incompletos).
         const draft = await getBorrador(draftId).catch(() => null);
         if (draft) {
+          const numeroDraft = draft.actividad?.visita_numero ?? visitaNumero;
+          const yaExiste = await buscarVisitaYaCompletada(draft.beneficiario?.cedula, numeroDraft);
+          if (yaExiste) {
+            avisarVisitaYaRegistrada(navigation, yaExiste, `La Visita Técnica ${numeroDraft}`);
+            return;
+          }
+          llaveRef.current = draft.llave || construirLlave(user?.id, draft.beneficiario?.cedula, numeroDraft);
           aplicarBorrador(draft);
         } else {
           // El borrador ya no existe: seguir con un formulario nuevo.
           formIdRef.current = draftId;
           iniciarFormulario('visita_tecnica', draftId);
+        }
+      } else {
+        // Entrada desde el beneficiario: una sola visita por beneficiario y formulario.
+        const decision = await resolverEntradaVisita({
+          usuarioId: user?.id,
+          cedula: beneficiarioParam?.cedula,
+          numeroVisita: visitaNumero,
+        });
+        if (decision.estado === 'sin_datos') {
+          avisarSinCedula(navigation);
+          return;
+        }
+        if (decision.estado === 'bloqueada') {
+          avisarVisitaYaRegistrada(navigation, decision.formulario, `La Visita Técnica ${visitaNumero}`);
+          return;
+        }
+        llaveRef.current = decision.llave;
+        // Solo se reanuda un borrador con EXACTAMENTE la misma llave (igualdad de texto).
+        if (decision.borrador && decision.borrador.llave === decision.llave) {
+          aplicarBorrador(decision.borrador);
         }
       }
 
@@ -499,7 +547,7 @@ const VisitaTecnicaFormScreen: React.FC<Props> = ({ navigation, route }) => {
 
     init();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [user?.id]);
 
   // Mantener el ref sincronizado con el id real del contexto
   useEffect(() => {
@@ -593,6 +641,7 @@ const VisitaTecnicaFormScreen: React.FC<Props> = ({ navigation, route }) => {
       return {
         id,
         tipo: 'visita_tecnica',
+        llave: llaveRef.current || undefined,
         step: 0,
         tecnico: construirTecnico(),
         beneficiario: construirBeneficiario(),
@@ -622,7 +671,8 @@ const VisitaTecnicaFormScreen: React.FC<Props> = ({ navigation, route }) => {
       data.observaciones.trim() ||
       data.latitud ||
       data.valoracion_cumplimiento ||
-      data.no_identificacion ||
+      // `no_identificacion` se autoselecciona al abrir: no cuenta como contenido del técnico
+      // (si contara, abrir y salir ya crearía un borrador).
       data.area_intervencion.trim() ||
       data.medicion_historial ||
       data.sin_compromisos ||
@@ -662,6 +712,13 @@ const VisitaTecnicaFormScreen: React.FC<Props> = ({ navigation, route }) => {
         // La carga inicial (borrador/precarga de beneficiario) aún no terminó:
         // guardar ahora escribiría el beneficiario equivocado en el borrador.
         if (!borradorListoRef.current) return;
+        // Sin llave no se crea un borrador nuevo (solo se admite al retomar uno por id).
+        if (!llaveRef.current && !draftId) return;
+        // Cinturón de seguridad: la llave debe ser la del beneficiario en pantalla.
+        if (llaveRef.current && !llaveCorrespondeACedula(llaveRef.current, beneficiario?.cedula)) {
+          console.warn('[VisitaTecnica] La llave no coincide con el beneficiario; no se autoguarda');
+          return;
+        }
         const id = formIdRef.current || formularioActual?.id;
         if (!id) return;
         if (!hayContenido()) return;
@@ -720,6 +777,10 @@ const VisitaTecnicaFormScreen: React.FC<Props> = ({ navigation, route }) => {
 
   // ─── Botón "Guardar borrador" ─────────────────────────────
   const guardarBorradorHandler = useCallback(async () => {
+    if (llaveRef.current && !llaveCorrespondeACedula(llaveRef.current, beneficiario?.cedula)) {
+      Alert.alert('No se pudo guardar', 'El borrador no corresponde al beneficiario en pantalla. Cierra y vuelve a abrir el formulario desde la ficha del beneficiario.');
+      return;
+    }
     setIsSaving(true);
     try {
       const id = formIdRef.current || formularioActual?.id || `visita-${Date.now()}`;
@@ -745,7 +806,7 @@ const VisitaTecnicaFormScreen: React.FC<Props> = ({ navigation, route }) => {
     } finally {
       setIsSaving(false);
     }
-  }, [armarBorrador, encolarEvidencias, formularioActual?.id]);
+  }, [armarBorrador, encolarEvidencias, formularioActual?.id, beneficiario?.cedula]);
 
   // ─── Validación ───────────────────────────────────────────
   const faltantes = React.useMemo(() => {

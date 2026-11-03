@@ -6,8 +6,8 @@ import React from 'react';
 import { View, ActivityIndicator, Text, StyleSheet, Image, ImageBackground } from 'react-native';
 import { COLORS, FONTS, SPACING } from '../theme';
 
-import FONDO from '../../assets/images/fondo_login_geo_daily.png';
-import LOGO from '../../assets/images/logo_geo_daily.png';
+import FONDO from '../../assets/images/fondo_login_geo_daily.jpg';
+import LOGO from '../../assets/images/logo_geo_daily_ui.png';
 
 interface LoadingSpinnerProps {
   message?: string;
@@ -60,6 +60,7 @@ const LoadingSpinner: React.FC<LoadingSpinnerProps> = ({
 const styles = StyleSheet.create({
   brandedContainer: {
     flex: 1,
+    backgroundColor: '#0D3B0F',
     width: '100%',
     height: '100%',
   },

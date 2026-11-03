@@ -67,6 +67,13 @@ import {
   INGRESOS_SALARIOS_OPTS,
 } from '../../utils/constants';
 import { guardarBorrador, getBorrador, FormDraft, obtenerUltimoErrorBorrador } from '../../store/FormDraftStore';
+import { construirLlave } from '../../utils/llaveVisita';
+import {
+  avisarSinCedula,
+  avisarVisitaYaRegistrada,
+  buscarVisitaYaCompletada,
+  resolverEntradaVisita,
+} from '../../services/entradaVisita';
 import {
   saveFormularioLocal,
   getFormularioById,
@@ -87,13 +94,14 @@ import {
   AcompaniamientoTecnico,
   ResumenClimatico,
   Coordenadas,
+  DatosBeneficiario,
 } from '../../types';
 import DropdownPicker from '../../components/DropdownPicker';
 import CapturaGPSPrecisa from '../../components/CapturaGPSPrecisa';
 
 type Props = {
   navigation: NativeStackNavigationProp<Record<string, any>>;
-  route: RouteProp<Record<string, any> & { params: { draftId?: string } }, 'params'>;
+  route: RouteProp<Record<string, any> & { params: { draftId?: string; beneficiario?: DatosBeneficiario } }, 'params'>;
 };
 
 // Claves de las secciones del formulario (para el check verde y la validación)
@@ -252,6 +260,27 @@ const EMPTY_ENCUESTA: EncuestaSocialAgroAmbiental = {
   acompaniamiento: { ...EMPTY_ACOMPANAMIENTO },
 };
 
+/**
+ * ¿El técnico ya aportó algo a la encuesta? Los campos que se precargan solos
+ * al abrir (beneficiario y técnico) NO cuentan: si contaran, abrir el
+ * formulario y salir ya crearía un borrador.
+ */
+const CAMPOS_PRECARGADOS = [
+  'productor_nombre',
+  'documento',
+  'vereda',
+  'corregimiento',
+  'tecnico_responsable',
+  'tecnico_cedula',
+] as const;
+const sinPrecarga = (d: EncuestaSocialAgroAmbiental): EncuestaSocialAgroAmbiental => {
+  const copia = { ...d } as Record<string, unknown>;
+  for (const k of CAMPOS_PRECARGADOS) copia[k] = '';
+  return copia as unknown as EncuestaSocialAgroAmbiental;
+};
+const encuestaTieneRespuestas = (d: EncuestaSocialAgroAmbiental): boolean =>
+  JSON.stringify(sinPrecarga(d)) !== JSON.stringify(sinPrecarga(EMPTY_ENCUESTA));
+
 // ─── Componente ──────────────────────────────────────────────
 const EncuestaSocialAgroambientalScreen: React.FC<Props> = ({ navigation, route }) => {
   const { user } = useAuth();
@@ -281,6 +310,12 @@ const EncuestaSocialAgroambientalScreen: React.FC<Props> = ({ navigation, route 
   const insets = useSafeAreaInsets();
 
   const draftId = route.params.draftId;
+  const beneficiarioParam = route.params.beneficiario;
+  /** Llave inmutable de la visita (técnico|cédula|v1). Sale del beneficiario ELEGIDO, no del campo editable. */
+  const llaveRef = useRef<string | null>(null);
+  const inicializadoRef = useRef(false);
+  /** La cédula del beneficiario es su identidad: no se edita cuando el formulario viene de su ficha. */
+  const [cedulaBloqueada, setCedulaBloqueada] = useState(false);
 
   // ─── Estado del formulario ────────────────────────────────
   const [data, setData] = useState<EncuestaSocialAgroAmbiental>({ ...EMPTY_ENCUESTA });
@@ -390,7 +425,15 @@ const EncuestaSocialAgroambientalScreen: React.FC<Props> = ({ navigation, route 
 
   // ─── Inicializar ──────────────────────────────────────────
   useEffect(() => {
+    if (inicializadoRef.current) return;
+    // Formulario nuevo: la llave necesita el id del técnico, así que se espera a la sesión.
+    if (!draftId && !user?.id) return;
+    inicializadoRef.current = true;
+
     iniciarFormulario('caracterizacion', draftId);
+    // `iniciarFormulario` conserva el beneficiario que hubiera en el contexto (puede ser el
+    // de otro formulario): se fija explícitamente el elegido en la navegación.
+    if (!draftId && beneficiarioParam) setBeneficiario(beneficiarioParam);
 
     // Autocompletar técnico desde el usuario autenticado
     if (user) {
@@ -402,26 +445,57 @@ const EncuestaSocialAgroambientalScreen: React.FC<Props> = ({ navigation, route 
     }
 
     const init = async () => {
+      let reanudado = false;
       // Cargar borrador si existe (solo se llega con `draftId` desde
       // "Formularios Incompletos", que es donde el técnico elige qué
       // borrador retomar).
       if (draftId) {
         const draft = await getBorrador(draftId).catch(() => null);
         if (draft) {
+          // Una sola encuesta por beneficiario: si ya se completó, se bloquea.
+          const yaExiste = await buscarVisitaYaCompletada(draft.beneficiario?.cedula, 1);
+          if (yaExiste) {
+            avisarVisitaYaRegistrada(navigation, yaExiste, 'La Encuesta Social AgroAmbiental (Visita 1)');
+            return;
+          }
+          llaveRef.current = draft.llave || construirLlave(user?.id, draft.beneficiario?.cedula, 1);
+          if (llaveRef.current) setCedulaBloqueada(true);
           // Restauración en un solo sitio: datos, evidencias, firmas,
           // coordenadas y beneficiario. Antes esta rama era una copia del
           // mismo código y podía desincronizarse de `aplicarBorrador`.
           aplicarBorrador(draft);
         }
       } else {
-        // Formulario NUEVO: no se busca ni se ofrece ningún borrador. Los
-        // incompletos viven en "Formularios Incompletos" y el técnico los
-        // retoma desde allí. Preguntar aquí era lo que metía el borrador de
-        // un beneficiario dentro del formulario de otro.
-        // Solo se pre-llena el beneficiario precargado (ficha del
-        // beneficiario → "Diligenciar").
-        const benefPrecargado = formularioActual?.beneficiario;
-        if (benefPrecargado?.nombre || benefPrecargado?.cedula) {
+        // Formulario NUEVO desde la ficha del beneficiario. Una sola encuesta por
+        // beneficiario: si ya existe completada se bloquea; si hay un borrador con
+        // EXACTAMENTE la misma llave (técnico|cédula|v1) se reanuda ese, en vez de
+        // crear otro. La cédula sale del beneficiario elegido, nunca del contexto
+        // global ni del campo editable (eso era lo que mezclaba beneficiarios).
+        const decision = await resolverEntradaVisita({
+          usuarioId: user?.id,
+          cedula: beneficiarioParam?.cedula,
+          numeroVisita: 1,
+        });
+        if (decision.estado === 'sin_datos') {
+          avisarSinCedula(navigation);
+          return;
+        }
+        if (decision.estado === 'bloqueada') {
+          avisarVisitaYaRegistrada(navigation, decision.formulario, 'La Encuesta Social AgroAmbiental (Visita 1)');
+          return;
+        }
+        llaveRef.current = decision.llave;
+        setCedulaBloqueada(true);
+        if (decision.borrador && decision.borrador.llave === decision.llave) {
+          aplicarBorrador(decision.borrador);
+          reanudado = true;
+        }
+      }
+      {
+        // Se pre-llena solo con el beneficiario elegido (ficha → "Diligenciar"), y solo si NO
+        // se reanudó un borrador (ese ya trae sus propios datos).
+        const benefPrecargado = beneficiarioParam;
+        if (!draftId && !reanudado && benefPrecargado && (benefPrecargado.nombre || benefPrecargado.cedula)) {
           setData(prev => ({
             ...prev,
             productor_nombre: benefPrecargado.nombre || prev.productor_nombre,
@@ -477,7 +551,7 @@ const EncuestaSocialAgroambientalScreen: React.FC<Props> = ({ navigation, route 
     };
     init();
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [user?.id]);
 
   // Sincronizar formIdRef con el ID real del contexto cuando esté disponible
   useEffect(() => {
@@ -790,15 +864,25 @@ const EncuestaSocialAgroambientalScreen: React.FC<Props> = ({ navigation, route 
         // La carga inicial (borrador/precarga) aún no terminó: guardar ahora
         // escribiría el beneficiario equivocado en el borrador.
         if (!borradorListoRef.current) return;
+        // Sin llave no se crea un borrador nuevo (solo se admite al retomar uno por id).
+        if (!llaveRef.current && !draftId) return;
         const draftIdActual = formIdRef.current || formularioActual?.id;
         if (!draftIdActual) return;
-        // Nada que guardar todavía: evita crear borradores vacíos
-        if (!data.productor_nombre?.trim() && !data.documento?.trim()) return;
+        // Nada que guardar todavía: evita crear borradores vacíos. Lo precargado al abrir
+        // (beneficiario, técnico) NO cuenta: solo respuestas o evidencia del técnico.
+        const evidencia = formularioRef.current || formularioActual;
+        const hayEvidencia =
+          (evidencia?.fotos?.length || 0) > 0 ||
+          !!evidencia?.firma_beneficiario ||
+          !!evidencia?.firma_tecnico ||
+          !!evidencia?.huella_beneficiario;
+        if (!encuestaTieneRespuestas(data) && !hayEvidencia) return;
 
         const currentForm = formularioRef.current || formularioActual;
         const draft: FormDraft = {
           id: draftIdActual,
           tipo: 'caracterizacion',
+          llave: llaveRef.current || undefined,
           step: 0,
           tecnico: {
             usuario_id: user?.id || '',
@@ -877,8 +961,8 @@ const EncuestaSocialAgroambientalScreen: React.FC<Props> = ({ navigation, route 
   useEffect(() => {
     if (completadoRef.current) return;
     if (!borradorListoRef.current) return;
-    // Nada que guardar todavía: evita crear borradores vacíos al abrir
-    if (!data.productor_nombre?.trim() && !data.documento?.trim()) return;
+    // Nada que guardar todavía: evita crear borradores vacíos al abrir (lo precargado no cuenta)
+    if (!encuestaTieneRespuestas(data)) return;
 
     if (autoguardadoDebounceRef.current) {
       clearTimeout(autoguardadoDebounceRef.current);
@@ -910,6 +994,7 @@ const EncuestaSocialAgroambientalScreen: React.FC<Props> = ({ navigation, route 
       const draft: FormDraft = {
         id: draftIdActual,
         tipo: 'caracterizacion',
+        llave: llaveRef.current || undefined,
         step: 0,
         tecnico: {
           usuario_id: user?.id || '',
@@ -1378,6 +1463,8 @@ const EncuestaSocialAgroambientalScreen: React.FC<Props> = ({ navigation, route 
       multiline?: boolean;
       numberOfLines?: number;
       required?: boolean;
+      /** false = solo lectura (p. ej. la cédula del beneficiario, que es su identidad). */
+      editable?: boolean;
     }
   ) => (
     <View style={styles.fieldContainer}>
@@ -1389,7 +1476,9 @@ const EncuestaSocialAgroambientalScreen: React.FC<Props> = ({ navigation, route 
         style={[
           styles.textInput,
           opts?.multiline && { minHeight: 70, textAlignVertical: 'top' },
+          opts?.editable === false && { backgroundColor: COLORS.surfaceAlt, color: COLORS.textSecondary },
         ]}
+        editable={opts?.editable !== false}
         value={value}
         onChangeText={onChange}
         placeholder={opts?.placeholder || ''}
@@ -1528,6 +1617,7 @@ const EncuestaSocialAgroambientalScreen: React.FC<Props> = ({ navigation, route 
                 placeholder: 'Número de cédula',
                 keyboardType: 'numeric',
                 required: true,
+                editable: !cedulaBloqueada,
               })}
 
               {renderField('Teléfono', data.telefono, (t) => updateData({ telefono: t }), {

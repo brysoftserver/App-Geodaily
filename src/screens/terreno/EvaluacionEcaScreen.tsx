@@ -14,6 +14,7 @@ import {
   ScrollView,
   Alert,
   ActivityIndicator,
+  Platform,
 } from 'react-native';
 import * as Sharing from 'expo-sharing';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
@@ -22,6 +23,7 @@ import { COLORS, FONTS, SPACING, BORDER_RADIUS, SHADOWS } from '../../theme';
 import { DatosBeneficiario } from '../../types';
 import {
   generarPDFEvaluacionEca,
+  construirHtmlEvaluacionEca,
   ECA_PREGUNTAS_TECNICAS,
   ECA_PREGUNTAS_JORNADA,
   ECA_TEMAS_UTILES,
@@ -29,6 +31,9 @@ import {
   EcaLikert,
 } from '../../services/pdfLocal.service';
 import { guardarDatosOtroFormato, cargarDatosOtroFormato } from '../../store/OtrosFormatosDraftStore';
+import BotonGuardarBorrador, { useGuardarBorrador } from '../../components/BotonGuardarBorrador';
+import { registrarOtroFormato, adjuntarPdfOtroFormato } from '../../services/otrosFormatos.service';
+import { abrirVentanaDeCarga, imprimirHtmlEnVentana } from '../../utils/printWeb';
 
 type Props = {
   navigation: NativeStackNavigationProp<Record<string, any>>;
@@ -111,14 +116,20 @@ const EvaluacionEcaScreen: React.FC<Props> = ({ navigation, route }) => {
     });
   }, [beneficiario?.cedula, nombre, identificacion, vereda, predio, respuestasTecnicas, respuestasJornada, temaMasUtil, temaMasUtilOtro, puedeAplicar, temaReforzar, volveriaParticipar, temaProximaEca, sugerencias]);
 
+  const { guardar, guardando } = useGuardarBorrador('evaluacion_eca', beneficiario?.cedula, { nombre, identificacion, vereda, predio, respuestasTecnicas, respuestasJornada, temaMasUtil, temaMasUtilOtro, puedeAplicar, temaReforzar, volveriaParticipar, temaProximaEca, sugerencias });
+
   const handleGenerar = useCallback(async () => {
     if (!nombre.trim() || !identificacion.trim()) {
       Alert.alert('Faltan datos', 'El nombre y la identificación del beneficiario son obligatorios.');
       return;
     }
+    // En web la pestaña de impresión debe abrirse SÍNCRONA, antes de cualquier
+    // await: si no, el navegador la bloquea como pop-up.
+    const ventanaWeb = Platform.OS === 'web' ? abrirVentanaDeCarga() : null;
+
     setGenerando(true);
     try {
-      const uri = await generarPDFEvaluacionEca({
+      const datosPDF = {
         nombre: nombre.trim(),
         identificacion: identificacion.trim(),
         vereda: vereda.trim(),
@@ -132,7 +143,24 @@ const EvaluacionEcaScreen: React.FC<Props> = ({ navigation, route }) => {
         volveriaParticipar,
         temaProximaEca: temaProximaEca.trim(),
         sugerencias: sugerencias.trim(),
+      };
+
+      // Publicar para los roles superiores (offline-first).
+      await registrarOtroFormato({
+        tipo: 'evaluacion_eca',
+        beneficiarioCedula: datosPDF.identificacion,
+        beneficiarioNombre: datosPDF.nombre,
+        datos: datosPDF,
       });
+
+      if (Platform.OS === 'web') {
+        imprimirHtmlEnVentana(ventanaWeb, construirHtmlEvaluacionEca(datosPDF));
+        return;
+      }
+
+      const uri = await generarPDFEvaluacionEca(datosPDF);
+      // Conserva el PDF (copia local + servidor) para el Historial; sin esperar la subida.
+      if (uri) void adjuntarPdfOtroFormato({ tipo: 'evaluacion_eca', beneficiarioCedula: datosPDF.identificacion, pdfUri: uri });
       if (!uri) {
         Alert.alert('Error', 'No se pudo generar el PDF. Intenta de nuevo.');
         return;
@@ -143,6 +171,7 @@ const EvaluacionEcaScreen: React.FC<Props> = ({ navigation, route }) => {
         Alert.alert('PDF generado', `Guardado en: ${uri}`);
       }
     } catch (e) {
+      ventanaWeb?.close();
       console.warn('[EvaluacionEca] Error al generar PDF:', e);
       Alert.alert('Error', 'No se pudo generar el PDF. Intenta de nuevo.');
     } finally {
@@ -170,7 +199,7 @@ const EvaluacionEcaScreen: React.FC<Props> = ({ navigation, route }) => {
         </View>
         <View style={styles.campoWrap}>
           <Text style={styles.campoLabel}>Identificación</Text>
-          <TextInput style={styles.input} value={identificacion} onChangeText={setIdentificacion} keyboardType="numeric" placeholder="Cédula" placeholderTextColor={COLORS.textLight} />
+          <TextInput style={styles.input} value={identificacion} onChangeText={setIdentificacion} editable={!beneficiario?.cedula} keyboardType="numeric" placeholder="Cédula" placeholderTextColor={COLORS.textLight} />
         </View>
         <View style={styles.campoWrap}>
           <Text style={styles.campoLabel}>Vereda</Text>
@@ -281,6 +310,7 @@ const EvaluacionEcaScreen: React.FC<Props> = ({ navigation, route }) => {
       </ScrollView>
 
       <View style={[styles.footer, { paddingBottom: insets.bottom + SPACING.md }]}>
+        <BotonGuardarBorrador onPress={guardar} guardando={guardando} />
         <TouchableOpacity style={[styles.generarBtn, generando && styles.generarBtnDisabled]} onPress={handleGenerar} disabled={generando} activeOpacity={0.8}>
           {generando ? <ActivityIndicator color="#fff" /> : <Text style={styles.generarBtnText}>📄 Generar PDF</Text>}
         </TouchableOpacity>

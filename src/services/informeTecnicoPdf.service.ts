@@ -295,7 +295,7 @@ function construirHtmlInforme(
 }
 
 /** Abre un PDF ya generado con el visor del sistema; si no hay visor, ofrece compartirlo. Mismo patrón que dashboardPdf.service.ts. */
-async function abrirPdf(uri: string): Promise<void> {
+export async function abrirPdf(uri: string): Promise<void> {
   if (Platform.OS === 'android') {
     try {
       const contentUri = await FileSystem.getContentUriAsync(uri);

@@ -51,6 +51,23 @@ const FormCard: React.FC<FormCardProps> = ({
     return formulario.tipo === 'visita_tecnica' ? COLORS.roleTecnico : COLORS.primary;
   };
 
+  // Novedades que el técnico todavía debe atender. Se exige que el rol que
+  // las marcó siga en 'novedades' (su último movimiento), para no pintar en
+  // rojo novedades ya resueltas por el mismo rol.
+  const hayNovedadesPendientes =
+    !!estadoRevision &&
+    estadoRevision.novedades_total > 0 &&
+    (estadoRevision.coordinador === 'novedades' || estadoRevision.interventor === 'novedades');
+  const aprobadoPorAmbos =
+    estadoRevision?.coordinador === 'ok' && estadoRevision?.interventor === 'ok';
+  // Después del OK del coordinador, el turno es de interventoría: si es ella
+  // la que observa, el técnico debe saberlo (antes decía "Todo OK del
+  // Coordinador/a — en interventoría" y ocultaba las novedades del interventor).
+  const novedadesDeInterventoria =
+    hayNovedadesPendientes &&
+    estadoRevision?.interventor === 'novedades' &&
+    estadoRevision?.coordinador === 'ok';
+
   return (
     <TouchableOpacity
       style={styles.card}
@@ -100,9 +117,9 @@ const FormCard: React.FC<FormCardProps> = ({
           <View
             style={[
               styles.revisionBadge,
-              estadoRevision.coordinador === 'ok' && estadoRevision.interventor === 'ok'
+              aprobadoPorAmbos
                 ? styles.revisionAprobada
-                : estadoRevision.novedades_total > 0 && estadoRevision.coordinador !== 'ok'
+                : hayNovedadesPendientes
                   ? styles.revisionNovedades
                   : estadoRevision.coordinador === 'ok'
                     ? styles.revisionAprobada
@@ -110,10 +127,12 @@ const FormCard: React.FC<FormCardProps> = ({
             ]}
           >
             <Text style={styles.revisionText}>
-              {estadoRevision.coordinador === 'ok' && estadoRevision.interventor === 'ok'
+              {aprobadoPorAmbos
                 ? '✅ Aprobado por Coordinador/a e interventoría'
-                : estadoRevision.novedades_total > 0 && estadoRevision.coordinador !== 'ok'
-                  ? `⚠️ ${estadoRevision.novedades_total} novedad(es) por corregir`
+                : hayNovedadesPendientes
+                  ? novedadesDeInterventoria
+                    ? `⚠️ ${estadoRevision.novedades_total} novedad(es) de interventoría por corregir`
+                    : `⚠️ ${estadoRevision.novedades_total} novedad(es) por corregir`
                   : estadoRevision.coordinador === 'ok'
                     ? '✅ Todo OK del Coordinador/a — en interventoría'
                     : '🕓 En revisión'}

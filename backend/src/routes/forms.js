@@ -6,6 +6,7 @@ const express = require('express');
 const { authenticateToken } = require('../middleware/auth');
 const db = require('../database');
 const storage = require('../storage');
+const { normalizarCedula, numeroVisitaFormulario, sqlCedulaNormalizada } = require('../lib/visitas');
 const {
   esTecnicoVigenteDelFormulario,
   resolverAtribucionFormulario,
@@ -271,7 +272,7 @@ router.post('/guardar', authenticateToken, async (req, res) => {
     );
 
     // Subir firmas base64 a MinIO si vienen en ese formato
-    const tipoFormulario = formulario.tipo;
+    const tipoFormulario = storage.claveCarpetaFormulario(formulario.tipo, actividad.visita_numero);
     // Resolver datos del beneficiario para la estructura de carpetas en MinIO
     let benefItem = null;
     let benefNombre = null;
@@ -453,18 +454,25 @@ router.post('/guardar', authenticateToken, async (req, res) => {
        JSON.stringify({ formulario_id: formulario.id, tipo: formulario.tipo })]
     );
 
-    const cedulaBeneficiario = (formulario.beneficiario && formulario.beneficiario.cedula) || null;
-    const visitaNumero = Number((formulario.actividad && formulario.actividad.visita_numero) ?? 0);
-    if (cedulaBeneficiario && Number.isInteger(visitaNumero) && visitaNumero >= 1 && visitaNumero <= 12) {
-      await db.query(
-        `UPDATE visitas_programadas
-           SET estado = 'realizada',
-               titulo = COALESCE(titulo, '')
-         WHERE beneficiario_cedula = $1
-           AND actividad_numero = $2
-           AND estado = 'pendiente'`,
-        [cedulaBeneficiario, visitaNumero]
-      );
+    // La visita planificada se cruza por (cédula, número). El número lo
+    // deduce el servidor del tipo (caracterización = 1) y no del cliente,
+    // que para caracterización nunca lo manda. Cédulas normalizadas.
+    const cedulaBeneficiario = normalizarCedula(formulario.beneficiario && formulario.beneficiario.cedula);
+    const visitaNumero = numeroVisitaFormulario(formulario.tipo, formulario.actividad && formulario.actividad.visita_numero);
+    if (cedulaBeneficiario && visitaNumero) {
+      try {
+        await db.query(
+          `UPDATE visitas_programadas
+             SET estado = 'realizada'
+           WHERE ${sqlCedulaNormalizada('beneficiario_cedula')} = $1
+             AND actividad_numero = $2
+             AND estado = 'pendiente'`,
+          [cedulaBeneficiario, visitaNumero]
+        );
+      } catch (visitaErr) {
+        // El formulario ya quedó guardado: no se le responde error al técnico.
+        console.warn('[Forms] No se pudo marcar la visita planificada como realizada:', visitaErr.message);
+      }
     }
 
     console.log(`[Forms] Formulario ${existente ? 'actualizado' : 'guardado'}: ${formulario.id} (${formulario.tipo})`);

@@ -1477,6 +1477,27 @@ export const runMigrations = async (): Promise<void> => {
         updated_at TEXT NOT NULL
       );
 
+      -- "Otros formatos" (Acta de Compromiso, Autorizaciones de Imagen,
+      -- Consentimiento de Datos, Evaluación ECA). Offline-first: el técnico
+      -- escribe aquí y se sube con sincronizarOtrosFormatos(). El id es
+      -- estable (of-{tipo}-{cedula}) para que corregir y regenerar un
+      -- formato actualice la misma fila, igual que el UPSERT del servidor.
+      CREATE TABLE IF NOT EXISTS otros_formatos_locales (
+        id TEXT PRIMARY KEY,
+        tecnico_id TEXT,
+        tecnico_nombre TEXT,
+        tecnico_usuario TEXT,
+        beneficiario_cedula TEXT NOT NULL,
+        beneficiario_nombre TEXT,
+        tipo TEXT NOT NULL,
+        datos TEXT NOT NULL DEFAULT '{}',
+        completo INTEGER DEFAULT 1,
+        sincronizado INTEGER DEFAULT 0,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_otros_formatos_locales_cedula ON otros_formatos_locales(beneficiario_cedula);
+
       -- ⚠️ PAPELERA DE SEGURIDAD (no la borres sin leer esto)
       --
       -- Cuando el servidor deja de devolver un formulario (porque un admin o
@@ -2655,6 +2676,135 @@ export interface FotoSeguimientoLocal {
   origen?: 'camara' | 'almacenamiento';
 }
 
+// === Otros formatos (Acta de Compromiso, Autorizaciones, Consentimiento, ECA) ===
+
+export interface OtroFormatoLocal {
+  id: string;
+  tecnico_id: string | null;
+  tecnico_nombre: string | null;
+  tecnico_usuario: string | null;
+  beneficiario_cedula: string;
+  beneficiario_nombre: string | null;
+  tipo: string;
+  datos: Record<string, any>;
+  completo: boolean;
+  sincronizado: boolean;
+  created_at: string;
+  updated_at: string;
+  /** Solo viene del servidor: ya hay un PDF guardado de este formato. */
+  tiene_pdf?: boolean;
+}
+
+/** Id estable de un formato. Solo el Acta de Entrega tiene `instancia` (varias por beneficiario). */
+export const idOtroFormato = (tipo: string, cedula: string, instancia?: string | null): string => {
+  const inst = tipo === 'acta_entrega_individual' ? String(instancia || '').replace(/[^A-Za-z0-9_-]/g, '') : '';
+  return inst ? `of-${tipo}-${cedula}-${inst}` : `of-${tipo}-${cedula}`;
+};
+
+const filaAOtroFormato = (row: any): OtroFormatoLocal => {
+  let datos: Record<string, any> = {};
+  try {
+    datos = row.datos ? JSON.parse(row.datos) : {};
+  } catch {
+    datos = {};
+  }
+  return {
+    id: row.id,
+    tecnico_id: row.tecnico_id ?? null,
+    tecnico_nombre: row.tecnico_nombre ?? null,
+    tecnico_usuario: row.tecnico_usuario ?? null,
+    beneficiario_cedula: row.beneficiario_cedula,
+    beneficiario_nombre: row.beneficiario_nombre ?? null,
+    tipo: row.tipo,
+    datos,
+    completo: row.completo !== 0,
+    sincronizado: row.sincronizado === 1,
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+  };
+};
+
+/**
+ * Guardar (crear o actualizar) un formato. La llave es (tipo, cédula[, instancia]): rehacer
+ * el mismo formato pisa el anterior, conserva `created_at` y vuelve a dejarlo
+ * pendiente de subir. Lanza si la base local no está disponible, para que el
+ * llamador no dé por guardado algo que no lo está.
+ */
+export const saveOtroFormatoLocal = async (
+  f: Pick<
+    OtroFormatoLocal,
+    'tecnico_id' | 'tecnico_nombre' | 'tecnico_usuario' | 'beneficiario_cedula' | 'beneficiario_nombre' | 'tipo' | 'datos' | 'completo'
+  >
+): Promise<void> => {
+  const database = await ensureDb();
+  if (!database) {
+    throw new Error('La base de datos local no está disponible — el formato NO se guardó');
+  }
+  const ahora = new Date().toISOString();
+  const id = idOtroFormato(f.tipo, f.beneficiario_cedula, f.datos?.instancia);
+  await database.runAsync(
+    `INSERT INTO otros_formatos_locales
+       (id, tecnico_id, tecnico_nombre, tecnico_usuario, beneficiario_cedula, beneficiario_nombre,
+        tipo, datos, completo, sincronizado, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+     ON CONFLICT(id) DO UPDATE SET
+       tecnico_id = excluded.tecnico_id,
+       tecnico_nombre = excluded.tecnico_nombre,
+       tecnico_usuario = excluded.tecnico_usuario,
+       beneficiario_nombre = excluded.beneficiario_nombre,
+       datos = excluded.datos,
+       completo = excluded.completo,
+       sincronizado = 0,
+       updated_at = excluded.updated_at`,
+    [
+      id,
+      f.tecnico_id || null,
+      f.tecnico_nombre || null,
+      f.tecnico_usuario || null,
+      f.beneficiario_cedula,
+      f.beneficiario_nombre || null,
+      f.tipo,
+      JSON.stringify(f.datos || {}),
+      f.completo ? 1 : 0,
+      ahora,
+      ahora,
+    ]
+  );
+};
+
+/** Formatos guardados en este dispositivo, de un beneficiario (o de todos si no se pasa cédula). */
+export const getOtrosFormatosLocales = async (cedula?: string): Promise<OtroFormatoLocal[]> => {
+  const database = await ensureDb();
+  if (!database) return [];
+  try {
+    const rows = cedula
+      ? await database.getAllAsync<any>(
+          'SELECT * FROM otros_formatos_locales WHERE beneficiario_cedula = ? ORDER BY updated_at DESC',
+          [cedula]
+        )
+      : await database.getAllAsync<any>('SELECT * FROM otros_formatos_locales ORDER BY updated_at DESC');
+    return rows.map(filaAOtroFormato);
+  } catch (error) {
+    console.error('[DB] Error leyendo otros formatos locales:', error);
+    return [];
+  }
+};
+
+/** Formatos completos que aún no se han subido al servidor. */
+export const getOtrosFormatosNoSincronizados = async (): Promise<OtroFormatoLocal[]> => {
+  const database = await ensureDb();
+  if (!database) return [];
+  try {
+    const rows = await database.getAllAsync<any>(
+      'SELECT * FROM otros_formatos_locales WHERE sincronizado = 0 AND completo = 1 ORDER BY created_at ASC'
+    );
+    return rows.map(filaAOtroFormato);
+  } catch (error) {
+    console.error('[DB] Error leyendo otros formatos pendientes:', error);
+    return [];
+  }
+};
+
 export interface SeguimientoLocal {
   id: string;
   autor_id: string;
@@ -2674,7 +2824,7 @@ export interface SeguimientoLocal {
   firma_beneficiario?: string;
   /** 'data:...' (base64, pendiente de subir) o archivo_id de MinIO (ya sincronizada) — firma de quien registra el seguimiento */
   firma_autor?: string;
-  /** Georeferencia puntual (captura única de 8s de alta precisión — CapturaGPSPrecisa) */
+  /** Georeferencia puntual (captura de 20s de alta precisión — CapturaGPSPrecisa) */
   geo_latitud?: number;
   geo_longitud?: number;
   geo_altitud?: number;

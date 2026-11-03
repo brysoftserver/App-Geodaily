@@ -35,6 +35,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { COLORS, FONTS, SPACING, BORDER_RADIUS, SHADOWS, API_CONFIG } from '../../theme';
 import { getSeguimientoLocalById, saveSeguimientoLocal, eliminarSeguimientoLocal, SeguimientoLocal, FotoSeguimientoLocal } from '../../services/database';
 import { fetchDocumentosDeFormulario, DocumentoDeFormulario } from '../../services/documentos.service';
+import { useAbrirDocumentoFinca } from '../../hooks/useAbrirDocumentoFinca';
 import { cabecerasDeArchivo, fuenteConAuth } from '../../services/archivos.service';
 import { actualizarPdfSeguimiento, actualizarSeguimiento, esSeguimientoEliminado } from '../../services/seguimientos.service';
 import { generarPDFSeguimiento, construirHtmlSeguimiento, DatosPDFSeguimiento } from '../../services/pdfLocal.service';
@@ -95,7 +96,7 @@ const SeguimientoDetailScreen: React.FC<SeguimientoDetailScreenProps> = ({ route
   const [cargando, setCargando] = useState(true);
   const [imagenAmpliada, setImagenAmpliada] = useState<{ uri: string; headers?: Record<string, string>; titulo: string } | null>(null);
   const [videoPreview, setVideoPreview] = useState<{ uri: string; headers: Record<string, string> } | null>(null);
-  const [abriendoDocId, setAbriendoDocId] = useState<string | null>(null);
+  const { abrirDocumento, abriendoId: abriendoDocId, visor: visorDocumento } = useAbrirDocumentoFinca();
   const [generandoPDF, setGenerandoPDF] = useState(false);
 
   // --- Edición ---
@@ -147,26 +148,6 @@ const SeguimientoDetailScreen: React.FC<SeguimientoDetailScreenProps> = ({ route
     if (!valor) return null;
     if (valor.startsWith('data:')) return { uri: valor, headers: {} };
     return fuenteConAuth(`${API_CONFIG.BASE_URL}/api/archivos/${valor}/contenido`, headersArchivo);
-  };
-
-  const abrirDocumento = async (doc: DocumentoDeFormulario) => {
-    setAbriendoDocId(doc.id);
-    try {
-      const url = doc.url.startsWith('http') ? doc.url : `${API_CONFIG.BASE_URL}${doc.url}`;
-      const extension = doc.nombre.includes('.') ? doc.nombre.split('.').pop() : 'dat';
-      const destino = `${FileSystem.cacheDirectory}doc_seguimiento_${doc.id}.${extension}`;
-      const { uri } = await FileSystem.downloadAsync(url, destino, { headers: headersArchivo });
-      if (await Sharing.isAvailableAsync()) {
-        await Sharing.shareAsync(uri, { mimeType: doc.mimetype });
-      } else {
-        Alert.alert('Documento descargado', `Guardado en: ${uri}`);
-      }
-    } catch (error) {
-      console.error('[SeguimientoDetail] No se pudo abrir el documento:', doc.id, error);
-      Alert.alert('Error', 'No se pudo abrir el documento. Verifica tu conexión.');
-    } finally {
-      setAbriendoDocId(null);
-    }
   };
 
   const exportarPDF = async () => {
@@ -935,6 +916,9 @@ const SeguimientoDetailScreen: React.FC<SeguimientoDetailScreenProps> = ({ route
           onClose={() => setVideoPreview(null)}
         />
       )}
+
+      {/* Visor interno de PDF de los documentos */}
+      {visorDocumento}
     </ScrollView>
   );
 };

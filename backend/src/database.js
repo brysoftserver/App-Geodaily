@@ -228,6 +228,32 @@ async function initSchema() {
       updated_at TIMESTAMPTZ DEFAULT NOW()
     )`,
 
+    // Resultado de laboratorio del análisis de suelos: un PDF por beneficiario
+    // (subir otro lo reemplaza). resumen_ia cachea la lectura que hizo la IA.
+    `CREATE TABLE IF NOT EXISTS analisis_suelos (
+      beneficiario_item INTEGER PRIMARY KEY,
+      tecnico_id VARCHAR(20) NOT NULL,
+      storage_key TEXT NOT NULL,
+      nombre_archivo VARCHAR(255),
+      tamano INTEGER,
+      resumen_ia TEXT,
+      subido_por VARCHAR(20),
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      updated_at TIMESTAMPTZ DEFAULT NOW()
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_analisis_suelos_tecnico ON analisis_suelos(tecnico_id)`,
+
+    // Hectáreas reportadas por el técnico por beneficiario y actividad
+    // (preparación del terreno, siembras, fertilización, control sanitario…).
+    `CREATE TABLE IF NOT EXISTS actividad_hectareas (
+      actividad VARCHAR(50) NOT NULL,
+      beneficiario_item INTEGER NOT NULL,
+      hectareas NUMERIC(10,2) NOT NULL,
+      tecnico_id VARCHAR(20) NOT NULL,
+      updated_at TIMESTAMPTZ DEFAULT NOW(),
+      PRIMARY KEY (actividad, beneficiario_item)
+    )`,
+
     `CREATE TABLE IF NOT EXISTS revisiones_formulario (
       id SERIAL PRIMARY KEY,
       formulario_id VARCHAR(100) NOT NULL,
@@ -292,6 +318,16 @@ async function initSchema() {
     // seguimiento que el admin ya eliminó lo vuelve a crear en su próximo
     // ciclo de sync (p. ej. si estaba esperando subir un video grande).
     `CREATE TABLE IF NOT EXISTS seguimientos_eliminados (
+      id VARCHAR(100) PRIMARY KEY,
+      eliminado_por VARCHAR(20),
+      eliminado_at TIMESTAMPTZ DEFAULT NOW()
+    )`,
+
+    // "Tumbas" de mediciones borradas (mismo criterio que
+    // formularios_eliminados). POST /api/mediciones/sync es un upsert por id:
+    // sin este registro, un celular que aún tenga la medición pendiente de
+    // subir la recrea en su próximo sync, y el script de restauración también.
+    `CREATE TABLE IF NOT EXISTS mediciones_eliminadas (
       id VARCHAR(100) PRIMARY KEY,
       eliminado_por VARCHAR(20),
       eliminado_at TIMESTAMPTZ DEFAULT NOW()
@@ -652,6 +688,64 @@ async function initSchema() {
     }
   } catch (err) {
     console.error('[DB] Error migrando revisor_rol supervisor→coordinador:', err.message);
+  }
+
+  // Tabla: "Otros Formatos" diligenciados en campo por el técnico para UN
+  // beneficiario (Acta de Compromiso, Autorizaciones de Imagen, Consentimiento
+  // de Datos, Evaluación ECA). Antes vivían SOLO en el AsyncStorage del
+  // celular y el único destino era el PDF compartido, así que coordinación,
+  // interventoría, gerencia y admin no podían verlos ni reimprimirlos.
+  //
+  // `datos` guarda el JSON completo del formulario, incluidas las firmas como
+  // data URI, para que cualquier rol superior pueda regenerar el PDF oficial
+  // con el mismo generador del técnico (sin depender de un archivo en MinIO).
+  //
+  // La llave natural es (beneficiario_cedula, tipo): un beneficiario tiene a
+  // lo sumo un acta, una autorización de imagen, etc. El sync hace UPSERT por
+  // esa llave, de modo que si el técnico corrige y regenera, se actualiza el
+  // mismo registro en vez de duplicarlo.
+  try {
+    await query(`CREATE TABLE IF NOT EXISTS otros_formatos (
+      id VARCHAR(160) PRIMARY KEY,
+      tecnico_id VARCHAR(20),
+      tecnico_nombre VARCHAR(200),
+      tecnico_usuario VARCHAR(100),
+      beneficiario_cedula VARCHAR(30) NOT NULL,
+      beneficiario_nombre VARCHAR(200),
+      tipo VARCHAR(40) NOT NULL CHECK (tipo IN (
+        'acta_compromiso','autorizacion_imagen','autorizacion_imagen_menor',
+        'consentimiento_datos','evaluacion_eca','acta_entrega_individual'
+      )),
+      datos JSONB NOT NULL,
+      completo BOOLEAN DEFAULT TRUE,
+      instancia VARCHAR(40) NOT NULL DEFAULT '',
+      pdf_path TEXT,
+      pdf_size BIGINT,
+      pdf_actualizado TIMESTAMPTZ,
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      updated_at TIMESTAMPTZ DEFAULT NOW()
+    )`);
+    // Historial de documentos completados: solo el Acta de Entrega admite
+    // varias por beneficiario (cada una con su `instancia`); el resto sigue
+    // siendo una por beneficiario porque su instancia siempre es ''. Además,
+    // el PDF generado se guarda en MinIO (pdf_path) para volver a abrirlo.
+    await query(`ALTER TABLE otros_formatos ADD COLUMN IF NOT EXISTS instancia VARCHAR(40) NOT NULL DEFAULT ''`);
+    await query(`ALTER TABLE otros_formatos ADD COLUMN IF NOT EXISTS pdf_path TEXT`);
+    await query(`ALTER TABLE otros_formatos ADD COLUMN IF NOT EXISTS pdf_size BIGINT`);
+    await query(`ALTER TABLE otros_formatos ADD COLUMN IF NOT EXISTS pdf_actualizado TIMESTAMPTZ`);
+    await query(`ALTER TABLE otros_formatos DROP CONSTRAINT IF EXISTS otros_formatos_beneficiario_cedula_tipo_key`);
+    await query(`CREATE UNIQUE INDEX IF NOT EXISTS uq_otros_formatos_instancia ON otros_formatos(beneficiario_cedula, tipo, instancia)`);
+    // La tabla ya existe en producción con el CHECK anterior: se reemplaza
+    // para admitir los tipos nuevos (CREATE IF NOT EXISTS no lo actualiza).
+    await query(`ALTER TABLE otros_formatos DROP CONSTRAINT IF EXISTS otros_formatos_tipo_check`);
+    await query(`ALTER TABLE otros_formatos ADD CONSTRAINT otros_formatos_tipo_check CHECK (tipo IN (
+      'acta_compromiso','autorizacion_imagen','autorizacion_imagen_menor',
+      'consentimiento_datos','evaluacion_eca','acta_entrega_individual'
+    ))`);
+    await query(`CREATE INDEX IF NOT EXISTS idx_otros_formatos_cedula ON otros_formatos(beneficiario_cedula)`);
+    await query(`CREATE INDEX IF NOT EXISTS idx_otros_formatos_tecnico ON otros_formatos(tecnico_id)`);
+  } catch (err) {
+    console.error('[DB] Error creando otros_formatos:', err.message);
   }
 
   // Tabla: seguimientos de Coordinación/Interventoría — registro de

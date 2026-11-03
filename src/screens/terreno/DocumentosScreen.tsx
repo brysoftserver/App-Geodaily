@@ -40,6 +40,7 @@ import {
 } from '../../services/database';
 import apiClient, { isOfflineError } from '../../services/api';
 import { persistirEvidencia } from '../../services/mediaStorage.service';
+import { useAbrirDocumentoFinca } from '../../hooks/useAbrirDocumentoFinca';
 import { fetchDocumentosDeBeneficiario, DocumentoDeFormulario } from '../../services/documentos.service';
 import { cabecerasDeArchivo } from '../../services/archivos.service';
 
@@ -71,7 +72,7 @@ const DocumentosScreen: React.FC<DocumentosScreenProps> = ({ navigation, route }
 
   const [documentos, setDocumentos] = useState<DocumentoFinca[]>([]);
   const [documentosRemotos, setDocumentosRemotos] = useState<DocumentoDeFormulario[]>([]);
-  const [abriendoRemotoId, setAbriendoRemotoId] = useState<string | null>(null);
+  const { abrirDocumento, abriendoId: abriendoRemotoId, visor: visorDocumento } = useAbrirDocumentoFinca();
   const [subiendoDoc, setSubiendoDoc] = useState(false);
   const [subiendoDocAMinIO, setSubiendoDocAMinIO] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -328,60 +329,6 @@ const DocumentosScreen: React.FC<DocumentosScreenProps> = ({ navigation, route }
     }
   };
 
-  // ─── Abrir un documento remoto (no capturado en este dispositivo) ───
-  const abrirDocumentoRemoto = async (doc: DocumentoDeFormulario) => {
-    const url = doc.url.startsWith('http') ? doc.url : `${API_CONFIG.BASE_URL}${doc.url}`;
-
-    // En web no hay sistema de archivos ni selector de apps nativo — expo-
-    // file-system/expo-sharing no aplican ahí. El navegador sí sabe mostrar
-    // un PDF si se navega directo a la URL, así que se abre en pestaña
-    // nueva con el token como query param (el backend lo acepta vía
-    // authenticateTokenOrQuery, igual que <Image>/<video> en fuenteConAuth).
-    // window.open() debe ser lo primero, antes de cualquier await, o el
-    // navegador lo bloquea como pop-up (mismo motivo que abrirVentanaDeCarga
-    // en printWeb.ts).
-    if (Platform.OS === 'web') {
-      const ventana = window.open('', '_blank');
-      try {
-        const headers = await cabecerasDeArchivo();
-        const token = headers.Authorization?.replace('Bearer ', '');
-        const separador = url.includes('?') ? '&' : '?';
-        const urlConToken = token ? `${url}${separador}token=${encodeURIComponent(token)}` : url;
-        if (ventana) {
-          ventana.location.href = urlConToken;
-        } else {
-          Alert.alert('Ventana bloqueada', 'Habilita las ventanas emergentes para ver el documento.');
-        }
-      } catch (error) {
-        console.error('[Documentos] No se pudo abrir el documento remoto (web):', doc.id, error);
-        ventana?.close();
-        Alert.alert('Error', 'No se pudo abrir el documento.');
-      }
-      return;
-    }
-
-    // Nativo (iOS/Android): mismo patrón que FormularioDetailScreen —
-    // se descarga a caché con el token de auth y se delega la apertura
-    // al selector de apps nativo del sistema.
-    setAbriendoRemotoId(doc.id);
-    try {
-      const extension = doc.nombre.includes('.') ? doc.nombre.split('.').pop() : 'dat';
-      const destino = `${FileSystem.cacheDirectory}doc_finca_${doc.id}.${extension}`;
-      const headers = await cabecerasDeArchivo();
-      const { uri } = await FileSystem.downloadAsync(url, destino, { headers });
-      if (await Sharing.isAvailableAsync()) {
-        await Sharing.shareAsync(uri, { mimeType: doc.mimetype });
-      } else {
-        Alert.alert('Documento descargado', `Guardado en: ${uri}`);
-      }
-    } catch (error) {
-      console.error('[Documentos] No se pudo abrir el documento remoto:', doc.id, error);
-      Alert.alert('Error', 'No se pudo abrir el documento. Verifica tu conexión.');
-    } finally {
-      setAbriendoRemotoId(null);
-    }
-  };
-
   // ─── Eliminar documento ─────────────────────────────────────
   const handleEliminarDocumento = (doc: DocumentoFinca) => {
     Alert.alert('Eliminar documento', `¿Estás seguro de eliminar "${doc.nombre}"?`, [
@@ -494,7 +441,7 @@ const DocumentosScreen: React.FC<DocumentosScreenProps> = ({ navigation, route }
               <TouchableOpacity
                 key={doc.id}
                 style={styles.docItem}
-                onPress={() => abrirDocumentoRemoto(doc)}
+                onPress={() => abrirDocumento(doc)}
                 activeOpacity={0.7}
                 disabled={abriendoRemotoId === doc.id}
               >
@@ -583,6 +530,9 @@ const DocumentosScreen: React.FC<DocumentosScreenProps> = ({ navigation, route }
           <Text style={styles.continueButtonText}>✓ Continuar</Text>
         </TouchableOpacity>
       </ScrollView>
+
+      {/* Visor interno de PDF de los documentos de la finca */}
+      {visorDocumento}
     </View>
   );
 };

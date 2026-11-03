@@ -10,7 +10,6 @@ import {
   StyleSheet,
   ScrollView,
   Image,
-  ImageBackground,
   ActivityIndicator,
 } from 'react-native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
@@ -21,6 +20,7 @@ import { cargarBorradores, sincronizarBorradoresConServidor } from '../../store/
 import CambiarContrasenaModal from '../../components/CambiarContrasenaModal';
 import SincronizacionModal from '../../components/SincronizacionModal';
 import AjustesMenu from '../../components/AjustesMenu';
+import FondoMenu from '../../components/FondoMenu';
 import NotificacionBell from '../../components/NotificacionBell';
 import AvatarViewerModal from '../../components/AvatarViewerModal';
 import { COLORS, FONTS, SPACING, BORDER_RADIUS, SHADOWS } from '../../theme';
@@ -56,6 +56,14 @@ const MENU_ITEMS = [
     icon: '📄',
     color: COLORS.info,
     screen: 'TerrenoFormularioList',
+  },
+  {
+    id: 'actividades',
+    title: 'Listado de Actividades',
+    subtitle: 'Realiza las actividades del proyecto con tus beneficiarios',
+    icon: '📋',
+    color: COLORS.primary,
+    screen: 'ListadoActividades',
   },
   {
     id: 'incompletos',
@@ -148,11 +156,7 @@ const TerrenoMenuScreen: React.FC<TerrenoMenuProps> = ({ navigation }) => {
     // El fondo cubre TODA la pantalla (encabezado + submódulos), no solo el
     // encabezado como antes. Al ir en el contenedor exterior (no dentro del
     // ScrollView) queda fijo mientras el contenido se desplaza encima.
-    <ImageBackground
-      source={require('../../../Logos_imagenes/fondo_login_geo_daily.png')}
-      style={styles.container}
-      resizeMode="cover"
-    >
+    <FondoMenu style={styles.container}>
       <View style={styles.overlayOscuro} pointerEvents="none" />
       <ScrollView
         style={styles.scroll}
@@ -237,7 +241,7 @@ const TerrenoMenuScreen: React.FC<TerrenoMenuProps> = ({ navigation }) => {
         onCambiar={cambiarAvatar}
         onQuitar={quitarAvatar}
       />
-    </ImageBackground>
+    </FondoMenu>
   );
 };
 

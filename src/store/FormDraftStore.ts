@@ -109,6 +109,12 @@ export interface FormDraft {
    * el borrador el técnico podía pisar la vereda asignada por error.
    */
   datosBloqueados?: boolean;
+  /**
+   * Llave inmutable de la visita (técnico|cédula|vN, ver utils/llaveVisita.ts).
+   * Se graba al crear el borrador y NO se recalcula desde campos editables.
+   * Los borradores antiguos no la tienen y nunca se reanudan automáticamente.
+   */
+  llave?: string;
   updated_at: string;
 }
 

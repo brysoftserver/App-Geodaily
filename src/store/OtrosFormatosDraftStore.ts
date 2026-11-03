@@ -26,14 +26,15 @@ export type TipoOtroFormato =
   | 'autorizacion_imagen'
   | 'autorizacion_imagen_menor'
   | 'consentimiento_datos'
-  | 'evaluacion_eca';
+  | 'evaluacion_eca'
+  | 'acta_entrega_individual';
 
 /**
  * Campos de `datos` que pueden traer una firma en base64.
  * Las firmas NO se guardan en AsyncStorage: se escriben como archivo y aquí
  * solo queda la URI (ver `firmasStorage.service`).
  */
-const CAMPOS_FIRMA = ['firma', 'firmaBeneficiario', 'firmaTecnico'] as const;
+const CAMPOS_FIRMA = ['firma', 'firmaBeneficiario', 'firmaTecnico', 'firmaInterventoria'] as const;
 
 const claveStorage = (tipo: TipoOtroFormato, cedulaBeneficiario: string): string =>
   `${PREFIX}${tipo}.${cedulaBeneficiario}`;
@@ -52,8 +53,8 @@ export const guardarDatosOtroFormato = async (
   tipo: TipoOtroFormato,
   cedulaBeneficiario: string | undefined | null,
   datos: Record<string, any>
-): Promise<void> => {
-  if (!cedulaBeneficiario) return;
+): Promise<boolean> => {
+  if (!cedulaBeneficiario) return false;
   try {
     // Las firmas (base64 de 40–140 KB) se sacan de AsyncStorage: se escriben
     // como archivo y aquí solo queda la URI. Sin esto, cada beneficiario
@@ -74,8 +75,10 @@ export const guardarDatosOtroFormato = async (
       claveStorage(tipo, cedulaBeneficiario),
       JSON.stringify({ datos: datosLigeros, updated_at: new Date().toISOString() })
     );
+    return true;
   } catch (e) {
     console.warn(`[OtrosFormatos] Error al guardar "${tipo}":`, e);
+    return false;
   }
 };
 

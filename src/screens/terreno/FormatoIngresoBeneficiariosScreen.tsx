@@ -26,6 +26,7 @@ import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { COLORS, FONTS, SPACING, BORDER_RADIUS, SHADOWS } from '../../theme';
 import { STORAGE_KEYS } from '../../utils/constants';
+import BotonGuardarBorrador from '../../components/BotonGuardarBorrador';
 import { useAuth } from '../../store/AuthContext';
 import {
   generarPDFIngresoBeneficiarios,
@@ -89,6 +90,21 @@ const FormatoIngresoBeneficiariosScreen: React.FC<FormatoIngresoBeneficiariosScr
     AsyncStorage.setItem(STORAGE_KEYS.INGRESO_BENEFICIARIOS_DRAFT, JSON.stringify(filas)).catch((e) =>
       console.warn('[IngresoBeneficiarios] Error al guardar borrador:', e)
     );
+  }, [filas]);
+
+  const [guardando, setGuardando] = useState(false);
+  const guardarBorrador = useCallback(async () => {
+    setGuardando(true);
+    try {
+      await AsyncStorage.setItem(STORAGE_KEYS.INGRESO_BENEFICIARIOS_DRAFT, JSON.stringify(filas));
+      const msg = 'Se guardó en este dispositivo. Podrás continuarla cuando quieras.';
+      if (Platform.OS === 'web' && typeof window !== 'undefined') window.alert(`Planilla guardada\n${msg}`);
+      else Alert.alert('Planilla guardada', msg);
+    } catch {
+      Alert.alert('No se pudo guardar', 'Revisa el espacio del dispositivo e intenta de nuevo.');
+    } finally {
+      setGuardando(false);
+    }
   }, [filas]);
 
   const actualizarCampo = useCallback((id: string, campo: keyof FilaIngresoBeneficiario, valor: string) => {
@@ -202,6 +218,7 @@ const FormatoIngresoBeneficiariosScreen: React.FC<FormatoIngresoBeneficiariosScr
       </ScrollView>
 
       <View style={[styles.footer, { paddingBottom: insets.bottom + SPACING.md }]}>
+        <BotonGuardarBorrador onPress={guardarBorrador} guardando={guardando} />
         <TouchableOpacity
           style={[styles.generarBtn, generando && styles.generarBtnDisabled]}
           onPress={generarPDF}

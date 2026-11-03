@@ -138,8 +138,12 @@ export const API_CONFIG = {
     FIRMAS: '/api/firmas',
     DOCUMENTOS: '/api/documentos',
     ANEXOS: '/api/anexos',
+    OTROS_FORMATOS: '/api/otros-formatos',
     VIDEOS: '/api/videos',
     ARCHIVOS: '/api/archivos',
     IA: '/api/ia',
+    ANALISIS_SUELOS: '/api/analisis-suelos',
+    ACTIVIDADES_HECTAREAS: '/api/actividades-hectareas',
+    ASISTENCIA_TECNICA: '/api/asistencia-tecnica',
   },
 };

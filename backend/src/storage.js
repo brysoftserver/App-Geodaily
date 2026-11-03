@@ -124,8 +124,25 @@ function getFormTypeFolder(tipoFormulario) {
     // firmas, documentos) de la visita de acompañamiento, separada de los
     // formularios del técnico.
     seguimiento: 'Seguimientos',
+    // Visita Técnica 3: sigue siendo tipo 'visita_tecnica' en la base de
+    // datos; esta clave solo existe para separar su evidencia en MinIO
+    // (ver claveCarpetaFormulario).
+    visita_tecnica_3: 'Formulario_3',
   };
   return map[tipoFormulario] || '';
+}
+
+/**
+ * Clave de carpeta de un formulario a partir de su tipo y número de visita.
+ * La Visita Técnica 3 va a `Formulario_3`; el resto conserva su tipo (la
+ * Visita 2 y las visitas antiguas siguen en `Formulario_2`).
+ * @param {string} tipo - 'caracterizacion' | 'visita_tecnica' | …
+ * @param {number|string|null|undefined} visitaNumero - actividad.visita_numero
+ * @returns {string} clave aceptada por getFormTypeFolder
+ */
+function claveCarpetaFormulario(tipo, visitaNumero) {
+  if (tipo === 'visita_tecnica' && Number(visitaNumero) === 3) return 'visita_tecnica_3';
+  return tipo;
 }
 
 /**
@@ -204,6 +221,30 @@ async function createBeneficiaryFolders(rol, usuario, item, nombreCompleto, tipo
 }
 
 /**
+ * Sanitizar un valor para usarlo como metadata de S3/MinIO.
+ *
+ * IMPORTANTE: los valores de metadata viajan en las cabeceras `x-amz-meta-*`
+ * y entran en el cálculo de la firma AWS Signature V4. Si el valor contiene
+ * caracteres no ASCII (ej. "paola.peña", "jennifer.cañon"), el cliente MinIO
+ * los envía como UTF-8 crudo mientras el servidor los normaliza distinto, y
+ * MinIO responde `SignatureDoesNotMatch` → HTTP 500 en TODAS las subidas de
+ * ese usuario (fotos, videos, PDFs, firmas).
+ *
+ * Solución: transliterar a ASCII (ñ→n, á→a, …) y eliminar cualquier carácter
+ * que no sea seguro para una cabecera HTTP. La ruta del objeto NO se toca:
+ * conserva el nombre original del usuario.
+ */
+function sanitizarMetadata(valor) {
+  if (valor === undefined || valor === null) return '';
+  return String(valor)
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '') // quita tildes/diéresis (ñ → n)
+    .replace(/[^\x20-\x7E]/g, '') // quita cualquier no-ASCII restante
+    .replace(/[\r\n]/g, ' ')
+    .trim();
+}
+
+/**
  * Subir un archivo a MinIO (con soporte opcional de carpeta por beneficiario y tipo de formulario)
  * Si se provee item y nombreCompleto, el archivo se guarda en:
  *   {rol}s/{usuario}/{item}_{nombre}/Formulario_{1|2}/{tipo}/{filename}
@@ -224,8 +265,9 @@ async function uploadFile(rol, usuario, tipo, filename, data, metadata = {}) {
 
   const meta = {
     'Content-Type': restMetadata.contentType || 'application/octet-stream',
-    'X-Amz-Meta-Uploaded-By': usuario,
-    'X-Amz-Meta-Rol': rol,
+    // Sanitizado a ASCII: un valor con "ñ" rompe la firma V4 (SignatureDoesNotMatch).
+    'X-Amz-Meta-Uploaded-By': sanitizarMetadata(usuario),
+    'X-Amz-Meta-Rol': sanitizarMetadata(rol),
     ...(restMetadata.custom || {}),
   };
 
@@ -699,10 +741,12 @@ module.exports = {
   sanitizeFolderName,
   getBeneficiarySubpath,
   getFormTypeFolder,
+  claveCarpetaFormulario,
   createUserFolders,
   createBeneficiaryFolders,
   uploadFile,
   uploadFromFile,
+  sanitizarMetadata,
   getSignedUrl,
   getFileStream,
   statFile,

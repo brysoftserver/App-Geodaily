@@ -75,14 +75,20 @@ async function getPdfjsSources(): Promise<{ pdfjs: string; worker: string }> {
  * El resultado se cachea en disco: reabrir el mismo documento es inmediato.
  */
 export async function crearHtmlVisorPdf(
-  moduleRef: number,
+  moduleRef: number | string,
   cacheKey: string
 ): Promise<string> {
-  const asset = Asset.fromModule(moduleRef);
-  if (!asset.localUri) {
-    await asset.downloadAsync();
+  // `string` = archivo local ya descargado/generado (ej. un PDF de Otros Formatos).
+  let pdfUri: string | null | undefined;
+  if (typeof moduleRef === 'string') {
+    pdfUri = moduleRef;
+  } else {
+    const asset = Asset.fromModule(moduleRef);
+    if (!asset.localUri) {
+      await asset.downloadAsync();
+    }
+    pdfUri = asset.localUri;
   }
-  const pdfUri = asset.localUri;
   if (!pdfUri) {
     throw new Error('No se pudo resolver el archivo PDF');
   }

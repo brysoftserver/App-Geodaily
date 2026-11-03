@@ -16,11 +16,26 @@ router.post('/sync', authenticateToken, async (req, res) => {
       return res.status(400).json({ estado: 'error', mensaje: 'Se requiere un arreglo de mediciones' });
     }
 
+    // Mediciones que un administrador ya eliminó: se descartan para que no
+    // "resuciten" desde un celular que aún las tenga pendientes. Cuentan como
+    // atendidas (el celular las marca sincronizadas y deja de reenviarlas).
+    const idsRecibidos = mediciones.map((m) => m.id).filter(Boolean);
+    const tumbas = new Set(
+      idsRecibidos.length
+        ? (await db.queryAll('SELECT id FROM mediciones_eliminadas WHERE id = ANY($1)', [idsRecibidos])).map((t) => t.id)
+        : []
+    );
+
     let sincronizadas = 0;
+    let eliminadas = 0;
     let omitidas = 0;
     let sinUsuario = 0;
     let fallidas = 0;
     for (const m of mediciones) {
+      if (m.id && tumbas.has(m.id)) {
+        eliminadas++;
+        continue;
+      }
       const id = m.id || `med-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
 
       // Usuario inexistente: la FK `mediciones_usuario_id_fkey` rechazaba el
@@ -98,13 +113,14 @@ router.post('/sync', authenticateToken, async (req, res) => {
       }
     }
 
-    console.log(`[Mediciones] ${sincronizadas} mediciones sincronizadas por ${req.user.usuario}${omitidas ? ` (${omitidas} sin formulario en servidor)` : ''}${sinUsuario ? ` (${sinUsuario} de usuario inexistente)` : ''}${fallidas ? ` (${fallidas} con error)` : ''}`);
+    console.log(`[Mediciones] ${sincronizadas} mediciones sincronizadas por ${req.user.usuario}${omitidas ? ` (${omitidas} sin formulario en servidor)` : ''}${sinUsuario ? ` (${sinUsuario} de usuario inexistente)` : ''}${eliminadas ? ` (${eliminadas} ya eliminadas por un admin, descartadas)` : ''}${fallidas ? ` (${fallidas} con error)` : ''}`);
     res.json({
       estado: 'ok',
       mensaje: `${sincronizadas} mediciones sincronizadas`,
       sincronizadas,
       sinFormulario: omitidas,
       sinUsuario,
+      eliminadas,
       fallidas,
     });
   } catch (error) {
@@ -183,6 +199,15 @@ router.delete('/:id', authenticateToken, async (req, res) => {
     if (!result) {
       return res.status(404).json({ estado: 'error', mensaje: 'Medición no encontrada' });
     }
+
+    // Deja constancia de que este id se borró a propósito: POST /sync la revisa
+    // para no recrearla si algún celular todavía la tiene.
+    await db.query(
+      `INSERT INTO mediciones_eliminadas (id, eliminado_por)
+       VALUES ($1, $2)
+       ON CONFLICT (id) DO UPDATE SET eliminado_por = $2, eliminado_at = NOW()`,
+      [req.params.id, req.user.id]
+    );
 
     await db.query(
       'INSERT INTO actividad_log (usuario_id, accion, detalle_json) VALUES ($1, $2, $3)',

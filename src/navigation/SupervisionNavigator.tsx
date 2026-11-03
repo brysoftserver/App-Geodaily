@@ -5,6 +5,8 @@
 import React from 'react';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { COLORS, FONTS } from '../theme';
+import ActividadesListScreen from '../screens/ActividadesListScreen';
+import ActividadDetalleScreen from '../screens/ActividadDetalleScreen';
 import SupervisionMenuScreen from '../screens/supervision/SupervisionMenuScreen';
 import DashboardScreen from '../screens/supervision/DashboardScreen';
 import ProyeccionScreen from '../screens/gerente/ProyeccionScreen';
@@ -37,6 +39,8 @@ export type SupervisionStackParamList = {
   BaseDatosBeneficiarios: undefined;
   SupervisionPlantacionesPorTecnico: undefined;
   RevisarAnexos: undefined;
+  RevisionActividades: { modo?: 'ejecutar' | 'revisar' } | undefined;
+  ActividadDetalle: { actividadId: string; modo: 'ejecutar' | 'revisar'; tecnico?: { usuario: string; nombre: string } };
 };
 
 const Stack = createNativeStackNavigator<SupervisionStackParamList>();
@@ -132,6 +136,17 @@ const SupervisionNavigator: React.FC = () => {
         name="RevisarAnexos"
         component={RevisarAnexosScreen}
         options={{ title: 'Revisar Anexos' }}
+      />
+      <Stack.Screen
+        name="RevisionActividades"
+        component={ActividadesListScreen}
+        initialParams={{ modo: 'revisar' }}
+        options={{ title: 'Revisión de Actividades' }}
+      />
+      <Stack.Screen
+        name="ActividadDetalle"
+        component={ActividadDetalleScreen}
+        options={{ title: 'Actividad' }}
       />
     </Stack.Navigator>
   );

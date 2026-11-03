@@ -5,6 +5,8 @@
 import React from 'react';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { COLORS, FONTS } from '../theme';
+import ActividadesListScreen from '../screens/ActividadesListScreen';
+import ActividadDetalleScreen from '../screens/ActividadDetalleScreen';
 import AdminMenuScreen from '../screens/admin/AdminMenuScreen';
 import UserManagementScreen from '../screens/admin/UserManagementScreen';
 import SystemConfigScreen from '../screens/admin/SystemConfigScreen';
@@ -49,6 +51,8 @@ export type AdminStackParamList = {
   AdminPlantacionesPorTecnico: undefined;
   DashboardGerencial: undefined;
   RevisarAnexos: undefined;
+  RevisionActividades: { modo?: 'ejecutar' | 'revisar' } | undefined;
+  ActividadDetalle: { actividadId: string; modo: 'ejecutar' | 'revisar'; tecnico?: { usuario: string; nombre: string } };
 };
 
 const Stack = createNativeStackNavigator<AdminStackParamList>();
@@ -174,6 +178,17 @@ const AdminNavigator: React.FC = () => {
         name="RevisarAnexos"
         component={RevisarAnexosScreen}
         options={{ title: 'Revisar Anexos' }}
+      />
+      <Stack.Screen
+        name="RevisionActividades"
+        component={ActividadesListScreen}
+        initialParams={{ modo: 'revisar' }}
+        options={{ title: 'Revisión de Actividades' }}
+      />
+      <Stack.Screen
+        name="ActividadDetalle"
+        component={ActividadDetalleScreen}
+        options={{ title: 'Actividad' }}
       />
     </Stack.Navigator>
   );

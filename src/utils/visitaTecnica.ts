@@ -16,7 +16,7 @@
 
 import { DatosBeneficiario } from '../types';
 
-export type FormatoVisita = 'v2';
+export type FormatoVisita = 'v2' | 'v3';
 
 export interface VisitaTecnicaDef {
   /** Número de la visita (1, 2, 3…). Se guarda en `actividad.visita_numero`. */
@@ -47,7 +47,34 @@ export const VISITAS_TECNICAS: VisitaTecnicaDef[] = [
     formato: 'v2',
     color: '#1565C0',
   },
+  {
+    numero: 3,
+    titulo: 'Visita Técnica 3',
+    descripcion: 'Adecuación del terreno, trazado, ahoyado y siembra',
+    icono: '🌱',
+    formato: 'v3',
+    color: '#2E7D32',
+  },
 ];
+
+/** ¿La actividad viene del formulario de la Visita Técnica 3 (formato 'v3')? */
+export const esVisitaTecnicaV3 = (
+  actividad?: { formato_visita?: string } | null
+): boolean => actividad?.formato_visita === 'v3';
+
+/**
+ * Clave de carpeta/evidencia de un formulario para el backend (MinIO).
+ * La Visita 3 va a `Formulario_3` ('visita_tecnica_3'); el resto conserva
+ * su tipo. Espejo de `claveCarpetaFormulario` en backend/src/storage.js.
+ */
+export const tipoFormularioEvidencia = (
+  form?: { tipo?: string; actividad?: { visita_numero?: number } | null } | null
+): string | undefined => {
+  if (!form?.tipo) return undefined;
+  return form.tipo === 'visita_tecnica' && form.actividad?.visita_numero === 3
+    ? 'visita_tecnica_3'
+    : form.tipo;
+};
 
 /** Devuelve la definición de una visita por su número (o la primera). */
 export const getVisitaTecnica = (numero?: number): VisitaTecnicaDef | undefined =>
@@ -167,7 +194,7 @@ export const resolverBeneficiarioVisita = (
 
 /** Ítem 2 — Objetivo de la visita (texto sugerido, editable). */
 export const OBJETIVO_VISITA_DEFAULT =
-  'Realizar seguimiento y asistencia técnica al proceso de asistencia técnica.';
+  'Asistir técnicamente las Unidades de Producción Agropecuaria en preparación de lote seleccionado para establecer el cultivo de cacao en arreglo agroforestal';
 
 /**
  * Ítem 8 — Compromisos base para la visita siguiente.
@@ -183,7 +210,8 @@ export const COMPROMISOS_VISITA_DEFAULT: string[] = [
 /** Texto guía de cada ítem (columna DESCRIPCIÓN de la tabla). */
 export const DESCRIPCION_ITEM: Record<string, string> = {
   no_identificacion: 'Generar desplegable con los datos',
-  objetivo: 'Realizar seguimiento y asistencia técnica al proceso de asistencia técnica',
+  objetivo:
+    'Asistir técnicamente las Unidades de Producción Agropecuaria en preparación de lote seleccionado para establecer el cultivo de cacao en arreglo agroforestal',
   descripcion_visita: 'Describir condiciones actuales del predio y paso a paso de la visita',
   georreferenciacion: 'Georreferenciar el área a intervenir',
   seguimiento_compromisos:

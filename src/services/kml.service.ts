@@ -82,6 +82,43 @@ export const generarKML = (
 };
 
 /**
+ * Generar un KML con un MARCADOR (Placemark de tipo Point) en la coordenada.
+ *
+ * El visor web de Google Earth (`earth.google.com/web/@lat,lon,...`) solo
+ * centra la cámara: no dibuja nada en el punto. Para que el usuario vea
+ * «aquí es», se le pasa además un KML con un pin, que Google Earth Web
+ * carga encima del terreno.
+ */
+export const generarKMLPunto = (
+  nombre: string,
+  punto: { latitud: number; longitud: number; altitud?: number }
+): string => {
+  const nombreXml = escaparXml(nombre);
+  const altitud = Number.isFinite(punto.altitud) ? Number(punto.altitud) : 0;
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<kml xmlns="http://www.opengis.net/kml/2.2">
+  <Document>
+    <name>${nombreXml}</name>
+    <Placemark>
+      <name>${nombreXml}</name>
+      <Style>
+        <IconStyle>
+          <color>ff2e7d32</color>
+          <scale>1.2</scale>
+          <Icon>
+            <href>http://maps.google.com/mapfiles/kml/paddle/grn-blank.png</href>
+          </Icon>
+        </IconStyle>
+      </Style>
+      <Point>
+        <coordinates>${punto.longitud},${punto.latitud},${altitud}</coordinates>
+      </Point>
+    </Placemark>
+  </Document>
+</kml>`;
+};
+
+/**
  * Exportar KML a archivo y compartir
  */
 export const exportarKML = async (

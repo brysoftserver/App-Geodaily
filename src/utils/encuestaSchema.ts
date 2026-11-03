@@ -15,6 +15,12 @@
 
 import { Formulario } from '../types';
 import { formatFecha } from './formatters';
+import {
+  conOtroSeguro,
+  conUnidadSegura,
+  numeroDeArea,
+  quitarEtiqueta,
+} from './respuestasCompuestas';
 
 /** Una pregunta con su respuesta ya resuelta a texto */
 export interface PreguntaResuelta {
@@ -42,17 +48,38 @@ export interface SeccionResuelta {
 // Helpers de formato
 // ------------------------------------------------------------------
 
-/** Combina una respuesta con su campo "otro / especifique" */
-const conOtro = (val?: string, otro?: string): string => {
-  if (!val) return '';
-  return otro ? `${val} — ${otro}` : val;
+/**
+ * Combina una respuesta con su campo "otro / especifique".
+ * Idempotente: si el valor ya venía compuesto ("No — Porque: X") no se
+ * vuelve a anexar el complemento.
+ */
+const conOtro = (val?: string, otro?: string): string => conOtroSeguro(val, otro);
+
+/**
+ * Formatea un valor con unidad, vacío si no hay dato.
+ * Idempotente: "70 ha" no se convierte en "70 ha ha".
+ */
+const conUnidad = (val: string | number | undefined | null, unidad: string): string =>
+  conUnidadSegura(val === undefined || val === null ? '' : String(val), unidad);
+
+/**
+ * Ítem del acompañamiento técnico con conteo + unidad
+ * (p. ej. "Número de hectáreas: 2.5 ha").
+ *
+ * Algunos registros quedaron con el texto ya compuesto guardado en el
+ * campo ("Número de hectáreas: 2.5"); se recorta esa etiqueta antes de
+ * componer para no mostrarla dos veces.
+ */
+const conEtiquetaUnidad = (val: string | undefined | null, etiqueta: string, unidad?: string): string => {
+  const base = primerSegmentoSimple(quitarEtiqueta(String(val ?? ''), etiqueta));
+  if (!base) return '';
+  if (unidad && /^-?\d+(?:[.,]\d+)?$/.test(base)) return `${etiqueta}: ${base} ${unidad}`;
+  return `${etiqueta}: ${base}`;
 };
 
-/** Formatea un valor con unidad, vacío si no hay dato */
-const conUnidad = (val: string | number | undefined | null, unidad: string): string =>
-  val !== undefined && val !== null && String(val).trim() !== ''
-    ? `${val} ${unidad}`
-    : '';
+/** Recorta el primer tramo de un valor compuesto con "·" o "|". */
+const primerSegmentoSimple = (val: string): string =>
+  String(val ?? '').split(/\s*[·|]\s*/)[0].trim();
 
 /** Formatea un trío de coordenadas */
 const coords = (lat?: any, lon?: any, alt?: any): string => {
@@ -157,11 +184,20 @@ export function construirSeccionesEncuesta(
   };
 
   // ---- Caracterización de la finca (19-27) ----
+  // P22: se compone "Etiqueta: N ha" por cada uso del suelo. Se recorta
+  // cualquier etiqueta/unidad que ya viniera dentro del campo guardado (en
+  // algunos registros quedó el texto completo de la vista) para que la
+  // respuesta se muestre una sola vez.
+  const division = (etiqueta: string, valor?: string | null): string => {
+    const n = numeroDeArea(valor, [etiqueta, 'Agricultura']);
+    return n ? `${etiqueta}: ${n} ha` : '';
+  };
+
   const divisiones = [
-    cf.division_bosque ? `Bosque: ${cf.division_bosque} ha` : '',
-    cf.division_agricola ? `Agrícola: ${cf.division_agricola} ha` : '',
-    cf.division_pecuaria ? `Pecuaria: ${cf.division_pecuaria} ha` : '',
-    cf.division_instalaciones ? `Instalaciones: ${cf.division_instalaciones} ha` : '',
+    division('Bosque', cf.division_bosque),
+    division('Agrícola', cf.division_agricola),
+    division('Pecuaria', cf.division_pecuaria),
+    division('Instalaciones', cf.division_instalaciones),
   ].filter(Boolean).join(' · ');
 
   const actividadesFinca = [
@@ -245,8 +281,8 @@ export function construirSeccionesEncuesta(
     titulo: 'DESARROLLO ACOMPAÑAMIENTO TÉCNICO',
     preguntas: [
       pAco('1', 'Socialización de actividades del proyecto al productor, mediante presentación digital.', aco.actividades_realizadas_si, aco.actividades_realizadas_no, aco.actividades_realizadas_obs),
-      p('2', 'Realización de selección y delimitación técnica del terreno para la implementación del cultivo de cacao en arreglo agroforestal con plátano y maderable.', aco.manejo_plagas_hectareas ? `Número de hectáreas: ${aco.manejo_plagas_hectareas} ha` : ''),
-      p('3', 'Realización de muestreo de suelo, teniendo en cuenta: criterios de homogeneidad, uso actual del terreno, topografía y condiciones agroecológicas.', aco.manejo_suelo_cantidad ? `Muestreo de suelo realizado: ${aco.manejo_suelo_cantidad}` : ''),
+      p('2', 'Realización de selección y delimitación técnica del terreno para la implementación del cultivo de cacao en arreglo agroforestal con plátano y maderable.', conEtiquetaUnidad(aco.manejo_plagas_hectareas, 'Número de hectáreas', 'ha')),
+      p('3', 'Realización de muestreo de suelo, teniendo en cuenta: criterios de homogeneidad, uso actual del terreno, topografía y condiciones agroecológicas.', conEtiquetaUnidad(aco.manejo_suelo_cantidad, 'Muestreo de suelo realizado')),
       pAco('4', 'Orientación al productor sobre procesos de producción y beneficios de la producción de cacao.', aco.capacitacion_si, aco.capacitacion_no, aco.capacitacion_obs),
       pAco('5', 'Orientación del manejo de preparación del terreno: realización de limpias si es rastrojo de porte bajo (herbáceas), recomendando no utilización de herbicidas a base de componentes de medio a altamente tóxicos.', aco.seguimiento_si, aco.seguimiento_no, aco.seguimiento_obs),
       pAco('6', 'Orientación del manejo de preparación del terreno: realización de entresacado en rastrojo biche de regeneración baja (arbóreas o arbustos), recomendando entresacado', aco.entresacado_si, aco.entresacado_no, aco.entresacado_obs),

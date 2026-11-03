@@ -35,6 +35,7 @@ import {
   getMedicionesNoSincronizadas,
   getTrackingNoSincronizado,
   getVisitasProgramadasNoSincronizadas,
+  deleteVisitaProgramadaLocal,
   getDocumentosNoSincronizados,
   getEvidenciasPendientes,
   marcarDocumentoSincronizado,
@@ -43,6 +44,7 @@ import {
   saveFormularioLocal,
   deleteFormularioLocal,
   getSeguimientosNoSincronizados,
+  getOtrosFormatosNoSincronizados,
   saveSeguimientoLocal,
   eliminarSeguimientoLocal,
   deleteEvidenciaLocal,
@@ -52,6 +54,7 @@ import { uploadVideo } from '../services/videos.service';
 import { subirDocumento } from '../services/documentos.service';
 import { subirFirma } from '../services/firmas.service';
 import { registrarSeguimiento, esSeguimientoEliminado } from '../services/seguimientos.service';
+import { sincronizarOtrosFormatos } from '../services/otrosFormatos.service';
 import { generarPDF } from '../services/pdf.service';
 import { limpiarEvidenciasAntiguas, archivoLocalFaltante } from '../services/mediaStorage.service';
 import { resolverClimaYUbicacion } from '../services/climate.service';
@@ -1034,11 +1037,32 @@ export const SyncProvider: React.FC<{ children: React.ReactNode }> = ({
         { timeout: 15000 }
       );
 
-      if (response.data?.estado === 'ok') {
+      // El servidor responde por visita: 'sincronizada' y 'ya_representada'
+      // quedan resueltas; 'conflicto' significa que ya hay otra planificación
+      // pendiente de esa visita en el servidor, así que la copia local
+      // rechazada se descarta (si no, se reintentaba en cada sync para
+      // siempre); 'error' sí se reintenta.
+      const resultados: { id: string; estado: string }[] = Array.isArray(response.data?.resultados)
+        ? response.data.resultados
+        : [];
+      if (response.data?.estado === 'ok' && resultados.length === 0) {
         for (const v of pendientes) {
           await marcarSincronizado('visitas_programadas', v.id);
         }
         console.log(`[Sync] ${pendientes.length} visita(s) programada(s) sincronizada(s)`);
+      } else if (resultados.length > 0) {
+        const estadoPorId = new Map(resultados.map(r => [r.id, r.estado]));
+        for (const v of pendientes) {
+          const estado = estadoPorId.get(v.id);
+          if (estado === 'sincronizada' || estado === 'ya_representada') {
+            await marcarSincronizado('visitas_programadas', v.id);
+          } else if (estado === 'conflicto') {
+            console.warn(`[Sync] Visita programada ${v.id} en conflicto con el servidor; se descarta la copia local`);
+            await deleteVisitaProgramadaLocal(v.id);
+          } else {
+            fallaron.push(v.id);
+          }
+        }
       } else {
         pendientes.forEach(v => fallaron.push(v.id));
       }
@@ -1121,7 +1145,7 @@ export const SyncProvider: React.FC<{ children: React.ReactNode }> = ({
 
   const checkPending = useCallback(async () => {
     try {
-      const [forms, plantas, mediciones, tracking, visitas, documentos, evidencias, seguimientos] = await Promise.all([
+      const [forms, plantas, mediciones, tracking, visitas, documentos, evidencias, seguimientos, otrosFormatos] = await Promise.all([
         getPendingSyncForms(),
         getPlantacionesNoSincronizadas(),
         getMedicionesNoSincronizadas(),
@@ -1130,8 +1154,9 @@ export const SyncProvider: React.FC<{ children: React.ReactNode }> = ({
         getDocumentosNoSincronizados(),
         getEvidenciasPendientes(),
         getSeguimientosNoSincronizados(),
+        getOtrosFormatosNoSincronizados(),
       ]);
-      const total = forms.length + plantas.length + mediciones.length + tracking.length + visitas.length + documentos.length + evidencias.fotos.length + evidencias.videos.length + seguimientos.length;
+      const total = forms.length + plantas.length + mediciones.length + tracking.length + visitas.length + documentos.length + evidencias.fotos.length + evidencias.videos.length + seguimientos.length + otrosFormatos.length;
       dispatch({ type: 'SET_PENDING', count: total });
     } catch {
       // Ignorar errores al verificar pendientes
@@ -1190,7 +1215,7 @@ export const SyncProvider: React.FC<{ children: React.ReactNode }> = ({
     }
 
     try {
-      const [pendingForms, pendingPlantaciones, pendingMediciones, pendingTracking, pendingVisitas, pendingDocumentos, pendingEvidencias, climaPendientes, pendingSeguimientos] = await Promise.all([
+      const [pendingForms, pendingPlantaciones, pendingMediciones, pendingTracking, pendingVisitas, pendingDocumentos, pendingEvidencias, climaPendientes, pendingSeguimientos, pendingOtrosFormatos] = await Promise.all([
         getPendingSyncForms(),
         getPlantacionesNoSincronizadas(),
         getMedicionesNoSincronizadas(),
@@ -1200,6 +1225,7 @@ export const SyncProvider: React.FC<{ children: React.ReactNode }> = ({
         getEvidenciasPendientes(),
         buscarFormulariosConClimaPendiente(),
         getSeguimientosNoSincronizados(),
+        getOtrosFormatosNoSincronizados(),
       ]);
 
       if (
@@ -1212,7 +1238,8 @@ export const SyncProvider: React.FC<{ children: React.ReactNode }> = ({
         pendingEvidencias.fotos.length === 0 &&
         pendingEvidencias.videos.length === 0 &&
         climaPendientes.length === 0 &&
-        pendingSeguimientos.length === 0
+        pendingSeguimientos.length === 0 &&
+        pendingOtrosFormatos.length === 0
       ) {
         dispatch({
           type: 'SYNC_SUCCESS',
@@ -1254,6 +1281,13 @@ export const SyncProvider: React.FC<{ children: React.ReactNode }> = ({
       dispatch({ type: 'SET_STAGE', stage: 'Sincronizando seguimientos...' });
       const seguimientosFallidos = await sincronizarSeguimientos();
       failedIds.push(...seguimientosFallidos.map(id => `seg-${id}`));
+
+      // 3f. Otros formatos (Acta de Compromiso, Autorizaciones, Consentimiento,
+      // ECA). NO crítico: si falla queda pendiente y se reintenta en el
+      // próximo ciclo sin marcar el sync completo como fallido.
+      dispatch({ type: 'SET_STAGE', stage: 'Sincronizando otros formatos...' });
+      const otrosFormatosFallidos = await sincronizarOtrosFormatos();
+      warnings.push(...otrosFormatosFallidos.map(id => `formato-${id}`));
 
       // 3d. Clima/ubicación pendiente de formularios guardados sin señal
       if (climaPendientes.length > 0) {

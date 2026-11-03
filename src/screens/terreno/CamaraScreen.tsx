@@ -53,7 +53,7 @@ const formatearDuracion = (segs: number): string => {
 
 type CamaraScreenProps = {
   navigation: NativeStackNavigationProp<Record<string, any>>;
-  route: RouteProp<Record<string, any> & { params: { mode?: 'photo' | 'video'; requisito?: string; formularioId?: string; beneficiarioCedula?: string; beneficiarioNombre?: string; tipoFormulario?: string } }, 'params'>;
+  route: RouteProp<Record<string, any> & { params: { mode?: 'photo' | 'video'; requisito?: string; formularioId?: string; beneficiarioCedula?: string; beneficiarioNombre?: string; tipoFormulario?: string; sinGeorreferencia?: boolean } }, 'params'>;
 };
 
 const CamaraScreen: React.FC<CamaraScreenProps> = ({ navigation, route }) => {
@@ -72,6 +72,9 @@ const CamaraScreen: React.FC<CamaraScreenProps> = ({ navigation, route }) => {
    */
   const formularioDestinoId = route.params?.formularioId;
   const esEvidenciaDirigida = !!formularioDestinoId;
+  // El admin agrega evidencia a visitas ya cerradas desde la oficina. Sus
+  // capturas no deben consultar GPS ni lugar ni llevar marca de agua.
+  const sinGeorreferencia = esEvidenciaDirigida && route.params?.sinGeorreferencia === true;
   const beneficiarioDestino = esEvidenciaDirigida
     ? { cedula: route.params?.beneficiarioCedula, nombre: route.params?.beneficiarioNombre }
     : undefined;
@@ -339,12 +342,16 @@ const CamaraScreen: React.FC<CamaraScreenProps> = ({ navigation, route }) => {
       : formActual
       ? { cedula: formActual.beneficiario?.cedula, nombre: formActual.beneficiario?.nombre }
       : undefined;
-    const tipoFormularioActual = esEvidenciaDirigida ? tipoFormularioDestino : formActual?.tipo;
+    // `tipoFormulario` por parámetro también aplica al flujo normal: la Visita Técnica 3
+    // lo manda ('visita_tecnica_3') para que su evidencia caiga en Formulario_3.
+    const tipoFormularioActual = tipoFormularioDestino || formActual?.tipo;
     try {
+      const coordenadasParaCola = sinGeorreferencia ? undefined : foto.coordenadas;
+      const origenParaCola = sinGeorreferencia ? 'almacenamiento' : undefined;
       if (foto.tipo === 'video') {
-        await saveVideoLocal(foto.id, formId, foto.uri, foto.coordenadas, beneficiarioActual, tipoFormularioActual);
+        await saveVideoLocal(foto.id, formId, foto.uri, coordenadasParaCola, beneficiarioActual, tipoFormularioActual, origenParaCola);
       } else {
-        await saveFotoLocal(foto.id, formId, foto.uri, foto.coordenadas, beneficiarioActual, tipoFormularioActual);
+        await saveFotoLocal(foto.id, formId, foto.uri, coordenadasParaCola, beneficiarioActual, tipoFormularioActual, origenParaCola);
       }
     } catch (queueErr) {
       console.warn('[Camara] No se pudo encolar para sync de inmediato:', foto.id, queueErr);
@@ -371,7 +378,12 @@ const CamaraScreen: React.FC<CamaraScreenProps> = ({ navigation, route }) => {
   ) => {
     setProcesandoEvidencia(true);
     try {
-      const nuevaFoto = await capturarFoto(uri, undefined, esVideoCaptura);
+      const nuevaFoto = await capturarFoto(
+        uri,
+        undefined,
+        esVideoCaptura,
+        sinGeorreferencia ? { origen: 'almacenamiento' } : undefined
+      );
       if (!nuevaFoto) {
         Alert.alert(
           'Evidencia no registrada',
@@ -394,7 +406,7 @@ const CamaraScreen: React.FC<CamaraScreenProps> = ({ navigation, route }) => {
         );
       }
       // El nombre del lugar es cosmético: si falla o no hay red, no importa.
-      if (!nuevaFoto.metadata?.sinUbicacion) {
+      if (!sinGeorreferencia && !nuevaFoto.metadata?.sinUbicacion) {
         resolverUbicacion(
           nuevaFoto.id,
           nuevaFoto.coordenadas.latitud,
@@ -568,7 +580,9 @@ const CamaraScreen: React.FC<CamaraScreenProps> = ({ navigation, route }) => {
         : formActual
         ? { cedula: formActual.beneficiario?.cedula, nombre: formActual.beneficiario?.nombre }
         : undefined;
-      const tipoFormularioActual = esEvidenciaDirigida ? tipoFormularioDestino : formActual?.tipo;
+      // `tipoFormulario` por parámetro también aplica al flujo normal: la Visita Técnica 3
+    // lo manda ('visita_tecnica_3') para que su evidencia caiga en Formulario_3.
+    const tipoFormularioActual = tipoFormularioDestino || formActual?.tipo;
       for (const foto of sinGuardar) {
         // En modo dirigido la evidencia pertenece a otra visita: no se añade
         // al formulario en curso.
@@ -982,7 +996,9 @@ const CamaraScreen: React.FC<CamaraScreenProps> = ({ navigation, route }) => {
                           : ''}
                       </Text>
                     )}
-                    {item.metadata?.sinUbicacion ? (
+                    {item.metadata?.sinMetadatos ? (
+                      <Text style={styles.fotoSinUbicacion}>Sin georreferencia</Text>
+                    ) : item.metadata?.sinUbicacion ? (
                       <Text style={styles.fotoSinUbicacion}>
                         ⚠️ Sin ubicación GPS
                       </Text>
@@ -1053,20 +1069,24 @@ const CamaraScreen: React.FC<CamaraScreenProps> = ({ navigation, route }) => {
               />
               <View style={styles.modalInfo}>
                 <Text style={styles.modalTitle}>📸 Foto</Text>
-                {ubicacionesFotos[fotoPreview.id] && (
+                {!fotoPreview.metadata?.sinMetadatos && ubicacionesFotos[fotoPreview.id] && (
                   <Text style={styles.modalText}>
                     📍 {ubicacionesFotos[fotoPreview.id].municipio}, {ubicacionesFotos[fotoPreview.id].departamento}
                   </Text>
                 )}
-                <Text style={styles.modalText}>
-                  🧭 {headingCompass(fotoPreview.coordenadas.heading)}
-                </Text>
-                <Text style={styles.modalText}>
-                  📅 {new Date(fotoPreview.timestamp).toLocaleString('es-CO')}
-                </Text>
-                <Text style={styles.modalCoords}>
-                  {formatCoordenadas(fotoPreview.coordenadas.latitud, fotoPreview.coordenadas.longitud, 6)}
-                </Text>
+                {!fotoPreview.metadata?.sinMetadatos && (
+                  <>
+                    <Text style={styles.modalText}>
+                      🧭 {headingCompass(fotoPreview.coordenadas.heading)}
+                    </Text>
+                    <Text style={styles.modalText}>
+                      📅 {new Date(fotoPreview.timestamp).toLocaleString('es-CO')}
+                    </Text>
+                    <Text style={styles.modalCoords}>
+                      {formatCoordenadas(fotoPreview.coordenadas.latitud, fotoPreview.coordenadas.longitud, 6)}
+                    </Text>
+                  </>
+                )}
               </View>
               <TouchableOpacity
                 style={styles.modalCloseBtn}
@@ -1087,11 +1107,13 @@ const CamaraScreen: React.FC<CamaraScreenProps> = ({ navigation, route }) => {
         onClose={() => setVideoPreview(null)}
         subtitulo={
           videoPreview
-            ? `📅 ${new Date(videoPreview.timestamp).toLocaleString('es-CO')}  ·  📍 ${formatCoordenadas(
-                videoPreview.coordenadas.latitud,
-                videoPreview.coordenadas.longitud,
-                6
-              )}`
+            ? videoPreview.metadata?.sinMetadatos
+              ? 'Sin georreferencia'
+              : `📅 ${new Date(videoPreview.timestamp).toLocaleString('es-CO')}  ·  📍 ${formatCoordenadas(
+                  videoPreview.coordenadas.latitud,
+                  videoPreview.coordenadas.longitud,
+                  6
+                )}`
             : undefined
         }
       />

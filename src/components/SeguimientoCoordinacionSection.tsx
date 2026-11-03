@@ -754,7 +754,7 @@ const SeguimientoCoordinacionSection: React.FC<SeguimientoCoordinacionSectionPro
       )}
 
       {/* Ubicación — al final, mismo componente que la pregunta 20 del
-          Formulario 1: botón con cuenta regresiva de 8s (se queda con la
+          Formulario 1: botón con cuenta regresiva de 20s (se queda con la
           lectura GPS de mayor precisión) y, debajo, un mapa pequeño con
           el punto capturado. */}
       <View style={styles.ubicacionWrap}>

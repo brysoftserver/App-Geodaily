@@ -10,7 +10,6 @@ import {
   StyleSheet,
   ScrollView,
   Image,
-  ImageBackground,
   ActivityIndicator,
 } from 'react-native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
@@ -20,6 +19,7 @@ import { useAuth } from '../../store/AuthContext';
 import { useAvatar } from '../../hooks/useAvatar';
 import CambiarContrasenaModal from '../../components/CambiarContrasenaModal';
 import AjustesMenu from '../../components/AjustesMenu';
+import FondoMenu from '../../components/FondoMenu';
 import NotificacionBell from '../../components/NotificacionBell';
 import AvatarViewerModal from '../../components/AvatarViewerModal';
 import SincronizacionModal from '../../components/SincronizacionModal';
@@ -60,6 +60,14 @@ const MENU_ITEMS = [
     icon: '📋',
     color: COLORS.primary,
     screen: 'SupervisionVisitasJerarquicas',
+  },
+  {
+    id: 'actividades',
+    title: 'Revisión de Actividades',
+    subtitle: 'Consolidado de lo que llenan todos los técnicos',
+    icon: '📋',
+    color: COLORS.roleCoordinador,
+    screen: 'RevisionActividades',
   },
   {
     id: 'calendario',
@@ -118,11 +126,7 @@ const SupervisionMenuScreen: React.FC<SupervisionMenuScreenProps> = ({ navigatio
     // El fondo cubre toda la pantalla (encabezado + submódulos); las
     // tarjetas de los submódulos quedan blancas encima, igual que en el
     // menú del técnico.
-    <ImageBackground
-      source={require('../../../Logos_imagenes/fondo_login_geo_daily.png')}
-      style={styles.container}
-      resizeMode="cover"
-    >
+    <FondoMenu style={styles.container}>
       <View style={styles.overlayOscuro} pointerEvents="none" />
       <ScrollView style={styles.scroll} contentContainerStyle={[styles.content, { paddingTop: Math.max(insets.top, SPACING.lg) }]}>
         {/* Header de usuario */}
@@ -187,7 +191,7 @@ const SupervisionMenuScreen: React.FC<SupervisionMenuScreenProps> = ({ navigatio
         onCambiar={cambiarAvatar}
         onQuitar={quitarAvatar}
       />
-    </ImageBackground>
+    </FondoMenu>
   );
 };
 

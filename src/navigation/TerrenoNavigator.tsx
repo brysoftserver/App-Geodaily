@@ -5,12 +5,15 @@
 import React from 'react';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { COLORS, FONTS } from '../theme';
+import ActividadesListScreen from '../screens/ActividadesListScreen';
+import ActividadDetalleScreen from '../screens/ActividadDetalleScreen';
 import TerrenoMenuScreen from '../screens/terreno/TerrenoMenuScreen';
 import BeneficiariosListScreen from '../screens/terreno/BeneficiariosListScreen';
 import BeneficiarioDetailScreen from '../screens/terreno/BeneficiarioDetailScreen';
 import SeleccionarTipoFormulario from '../screens/terreno/SeleccionarTipoFormulario';
 import SeleccionarVisitaTecnica from '../screens/terreno/SeleccionarVisitaTecnica';
 import VisitaTecnicaFormScreen from '../screens/terreno/VisitaTecnicaFormScreen';
+import VisitaTecnica3FormScreen from '../screens/terreno/VisitaTecnica3FormScreen';
 import FormularioScreen from '../screens/terreno/FormularioScreen';
 import FormularioCaracterizacionScreen from '../screens/terreno/FormularioCaracterizacionScreen';
 import CamaraScreen from '../screens/terreno/CamaraScreen';
@@ -29,6 +32,8 @@ import AutorizacionImagenScreen from '../screens/terreno/AutorizacionImagenScree
 import AutorizacionImagenMenorScreen from '../screens/terreno/AutorizacionImagenMenorScreen';
 import ConsentimientoDatosScreen from '../screens/terreno/ConsentimientoDatosScreen';
 import EvaluacionEcaScreen from '../screens/terreno/EvaluacionEcaScreen';
+import ActaEntregaIndividualScreen from '../screens/terreno/ActaEntregaIndividualScreen';
+import HistorialFormatosScreen from '../screens/terreno/HistorialFormatosScreen';
 import CalendarioScreen from '../screens/CalendarioGlobalScreen';
 import MapaScreen from '../screens/terreno/MapaScreen';
 import CapacitacionScreen from '../screens/CapacitacionScreen';
@@ -54,8 +59,14 @@ export type TerrenoStackParamList = {
     draftId?: string;
     beneficiario?: DatosBeneficiario;
   } | undefined;
+  /** Formulario de la Visita Técnica 3 (formato v3). */
+  VisitaTecnica3Form: {
+    visitaNumero?: number;
+    draftId?: string;
+    beneficiario?: DatosBeneficiario;
+  } | undefined;
   Formulario: { tipo: TipoFormulario; draftId?: string };
-  FormularioCaracterizacion: { draftId?: string };
+  FormularioCaracterizacion: { draftId?: string; beneficiario?: DatosBeneficiario };
   Camara: {
     mode?: 'photo' | 'video';
     requisito?: string;
@@ -84,6 +95,8 @@ export type TerrenoStackParamList = {
   AutorizacionImagenMenor: { beneficiario?: DatosBeneficiario } | undefined;
   ConsentimientoDatos: { beneficiario?: DatosBeneficiario } | undefined;
   EvaluacionEca: { beneficiario?: DatosBeneficiario } | undefined;
+  ActaEntregaIndividual: { beneficiario?: DatosBeneficiario } | undefined;
+  HistorialFormatos: { beneficiario?: DatosBeneficiario } | undefined;
   TerrenoCalendario: undefined;
   /**
    * Mapa de trazado de polígonos. Recibe el beneficiario para poder nombrar
@@ -112,6 +125,8 @@ export type TerrenoStackParamList = {
       }
     | undefined;
   TerrenoCapacitacion: undefined;
+  ListadoActividades: { modo?: 'ejecutar' | 'revisar' } | undefined;
+  ActividadDetalle: { actividadId: string; modo: 'ejecutar' | 'revisar'; tecnico?: { usuario: string; nombre: string } };
 };
 
 const Stack = createNativeStackNavigator<TerrenoStackParamList>();
@@ -168,6 +183,11 @@ const TerrenoNavigator: React.FC = () => {
             ? `Visita Técnica ${route.params.visitaNumero}`
             : 'Visita Técnica',
         })}
+      />
+      <Stack.Screen
+        name="VisitaTecnica3Form"
+        component={VisitaTecnica3FormScreen as any}
+        options={{ title: 'Visita Técnica 3' }}
       />
       <Stack.Screen
         name="Formulario"
@@ -260,6 +280,16 @@ const TerrenoNavigator: React.FC = () => {
         options={{ title: 'Evaluación ECA 1' }}
       />
       <Stack.Screen
+        name="ActaEntregaIndividual"
+        component={ActaEntregaIndividualScreen as any}
+        options={{ title: 'Acta de Entrega y Recibo' }}
+      />
+      <Stack.Screen
+        name="HistorialFormatos"
+        component={HistorialFormatosScreen as any}
+        options={{ title: 'Historial de formatos' }}
+      />
+      <Stack.Screen
         name="TerrenoCalendario"
         component={CalendarioScreen}
         options={{ title: 'Calendario' }}
@@ -273,6 +303,17 @@ const TerrenoNavigator: React.FC = () => {
         name="TerrenoCapacitacion"
         component={CapacitacionScreen}
         options={{ title: 'Capacitaciones' }}
+      />
+      <Stack.Screen
+        name="ListadoActividades"
+        component={ActividadesListScreen}
+        initialParams={{ modo: 'ejecutar' }}
+        options={{ title: 'Listado de Actividades' }}
+      />
+      <Stack.Screen
+        name="ActividadDetalle"
+        component={ActividadDetalleScreen}
+        options={{ title: 'Actividad' }}
       />
     </Stack.Navigator>
   );

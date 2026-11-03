@@ -143,6 +143,13 @@ function fueraDeBbox(puntos) {
       restaurado_at: new Date().toISOString(),
     };
 
+    // Una medición que un admin eliminó a propósito no se restaura.
+    const tumba = await query('SELECT 1 FROM mediciones_eliminadas WHERE id = $1', [m.id]);
+    if (tumba.rowCount > 0) {
+      omitidas++;
+      continue;
+    }
+
     const res = await query(
       `INSERT INTO mediciones
          (id, usuario_id, formulario_id, tipo_medicion, valor, unidad,

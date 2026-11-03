@@ -20,9 +20,12 @@ import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { COLORS, FONTS, SPACING, BORDER_RADIUS, SHADOWS } from '../../theme';
 import { DatosBeneficiario } from '../../types';
-import { generarPDFAutorizacionImagen } from '../../services/pdfLocal.service';
+import { generarPDFAutorizacionImagen, construirHtmlAutorizacionImagen } from '../../services/pdfLocal.service';
 import SignaturePad from '../../components/SignaturePad';
 import { guardarDatosOtroFormato, cargarDatosOtroFormato } from '../../store/OtrosFormatosDraftStore';
+import BotonGuardarBorrador, { useGuardarBorrador } from '../../components/BotonGuardarBorrador';
+import { registrarOtroFormato, adjuntarPdfOtroFormato } from '../../services/otrosFormatos.service';
+import { abrirVentanaDeCarga, imprimirHtmlEnVentana } from '../../utils/printWeb';
 
 type Props = {
   navigation: NativeStackNavigationProp<Record<string, any>>;
@@ -85,6 +88,8 @@ const AutorizacionImagenScreen: React.FC<Props> = ({ navigation, route }) => {
     });
   }, [beneficiario?.cedula, nombre, cedula, expedidaEn, telefono, autorizaFotos, autorizaAudios, autorizaVideos, autorizaOtros, firma]);
 
+  const { guardar, guardando } = useGuardarBorrador('autorizacion_imagen', beneficiario?.cedula, { nombre, cedula, expedidaEn, telefono, autorizaFotos, autorizaAudios, autorizaVideos, autorizaOtros, firma });
+
   const handleGenerar = useCallback(async () => {
     if (!nombre.trim() || !cedula.trim()) {
       Alert.alert('Faltan datos', 'El nombre y la cédula son obligatorios.');
@@ -94,9 +99,13 @@ const AutorizacionImagenScreen: React.FC<Props> = ({ navigation, route }) => {
       Alert.alert('Falta la firma', 'El beneficiario debe firmar la autorización.');
       return;
     }
+    // En web la pestaña de impresión debe abrirse SÍNCRONA, antes de cualquier
+    // await: si no, el navegador la bloquea como pop-up.
+    const ventanaWeb = Platform.OS === 'web' ? abrirVentanaDeCarga() : null;
+
     setGenerando(true);
     try {
-      const uri = await generarPDFAutorizacionImagen({
+      const datosPDF = {
         nombre: nombre.trim(),
         cedula: cedula.trim(),
         expedidaEn: expedidaEn.trim(),
@@ -105,8 +114,25 @@ const AutorizacionImagenScreen: React.FC<Props> = ({ navigation, route }) => {
         autorizaAudios,
         autorizaVideos,
         autorizaOtros,
-        firma,
+        firma: firma as string,
+      };
+
+      // Publicar para los roles superiores (offline-first).
+      await registrarOtroFormato({
+        tipo: 'autorizacion_imagen',
+        beneficiarioCedula: datosPDF.cedula,
+        beneficiarioNombre: datosPDF.nombre,
+        datos: datosPDF,
       });
+
+      if (Platform.OS === 'web') {
+        imprimirHtmlEnVentana(ventanaWeb, construirHtmlAutorizacionImagen(datosPDF));
+        return;
+      }
+
+      const uri = await generarPDFAutorizacionImagen(datosPDF);
+      // Conserva el PDF (copia local + servidor) para el Historial; sin esperar la subida.
+      if (uri) void adjuntarPdfOtroFormato({ tipo: 'autorizacion_imagen', beneficiarioCedula: datosPDF.cedula, pdfUri: uri });
       if (!uri) {
         Alert.alert('Error', 'No se pudo generar el PDF. Intenta de nuevo.');
         return;
@@ -117,6 +143,7 @@ const AutorizacionImagenScreen: React.FC<Props> = ({ navigation, route }) => {
         Alert.alert('PDF generado', `Guardado en: ${uri}`);
       }
     } catch (e) {
+      ventanaWeb?.close();
       console.warn('[AutorizacionImagen] Error al generar PDF:', e);
       Alert.alert('Error', 'No se pudo generar el PDF. Intenta de nuevo.');
     } finally {
@@ -164,7 +191,7 @@ const AutorizacionImagenScreen: React.FC<Props> = ({ navigation, route }) => {
         </View>
         <View style={styles.campoWrap}>
           <Text style={styles.campoLabel}>Cédula de ciudadanía</Text>
-          <TextInput style={styles.input} value={cedula} onChangeText={setCedula} keyboardType="numeric" placeholder="Cédula" placeholderTextColor={COLORS.textLight} />
+          <TextInput style={styles.input} value={cedula} onChangeText={setCedula} editable={!beneficiario?.cedula} keyboardType="numeric" placeholder="Cédula" placeholderTextColor={COLORS.textLight} />
         </View>
         <View style={styles.campoWrap}>
           <Text style={styles.campoLabel}>Expedida en (ciudad)</Text>
@@ -200,6 +227,7 @@ const AutorizacionImagenScreen: React.FC<Props> = ({ navigation, route }) => {
       </ScrollView>
 
       <View style={[styles.footer, { paddingBottom: insets.bottom + SPACING.md }]}>
+        <BotonGuardarBorrador onPress={guardar} guardando={guardando} />
         <TouchableOpacity style={[styles.generarBtn, generando && styles.generarBtnDisabled]} onPress={handleGenerar} disabled={generando} activeOpacity={0.8}>
           {generando ? <ActivityIndicator color="#fff" /> : <Text style={styles.generarBtnText}>📄 Generar PDF</Text>}
         </TouchableOpacity>

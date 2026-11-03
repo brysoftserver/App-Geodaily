@@ -34,12 +34,22 @@ export const uploadVideo = async (
   try {
     const formData = new FormData();
     const desdeAlmacenamiento = origen === 'almacenamiento';
+    const extension = videoUri.split('?')[0].match(/\.([a-z0-9]+)$/i)?.[1]?.toLowerCase() || 'mp4';
+    const mimeTypes: Record<string, string> = {
+      '3gp': 'video/3gpp',
+      avi: 'video/x-msvideo',
+      m4v: 'video/x-m4v',
+      mkv: 'video/x-matroska',
+      mov: 'video/quicktime',
+      mp4: 'video/mp4',
+      webm: 'video/webm',
+    };
 
     // @ts-expect-error — React Native FormData
     formData.append('archivo', {
       uri: videoUri,
-      type: 'video/mp4',
-      name: `video_${Date.now()}.mp4`,
+      type: mimeTypes[extension] || 'application/octet-stream',
+      name: `video_${Date.now()}.${extension}`,
     });
 
     if (desdeAlmacenamiento) {

@@ -90,6 +90,7 @@ export type TipoFormatoOficial =
   | 'autorizacion_imagen_menor'
   | 'consentimiento_datos'
   | 'evaluacion_eca'
+  | 'acta_entrega_individual'
   | 'caracterizacion'
   | 'tecnica'
   | 'supervision'
@@ -136,6 +137,12 @@ export const FORMATOS_OFICIALES: Record<TipoFormatoOficial, {
     codigo: 'PA. 2 FO. 33',
     version: 'Versión 1',
     titulo: 'FORMATO DE EVALUACIÓN DE ESCUELA DE CAMPO PARA AGRICULTORES – ECA 1',
+  },
+  acta_entrega_individual: {
+    variante: 'ejecucion',
+    codigo: 'PA. 2 FO. 39',
+    version: 'Versión 1',
+    titulo: 'ACTA INDIVIDUAL DE ENTREGA Y RECIBIDO A SATISFACCIÓN',
   },
   caracterizacion: {
     variante: 'ejecucion',

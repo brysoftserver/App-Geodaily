@@ -320,7 +320,7 @@ const UserManagementScreen: React.FC = () => {
                       style={[styles.avatar, { borderRadius: 24 }]}
                     />
                   ) : (
-                    <ImageBackground source={require('../../../Logos_imagenes/fondo_login_geo_daily.png')} style={[styles.avatar, { overflow: 'hidden' }]} imageStyle={{ borderRadius: 24 }}>
+                    <ImageBackground source={require('../../../assets/images/fondo_login_geo_daily.jpg')} style={[styles.avatar, { overflow: 'hidden' }]} imageStyle={{ borderRadius: 24 }}>
                       <Text style={styles.avatarText}>{user.nombre.charAt(0)}</Text>
                     </ImageBackground>
                   )}

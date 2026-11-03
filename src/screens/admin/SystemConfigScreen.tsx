@@ -176,7 +176,7 @@ const SystemConfigScreen: React.FC = () => {
         </Text>
         {tecnicos.map((tec) => (
           <View key={tec.id} style={styles.tecnicoRow}>
-            <ImageBackground source={require('../../../Logos_imagenes/fondo_login_geo_daily.png')} style={[styles.tecnicoAvatar, { overflow: 'hidden' }]} imageStyle={{ borderRadius: 18 }}>
+            <ImageBackground source={require('../../../assets/images/fondo_login_geo_daily.jpg')} style={[styles.tecnicoAvatar, { overflow: 'hidden' }]} imageStyle={{ borderRadius: 18 }}>
               <Text style={styles.tecnicoAvatarText}>
                 {tec.nombre.charAt(0)}
               </Text>

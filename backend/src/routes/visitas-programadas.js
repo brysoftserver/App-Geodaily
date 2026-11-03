@@ -7,6 +7,7 @@
 const express = require('express');
 const { authenticateToken } = require('../middleware/auth');
 const db = require('../database');
+const { normalizarCedula, sqlCedulaNormalizada, sqlFormularioEsVisita } = require('../lib/visitas');
 const router = express.Router();
 
 // POST /api/visitas-programadas/sync — Recibir visitas programadas del técnico
@@ -18,42 +19,56 @@ router.post('/sync', authenticateToken, async (req, res) => {
     }
 
     let sincronizadas = 0;
+    const resultados = [];
     for (const v of visitas) {
-      const numero = Number(v.actividad_numero);
-      const cedula = (v.beneficiario_cedula || '').trim();
-
-      if (cedula && Number.isInteger(numero) && numero >= 1 && numero <= 12) {
-        const existente = await db.queryOne(
-          `SELECT id FROM visitas_programadas
-            WHERE beneficiario_cedula = $1 AND actividad_numero = $2 AND id <> $3 AND estado = 'pendiente'`,
-          [cedula, numero, v.id || '']
-        );
-
-        if (existente) {
-          return res.status(409).json({
-            estado: 'error',
-            mensaje: `Ya existe una programación pendiente para la Visita ${numero} del beneficiario ${cedula}`,
-          });
-        }
-
-        const formularioExistente = await db.queryOne(
-          `SELECT id FROM formularios
-            WHERE beneficiario_json->>'cedula' = $1
-              AND actividad_json->>'visita_numero' = $2`,
-          [cedula, String(numero)]
-        );
-
-        if (formularioExistente) {
-          return res.status(409).json({
-            estado: 'error',
-            mensaje: `La Visita ${numero} del beneficiario ${cedula} ya fue realizada y no puede programarse otra vez`,
-          });
-        }
-      }
-
       const id = v.id || `visita-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
-      await db.query(
-        `INSERT INTO visitas_programadas (
+      try {
+        const numero = Number(v.actividad_numero);
+        const cedula = (v.beneficiario_cedula || '').trim();
+        const cedulaNorm = normalizarCedula(cedula);
+        let estadoFinal = v.estado || 'pendiente';
+
+        if (cedulaNorm && Number.isInteger(numero) && numero >= 1 && numero <= 12) {
+          const existente = await db.queryOne(
+            `SELECT id, usuario_id, titulo, ubicacion, fecha, estado
+             FROM visitas_programadas
+            WHERE ${sqlCedulaNormalizada('beneficiario_cedula')} = $1 AND actividad_numero = $2 AND id <> $3 AND estado = 'pendiente'`,
+            [cedulaNorm, numero, id]
+          );
+
+          if (existente) {
+            const mismaProgramacion =
+              String(existente.usuario_id) === String(v.usuario_id || req.user.id) &&
+              existente.titulo === (v.titulo || '') &&
+              existente.ubicacion === (v.ubicacion || '') &&
+              String(existente.fecha).slice(0, 10) === String(v.fecha).slice(0, 10) &&
+              existente.estado === (v.estado || 'pendiente');
+
+            resultados.push({
+              id,
+              estado: mismaProgramacion ? 'ya_representada' : 'conflicto',
+              mensaje: mismaProgramacion
+                ? 'La misma programación ya está guardada en el servidor'
+                : `Ya existe otra programación pendiente para la Visita ${numero}`,
+            });
+            continue;
+          }
+
+          // Si el formulario de esa visita ya existe, la planificación se
+          // guarda directamente como realizada (antes se rechazaba y la
+          // visita quedaba pendiente en el celular para siempre).
+          const formularioExistente = await db.queryOne(
+            `SELECT id FROM formularios WHERE ${sqlFormularioEsVisita('$1', '$2', '$3')}`,
+            [cedulaNorm, numero, String(numero)]
+          );
+
+          if (formularioExistente && estadoFinal === 'pendiente') {
+            estadoFinal = 'realizada';
+          }
+        }
+
+        await db.query(
+          `INSERT INTO visitas_programadas (
           id, usuario_id, titulo, ubicacion, fecha, estado,
           beneficiario_cedula, beneficiario_nombre, actividad_numero, vereda, corregimiento,
           timestamp_dispositivo
@@ -62,35 +77,53 @@ router.post('/sync', authenticateToken, async (req, res) => {
            titulo = EXCLUDED.titulo,
            ubicacion = EXCLUDED.ubicacion,
            fecha = EXCLUDED.fecha,
-           estado = EXCLUDED.estado,
+           estado = CASE
+             WHEN visitas_programadas.estado = 'realizada' AND EXCLUDED.estado = 'pendiente'
+             THEN 'realizada'
+             ELSE EXCLUDED.estado
+           END,
            beneficiario_cedula = EXCLUDED.beneficiario_cedula,
            beneficiario_nombre = EXCLUDED.beneficiario_nombre,
            actividad_numero = EXCLUDED.actividad_numero,
            vereda = EXCLUDED.vereda,
            corregimiento = EXCLUDED.corregimiento`,
-        [
-          id,
-          v.usuario_id || req.user.id,
-          v.titulo || '',
-          v.ubicacion || '',
-          v.fecha,
-          v.estado || 'pendiente',
-          v.beneficiario_cedula || null,
-          v.beneficiario_nombre || null,
-          v.actividad_numero ?? null,
-          v.vereda || null,
-          v.corregimiento || null,
-          v.timestamp_dispositivo || new Date().toISOString(),
-        ]
-      );
-      sincronizadas++;
+          [
+            id,
+            v.usuario_id || req.user.id,
+            v.titulo || '',
+            v.ubicacion || '',
+            v.fecha,
+            estadoFinal,
+            v.beneficiario_cedula || null,
+            v.beneficiario_nombre || null,
+            v.actividad_numero ?? null,
+            v.vereda || null,
+            v.corregimiento || null,
+            v.timestamp_dispositivo || new Date().toISOString(),
+          ]
+        );
+        sincronizadas++;
+        resultados.push({ id, estado: 'sincronizada' });
+      } catch (error) {
+        console.error(`[VisitasProgramadas] Error sincronizando visita ${id}:`, error.message);
+        resultados.push({ id, estado: 'error', mensaje: 'No se pudo guardar esta visita en el servidor' });
+      }
     }
 
-    console.log(`[VisitasProgramadas] ${sincronizadas} visita(s) sincronizada(s) por ${req.user.usuario}`);
+    const representadas = resultados.filter(r => r.estado === 'ya_representada').length;
+    const conflictos = resultados.filter(r => r.estado === 'conflicto').length;
+    const errores = resultados.filter(r => r.estado === 'error').length;
+    for (const resultado of resultados) {
+      if (resultado.estado !== 'sincronizada') {
+        console.warn(`[VisitasProgramadas] ${resultado.estado} en visita ${resultado.id}: ${resultado.mensaje}`);
+      }
+    }
+    console.log(`[VisitasProgramadas] ${sincronizadas} visita(s) sincronizada(s), ${representadas} ya representada(s), ${conflictos} conflicto(s), ${errores} error(es) por ${req.user.usuario}`);
     res.json({
-      estado: 'ok',
-      mensaje: `${sincronizadas} visita(s) sincronizada(s)`,
-      sincronizadas,
+      estado: conflictos || errores ? 'parcial' : 'ok',
+      mensaje: `${sincronizadas} visita(s) sincronizada(s), ${representadas} ya representada(s), ${conflictos} conflicto(s), ${errores} error(es)`,
+      sincronizadas: sincronizadas + representadas,
+      resultados,
     });
   } catch (error) {
     console.error('[VisitasProgramadas] Error en sync:', error);

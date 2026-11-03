@@ -48,7 +48,7 @@ const LoginScreen: React.FC = () => {
 
   return (
     <ImageBackground
-      source={require('../../../assets/images/fondo_login_geo_daily.png')}
+      source={require('../../../assets/images/fondo_login_geo_daily.jpg')}
       style={styles.container}
       resizeMode="cover"
     >
@@ -65,7 +65,7 @@ const LoginScreen: React.FC = () => {
             <View style={styles.header}>
               <View style={styles.logoContainer}>
                 <Image
-                  source={require('../../../assets/images/logo_geo_daily.png')}
+                  source={require('../../../assets/images/logo_geo_daily_ui.png')}
                   style={styles.logoImage}
                   resizeMode="contain"
                 />

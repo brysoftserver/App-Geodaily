@@ -20,9 +20,12 @@ import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { COLORS, FONTS, SPACING, BORDER_RADIUS, SHADOWS } from '../../theme';
 import { DatosBeneficiario } from '../../types';
-import { generarPDFAutorizacionImagenMenor } from '../../services/pdfLocal.service';
+import { generarPDFAutorizacionImagenMenor, construirHtmlAutorizacionImagenMenor } from '../../services/pdfLocal.service';
 import SignaturePad from '../../components/SignaturePad';
 import { guardarDatosOtroFormato, cargarDatosOtroFormato } from '../../store/OtrosFormatosDraftStore';
+import BotonGuardarBorrador, { useGuardarBorrador } from '../../components/BotonGuardarBorrador';
+import { registrarOtroFormato, adjuntarPdfOtroFormato } from '../../services/otrosFormatos.service';
+import { abrirVentanaDeCarga, imprimirHtmlEnVentana } from '../../utils/printWeb';
 
 type Props = {
   navigation: NativeStackNavigationProp<Record<string, any>>;
@@ -99,6 +102,8 @@ const AutorizacionImagenMenorScreen: React.FC<Props> = ({ navigation, route }) =
     });
   }, [beneficiario?.cedula, nombreRepresentante, cedulaRepresentante, expedidaEn, documentoMenor, calidad, telefono, autorizaFotos, autorizaAudios, autorizaVideos, autorizaOtros, firma]);
 
+  const { guardar, guardando } = useGuardarBorrador('autorizacion_imagen_menor', beneficiario?.cedula, { nombreRepresentante, cedulaRepresentante, expedidaEn, documentoMenor, calidad, telefono, autorizaFotos, autorizaAudios, autorizaVideos, autorizaOtros, firma });
+
   const handleGenerar = useCallback(async () => {
     if (!nombreRepresentante.trim() || !cedulaRepresentante.trim()) {
       Alert.alert('Faltan datos', 'El nombre y la cédula del padre/madre/representante son obligatorios.');
@@ -116,21 +121,47 @@ const AutorizacionImagenMenorScreen: React.FC<Props> = ({ navigation, route }) =
       Alert.alert('Falta la firma', 'El padre, madre o representante legal debe firmar la autorización.');
       return;
     }
+    // En web la pestaña de impresión debe abrirse SÍNCRONA, antes de cualquier
+    // await: si no, el navegador la bloquea como pop-up.
+    const ventanaWeb = Platform.OS === 'web' ? abrirVentanaDeCarga() : null;
+
     setGenerando(true);
     try {
-      const uri = await generarPDFAutorizacionImagenMenor({
+      const datosPDF = {
         nombreRepresentante: nombreRepresentante.trim(),
         cedulaRepresentante: cedulaRepresentante.trim(),
         expedidaEn: expedidaEn.trim(),
         documentoMenor: documentoMenor.trim(),
-        calidad,
+        calidad: calidad as 'padre' | 'madre' | 'representante',
         telefono: telefono.trim(),
         autorizaFotos,
         autorizaAudios,
         autorizaVideos,
         autorizaOtros,
-        firma,
+        firma: firma as string,
+      };
+
+      // Se registra contra la cédula del BENEFICIARIO (el menor atendido), no
+      // la del representante: el formato pertenece a la ficha del menor y así
+      // supervisión lo encuentra junto al resto de sus anexos. Si se usara la
+      // cédula del representante, dos hermanos atendidos por el mismo padre
+      // colisionarían en la clave única (beneficiario + tipo) y uno borraría
+      // al otro. Los datos del representante ya van dentro de `datosPDF`.
+      await registrarOtroFormato({
+        tipo: 'autorizacion_imagen_menor',
+        beneficiarioCedula: beneficiario?.cedula || datosPDF.cedulaRepresentante,
+        beneficiarioNombre: beneficiario?.nombre || datosPDF.nombreRepresentante,
+        datos: datosPDF,
       });
+
+      if (Platform.OS === 'web') {
+        imprimirHtmlEnVentana(ventanaWeb, construirHtmlAutorizacionImagenMenor(datosPDF));
+        return;
+      }
+
+      const uri = await generarPDFAutorizacionImagenMenor(datosPDF);
+      // Conserva el PDF (copia local + servidor) para el Historial; sin esperar la subida.
+      if (uri) void adjuntarPdfOtroFormato({ tipo: 'autorizacion_imagen_menor', beneficiarioCedula: beneficiario?.cedula || datosPDF.cedulaRepresentante, pdfUri: uri });
       if (!uri) {
         Alert.alert('Error', 'No se pudo generar el PDF. Intenta de nuevo.');
         return;
@@ -141,12 +172,13 @@ const AutorizacionImagenMenorScreen: React.FC<Props> = ({ navigation, route }) =
         Alert.alert('PDF generado', `Guardado en: ${uri}`);
       }
     } catch (e) {
+      ventanaWeb?.close();
       console.warn('[AutorizacionImagenMenor] Error al generar PDF:', e);
       Alert.alert('Error', 'No se pudo generar el PDF. Intenta de nuevo.');
     } finally {
       setGenerando(false);
     }
-  }, [nombreRepresentante, cedulaRepresentante, expedidaEn, documentoMenor, calidad, telefono, autorizaFotos, autorizaAudios, autorizaVideos, autorizaOtros, firma]);
+  }, [nombreRepresentante, cedulaRepresentante, expedidaEn, documentoMenor, calidad, telefono, autorizaFotos, autorizaAudios, autorizaVideos, autorizaOtros, firma, beneficiario?.cedula, beneficiario?.nombre]);
 
   if (cargando) {
     return (
@@ -239,6 +271,7 @@ const AutorizacionImagenMenorScreen: React.FC<Props> = ({ navigation, route }) =
       </ScrollView>
 
       <View style={[styles.footer, { paddingBottom: insets.bottom + SPACING.md }]}>
+        <BotonGuardarBorrador onPress={guardar} guardando={guardando} />
         <TouchableOpacity style={[styles.generarBtn, generando && styles.generarBtnDisabled]} onPress={handleGenerar} disabled={generando} activeOpacity={0.8}>
           {generando ? <ActivityIndicator color="#fff" /> : <Text style={styles.generarBtnText}>📄 Generar PDF</Text>}
         </TouchableOpacity>

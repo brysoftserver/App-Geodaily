@@ -138,7 +138,7 @@ const FormularioListScreen: React.FC<FormularioListScreenProps> = ({ navigation 
 
   return (
     <ImageBackground
-      source={require('../../../Logos_imagenes/fondo_login_geo_daily.png')}
+      source={require('../../../assets/images/fondo_login_geo_daily.jpg')}
       style={styles.backgroundImage}
       resizeMode="cover"
     >

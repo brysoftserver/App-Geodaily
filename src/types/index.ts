@@ -211,6 +211,8 @@ export interface ActividadRealizada {
    * técnico había diligenciado, sin ambigüedad con los campos legibles.
    */
   visita_datos?: Record<string, unknown>;
+  /** Estado completo del formulario de la Visita Técnica 3 (formato v3). */
+  visita3_datos?: Record<string, unknown>;
 }
 
 export type TipoFormulario = 'caracterizacion' | 'visita_tecnica';

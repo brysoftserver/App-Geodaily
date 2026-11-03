@@ -19,13 +19,21 @@ import {
   BackHandler,
   Alert,
   ActivityIndicator,
+  Platform,
+  Modal,
+  TextInput,
+  Dimensions,
 } from 'react-native';
+import * as Sharing from 'expo-sharing';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useFocusEffect } from '@react-navigation/native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import SignaturePad from '../../components/SignaturePad';
+import PdfViewer from '../../components/PdfViewer';
 import { COLORS, FONTS, SPACING, BORDER_RADIUS, SHADOWS } from '../../theme';
 import { Formulario, BeneficiarioDB } from '../../types';
 import { useAuth } from '../../store/AuthContext';
-import { getFormulariosLocales, mergeFormulariosDelServidor } from '../../services/database';
+import { getFormulariosLocales, mergeFormulariosDelServidor, OtroFormatoLocal } from '../../services/database';
 import {
   fetchFormulariosDelServidor,
   eliminarFormularioDelServidor,
@@ -36,6 +44,30 @@ import BotonPdfDashboard from '../../components/dashboard/BotonPdfDashboard';
 import BotonPdfTecnico from '../../components/dashboard/BotonPdfTecnico';
 import { descargarPaqueteMedia } from '../../services/mediaPackage.service';
 import { BeneficiarioInformeTecnico } from '../../services/informeTecnicoPdf.service';
+import {
+  obtenerOtrosFormatosBeneficiario,
+  firmarActaInterventoria,
+  resolverPdfFormato,
+  generarPdfDeFormato,
+  subirPdfDeFormato,
+  tituloDocumentoFormato,
+  etiquetaOtroFormato,
+} from '../../services/otrosFormatos.service';
+import {
+  construirHtmlActaCompromiso,
+  construirHtmlAutorizacionImagen,
+  construirHtmlAutorizacionImagenMenor,
+  construirHtmlConsentimientoDatos,
+  construirHtmlActaEntregaIndividual,
+  DatosActaEntregaIndividual,
+  construirHtmlEvaluacionEca,
+  DatosActaCompromiso,
+  DatosAutorizacionImagen,
+  DatosAutorizacionImagenMenor,
+  DatosConsentimientoDatos,
+  DatosEvaluacionEca,
+} from '../../services/pdfLocal.service';
+import { abrirVentanaDeCarga, imprimirHtmlEnVentana } from '../../utils/printWeb';
 import {
   tituloVisitaTecnica,
   etiquetaVisitaFormulario,
@@ -91,7 +123,8 @@ type Nivel = 'tecnicos' | 'beneficiarios' | 'visita' | 'visitas';
 type OrigenVisitas = 'beneficiarios' | 'visita';
 
 const VisitasJerarquicasScreen: React.FC<VisitasJerarquicasScreenProps> = ({ navigation }) => {
-  const { user, puedeEliminarFormulario, isCoordinador, isInterventor } = useAuth();
+  const { user, puedeEliminarFormulario, isCoordinador, isInterventor, isAdmin } = useAuth();
+  const insets = useSafeAreaInsets();
   const [formularios, setFormularios] = useState<Formulario[]>([]);
   const [beneficiariosAsignados, setBeneficiariosAsignados] = useState<BeneficiarioDB[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -109,6 +142,40 @@ const VisitasJerarquicasScreen: React.FC<VisitasJerarquicasScreenProps> = ({ nav
   const [visitaSeleccionada, setVisitaSeleccionada] = useState<number | null>(null);
   // Desde dónde se abrió el nivel "visitas" — para que atrás vuelva a "Visita N" si se llegó por ahí.
   const origenVisitasRef = useRef<OrigenVisitas>('beneficiarios');
+
+  // --- Otros Anexos del beneficiario (Acta de Compromiso, Autorizaciones,
+  //     Consentimiento de Datos, Evaluación ECA) ---
+  // Antes estos formatos vivían solo en el celular del técnico y ningún rol
+  // superior podía verlos ni reimprimirlos. Ahora se leen del servidor (o de
+  // lo local aún pendiente) y se regenera el PDF con el mismo generador.
+  const [otrosFormatos, setOtrosFormatos] = useState<OtroFormatoLocal[]>([]);
+  const [cargandoOtrosFormatos, setCargandoOtrosFormatos] = useState(false);
+  const [imprimiendoFormatoId, setImprimiendoFormatoId] = useState<string | null>(null);
+
+  const cargarOtrosFormatos = useCallback(async (cedula: string) => {
+    if (!cedula) {
+      setOtrosFormatos([]);
+      return;
+    }
+    setCargandoOtrosFormatos(true);
+    try {
+      const formatos = await obtenerOtrosFormatosBeneficiario(cedula);
+      setOtrosFormatos(formatos);
+    } catch (e) {
+      console.warn('[VisitasJerarquicas] No se pudieron cargar los otros formatos:', e);
+      setOtrosFormatos([]);
+    } finally {
+      setCargandoOtrosFormatos(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (nivel === 'visitas' && beneficiarioSeleccionado?.cedula) {
+      cargarOtrosFormatos(beneficiarioSeleccionado.cedula);
+    } else {
+      setOtrosFormatos([]);
+    }
+  }, [nivel, beneficiarioSeleccionado?.cedula, cargarOtrosFormatos]);
 
   // --- Agrupar datos (con protección contra null) ---
   const tecnicos = useMemo(() => {
@@ -805,6 +872,278 @@ const VisitasJerarquicasScreen: React.FC<VisitasJerarquicasScreenProps> = ({ nav
     );
   };
 
+  // --- Otros Anexos: generación del PDF desde el JSON guardado ---
+  // El servidor guarda los DATOS del formato (firmas incluidas), no un PDF:
+  // así supervisión reimprime el documento oficial con el MISMO generador que
+  // usó el técnico, en vez de un archivo que podría quedar desactualizado.
+  const construirHtmlOtroFormato = (tipo: string, datos: Record<string, any>): string | null => {
+    switch (tipo) {
+      case 'acta_compromiso':
+        return construirHtmlActaCompromiso(datos as unknown as DatosActaCompromiso);
+      case 'autorizacion_imagen':
+        return construirHtmlAutorizacionImagen(datos as unknown as DatosAutorizacionImagen);
+      case 'autorizacion_imagen_menor':
+        return construirHtmlAutorizacionImagenMenor(datos as unknown as DatosAutorizacionImagenMenor);
+      case 'consentimiento_datos':
+        return construirHtmlConsentimientoDatos(datos as unknown as DatosConsentimientoDatos);
+      case 'evaluacion_eca':
+        return construirHtmlEvaluacionEca(datos as unknown as DatosEvaluacionEca);
+      case 'acta_entrega_individual':
+        return construirHtmlActaEntregaIndividual(datos as unknown as DatosActaEntregaIndividual);
+      default:
+        return null;
+    }
+  };
+
+  // En web `Alert.alert` de react-native-web no dibuja nada (es un no-op), así
+  // que un fallo al abrir la ventana de impresión se veía como "el botón no
+  // hace nada". Aquí se avisa de verdad por el diálogo del navegador.
+  const avisar = (mensaje: string) => {
+    if (Platform.OS === 'web' && typeof window !== 'undefined') {
+      window.alert(mensaje);
+    } else {
+      Alert.alert('Aviso', mensaje);
+    }
+  };
+
+  // --- Firma de la interventoría sobre el Acta de Entrega y Recibo ---
+  const [firmaActa, setFirmaActa] = useState<OtroFormatoLocal | null>(null);
+  const [firmaNombre, setFirmaNombre] = useState('');
+  const [firmaCargo, setFirmaCargo] = useState('');
+  const [guardandoFirma, setGuardandoFirma] = useState(false);
+  const [visorPdf, setVisorPdf] = useState<{ uri: string; titulo: string; key: string } | null>(null);
+
+  const abrirFirmaActa = (formato: OtroFormatoLocal) => {
+    setFirmaNombre(String(formato.datos?.interventoriaNombre || user?.nombre || ''));
+    setFirmaCargo(String(formato.datos?.interventoriaCargo || (isInterventor ? 'Interventor' : '')));
+    setFirmaActa(formato);
+  };
+
+  const guardarFirmaActa = async (firma: string) => {
+    if (!firmaActa || guardandoFirma) return;
+    if (!firmaNombre.trim()) {
+      avisar('Escribe el nombre de quien firma por la interventoría.');
+      return;
+    }
+    setGuardandoFirma(true);
+    try {
+      const parche = await firmarActaInterventoria({
+        formatoId: firmaActa.id,
+        firma,
+        nombre: firmaNombre.trim(),
+        cargo: firmaCargo.trim(),
+      });
+      setOtrosFormatos((prev) =>
+        prev.map((f) => (f.id === firmaActa.id ? { ...f, datos: { ...f.datos, ...parche } } : f))
+      );
+      const actaFirmada = firmaActa;
+      setFirmaActa(null);
+      avisar('Firma de interventoría registrada. Ya aparece en el PDF del acta.');
+      // El PDF guardado en el servidor quedó sin esta firma: se regenera y se re-sube
+      // (mientras tanto, abrir el acta lo regenera desde los datos, ya firmado).
+      if (Platform.OS !== 'web') {
+        generarPdfDeFormato(actaFirmada.tipo, { ...actaFirmada.datos, ...parche })
+          .then((uri) => (uri ? subirPdfDeFormato(actaFirmada.id, uri) : false))
+          .catch((e) => console.warn('[VisitasJerarquicas] No se pudo actualizar el PDF firmado:', e));
+      }
+    } catch (e: any) {
+      console.warn('[VisitasJerarquicas] No se pudo registrar la firma:', e?.message);
+      avisar('No se pudo registrar la firma. Verifica tu conexión e intenta de nuevo.');
+    } finally {
+      setGuardandoFirma(false);
+    }
+  };
+
+  const verOtroFormato = async (formato: OtroFormatoLocal) => {
+    if (imprimiendoFormatoId) return;
+
+    // En web expo-print es window.print() sobre la pantalla abierta, así que se
+    // abre la pestaña SÍNCRONA (antes de cualquier await) para que el navegador
+    // no la bloquee como pop-up y se imprime el HTML institucional.
+    const ventanaWeb = Platform.OS === 'web' ? abrirVentanaDeCarga() : null;
+
+    setImprimiendoFormatoId(formato.id);
+    try {
+      if (Platform.OS === 'web') {
+        const html = construirHtmlOtroFormato(formato.tipo, formato.datos || {});
+        if (!html) {
+          ventanaWeb?.close();
+          avisar('Este formato aún no se puede reimprimir desde aquí.');
+          return;
+        }
+        if (!ventanaWeb) {
+          avisar(
+            'El navegador bloqueó la ventana del documento. Permite las ventanas emergentes para este sitio e intenta de nuevo.'
+          );
+          return;
+        }
+        imprimirHtmlEnVentana(ventanaWeb, html);
+        return;
+      }
+
+      const uri = await resolverPdfFormato(formato);
+      if (!uri) {
+        avisar('Este formato aún no se puede abrir desde aquí.');
+        return;
+      }
+      setVisorPdf({
+        uri,
+        titulo: tituloDocumentoFormato(formato),
+        key: `${formato.id}-${formato.updated_at}`,
+      });
+    } catch (e) {
+      ventanaWeb?.close();
+      console.warn('[VisitasJerarquicas] No se pudo generar el otro formato:', formato.tipo, e);
+      avisar('No se pudo generar el PDF del formato.');
+    } finally {
+      setImprimiendoFormatoId(null);
+    }
+  };
+
+  /** Bloque "📎 Otros Anexos" que va debajo del listado de visitas. */
+  const renderOtrosAnexos = () => (
+    <View style={styles.anexosSection}>
+      <View style={styles.anexosHeader}>
+        <Text style={styles.anexosTitle}>📎 Otros Anexos</Text>
+        {cargandoOtrosFormatos && <ActivityIndicator size="small" color={COLORS.primary} />}
+      </View>
+      <Text style={styles.anexosSubtitle}>
+        Formatos diligenciados en campo para este beneficiario
+      </Text>
+
+      {!cargandoOtrosFormatos && otrosFormatos.length === 0 && (
+        <View style={styles.anexosEmpty}>
+          <Text style={styles.anexosEmptyText}>Aún no hay otros formatos diligenciados</Text>
+          <Text style={styles.anexosEmptySubtext}>
+            El Acta de Compromiso, las Autorizaciones de Imagen, el Consentimiento de Datos y la
+            Evaluación ECA aparecerán aquí en cuanto el técnico los genere en campo.
+          </Text>
+        </View>
+      )}
+
+      {otrosFormatos.map((formato) => {
+        const etiqueta = etiquetaOtroFormato(formato.tipo);
+        const ocupado = imprimiendoFormatoId === formato.id;
+        const fecha = formato.updated_at || formato.created_at;
+        return (
+          <View key={formato.id} style={styles.anexoCard}>
+            <View style={styles.anexoRow}>
+              <View style={styles.anexoIcono}>
+                <Text style={styles.anexoIconoText}>{etiqueta.icono}</Text>
+              </View>
+              <View style={styles.anexoInfo}>
+                <Text style={styles.anexoTitulo}>{tituloDocumentoFormato(formato)}</Text>
+                <Text style={styles.anexoCodigo}>
+                  {etiqueta.codigo}
+                  {fecha
+                    ? ` · ${new Date(fecha).toLocaleDateString('es-CO', {
+                        day: 'numeric',
+                        month: 'short',
+                        year: 'numeric',
+                      })}`
+                    : ''}
+                </Text>
+                {formato.tecnico_nombre ? (
+                  <Text style={styles.anexoTecnico}>👷 {formato.tecnico_nombre}</Text>
+                ) : null}
+              </View>
+            </View>
+
+            <View style={styles.anexoFooter}>
+              <View style={styles.statusIndicator}>
+                <View
+                  style={[
+                    styles.statusDot,
+                    { backgroundColor: formato.sincronizado ? COLORS.success : COLORS.warning },
+                  ]}
+                />
+                <Text style={styles.statusText}>
+                  {formato.sincronizado ? 'Sincronizado' : 'Pendiente de subir'}
+                </Text>
+              </View>
+              {formato.tipo === 'acta_entrega_individual' && (isInterventor || isAdmin) && (
+                <TouchableOpacity
+                  style={[styles.actionBtn, styles.actionBtnFirmar]}
+                  onPress={() => abrirFirmaActa(formato)}
+                  disabled={!formato.sincronizado}
+                >
+                  <Text style={styles.actionBtnTextFirmar}>
+                    {formato.datos?.firmaInterventoria ? '✓ Firmada · Cambiar' : '✍️ Firmar'}
+                  </Text>
+                </TouchableOpacity>
+              )}
+              <TouchableOpacity
+                style={[styles.actionBtn, styles.actionBtnPDF]}
+                onPress={() => verOtroFormato(formato)}
+                disabled={ocupado}
+              >
+                {ocupado ? (
+                  <ActivityIndicator size="small" color={COLORS.error} />
+                ) : (
+                  <Text style={styles.actionBtnTextPDF}>📄 Ver / Imprimir</Text>
+                )}
+              </TouchableOpacity>
+            </View>
+          </View>
+        );
+      })}
+
+      <Modal visible={visorPdf !== null} animationType="slide" onRequestClose={() => setVisorPdf(null)}>
+        {visorPdf && (
+          <PdfViewer
+            archivo={visorPdf.uri}
+            titulo={visorPdf.titulo}
+            cacheKey={visorPdf.key}
+            onClose={() => setVisorPdf(null)}
+            onFallback={async () => {
+              if (await Sharing.isAvailableAsync()) {
+                await Sharing.shareAsync(visorPdf.uri, { mimeType: 'application/pdf', UTI: 'com.adobe.pdf' });
+              }
+            }}
+          />
+        )}
+      </Modal>
+
+      <Modal visible={firmaActa !== null} animationType="slide" onRequestClose={() => setFirmaActa(null)}>
+        <View style={[styles.firmaModal, { paddingTop: insets.top + SPACING.sm }]}>
+          <View style={styles.firmaModalHeader}>
+            <Text style={styles.firmaModalTitle}>✍️ Firma de la Interventoría</Text>
+            <TouchableOpacity onPress={() => setFirmaActa(null)} disabled={guardandoFirma}>
+              <Text style={styles.firmaModalClose}>✕ Cerrar</Text>
+            </TouchableOpacity>
+          </View>
+          <Text style={styles.firmaModalHint}>
+            Acta de Entrega y Recibo — {firmaActa?.beneficiario_nombre || firmaActa?.beneficiario_cedula}
+          </Text>
+          <TextInput
+            style={styles.firmaInput}
+            value={firmaNombre}
+            onChangeText={setFirmaNombre}
+            placeholder="Nombre de quien firma"
+            placeholderTextColor={COLORS.textLight}
+          />
+          <TextInput
+            style={styles.firmaInput}
+            value={firmaCargo}
+            onChangeText={setFirmaCargo}
+            placeholder="Cargo"
+            placeholderTextColor={COLORS.textLight}
+          />
+          {guardandoFirma ? (
+            <ActivityIndicator style={{ marginTop: SPACING.lg }} color={COLORS.primary} />
+          ) : (
+            <SignaturePad
+              key={firmaActa?.id || 'firma'}
+              onOK={guardarFirmaActa}
+              description="Firma de la interventoría"
+              height={Dimensions.get('window').height * 0.35}
+            />
+          )}
+        </View>
+      </Modal>
+    </View>
+  );
+
   // --- Pantalla de carga ---
   if (isLoading) {
     return <LoadingSpinner message="Cargando visitas..." fullScreen />;
@@ -944,6 +1283,7 @@ const VisitasJerarquicasScreen: React.FC<VisitasJerarquicasScreenProps> = ({ nav
               </Text>
             </View>
           }
+          ListFooterComponent={renderOtrosAnexos}
           ListEmptyComponent={
             <View style={styles.emptyState}>
               <Text style={styles.emptyText}>Sin visitas registradas</Text>
@@ -1278,6 +1618,127 @@ const styles = StyleSheet.create({
   listContent: {
     paddingVertical: SPACING.sm,
     paddingBottom: SPACING.xxl,
+  },
+
+  // --- Otros Anexos ---
+  anexosSection: {
+    marginTop: SPACING.lg,
+    paddingHorizontal: SPACING.md,
+  },
+  anexosHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  anexosTitle: {
+    fontSize: FONTS.sizes.lg,
+    fontWeight: FONTS.weights.bold,
+    color: COLORS.textPrimary,
+  },
+  anexosSubtitle: {
+    fontSize: FONTS.sizes.xs,
+    color: COLORS.textSecondary,
+    marginTop: 2,
+    marginBottom: SPACING.sm,
+  },
+  anexosEmpty: {
+    backgroundColor: COLORS.surface,
+    borderRadius: BORDER_RADIUS.md,
+    borderWidth: 1,
+    borderColor: COLORS.divider,
+    borderStyle: 'dashed',
+    padding: SPACING.lg,
+    alignItems: 'center',
+  },
+  anexosEmptyText: {
+    fontSize: FONTS.sizes.sm,
+    fontWeight: FONTS.weights.medium,
+    color: COLORS.textSecondary,
+    textAlign: 'center',
+  },
+  anexosEmptySubtext: {
+    fontSize: FONTS.sizes.xs,
+    color: COLORS.textLight,
+    textAlign: 'center',
+    marginTop: SPACING.xs,
+  },
+  anexoCard: {
+    backgroundColor: COLORS.surface,
+    borderRadius: BORDER_RADIUS.md,
+    padding: SPACING.md,
+    marginBottom: SPACING.sm,
+    borderWidth: 1,
+    borderColor: COLORS.divider,
+    ...SHADOWS.sm,
+  },
+  anexoRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  anexoIcono: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    backgroundColor: COLORS.primary + '12',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: SPACING.sm,
+  },
+  anexoIconoText: {
+    fontSize: 18,
+  },
+  anexoInfo: {
+    flex: 1,
+  },
+  anexoTitulo: {
+    fontSize: FONTS.sizes.sm,
+    fontWeight: FONTS.weights.semibold,
+    color: COLORS.textPrimary,
+  },
+  anexoCodigo: {
+    fontSize: FONTS.sizes.xs,
+    color: COLORS.textSecondary,
+    marginTop: 1,
+  },
+  anexoTecnico: {
+    fontSize: FONTS.sizes.xs,
+    color: COLORS.textLight,
+    marginTop: 2,
+  },
+  actionBtnFirmar: {
+    backgroundColor: COLORS.info + '15',
+    borderColor: COLORS.info,
+    marginRight: SPACING.sm,
+  },
+  actionBtnTextFirmar: {
+    color: COLORS.info,
+    fontWeight: FONTS.weights.bold,
+    fontSize: FONTS.sizes.xs,
+  },
+  firmaModal: { flex: 1, backgroundColor: COLORS.background, padding: SPACING.md },
+  firmaModalHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: SPACING.sm },
+  firmaModalTitle: { fontSize: FONTS.sizes.lg, fontWeight: FONTS.weights.bold, color: COLORS.textPrimary },
+  firmaModalClose: { color: COLORS.textSecondary, fontSize: FONTS.sizes.sm },
+  firmaModalHint: { fontSize: FONTS.sizes.xs, color: COLORS.textSecondary, marginBottom: SPACING.md },
+  firmaInput: {
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    borderRadius: BORDER_RADIUS.sm,
+    paddingHorizontal: SPACING.sm,
+    paddingVertical: 8,
+    fontSize: FONTS.sizes.sm,
+    color: COLORS.textPrimary,
+    backgroundColor: COLORS.surface,
+    marginBottom: SPACING.sm,
+  },
+  anexoFooter: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginTop: SPACING.sm,
+    paddingTop: SPACING.sm,
+    borderTopWidth: 1,
+    borderTopColor: COLORS.divider,
   },
 
   // --- Empty state ---

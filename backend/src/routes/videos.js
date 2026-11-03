@@ -21,7 +21,12 @@ const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 200 * 1024 * 1024 },
   fileFilter: (_req, file, cb) => {
-    const allowed = /mp4|mov|avi|mkv|webm|3gp/;
+    // 'm4v' se agregó porque el cliente ahora envía el MIME real del archivo
+    // elegido del almacenamiento: un .m4v (contenedor MP4 de iTunes/cámara
+    // Android) llegaba con `video/x-m4v` y este filtro lo descartaba en
+    // silencio, así que la subida terminaba en un 400 confuso ("Archivo de
+    // video requerido").
+    const allowed = /mp4|m4v|mov|avi|mkv|webm|3gp/;
     const extOk = allowed.test(path.extname(file.originalname).toLowerCase());
     const mimeOk = allowed.test(file.mimetype.split('/')[1]);
     cb(null, extOk || mimeOk);
@@ -43,6 +48,12 @@ router.post('/subir', authenticateToken, upload.single('archivo'), async (req, r
     // 'almacenamiento' = el video ya existía en el teléfono y el
     // admin/coordinador lo adjunta a la visita: se sube sin coordenadas.
     const sinMetadatos = esOrigenAlmacenamiento(origen);
+    if (sinMetadatos && req.user?.rol !== 'admin') {
+      return res.status(403).json({
+        estado: 'error',
+        mensaje: 'Solo el administrador puede adjuntar videos sin georreferencia',
+      });
+    }
 
     // ─── Dueño efectivo del formulario (ver lib/duenoEvidencia.js) ───
     // El archivo se guarda en el árbol del DUEÑO del formulario y a su
@@ -106,12 +117,12 @@ router.post('/subir', authenticateToken, upload.single('archivo'), async (req, r
     if (!cedulaResuelta && formulario_id) {
       try {
         const formulario = await db.queryOne(
-          `SELECT tipo, beneficiario_json->>'cedula' AS cedula FROM formularios WHERE id = $1`,
+          `SELECT tipo, actividad_json->>'visita_numero' AS visita_numero, beneficiario_json->>'cedula' AS cedula FROM formularios WHERE id = $1`,
           [formulario_id]
         );
         if (formulario) {
           cedulaResuelta = formulario.cedula || null;
-          tipoFormularioResuelto = tipoFormularioResuelto || formulario.tipo || null;
+          tipoFormularioResuelto = tipoFormularioResuelto || storage.claveCarpetaFormulario(formulario.tipo, formulario.visita_numero) || null;
         }
       } catch (lookupErr) {
         console.warn('[Videos] Error resolviendo beneficiario desde formulario:', lookupErr.message);

@@ -411,6 +411,8 @@ router.post('/generar', authenticateToken, async (req, res) => {
 
     // Subir a MinIO
     const buffer = Buffer.from(html, 'utf8');
+    // La Visita Técnica 3 guarda en Formulario_3 (el tipo sigue siendo visita_tecnica)
+    const claveCarpeta = storage.claveCarpetaFormulario(formulario.tipo, formulario.actividad?.visita_numero);
 
     // Resolver datos del beneficiario para carpeta en MinIO
     const b = formulario.beneficiario || {};
@@ -439,7 +441,7 @@ router.post('/generar', authenticateToken, async (req, res) => {
       buffer,
       {
         contentType: 'text/html',
-        tipoFormulario: formulario.tipo,
+        tipoFormulario: claveCarpeta,
         beneficiarioItem: benefItem,
         beneficiarioNombre: benefNombre,
       }
@@ -451,7 +453,7 @@ router.post('/generar', authenticateToken, async (req, res) => {
     let minioPath;
     if (benefItem && benefNombre) {
       const subpath = storage.getBeneficiarySubpath(benefItem, benefNombre);
-      const formFolder = storage.getFormTypeFolder(formulario.tipo);
+      const formFolder = storage.getFormTypeFolder(claveCarpeta);
       minioPath = formFolder ? `${basePath}/${subpath}/${formFolder}/pdfs/${filename}` : `${basePath}/${subpath}/pdfs/${filename}`;
     } else {
       minioPath = `${basePath}/pdfs/${filename}`;

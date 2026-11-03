@@ -5,6 +5,8 @@
 import React from 'react';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { COLORS, FONTS } from '../theme';
+import ActividadesListScreen from '../screens/ActividadesListScreen';
+import ActividadDetalleScreen from '../screens/ActividadDetalleScreen';
 import GerenteMenuScreen from '../screens/gerente/GerenteMenuScreen';
 import DashboardGerencialScreen from '../screens/gerente/DashboardGerencialScreen';
 import PerfilTecnicosScreen from '../screens/gerente/PerfilTecnicosScreen';
@@ -33,6 +35,8 @@ export type GerenteStackParamList = {
   SupervisionFormularioDetail: { formulario: import('../types').Formulario; modo?: 'online' | 'campo' };
   GerentePlantacionesPorTecnico: undefined;
   RevisarAnexos: undefined;
+  RevisionActividades: { modo?: 'ejecutar' | 'revisar' } | undefined;
+  ActividadDetalle: { actividadId: string; modo: 'ejecutar' | 'revisar'; tecnico?: { usuario: string; nombre: string } };
 };
 
 const Stack = createNativeStackNavigator<GerenteStackParamList>();
@@ -118,6 +122,17 @@ const GerenteNavigator: React.FC = () => {
         name="RevisarAnexos"
         component={RevisarAnexosScreen}
         options={{ title: 'Revisar Anexos' }}
+      />
+      <Stack.Screen
+        name="RevisionActividades"
+        component={ActividadesListScreen}
+        initialParams={{ modo: 'revisar' }}
+        options={{ title: 'Revisión de Actividades' }}
+      />
+      <Stack.Screen
+        name="ActividadDetalle"
+        component={ActividadDetalleScreen}
+        options={{ title: 'Actividad' }}
       />
     </Stack.Navigator>
   );

@@ -42,7 +42,8 @@ const SeleccionarVisitaTecnicaScreen: React.FC<SeleccionarVisitaProps> = ({ navi
   }, [beneficiario, setBeneficiario]);
 
   const abrirVisita = (numero: number) => {
-    navigation.navigate('VisitaTecnicaForm', {
+    const formato = VISITAS_TECNICAS.find((v) => v.numero === numero)?.formato;
+    navigation.navigate(formato === 'v3' ? 'VisitaTecnica3Form' : 'VisitaTecnicaForm', {
       visitaNumero: numero,
       beneficiario,
     });
@@ -91,7 +92,7 @@ const SeleccionarVisitaTecnicaScreen: React.FC<SeleccionarVisitaProps> = ({ navi
       <View style={styles.infoBox}>
         <Text style={styles.infoIcon}>ℹ️</Text>
         <Text style={styles.infoText}>
-          Muy pronto se habilitarán las demás visitas (3, 4, …). Si un formulario queda
+          Muy pronto se habilitarán las demás visitas (4, 5, …). Si un formulario queda
           incompleto, se guarda como borrador y lo encuentras en “Formularios Incompletos”.
         </Text>
       </View>

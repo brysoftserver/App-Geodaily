@@ -17,29 +17,27 @@ import { useGPS } from '../store/GPSContext';
 import { COLORS, FONTS, SPACING, BORDER_RADIUS } from '../theme';
 
 /**
- * Duración MÁXIMA de la cuenta regresiva de captura, en segundos. La captura
- * puede terminar antes si se alcanza una precisión aceptable (ver
- * PRECISION_ACEPTABLE_M): en campo abierto engancha en 2-3 s y solo se agota
- * la ventana completa cuando la señal es difícil (vereda/bajo árboles).
+ * Tiempo MÍNIMO de captura, en segundos. Siempre se espera completo: no se
+ * corta por muy buena que sea la precisión, para que el técnico vea cómo el
+ * error va bajando (como en las apps de coordenadas) y se guarde la mejor
+ * lectura de la ventana.
  */
-const DURACION_CAPTURA_SEG = 12;
+const DURACION_MINIMA_SEG = 20;
 
 /**
- * Precisión (radio de error en metros) a partir de la cual se considera que
- * la lectura es suficientemente buena y se puede cortar la captura antes de
- * agotar la ventana. 15 m es más que suficiente para georreferenciar una
- * finca y evita hacer esperar al técnico cuando ya hay buena señal.
+ * Tope de espera automática, en segundos. Pasado el mínimo, si la mejor
+ * lectura aún no llega a PRECISION_MAXIMA_M la captura sigue sola: sin datos
+ * (sin A-GPS) el arranque en frío tarda hasta ~2 min en bajar de ±80 m a
+ * ±15 m. Agotado el tope se avisa y se ofrece seguir esperando.
  */
-const PRECISION_ACEPTABLE_M = 15;
+const DURACION_TOPE_SEG = 120;
 
 /**
- * Edad máxima aceptada para la "última posición conocida" del sistema cuando
- * la captura de alta precisión no logra un fix. En veredas sin cielo abierto
- * el GPS puede tardar minutos: es mejor guardar una posición de hace un rato
- * (que el técnico puede corregir) que dejar la pregunta sin responder y
- * bloquear el formulario.
+ * Error máximo aceptado (radio en metros) para guardar la coordenada. Si al
+ * terminar la ventana la mejor lectura es peor, NO se guarda: se ofrece
+ * seguir esperando otra ventana (sin perder la mejor lectura fresca).
  */
-const ULTIMA_POSICION_MAX_AGE_MS = 30 * 60 * 1000;
+const PRECISION_MAXIMA_M = 30;
 
 interface MejorLectura {
   latitud: number;
@@ -82,6 +80,11 @@ interface CapturaGPSPrecisaProps {
    * el botón Guardar se habilite/deshabilite con los valores reales).
    */
   onChangeManual?: (latitud: string, longitud: string, altitud: string) => void;
+  /**
+   * La captura es obligatoria en este formulario: cambia el texto de "aún sin
+   * capturar" (por defecto se indica que se puede continuar sin coordenadas).
+   */
+  obligatoria?: boolean;
 }
 
 const CapturaGPSPrecisa: React.FC<CapturaGPSPrecisaProps> = ({
@@ -94,22 +97,41 @@ const CapturaGPSPrecisa: React.FC<CapturaGPSPrecisaProps> = ({
   onCapture,
   permitirEdicionManual = false,
   onChangeManual,
+  obligatoria = false,
 }) => {
   const [capturando, setCapturando] = useState(false);
-  const [segundosRestantes, setSegundosRestantes] = useState(DURACION_CAPTURA_SEG);
+  const [segundosTranscurridos, setSegundosTranscurridos] = useState(0);
   // Precisión de la mejor lectura obtenida hasta ahora durante la captura,
   // para mostrarla en vivo ("±8 m") y dar confianza al técnico.
   const [precisionEnVivo, setPrecisionEnVivo] = useState<number | null>(null);
+  // Estado del GPS de fondo (siempre encendido): indica si el chip ya está
+  // "caliente" antes de pulsar el botón.
+  const { precisionActual: precisionFondo, gpsHabilitado } = useGPS();
+  const [puntoEnVivo, setPuntoEnVivo] = useState<{ lat: number; lon: number } | null>(null);
 
-  // Posición que el GPSContext ya tiene en tiempo real (watch de fondo con
-  // precisión Balanced). Sirve de respaldo cuando la captura de alta
-  // precisión no logra un fix en la ventana de 8 s: en vez de dejar la
-  // pregunta sin responder, se ofrece esta posición.
-  const { userLocation } = useGPS();
+  /**
+   * Aplica al formulario la mejor lectura fresca de la ventana de captura.
+   */
+  const aplicarLectura = useCallback(
+    (lectura: MejorLectura) => {
+      onCapture(
+        String(lectura.latitud),
+        String(lectura.longitud),
+        lectura.altitud != null ? String(Math.round(lectura.altitud)) : '',
+        Number.isFinite(lectura.precision) ? String(Math.round(lectura.precision)) : ''
+      );
+    },
+    [onCapture]
+  );
 
   const mejorLecturaRef = useRef<MejorLectura | null>(null);
   const subscripcionRef = useRef<Location.LocationSubscription | null>(null);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // Momento en que se pulsó Start: toda lectura anterior es una posición en
+  // caché del sistema (p. ej. la captura previa) y se descarta.
+  const inicioMsRef = useRef(0);
+  const segundosRef = useRef(0);
+  const cerradaRef = useRef(true);
 
   const detenerMuestreo = useCallback(() => {
     subscripcionRef.current?.remove();
@@ -125,73 +147,26 @@ const CapturaGPSPrecisa: React.FC<CapturaGPSPrecisaProps> = ({
   useEffect(() => () => detenerMuestreo(), [detenerMuestreo]);
 
   /**
-   * Aplica una lectura al formulario. Se usa tanto para la captura de alta
-   * precisión como para los respaldos (última posición conocida / GPSContext).
+   * Arranca (o reinicia) el contador de captura desde `desde` segundos.
+   * `alTick` decide si cerrar: recibe los segundos transcurridos.
    */
-  const aplicarLectura = useCallback(
-    (lectura: MejorLectura) => {
-      onCapture(
-        String(lectura.latitud),
-        String(lectura.longitud),
-        lectura.altitud != null ? String(Math.round(lectura.altitud)) : '',
-        Number.isFinite(lectura.precision) ? String(Math.round(lectura.precision)) : ''
-      );
-    },
-    [onCapture]
-  );
+  const arrancarVentana = useCallback((desde: number, alTick: (seg: number) => void) => {
+    if (timerRef.current) clearInterval(timerRef.current);
+    segundosRef.current = desde;
+    setSegundosTranscurridos(desde);
+    timerRef.current = setInterval(() => {
+      segundosRef.current += 1;
+      setSegundosTranscurridos(segundosRef.current);
+      alTick(segundosRef.current);
+    }, 1000);
+  }, []);
 
-  /**
-   * Respaldo cuando la captura de alta precisión no obtuvo ninguna lectura:
-   *  1. La última posición conocida del sistema (hasta 30 min de antigüedad).
-   *  2. La posición que el GPSContext ya tiene (watch de fondo).
-   * Si ninguna existe, se avisa al técnico y se le ofrece continuar sin
-   * coordenadas para que NO quede bloqueado.
-   */
-  const intentarRespaldo = useCallback(async () => {
-    let ultima: Location.LocationObject | null = null;
-    try {
-      ultima = await Location.getLastKnownPositionAsync({ maxAge: ULTIMA_POSICION_MAX_AGE_MS });
-    } catch {
-      ultima = null;
-    }
-
-    if (ultima) {
-      aplicarLectura({
-        latitud: ultima.coords.latitude,
-        longitud: ultima.coords.longitude,
-        altitud: ultima.coords.altitude ?? undefined,
-        precision: ultima.coords.accuracy ?? Infinity,
-      });
-      Alert.alert(
-        'Ubicación aproximada',
-        'No se logró una señal GPS precisa, pero se guardó la última ubicación conocida del dispositivo. Puedes volver a capturar cuando tengas mejor señal.'
-      );
-      return;
-    }
-
-    if (userLocation) {
-      aplicarLectura({
-        latitud: userLocation.latitud,
-        longitud: userLocation.longitud,
-        altitud: userLocation.altitud,
-        precision: userLocation.precision_gps ?? Infinity,
-      });
-      Alert.alert(
-        'Ubicación aproximada',
-        'No se logró una señal GPS precisa, pero se guardó la última ubicación registrada por la app. Puedes volver a capturar cuando tengas mejor señal.'
-      );
-      return;
-    }
-
-    Alert.alert(
-      'Sin señal GPS',
-      'No se pudo obtener la ubicación. Puedes continuar sin coordenadas y capturarlas más tarde, o volver a intentar.',
-      [
-        { text: 'Volver a intentar', style: 'cancel' },
-        { text: 'Continuar sin coordenadas', onPress: () => onCapture('', '', '', '') },
-      ]
-    );
-  }, [aplicarLectura, onCapture, userLocation]);
+  /** Cancelar una captura en curso: no guarda nada y conserva lo anterior. */
+  const cancelarCaptura = useCallback(() => {
+    cerradaRef.current = true;
+    detenerMuestreo();
+    setCapturando(false);
+  }, [detenerMuestreo]);
 
   const iniciarCaptura = useCallback(async () => {
     const { status } = await Location.requestForegroundPermissionsAsync();
@@ -200,36 +175,61 @@ const CapturaGPSPrecisa: React.FC<CapturaGPSPrecisaProps> = ({
       return;
     }
 
+    const gpsEncendido = await Location.hasServicesEnabledAsync().catch(() => true);
+    if (!gpsEncendido) {
+      Alert.alert('GPS apagado', 'Enciende la ubicación (GPS) del teléfono para capturar las coordenadas.');
+      return;
+    }
+
     mejorLecturaRef.current = null;
+    inicioMsRef.current = Date.now();
+    cerradaRef.current = false;
     setPrecisionEnVivo(null);
-    setSegundosRestantes(DURACION_CAPTURA_SEG);
+    setPuntoEnVivo(null);
     setCapturando(true);
 
     /**
-     * Cierra la captura con la mejor lectura disponible (o con los respaldos
-     * si no hubo ninguna). Es idempotente: si ya se cerró, no hace nada.
+     * Cierra la ventana. Idempotente (guarda con cerradaRef). Solo se guarda
+     * una lectura FRESCA con error <= PRECISION_MAXIMA_M; en otro caso se
+     * avisa y se deja la coordenada anterior (si había) intacta.
      */
     const finalizar = () => {
+      if (cerradaRef.current) return;
+      cerradaRef.current = true;
       detenerMuestreo();
       setCapturando(false);
       const mejor = mejorLecturaRef.current;
-      if (mejor) {
+
+      if (mejor && mejor.precision <= PRECISION_MAXIMA_M) {
         aplicarLectura(mejor);
-      } else {
-        // Sin lectura de alta precisión: probar última conocida / GPSContext.
-        intentarRespaldo();
+        return;
       }
+
+      const detalle = mejor
+        ? `La mejor lectura fue de ±${Math.round(mejor.precision)} m y se requiere ±${PRECISION_MAXIMA_M} m o menos.`
+        : 'No se recibió ninguna lectura del GPS.';
+      Alert.alert(
+        'Precisión insuficiente',
+        `${detalle} Sal a cielo abierto, aléjate de árboles o construcciones y sigue esperando: sin internet el GPS puede tardar un par de minutos en afinar.`,
+        [
+          { text: 'Cancelar', style: 'cancel' },
+          { text: 'Seguir esperando', onPress: () => reanudar() },
+        ]
+      );
     };
 
-    try {
+    const suscribir = async () => {
+      subscripcionRef.current?.remove();
       subscripcionRef.current = await Location.watchPositionAsync(
         // `High` (no `BestForNavigation`): esta última está pensada para
         // navegación vehicular, usa sensores extra y tarda mucho más en
-        // enganchar. Para georreferenciar una finca, `High` es suficiente y
-        // consigue el primer fix bastante más rápido.
-        { accuracy: Location.Accuracy.High, timeInterval: 500, distanceInterval: 0 },
+        // enganchar. Para georreferenciar una finca, `High` es suficiente.
+        { accuracy: Location.Accuracy.High, timeInterval: 1000, distanceInterval: 0 },
         (pos) => {
+          // Lectura en caché de antes de pulsar Start: no es fresca.
+          if (pos.timestamp < inicioMsRef.current) return;
           const precisionActual = pos.coords.accuracy ?? Infinity;
+          setPuntoEnVivo({ lat: pos.coords.latitude, lon: pos.coords.longitude });
           const mejorActual = mejorLecturaRef.current;
           if (!mejorActual || precisionActual < mejorActual.precision) {
             mejorLecturaRef.current = {
@@ -239,33 +239,45 @@ const CapturaGPSPrecisa: React.FC<CapturaGPSPrecisaProps> = ({
               precision: precisionActual,
             };
             setPrecisionEnVivo(Number.isFinite(precisionActual) ? precisionActual : null);
-
-            // Corte anticipado: si ya tenemos una lectura suficientemente
-            // buena, no tiene sentido seguir esperando el resto de la ventana.
-            if (precisionActual <= PRECISION_ACEPTABLE_M) {
-              finalizar();
-            }
           }
         }
       );
+    };
+
+    /** Cierra al cumplir el mínimo con buena precisión, o al agotar el tope. */
+    const alTick = (seg: number) => {
+      const mejor = mejorLecturaRef.current;
+      const buena = !!mejor && mejor.precision <= PRECISION_MAXIMA_M;
+      if ((seg >= DURACION_MINIMA_SEG && buena) || seg >= DURACION_TOPE_SEG) finalizar();
+    };
+
+    /** "Seguir esperando": nueva ventana conservando la mejor lectura fresca. */
+    const reanudar = async () => {
+      cerradaRef.current = false;
+      setCapturando(true);
+      try {
+        await suscribir();
+      } catch {
+        cerradaRef.current = true;
+        setCapturando(false);
+        Alert.alert('Sin señal GPS', 'No se pudo iniciar la lectura del GPS. Intenta de nuevo.');
+        return;
+      }
+      arrancarVentana(DURACION_MINIMA_SEG, alTick);
+    };
+
+    try {
+      await suscribir();
     } catch {
       detenerMuestreo();
+      cerradaRef.current = true;
       setCapturando(false);
-      // No se pudo ni suscribir el watch: intentar respaldos antes de rendirse.
-      await intentarRespaldo();
+      Alert.alert('Sin señal GPS', 'No se pudo iniciar la lectura del GPS. Verifica que la ubicación esté encendida e intenta de nuevo.');
       return;
     }
 
-    timerRef.current = setInterval(() => {
-      setSegundosRestantes((prev) => {
-        if (prev <= 1) {
-          finalizar();
-          return DURACION_CAPTURA_SEG;
-        }
-        return prev - 1;
-      });
-    }, 1000);
-  }, [detenerMuestreo, aplicarLectura, intentarRespaldo]);
+    arrancarVentana(0, alTick);
+  }, [detenerMuestreo, aplicarLectura, arrancarVentana]);
 
   const hayCaptura = !!(latitud && longitud);
 
@@ -289,6 +301,18 @@ const CapturaGPSPrecisa: React.FC<CapturaGPSPrecisaProps> = ({
   return (
     <View style={styles.fieldContainer}>
       <Text style={styles.fieldLabel}>{label}</Text>
+
+      {!capturando && (
+        <Text style={styles.gpsEstado}>
+          {gpsHabilitado === false
+            ? '⚠️ GPS del teléfono apagado'
+            : precisionFondo == null
+            ? '🛰️ GPS buscando señal…'
+            : precisionFondo <= PRECISION_MAXIMA_M
+            ? `🟢 GPS listo (±${Math.round(precisionFondo)} m)`
+            : `🟠 GPS calentando (±${Math.round(precisionFondo)} m) — espera al aire libre`}
+        </Text>
+      )}
 
       {!capturando && (
         <TouchableOpacity style={styles.gpsButton} onPress={iniciarCaptura} activeOpacity={0.7}>
@@ -353,10 +377,24 @@ const CapturaGPSPrecisa: React.FC<CapturaGPSPrecisaProps> = ({
       {capturando && (
         <View style={[styles.gpsButton, styles.gpsButtonContando]}>
           <Text style={styles.gpsButtonText}>
-            📡 Obteniendo ubicación… {segundosRestantes}s
-            {precisionEnVivo != null ? `   ±${Math.round(precisionEnVivo)} m` : ''}
+            📡 Obteniendo ubicación… {segundosTranscurridos}s
+            {precisionEnVivo != null ? `   mejor ±${Math.round(precisionEnVivo)} m` : '   buscando satélites…'}
+          </Text>
+          {puntoEnVivo && (
+            <Text style={styles.gpsEnVivoText}>
+              {puntoEnVivo.lat.toFixed(6)}, {puntoEnVivo.lon.toFixed(6)}
+            </Text>
+          )}
+          <Text style={styles.gpsEnVivoText}>
+            Se guarda con ±{PRECISION_MAXIMA_M} m o menos (mínimo {DURACION_MINIMA_SEG}s)
           </Text>
         </View>
+      )}
+
+      {capturando && (
+        <TouchableOpacity style={styles.gpsCancelar} onPress={cancelarCaptura} activeOpacity={0.7}>
+          <Text style={styles.gpsCancelarText}>Cancelar</Text>
+        </TouchableOpacity>
       )}
 
       {!capturando && hayCaptura && (
@@ -385,7 +423,7 @@ const CapturaGPSPrecisa: React.FC<CapturaGPSPrecisaProps> = ({
       )}
 
       {!capturando && !hayCaptura && (
-        <Text style={styles.gpsPendiente}>Aún sin capturar (opcional: puedes continuar sin coordenadas)</Text>
+        <Text style={styles.gpsPendiente}>{obligatoria ? 'Aún sin capturar (obligatorio para completar la visita)' : 'Aún sin capturar (opcional: puedes continuar sin coordenadas)'}</Text>
       )}
     </View>
   );
@@ -414,6 +452,26 @@ const styles = StyleSheet.create({
     color: '#fff',
     fontWeight: FONTS.weights.semibold,
     fontSize: FONTS.sizes.md,
+  },
+  gpsEstado: {
+    fontSize: FONTS.sizes.xs,
+    color: COLORS.textSecondary,
+    marginBottom: SPACING.xs,
+  },
+  gpsCancelar: {
+    marginTop: SPACING.xs,
+    paddingVertical: SPACING.xs,
+    alignItems: 'center',
+  },
+  gpsCancelarText: {
+    color: COLORS.error,
+    fontSize: FONTS.sizes.sm,
+    fontWeight: FONTS.weights.semibold,
+  },
+  gpsEnVivoText: {
+    color: '#fff',
+    fontSize: FONTS.sizes.xs,
+    marginTop: 2,
   },
   gpsResultado: {
     marginTop: SPACING.xs,

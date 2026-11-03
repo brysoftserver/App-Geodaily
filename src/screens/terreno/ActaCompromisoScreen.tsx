@@ -32,6 +32,7 @@ import {
 } from '../../services/beneficiariosDB.service';
 import {
   generarPDFActaCompromiso,
+  construirHtmlActaCompromiso,
   AC_DISPONIBILIDAD,
   AC_ACREDITACION,
   AC_USO_MANEJO,
@@ -42,6 +43,9 @@ import {
 } from '../../services/pdfLocal.service';
 import SignaturePad from '../../components/SignaturePad';
 import { guardarDatosOtroFormato, cargarDatosOtroFormato } from '../../store/OtrosFormatosDraftStore';
+import BotonGuardarBorrador, { useGuardarBorrador } from '../../components/BotonGuardarBorrador';
+import { registrarOtroFormato, adjuntarPdfOtroFormato } from '../../services/otrosFormatos.service';
+import { abrirVentanaDeCarga, imprimirHtmlEnVentana } from '../../utils/printWeb';
 
 type ActaCompromisoScreenProps = {
   navigation: NativeStackNavigationProp<Record<string, any>>;
@@ -214,6 +218,8 @@ const ActaCompromisoScreen: React.FC<ActaCompromisoScreenProps> = ({ navigation,
 
   const todasLeidas = useMemo(() => leidas.size === SECCIONES.length, [leidas]);
 
+  const { guardar, guardando } = useGuardarBorrador('acta_compromiso', beneficiario?.cedula, { nombre, cedula, telefono, correo, vereda, corregimiento, predio, calidadPredio, leidas: Array.from(leidas), firmaBeneficiario, firmaTecnico });
+
   const handleGenerar = useCallback(async () => {
     if (!nombre.trim() || !cedula.trim()) {
       Alert.alert('Faltan datos', 'El nombre y la identificación del beneficiario son obligatorios.');
@@ -235,6 +241,10 @@ const ActaCompromisoScreen: React.FC<ActaCompromisoScreenProps> = ({ navigation,
       return;
     }
 
+    // En web la pestaña de impresión debe abrirse SÍNCRONA, antes de cualquier
+    // await: si no, el navegador la bloquea como pop-up.
+    const ventanaWeb = Platform.OS === 'web' ? abrirVentanaDeCarga() : null;
+
     setGenerando(true);
     try {
       // Guardar en la base de beneficiarios los datos capturados aquí por
@@ -252,7 +262,7 @@ const ActaCompromisoScreen: React.FC<ActaCompromisoScreenProps> = ({ navigation,
         console.warn('[ActaCompromiso] No se pudieron guardar los datos de contacto:', e);
       }
 
-      const uri = await generarPDFActaCompromiso({
+      const datosPDF = {
         nombre: nombre.trim(),
         cedula: cedula.trim(),
         telefono: telefono.trim(),
@@ -260,12 +270,33 @@ const ActaCompromisoScreen: React.FC<ActaCompromisoScreenProps> = ({ navigation,
         vereda: vereda.trim(),
         corregimiento: corregimiento.trim(),
         predio: predio.trim(),
-        calidadPredio,
+        calidadPredio: calidadPredio as CalidadPredio,
         fecha: new Date().toISOString(),
-        firmaBeneficiario,
-        firmaTecnico,
+        firmaBeneficiario: firmaBeneficiario as string,
+        firmaTecnico: firmaTecnico as string,
         tecnicoNombre: user?.nombre || 'Técnico',
+      };
+
+      // Publicar para los roles superiores (offline-first: si no hay red queda
+      // guardado en el dispositivo y se sube solo en el próximo sync).
+      await registrarOtroFormato({
+        tipo: 'acta_compromiso',
+        beneficiarioCedula: datosPDF.cedula,
+        beneficiarioNombre: datosPDF.nombre,
+        datos: datosPDF,
+        user,
       });
+
+      // En el navegador expo-print no produce PDF: se imprime el mismo HTML
+      // institucional en la pestaña abierta arriba.
+      if (Platform.OS === 'web') {
+        imprimirHtmlEnVentana(ventanaWeb, construirHtmlActaCompromiso(datosPDF));
+        return;
+      }
+
+      const uri = await generarPDFActaCompromiso(datosPDF);
+      // Conserva el PDF (copia local + servidor) para el Historial; sin esperar la subida.
+      if (uri) void adjuntarPdfOtroFormato({ tipo: 'acta_compromiso', beneficiarioCedula: datosPDF.cedula, pdfUri: uri });
 
       if (!uri) {
         Alert.alert('Error', 'No se pudo generar el PDF. Intenta de nuevo.');
@@ -277,6 +308,7 @@ const ActaCompromisoScreen: React.FC<ActaCompromisoScreenProps> = ({ navigation,
         Alert.alert('PDF generado', `Guardado en: ${uri}`);
       }
     } catch (e) {
+      ventanaWeb?.close();
       console.warn('[ActaCompromiso] Error al generar PDF:', e);
       Alert.alert('Error', 'No se pudo generar el PDF. Intenta de nuevo.');
     } finally {
@@ -332,7 +364,7 @@ const ActaCompromisoScreen: React.FC<ActaCompromisoScreenProps> = ({ navigation,
         </View>
         <View style={styles.campoWrap}>
           <Text style={styles.campoLabel}>Identificación</Text>
-          <TextInput style={styles.input} value={cedula} onChangeText={setCedula} keyboardType="numeric" placeholder="Cédula" placeholderTextColor={COLORS.textLight} />
+          <TextInput style={styles.input} value={cedula} onChangeText={setCedula} editable={!beneficiario?.cedula} keyboardType="numeric" placeholder="Cédula" placeholderTextColor={COLORS.textLight} />
         </View>
         <View style={styles.campoWrap}>
           <Text style={styles.campoLabel}>Teléfono</Text>
@@ -434,6 +466,7 @@ const ActaCompromisoScreen: React.FC<ActaCompromisoScreenProps> = ({ navigation,
       </ScrollView>
 
       <View style={[styles.footer, { paddingBottom: insets.bottom + SPACING.md }]}>
+        <BotonGuardarBorrador onPress={guardar} guardando={guardando} />
         <TouchableOpacity
           style={[styles.generarBtn, generando && styles.generarBtnDisabled]}
           onPress={handleGenerar}

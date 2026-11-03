@@ -28,8 +28,8 @@ import { COLORS, FONTS, SPACING, BORDER_RADIUS } from '../theme';
 import { crearHtmlVisorPdf } from '../services/pdfRenderer.service';
 
 interface PdfViewerProps {
-  /** Módulo devuelto por require() del archivo PDF. */
-  archivo: number;
+  /** Módulo devuelto por require() del PDF empaquetado, o URI local (file://) de un PDF ya generado/descargado. */
+  archivo: number | string;
   titulo: string;
   onClose: () => void;
   /** Clave estable para cachear el HTML generado. */
@@ -71,11 +71,16 @@ const PdfViewer: React.FC<PdfViewerProps> = ({
       setProgreso(null);
 
       try {
-        const asset = Asset.fromModule(archivo);
-        if (!asset.localUri) {
-          await asset.downloadAsync();
+        let pdfUri: string | null | undefined;
+        if (typeof archivo === 'string') {
+          pdfUri = archivo;
+        } else {
+          const asset = Asset.fromModule(archivo);
+          if (!asset.localUri) {
+            await asset.downloadAsync();
+          }
+          pdfUri = asset.localUri;
         }
-        const pdfUri = asset.localUri;
         if (!pdfUri) {
           throw new Error('No se encontró el archivo del documento.');
         }

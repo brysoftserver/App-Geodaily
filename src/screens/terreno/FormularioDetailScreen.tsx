@@ -42,6 +42,7 @@ import {
 import { deleteEvidenciaLocal, saveFormularioLocal, getUnsyncedPhotos, getUnsyncedVideos, saveFotoLocal, saveVideoLocal, saveDocumentoLocal, marcarDocumentoSincronizado } from '../../services/database';
 import { eliminarArchivoLocal, persistirEvidencia } from '../../services/mediaStorage.service';
 import { useSync } from '../../store/SyncContext';
+import { useAbrirDocumentoFinca } from '../../hooks/useAbrirDocumentoFinca';
 import { fetchDocumentosDeFormulario, fetchDocumentosDeBeneficiario, subirDocumento, DocumentoDeFormulario } from '../../services/documentos.service';
 import { useCamera } from '../../hooks/useCamera';
 import * as ImagePicker from 'expo-image-picker';
@@ -55,7 +56,15 @@ import {
   resolverDuenoFormulario,
 } from '../../utils/permisosFormulario';
 import { construirSeccionesEncuesta, esEncuestaSocial } from '../../utils/encuestaSchema';
-import { esVisitaTecnicaV2, tituloVisitaTecnica } from '../../utils/visitaTecnica';
+import { soloNumero, valorParaEditar } from '../../utils/respuestasCompuestas';
+import { esVisitaTecnicaV2, esVisitaTecnicaV3, tipoFormularioEvidencia, tituloVisitaTecnica } from '../../utils/visitaTecnica';
+import {
+  COMPROMISOS_V3,
+  PREGUNTAS_V3,
+  hidratarEstadoV3,
+  respuestaPreguntaV3,
+  textoCompromiso,
+} from '../../utils/visitaTecnica3';
 import MedicionCaptura from '../../components/MedicionCaptura';
 import type { MedicionCapturaDatos } from '../../components/MedicionCaptura';
 import {
@@ -102,6 +111,7 @@ import {
   Revision,
 } from '../../services/revisiones.service';
 import { useRevisiones } from '../../hooks/useRevisiones';
+import { estaNovedadResuelta, rolEstaOk } from '../../utils/revisiones';
 import { descargarPaqueteMedia } from '../../services/mediaPackage.service';
 import SeguimientoCoordinacionSection from '../../components/SeguimientoCoordinacionSection';
 import { actualizarRespuestaFormulario } from '../../services/formularios.service';
@@ -259,6 +269,13 @@ const RESPUESTA_ESPEC: Record<string, EspecRespuesta> = {
     },
   },
   'caracterizacion_finca.area_total': { tipo: 'texto', keyboardType: 'numeric' },
+  // P22 — División del área. La vista muestra los cuatro subcampos
+  // compuestos en una sola línea ("Bosque: 10 ha · Agrícola: 60 ha · …"),
+  // pero cada uno se guarda por separado y como número simple.
+  'caracterizacion_finca.division_bosque': { tipo: 'texto', keyboardType: 'numeric' },
+  'caracterizacion_finca.division_agricola': { tipo: 'texto', keyboardType: 'numeric' },
+  'caracterizacion_finca.division_pecuaria': { tipo: 'texto', keyboardType: 'numeric' },
+  'caracterizacion_finca.division_instalaciones': { tipo: 'texto', keyboardType: 'numeric' },
   'caracterizacion_finca.medio_salida': { tipo: 'seleccion', opciones: MEDIO_SALIDA_OPTS },
   'caracterizacion_finca.distancia_km': { tipo: 'texto', keyboardType: 'numeric' },
   'caracterizacion_finca.distancia_observaciones': { tipo: 'texto', multiline: true },
@@ -307,10 +324,41 @@ const RESPUESTA_ESPEC: Record<string, EspecRespuesta> = {
 
   // --- DESARROLLO ACOMPAÑAMIENTO TÉCNICO (observaciones) ---
   'acompaniamiento.actividades_realizadas_obs': { tipo: 'texto', multiline: true },
+  // Los dos conteos se muestran con su etiqueta delante ("Número de
+  // hectáreas: 2.5 ha"): se guardan como número simple.
+  'acompaniamiento.manejo_plagas_hectareas': { tipo: 'texto', keyboardType: 'numeric' },
+  'acompaniamiento.manejo_suelo_cantidad': { tipo: 'texto', keyboardType: 'numeric' },
   'acompaniamiento.capacitacion_obs': { tipo: 'texto', multiline: true },
   'acompaniamiento.seguimiento_obs': { tipo: 'texto', multiline: true },
   'acompaniamiento.entresacado_obs': { tipo: 'texto', multiline: true },
   'acompaniamiento.observaciones_visita': { tipo: 'texto', multiline: true },
+};
+
+/**
+ * Preguntas que la vista muestra COMPUESTAS por varios subcampos.
+ *
+ * La P22 es el caso claro: el detalle pinta una sola línea
+ * ("Bosque: 10 ha · Agrícola: 60 ha · Pecuaria: 0 ha · Instalaciones: 0 ha")
+ * a partir de cuatro campos independientes. Editarla como un único campo de
+ * texto obligaba a guardar la línea completa dentro de `division_bosque`, así
+ * que cada corrección anidaba etiquetas y unidades («Bosque: Bosque: 10 ha ha»).
+ *
+ * Aquí se editan los cuatro subcampos por separado, cada uno en su propio
+ * campo del formulario y como número simple.
+ */
+type CampoCompuesto = {
+  etiqueta: string;
+  path: string;
+  unidad?: string;
+};
+
+const PREGUNTAS_COMPUESTAS: Record<string, CampoCompuesto[]> = {
+  'CARACTERIZACIÓN DE LA FINCA__22': [
+    { etiqueta: 'Área de bosque', path: 'caracterizacion_finca.division_bosque', unidad: 'ha' },
+    { etiqueta: 'Área agrícola', path: 'caracterizacion_finca.division_agricola', unidad: 'ha' },
+    { etiqueta: 'Área pecuaria', path: 'caracterizacion_finca.division_pecuaria', unidad: 'ha' },
+    { etiqueta: 'Área de instalaciones', path: 'caracterizacion_finca.division_instalaciones', unidad: 'ha' },
+  ],
 };
 
 // ============================================================
@@ -334,16 +382,35 @@ const SeccionRevision: React.FC<{ formulario: Formulario; revisiones: Revision[]
   const [enviando, setEnviando] = useState(false);
   const [modalNovedad, setModalNovedad] = useState(false);
   const [novedadTexto, setNovedadTexto] = useState('');
+  // Las novedades resueltas no se borran (son historial), pero se ocultan
+  // por defecto para que no se confundan con las pendientes.
+  const [verHistorial, setVerHistorial] = useState(false);
 
   const cargar = recargar;
 
+  /**
+   * Estado de un rol según su ÚLTIMA marca (novedad / visto bueno) — igual
+   * que GET /api/revisiones/resumen (ver `src/utils/revisiones.ts`). Antes
+   * bastaba con que existiera un visto bueno histórico para pintar 'ok',
+   * aunque después el rol hubiera marcado una novedad nueva.
+   */
   const estadoDe = (r: string): 'ok' | 'novedades' | null => {
-    if (revisiones.some((x) => x.revisor_rol === r && x.tipo === 'visto_bueno')) return 'ok';
-    if (revisiones.some((x) => x.revisor_rol === r && x.tipo === 'novedad')) return 'novedades';
-    return null;
+    const propias = revisiones.filter(
+      (x) => x.revisor_rol === r && (x.tipo === 'novedad' || x.tipo === 'visto_bueno')
+    );
+    if (propias.length === 0) return null;
+    return rolEstaOk(r, revisiones) ? 'ok' : 'novedades';
   };
   const yaAprobePorMiRol = estadoDe(rol) === 'ok';
-  const novedades = revisiones.filter((r) => r.tipo === 'novedad');
+  // Solo las novedades SIN resolver se muestran en rojo: una novedad queda
+  // resuelta cuando el mismo rol que la marcó la da por buena después
+  // (mismo criterio que el badge del listado y el backend).
+  const novedadesPendientes = revisiones.filter(
+    (r) => r.tipo === 'novedad' && !estaNovedadResuelta(r, revisiones)
+  );
+  const novedadesResueltas = revisiones.filter(
+    (r) => r.tipo === 'novedad' && estaNovedadResuelta(r, revisiones)
+  );
 
   const enviarNovedad = async () => {
     if (!novedadTexto.trim()) {
@@ -405,21 +472,46 @@ const SeccionRevision: React.FC<{ formulario: Formulario; revisiones: Revision[]
         <Chip rolChip="interventor" />
       </View>
 
-      {/* Novedades registradas */}
-      {novedades.length > 0 && (
+      {/* Novedades PENDIENTES (las resueltas van al historial plegable) */}
+      {novedadesPendientes.length > 0 && (
         <View style={rev.novedadesBox}>
-          <Text style={rev.novedadesTitle}>⚠ Novedades ({novedades.length})</Text>
-          {novedades.map((n) => (
+          <Text style={rev.novedadesTitle}>
+            ⚠ Novedades pendientes ({novedadesPendientes.length})
+          </Text>
+          {novedadesPendientes.map((n) => (
             <View key={n.id} style={rev.novedadItem}>
               <Text style={rev.novedadMeta}>
                 {ROL_LABEL[n.revisor_rol] || n.revisor_rol} · {n.revisor_nombre || ''} · {formatFecha(n.created_at)}
+                {n.seccion ? ` · Sección: ${n.seccion}` : ''}
               </Text>
               <Text style={rev.novedadTexto}>{n.comentario}</Text>
             </View>
           ))}
         </View>
       )}
-      {novedades.length === 0 && revisiones.length === 0 && (
+      {novedadesPendientes.length === 0 && revisiones.length > 0 && (
+        <Text style={rev.sinNovedadesPendientes}>✔ Sin novedades pendientes.</Text>
+      )}
+      {novedadesResueltas.length > 0 && (
+        <View style={rev.historialBox}>
+          <TouchableOpacity onPress={() => setVerHistorial((v) => !v)} activeOpacity={0.7}>
+            <Text style={rev.historialToggle}>
+              {verHistorial ? '▾' : '▸'} Historial de novedades resueltas ({novedadesResueltas.length})
+            </Text>
+          </TouchableOpacity>
+          {verHistorial &&
+            novedadesResueltas.map((n) => (
+              <View key={n.id} style={rev.novedadItemResuelta}>
+                <Text style={rev.novedadMeta}>
+                  ✔ {ROL_LABEL[n.revisor_rol] || n.revisor_rol} · {n.revisor_nombre || ''} · {formatFecha(n.created_at)}
+                  {n.seccion ? ` · Sección: ${n.seccion}` : ''}
+                </Text>
+                <Text style={rev.novedadTextoResuelto}>{n.comentario}</Text>
+              </View>
+            ))}
+        </View>
+      )}
+      {novedadesPendientes.length === 0 && novedadesResueltas.length === 0 && revisiones.length === 0 && (
         <Text style={rev.sinRevisiones}>Aún no hay revisiones para este formulario.</Text>
       )}
 
@@ -504,6 +596,16 @@ const SeccionMiniRevision: React.FC<{
   };
   const miEstado = estadoDeRol(rol);
 
+  // Solo las pendientes en rojo. Se evalúa contra TODAS las revisiones porque
+  // un visto bueno global (seccion = NULL) posterior también resuelve la
+  // novedad de una sección concreta.
+  const novedadesPendientesSeccion = deEstaSeccion.filter(
+    (r) => r.tipo === 'novedad' && !estaNovedadResuelta(r, revisiones)
+  );
+  const novedadesResueltasSeccion = deEstaSeccion.filter(
+    (r) => r.tipo === 'novedad' && estaNovedadResuelta(r, revisiones)
+  );
+
   const marcarAprobado = async () => {
     setEnviando(true);
     try {
@@ -548,9 +650,14 @@ const SeccionMiniRevision: React.FC<{
         );
       })}
 
-      {deEstaSeccion.filter((r) => r.tipo === 'novedad').map((n) => (
+      {novedadesPendientesSeccion.map((n) => (
         <Text key={n.id} style={mini.novedadTexto}>
           ⚠ {ROL_LABEL[n.revisor_rol] || n.revisor_rol}: {n.comentario}
+        </Text>
+      ))}
+      {novedadesResueltasSeccion.map((n) => (
+        <Text key={n.id} style={mini.novedadResuelta}>
+          ✔ {ROL_LABEL[n.revisor_rol] || n.revisor_rol}: {n.comentario}
         </Text>
       ))}
 
@@ -597,8 +704,10 @@ const mini = StyleSheet.create({
   chip: { alignSelf: 'flex-start', paddingHorizontal: SPACING.sm, paddingVertical: 2, borderRadius: BORDER_RADIUS.full, marginBottom: 4 },
   chipOk: { backgroundColor: COLORS.success + '22' },
   chipNov: { backgroundColor: COLORS.warning + '22' },
-  chipText: { fontSize: FONTS.sizes.xs, color: COLORS.textPrimary },
+  chipPend: { backgroundColor: COLORS.divider },
+  chipText: { fontSize: FONTS.sizes.sm, color: COLORS.textPrimary },
   novedadTexto: { fontSize: FONTS.sizes.xs, color: COLORS.error, marginBottom: 2 },
+  novedadResuelta: { fontSize: FONTS.sizes.xs, color: COLORS.textSecondary, marginBottom: 2 },
   accionesRow: { flexDirection: 'row', gap: SPACING.xs, marginTop: 4 },
   btn: { paddingHorizontal: SPACING.sm, paddingVertical: 6, borderRadius: BORDER_RADIUS.sm },
   btnNovedad: { backgroundColor: COLORS.info },
@@ -635,6 +744,11 @@ const rev = StyleSheet.create({
   novedadItem: { borderLeftWidth: 3, borderLeftColor: COLORS.error, paddingLeft: SPACING.sm, marginBottom: SPACING.xs },
   novedadMeta: { fontSize: FONTS.sizes.xs, color: COLORS.textSecondary },
   novedadTexto: { fontSize: FONTS.sizes.md, color: COLORS.textPrimary },
+  novedadItemResuelta: { borderLeftWidth: 3, borderLeftColor: COLORS.divider, paddingLeft: SPACING.sm, marginBottom: SPACING.xs },
+  novedadTextoResuelto: { fontSize: FONTS.sizes.sm, color: COLORS.textSecondary },
+  sinNovedadesPendientes: { fontSize: FONTS.sizes.sm, color: COLORS.success, marginBottom: SPACING.sm },
+  historialBox: { marginBottom: SPACING.sm },
+  historialToggle: { fontSize: FONTS.sizes.xs, color: COLORS.textSecondary, marginBottom: SPACING.xs },
   sinRevisiones: { fontSize: FONTS.sizes.sm, color: COLORS.textSecondary, marginBottom: SPACING.sm },
   botonesRow: { flexDirection: 'row', gap: SPACING.sm, marginTop: SPACING.xs },
   boton: { flex: 1, paddingVertical: SPACING.sm, borderRadius: BORDER_RADIUS.md, alignItems: 'center', paddingHorizontal: SPACING.sm },
@@ -697,19 +811,16 @@ const rev = StyleSheet.create({
 // ============================================================
 
 const BannerNovedades: React.FC<{ revisiones: Revision[] }> = ({ revisiones }) => {
-  // Si coordinación (o admin) ya dio el visto bueno global, las novedades
-  // quedan resueltas y el aviso desaparece — igual que el badge del listado.
-  const aprobadoGlobal = revisiones.some(
-    (r) =>
-      r.tipo === 'visto_bueno' &&
-      (r.revisor_rol === 'coordinador' || r.revisor_rol === 'admin') &&
-      !r.seccion
-  );
+  // Solo se avisan las novedades SIN resolver, con el mismo criterio que el
+  // badge del listado (GET /api/revisiones/resumen): una novedad queda
+  // resuelta cuando el mismo rol que la marcó da su visto bueno después, sea
+  // por sección o global. El atajo anterior ('si hay algún visto bueno global,
+  // ocultar todo') escondía novedades marcadas DESPUÉS de una aprobación.
   const novedades = revisiones
-    .filter((r) => r.tipo === 'novedad')
+    .filter((r) => r.tipo === 'novedad' && !estaNovedadResuelta(r, revisiones))
     .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
 
-  if (novedades.length === 0 || aprobadoGlobal) return null;
+  if (novedades.length === 0) return null;
 
   return (
     <View style={rev.avisoBox}>
@@ -910,7 +1021,7 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
   const [authHeaders, setAuthHeaders] = useState<Record<string, string>>({});
   /** Documentos de finca vinculados a este formulario — visibles para todos los roles */
   const [documentos, setDocumentos] = useState<DocumentoDeFormulario[]>([]);
-  const [abriendoDocumentoId, setAbriendoDocumentoId] = useState<string | null>(null);
+  const { abrirDocumento, abriendoId: abriendoDocumentoId, visor: visorDocumento } = useAbrirDocumentoFinca();
   /** Subida de un documento de finca en curso (spinner en el botón) */
   const [subiendoDocumento, setSubiendoDocumento] = useState(false);
   /** Foto elegida de la galería que se está registrando como evidencia */
@@ -923,8 +1034,13 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
     beneficiario: FirmaResuelta | null;
     tecnico: FirmaResuelta | null;
   } | null>(null);
-  const [respuestaEditando, setRespuestaEditando] = useState<{ path: string; texto: string; espec?: EspecRespuesta; modo?: 'completar' | 'corregir' } | null>(null);
+  const [respuestaEditando, setRespuestaEditando] = useState<{ path: string; texto: string; espec?: EspecRespuesta; modo?: 'completar' | 'corregir'; compuesta?: CampoCompuesto[] } | null>(null);
   const [valorRespuesta, setValorRespuesta] = useState('');
+  /**
+   * Valores de los subcampos cuando la pregunta se edita como bloque
+   * (P22: bosque / agrícola / pecuaria / instalaciones).
+   */
+  const [valoresCompuestos, setValoresCompuestos] = useState<Record<string, string>>({});
   const [guardandoRespuesta, setGuardandoRespuesta] = useState(false);
   /**
    * Captura GPS de alta precisión para las preguntas de coordenada (P20/P32).
@@ -989,13 +1105,41 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
     // tienen respuesta. Evita abrir el modal en el caso equivocado.
     if (modo === 'completar' && pregunta.valor) return;
     if (modo === 'corregir' && !pregunta.valor) return;
-    const path = RUTAS_RESPUESTAS_FORMULARIO_1[`${seccionTitulo}__${pregunta.numero === '\u2022' ? pregunta.texto : pregunta.numero}`];
+
+    /** Valor guardado tal cual (sin el formato compuesto de la vista). */
+    const leerCrudo = (ruta: string): string => {
+      const enc = ((formulario as any).caracterizacion_nueva || {}) as Record<string, any>;
+      const [sec, campo] = ruta.split('.');
+      return campo ? String(enc[sec]?.[campo] ?? '') : String(enc[sec] ?? '');
+    };
+
+    const clave = `${seccionTitulo}__${pregunta.numero === '\u2022' ? pregunta.texto : pregunta.numero}`;
+
+    // Pregunta compuesta por varios subcampos (P22): se edita como bloque,
+    // cada subcampo en su propio campo del formulario.
+    const compuesta = PREGUNTAS_COMPUESTAS[clave];
+    if (compuesta) {
+      const valores: Record<string, string> = {};
+      compuesta.forEach((campo) => {
+        valores[campo.path] = valorParaEditar(campo.path, leerCrudo(campo.path));
+      });
+      setValoresCompuestos(valores);
+      setValorRespuesta('');
+      setGpsCaptura(null);
+      setRespuestaEditando({ path: compuesta[0].path, texto: pregunta.texto, modo, compuesta });
+      return;
+    }
+
+    const path = RUTAS_RESPUESTAS_FORMULARIO_1[clave];
     if (!path) return;
     const espec = RESPUESTA_ESPEC[path];
     setRespuestaEditando({ path, texto: pregunta.texto, espec, modo });
-    // Al corregir se precarga el valor actual para editarlo; al completar se
-    // parte de vacío.
-    setValorRespuesta(modo === 'corregir' ? pregunta.valor : '');
+    // Al corregir se precarga el valor SIMPLE guardado en el formulario, no
+    // el texto compuesto que se ve en pantalla. Antes se precargaba
+    // `pregunta.valor` ("Bosque: 10 ha · Agrícola: 60 ha · …"): al guardar,
+    // ese texto completo caía dentro del campo simple y la vista lo volvía
+    // a componer, dejando etiquetas y unidades duplicadas.
+    setValorRespuesta(modo === 'corregir' ? valorParaEditar(path, leerCrudo(path)) : '');
     // Preguntas de coordenada (P20/P32): precargar la captura GPS existente
     // para que el mapa y el botón "Volver a capturar" muestren el punto actual.
     if (espec?.tipo === 'gps' && espec.gpsCampos) {
@@ -1043,22 +1187,29 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
       Alert.alert('Respuesta vacía', 'Escribe una respuesta antes de guardar.');
       return;
     }
+    // Los campos que la vista muestra con unidad o etiqueta (área, distancia,
+    // pendiente, conteos) se guardan como número simple. Si la persona escribe
+    // "10 ha", se guarda "10": la vista agrega la unidad al mostrarla.
+    const valorAGuardar =
+      respuestaEditando.espec?.keyboardType === 'numeric'
+        ? soloNumero(valorRespuesta) || valorRespuesta.trim()
+        : valorRespuesta.trim();
     setGuardandoRespuesta(true);
     try {
       await actualizarRespuestaFormulario(
         formulario.id,
         respuestaEditando.path,
-        valorRespuesta.trim(),
+        valorAGuardar,
         respuestaEditando.modo || 'completar'
       );
       const partes = respuestaEditando.path.split('.');
       setFormulario((prev) => {
         const encuesta = { ...((prev as any).caracterizacion_nueva || {}) };
         if (partes.length === 1) {
-          encuesta[partes[0]] = valorRespuesta.trim();
+          encuesta[partes[0]] = valorAGuardar;
         } else {
           const [seccion, campo] = partes;
-          encuesta[seccion] = { ...(encuesta[seccion] || {}), [campo]: valorRespuesta.trim() };
+          encuesta[seccion] = { ...(encuesta[seccion] || {}), [campo]: valorAGuardar };
         }
         return { ...prev, caracterizacion_nueva: encuesta } as typeof prev;
       });
@@ -1076,11 +1227,99 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
   };
 
   /**
-   * Guarda una respuesta de tipo coordenada (P20/P32).
+   * Guarda una pregunta compuesta por varios subcampos (P22 — división del
+   * área en hectáreas).
    *
-   * La captura GPS produce lat/lon/alt a la vez, así que hay que escribir cada
-   * valor en su campo hermano del formulario. Se guarda primero el campo que
-   * abrió el modal (latitud) y luego los compañeros (longitud, altitud) para
+   * Cada subcampo se envía por separado y como número simple, con el modo que
+   * le corresponde según si ya tenía valor ('corregir') o estaba vacío
+   * ('completar'). Los que no cambiaron no se envían: menos llamadas y menos
+   * puntos de falla con mala señal.
+   */
+  const guardarRespuestaCompuesta = async () => {
+    const campos = respuestaEditando?.compuesta;
+    if (!campos) return;
+
+    const leerCrudo = (ruta: string): string => {
+      const enc = ((formulario as any).caracterizacion_nueva || {}) as Record<string, any>;
+      const [sec, campo] = ruta.split('.');
+      return campo ? String(enc[sec]?.[campo] ?? '') : String(enc[sec] ?? '');
+    };
+
+    const cambios: Array<{ path: string; value: string; modo: 'completar' | 'corregir' }> = [];
+    const sinValor: string[] = [];
+
+    for (const campo of campos) {
+      const escrito = (valoresCompuestos[campo.path] ?? '').trim();
+      // Se guarda el número, nunca la etiqueta ni la unidad que pinta la vista.
+      const simple = soloNumero(escrito) || escrito;
+      const actual = valorParaEditar(campo.path, leerCrudo(campo.path));
+      if (simple === actual) continue;
+      if (!simple) {
+        sinValor.push(campo.etiqueta);
+        continue;
+      }
+      cambios.push({ path: campo.path, value: simple, modo: actual ? 'corregir' : 'completar' });
+    }
+
+    if (cambios.length === 0) {
+      setRespuestaEditando(null);
+      if (sinValor.length > 0) {
+        Alert.alert(
+          'Sin cambios',
+          `Una respuesta guardada no se puede dejar en blanco (${sinValor.join(', ')}). Escribe 0 si esa área no aplica.`
+        );
+      }
+      return;
+    }
+
+    setGuardandoRespuesta(true);
+    const aplicados: Array<{ path: string; value: string }> = [];
+    try {
+      for (const cambio of cambios) {
+        await actualizarRespuestaFormulario(formulario.id, cambio.path, cambio.value, cambio.modo);
+        aplicados.push({ path: cambio.path, value: cambio.value });
+      }
+      // Reflejar en pantalla lo que sí quedó guardado.
+      setFormulario((prev) => {
+        const encuesta = { ...((prev as any).caracterizacion_nueva || {}) };
+        for (const { path, value } of aplicados) {
+          const [seccion, campo] = path.split('.');
+          if (campo) encuesta[seccion] = { ...(encuesta[seccion] || {}), [campo]: value };
+          else encuesta[seccion] = value;
+        }
+        return { ...prev, caracterizacion_nueva: encuesta } as typeof prev;
+      });
+      setRespuestaEditando(null);
+      Alert.alert('Respuesta actualizada', 'La división del área quedó actualizada para este formulario.');
+    } catch (error) {
+      // Si algo falló a medias, la pantalla igual refleja lo que sí se guardó.
+      if (aplicados.length > 0) {
+        setFormulario((prev) => {
+          const encuesta = { ...((prev as any).caracterizacion_nueva || {}) };
+          for (const { path, value } of aplicados) {
+            const [seccion, campo] = path.split('.');
+            if (campo) {
+              encuesta[seccion] = { ...(encuesta[seccion] || {}), [campo]: value };
+            } else {
+              encuesta[seccion] = value;
+            }
+          }
+          return { ...prev, caracterizacion_nueva: encuesta } as typeof prev;
+        });
+      }
+      Alert.alert(
+        'No se pudo guardar todo',
+        error instanceof Error ? error.message : String(error)
+      );
+    } finally {
+      setGuardandoRespuesta(false);
+    }
+  };
+
+  /**
+   * Guarda una respuesta de tipo GPS (latitud / longitud / altitud).
+   *
+   * Cada subcampo se envía por separado y con el modo que corresponde, para
    * que el backend valide el modo correcto (completar/corregir) sobre el campo
    * principal. La precisión no se persiste porque el backend no la permite.
    */
@@ -1293,7 +1532,10 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
       formularioId: formulario.id,
       beneficiarioCedula: formulario.beneficiario?.cedula,
       beneficiarioNombre: formulario.beneficiario?.nombre,
-      tipoFormulario: formulario.tipo,
+      tipoFormulario: tipoFormularioEvidencia(formulario),
+      // Al corregir desde oficina, incluso una captura nueva del admin se
+      // adjunta sin GPS, lugar ni marca de agua.
+      sinGeorreferencia: puedeElegirAlmacenamiento,
     });
   };
 
@@ -1636,34 +1878,6 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
   );
 
   /**
-   * Abrir un documento de finca: se descarga (con autenticación) a un
-   * archivo temporal y se ofrece con el selector nativo "Abrir con…", ya
-   * que un documento puede ser PDF, imagen, Word, Excel, etc. — no tiene
-   * sentido construir un visor propio por cada formato posible.
-   */
-  const abrirDocumento = async (doc: DocumentoDeFormulario) => {
-    setAbriendoDocumentoId(doc.id);
-    try {
-      const headers = await cabecerasDeArchivo();
-      const url = doc.url.startsWith('http') ? doc.url : `${API_CONFIG.BASE_URL}${doc.url}`;
-      const extension = doc.nombre.includes('.') ? doc.nombre.split('.').pop() : 'dat';
-      const destino = `${FileSystem.cacheDirectory}doc_${doc.id}.${extension}`;
-      const { uri } = await FileSystem.downloadAsync(url, destino, { headers });
-
-      if (await Sharing.isAvailableAsync()) {
-        await Sharing.shareAsync(uri, { mimeType: doc.mimetype });
-      } else {
-        Alert.alert('Documento descargado', `Guardado en: ${uri}`);
-      }
-    } catch (e) {
-      console.warn('[Detalle] No se pudo abrir el documento:', doc.id, e);
-      Alert.alert('Error', 'No se pudo abrir el documento. Verifica tu conexión.');
-    } finally {
-      setAbriendoDocumentoId(null);
-    }
-  };
-
-  /**
    * Subir un documento de la finca desde el detalle de la visita.
    *
    * Caso real: el admin/coordinador corrige una visita en oficina y necesita
@@ -1999,7 +2213,7 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
   // oficial de ACPR (encabezado y pie repetidos en todas las páginas,
   // tamaño Carta) además de las 52 preguntas, clima, GPS y anexo de videos.
   //
-  // Antes solo la Encuesta Social AgroAmbiental pasaba por él: las visitas
+  // Antes solo la Encuesta
   // técnicas caían al generador de esta pantalla, que no lleva membrete —
   // por eso el formato institucional no salía en el PDF generado.
   /**
@@ -2459,7 +2673,44 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
                 del formulario. Antes solo salían descripción/observaciones/
                 recomendaciones, así que los compromisos adquiridos y la
                 valoración del cumplimiento quedaban invisibles en el detalle. */}
-            {esVisitaTecnicaV2(formulario.actividad) ? (
+            {esVisitaTecnicaV3(formulario.actividad) ? (
+              (() => {
+                // Visita Técnica 3: todo sale de `visita3_datos` (mismo esquema
+                // que usa el formulario y el PDF, utils/visitaTecnica3.ts).
+                const d = hidratarEstadoV3(formulario.actividad.visita3_datos as any);
+                return (
+                  <>
+                    <BloqueTexto titulo="Objetivo de la visita" texto={d.objetivo || '—'} />
+                    <BloqueTexto titulo="Descripción de la visita" texto={d.descripcion_visita || '—'} />
+                    {PREGUNTAS_V3.map(({ clave, numero, texto }) => (
+                      <BloqueTexto
+                        key={clave}
+                        titulo={`${numero}. ${texto}`}
+                        texto={respuestaPreguntaV3(d, clave) || '—'}
+                      />
+                    ))}
+                    <Text style={styles.bloqueTextoLabel}>── Seguimiento a compromisos ──</Text>
+                    {COMPROMISOS_V3.map(({ clave, pregunta }, i) => (
+                      <BloqueTexto
+                        key={clave}
+                        titulo={`${i + 1}. ${pregunta}`}
+                        texto={textoCompromiso(d.compromisos[clave]) || '—'}
+                      />
+                    ))}
+                    <BloqueTexto
+                      titulo="5. ¿Las actividades realizadas cumplen con las recomendaciones técnicas impartidas en la visita anterior?"
+                      texto={d.cumple_recomendaciones || '—'}
+                    />
+                    <BloqueTexto
+                      titulo="6. ¿Qué dificultades se presentaron para cumplir los compromisos establecidos?"
+                      texto={d.dificultades || '—'}
+                    />
+                    <BloqueTexto titulo="Observaciones durante la visita" texto={d.observaciones || '—'} />
+                    <BloqueTexto titulo="Recomendaciones" texto={d.recomendaciones || '—'} />
+                  </>
+                );
+              })()
+            ) : esVisitaTecnicaV2(formulario.actividad) ? (
               <>
                 {!!formulario.actividad.no_identificacion && (
                   <View style={styles.row}>
@@ -2873,7 +3124,35 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
             </Text>
             <Text style={styles.adminModalQuestion}>{respuestaEditando?.texto}</Text>
 
-            {respuestaEditando?.espec?.tipo === 'gps' ? (
+            {respuestaEditando?.compuesta ? (
+              <ScrollView
+                style={styles.adminOpcionesScroll}
+                keyboardShouldPersistTaps="handled"
+                nestedScrollEnabled
+              >
+                <Text style={styles.adminOpcionHint}>
+                  Cada área se guarda por separado. Escribe solo el número.
+                </Text>
+                {respuestaEditando.compuesta.map((campo) => (
+                  <View key={campo.path} style={styles.adminCampoCompuesto}>
+                    <Text style={styles.adminCampoCompuestoLabel}>
+                      {campo.etiqueta}
+                      {campo.unidad ? ` (${campo.unidad})` : ''}
+                    </Text>
+                    <TextInput
+                      style={styles.adminRespuestaInput}
+                      value={valoresCompuestos[campo.path] ?? ''}
+                      onChangeText={(t) =>
+                        setValoresCompuestos((prev) => ({ ...prev, [campo.path]: t }))
+                      }
+                      placeholder="0"
+                      placeholderTextColor={COLORS.textLight}
+                      keyboardType="numeric"
+                    />
+                  </View>
+                ))}
+              </ScrollView>
+            ) : respuestaEditando?.espec?.tipo === 'gps' ? (
               <CapturaGPSPrecisa
                 label={respuestaEditando?.texto || 'Coordenada'}
                 latitud={gpsCaptura?.lat}
@@ -2956,7 +3235,13 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
               </TouchableOpacity>
               <TouchableOpacity
                 style={[styles.adminModalButton, styles.adminSaveButton]}
-                onPress={respuestaEditando?.espec?.tipo === 'gps' ? guardarRespuestaGPS : guardarRespuestaAdmin}
+                onPress={
+                  respuestaEditando?.compuesta
+                    ? guardarRespuestaCompuesta
+                    : respuestaEditando?.espec?.tipo === 'gps'
+                    ? guardarRespuestaGPS
+                    : guardarRespuestaAdmin
+                }
                 disabled={
                   guardandoRespuesta ||
                   (respuestaEditando?.espec?.tipo === 'gps' && !coordenadaValida)
@@ -2968,6 +3253,9 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
           </View>
         </View>
       </Modal>
+
+      {/* Visor interno de documentos de la finca (PDF) */}
+      {visorDocumento}
 
       {/* 📄 Visor PDF embebido */}
       {showPdf && pdfUri && (
@@ -3404,6 +3692,15 @@ const styles = StyleSheet.create({
   },
   adminOpcionHint: {
     fontSize: FONTS.sizes.xs,
+    color: COLORS.textSecondary,
+    marginBottom: SPACING.xs,
+  },
+  adminCampoCompuesto: {
+    marginBottom: SPACING.xs,
+  },
+  adminCampoCompuestoLabel: {
+    fontSize: FONTS.sizes.sm,
+    fontWeight: FONTS.weights.semibold,
     color: COLORS.textSecondary,
     marginBottom: SPACING.xs,
   },

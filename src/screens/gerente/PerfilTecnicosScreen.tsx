@@ -96,7 +96,7 @@ const PerfilTecnicosScreen: React.FC<PerfilTecnicosProps> = ({ navigation }) => 
         </TouchableOpacity>
 
         <View style={styles.perfilHeader}>
-          <ImageBackground source={require('../../../Logos_imagenes/fondo_login_geo_daily.png')} style={[styles.avatar, { overflow: 'hidden' }]} imageStyle={{ borderRadius: 24 }}>
+          <ImageBackground source={require('../../../assets/images/fondo_login_geo_daily.jpg')} style={[styles.avatar, { overflow: 'hidden' }]} imageStyle={{ borderRadius: 24 }}>
             <Text style={styles.avatarText}>{selectedTecnico.charAt(0).toUpperCase()}</Text>
           </ImageBackground>
           <Text style={styles.perfilNombre}>{selectedTecnico}</Text>
@@ -162,7 +162,7 @@ const PerfilTecnicosScreen: React.FC<PerfilTecnicosProps> = ({ navigation }) => 
           onPress={() => setSelectedTecnico(tecnico.nombre)}
           activeOpacity={0.7}
         >
-          <ImageBackground source={require('../../../Logos_imagenes/fondo_login_geo_daily.png')} style={[styles.avatar, { overflow: 'hidden' }]} imageStyle={{ borderRadius: 24 }}>
+          <ImageBackground source={require('../../../assets/images/fondo_login_geo_daily.jpg')} style={[styles.avatar, { overflow: 'hidden' }]} imageStyle={{ borderRadius: 24 }}>
             <Text style={styles.avatarText}>{tecnico.nombre.charAt(0).toUpperCase()}</Text>
           </ImageBackground>
           <View style={styles.tecnicoInfo}>

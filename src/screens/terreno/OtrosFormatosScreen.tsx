@@ -73,6 +73,13 @@ const FORMATOS: ItemFormato[] = [
     subtitulo: 'PA. 2 FO. 33 — Escuela de Campo para Agricultores',
     ruta: 'EvaluacionEca',
   },
+  {
+    id: 'acta_entrega_individual',
+    icon: '📦',
+    titulo: 'Acta Individual de Entrega y Recibo',
+    subtitulo: 'PA. 2 FO. 39 — Entrega y recibido a satisfacción',
+    ruta: 'ActaEntregaIndividual',
+  },
 ];
 
 const OtrosFormatosScreen: React.FC<OtrosFormatosScreenProps> = ({ navigation, route }) => {
@@ -90,6 +97,21 @@ const OtrosFormatosScreen: React.FC<OtrosFormatosScreenProps> = ({ navigation, r
     <ScrollView style={styles.container} contentContainerStyle={styles.content}>
       <Text style={styles.title}>Otros Formatos</Text>
       <Text style={styles.subtitle}>Formatos institucionales complementarios</Text>
+
+      {beneficiario?.cedula ? (
+        <TouchableOpacity
+          style={styles.historialBtn}
+          onPress={() => navigation.navigate('HistorialFormatos', { beneficiario })}
+          activeOpacity={0.7}
+        >
+          <Text style={styles.cardIcon}>📚</Text>
+          <View style={styles.cardContent}>
+            <Text style={styles.cardTitle}>Historial de formatos</Text>
+            <Text style={styles.cardDesc}>Abre o comparte de nuevo los formatos ya completados</Text>
+          </View>
+          <Text style={styles.arrow}>›</Text>
+        </TouchableOpacity>
+      ) : null}
 
       {FORMATOS.map((item) => (
         <TouchableOpacity
@@ -145,6 +167,16 @@ const styles = StyleSheet.create({
     borderLeftWidth: 4,
     borderLeftColor: COLORS.secondary,
     ...SHADOWS.md,
+  },
+  historialBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: COLORS.surface,
+    borderRadius: BORDER_RADIUS.lg,
+    padding: SPACING.md,
+    marginBottom: SPACING.lg,
+    borderWidth: 1.5,
+    borderColor: COLORS.primary,
   },
   cardDisabled: {
     opacity: 0.6,

@@ -17,7 +17,14 @@ import {
   SeccionResuelta,
 } from '../utils/encuestaSchema';
 import { membreteAperturaHtml, membreteCierreHtml, membreteCss, MembreteVariante } from '../utils/membrete';
-import { esVisitaTecnicaV2 } from '../utils/visitaTecnica';
+import { esVisitaTecnicaV2, esVisitaTecnicaV3 } from '../utils/visitaTecnica';
+import {
+  COMPROMISOS_V3,
+  PREGUNTAS_V3,
+  hidratarEstadoV3,
+  respuestaPreguntaV3,
+  textoCompromiso,
+} from '../utils/visitaTecnica3';
 import {
   construirMosaicoMapa,
   dibujarPoligonoEnMosaico,
@@ -270,6 +277,9 @@ export const construirHtmlFormulario = async (
   // Visita Técnica formato nuevo (v2): layout propio, en el orden de sus 10
   // ítems y con las imágenes de ubicación/área medidas. El formato antiguo
   // (y cualquier otro formulario) sigue usando `construirHTML` intacto.
+  if (esVisitaTecnicaV3(formulario.actividad)) {
+    return await construirHTMLVisitaV3(formulario, fotosHtml, firmaBenefHtml, firmaTecHtml, selloBiometricoHtml);
+  }
   if (esVisitaTecnicaV2(formulario.actividad)) {
     return await construirHTMLVisitaV2(formulario, fotosHtml, firmaBenefHtml, firmaTecHtml, selloBiometricoHtml);
   }
@@ -400,7 +410,7 @@ export interface DatosPDFSeguimiento {
   firmaBeneficiario?: string;
   /** 'data:...' (base64 local, aún no subida) o archivo_id de MinIO */
   firmaAutor?: string;
-  /** Georeferencia puntual (captura única de 8s de alta precisión — CapturaGPSPrecisa) */
+  /** Georeferencia puntual (captura de 20s de alta precisión — CapturaGPSPrecisa) */
   geoLatitud?: number;
   geoLongitud?: number;
   geoAltitud?: number;
@@ -874,6 +884,160 @@ function construirHTMLActaCompromiso(datos: DatosActaCompromiso): string {
         ${datos.firmaTecnico ? `<img class="ac-firma-img" src="${datos.firmaTecnico}" />` : '<div style="height:2.2cm"></div>'}
         <div class="ac-firma-label">Firma del Técnico de Campo</div>
       </td>
+    </tr>
+  </table>
+
+  ${membreteCierreHtml()}
+</body>
+</html>`;
+}
+
+// ============================================================
+// Acta Individual de Entrega y Recibido a Satisfacción (PA. 2 FO. 39)
+// ============================================================
+
+export interface ActividadActaEntrega {
+  descripcion: string;
+  /** "Actividad proyecto": número de la actividad en el proyecto. */
+  actividad: string;
+  cantidad: string;
+  unidad: string;
+}
+
+export interface DatosActaEntregaIndividual {
+  nombre: string;
+  cedula: string;
+  /** Tipo de documento (CC, CE, TI...). */
+  tipoDocumento: string;
+  /** Identifica esta acta entre las varias que puede firmar un beneficiario. */
+  instancia?: string;
+  /** Fecha de la entrega (ISO). */
+  fecha: string;
+  corregimiento: string;
+  vereda: string;
+  predio: string;
+  actividades: ActividadActaEntrega[];
+  /** "Por el Contratista": quien entrega en campo (técnico). */
+  contratistaNombre: string;
+  contratistaCargo: string;
+  interventoriaNombre: string;
+  interventoriaCargo: string;
+  firmaBeneficiario: string;
+  firmaTecnico: string;
+  /** Opcional: la interventoría puede firmar después sobre el PDF impreso. */
+  firmaInterventoria?: string | null;
+}
+
+export const generarPDFActaEntregaIndividual = async (datos: DatosActaEntregaIndividual): Promise<string | null> => {
+  try {
+    const html = construirHTMLActaEntregaIndividual(datos);
+    const { uri } = await Print.printToFileAsync({ html, width: 792, height: 612 });
+    const nombreBenef = (datos.nombre || 'beneficiario').replace(/[^a-zA-Z0-9áéíóúÁÉÍÓÚñÑ ]/g, '').trim().replace(/\s+/g, '_');
+    const fechaStr = new Date(datos.fecha || Date.now()).toISOString().split('T')[0];
+    const pdfName = `ACTA-ENTREGA-RECIBO-${nombreBenef}-${fechaStr}.pdf`;
+    const pdfDir = uri.substring(0, uri.lastIndexOf('/'));
+    const pdfPath = `${pdfDir}/${pdfName}`;
+    try {
+      await FileSystem.moveAsync({ from: uri, to: pdfPath });
+      return pdfPath;
+    } catch {
+      return uri;
+    }
+  } catch (error) {
+    console.error('[PDF Acta Entrega Individual] Error:', error);
+    return null;
+  }
+};
+
+function construirHTMLActaEntregaIndividual(datos: DatosActaEntregaIndividual): string {
+  const f = datos.fecha ? new Date(datos.fecha) : new Date();
+  const fechaTxt = `${String(f.getDate()).padStart(2, '0')}/${String(f.getMonth() + 1).padStart(2, '0')}/${f.getFullYear()}`;
+
+  const filas = (datos.actividades || []).map((a, i) => `
+    <tr>
+      <td class="ae-c">${i + 1}</td>
+      <td>${escapeHtml(a.descripcion)}</td>
+      <td class="ae-c">${escapeHtml(a.actividad)}</td>
+      <td class="ae-c">${escapeHtml(a.cantidad)}</td>
+      <td class="ae-c">${escapeHtml(a.unidad)}</td>
+    </tr>`).join('');
+
+  const firmaImg = (src?: string | null) =>
+    src ? `<img class="ae-firma-img" src="${src}" />` : '';
+
+  return `<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <title>Acta Individual de Entrega y Recibo</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    ${membreteCss()}
+    ${OF_ESTILOS_COMUNES}
+    /* El formato oficial FO. 39 es carta apaisada (el membrete base es vertical). */
+    @page { size: 27.94cm 21.59cm; margin: 1.3cm 2.5cm 1.0cm 2.5cm; }
+    table.ae-info, table.ae-act, table.ae-firmas { width: 100%; border-collapse: collapse; margin-bottom: 0.35cm; }
+    table.ae-info td, table.ae-act th, table.ae-act td, table.ae-firmas td, table.ae-firmas th {
+      border: 0.75pt solid #bfbfbf; padding: 0.13cm 0.2cm; font-size: 9pt;
+    }
+    .ae-l { font-weight: bold; width: 3.2cm; }
+    .ae-l2 { font-weight: bold; width: 3.6cm; }
+    table.ae-act th { font-weight: bold; text-align: center; }
+    .ae-c { text-align: center; }
+    table.ae-firmas th { font-weight: bold; text-align: center; width: 33.33%; }
+    table.ae-firmas td.ae-firma-celda { height: 2.2cm; text-align: center; vertical-align: bottom; }
+    .ae-firma-img { max-height: 2cm; max-width: 90%; }
+    table.ae-firmas td.ae-n { font-weight: bold; }
+    .ae-vacio { height: 0.5cm; }
+    .ae-aviso { margin: 0.1cm 0 0.3cm; }
+    table.ae-firmas, table.ae-act { break-inside: avoid; }
+  </style>
+</head>
+<body>
+  ${membreteAperturaHtml('ejecucion', 'acta_entrega_individual')}
+
+  <table class="ae-info">
+    <tr><td class="ae-l">Proyecto</td><td colspan="3">Implementación de Unidades Productoras de Cacao en Arreglo Agroforestal en el Municipio de Puerto Rico – Caquetá.</td></tr>
+    <tr><td class="ae-l">Fecha</td><td>${fechaTxt}</td><td class="ae-l2">Corregimiento</td><td>${escapeHtml(datos.corregimiento)}</td></tr>
+    <tr><td class="ae-l">Vereda</td><td>${escapeHtml(datos.vereda)}</td><td class="ae-l2">Nombre del Predio</td><td>${escapeHtml(datos.predio)}</td></tr>
+    <tr><td class="ae-l">Beneficiario</td><td colspan="3">${escapeHtml(datos.nombre)}</td></tr>
+    <tr><td class="ae-l">Identificación</td><td colspan="3" style="padding:0">
+      <table style="width:100%;border-collapse:collapse"><tr>
+        <td class="ae-l" style="border:0;border-right:0.75pt solid #bfbfbf;width:1.6cm">Tipo</td>
+        <td style="border:0;border-right:0.75pt solid #bfbfbf;width:1.8cm">${escapeHtml(datos.tipoDocumento)}</td>
+        <td style="border:0">${escapeHtml(datos.cedula)}</td>
+      </tr></table>
+    </td></tr>
+  </table>
+
+  <p class="ae-aviso">En el lugar y fecha señala se deja constancia por los abajo firmantes de la entrega y recibido a satisfacción de las actividades descritas a continuación:</p>
+
+  <table class="ae-act">
+    <tr>
+      <th style="width:1.5cm">Ítem</th><th>Descripción</th><th style="width:3cm">Actividad proyecto</th>
+      <th style="width:2.4cm">Cantidad</th><th style="width:3.6cm">Unidad de medida</th>
+    </tr>
+    ${filas}
+  </table>
+
+  <p class="ae-aviso">Para constancia firman:</p>
+
+  <table class="ae-firmas">
+    <tr><th>Beneficiario</th><th>Por el Contratista</th><th>Por la Interventoría</th></tr>
+    <tr>
+      <td class="ae-firma-celda">${firmaImg(datos.firmaBeneficiario)}</td>
+      <td class="ae-firma-celda">${firmaImg(datos.firmaTecnico)}</td>
+      <td class="ae-firma-celda">${firmaImg(datos.firmaInterventoria)}</td>
+    </tr>
+    <tr>
+      <td><strong>Nombre</strong> ${escapeHtml(datos.nombre)}</td>
+      <td><strong>Nombre</strong> ${escapeHtml(datos.contratistaNombre)}</td>
+      <td><strong>Nombre</strong> ${escapeHtml(datos.interventoriaNombre)}</td>
+    </tr>
+    <tr>
+      <td><strong>${escapeHtml(datos.tipoDocumento) || 'CC'}.</strong> ${escapeHtml(datos.cedula)}</td>
+      <td><strong>Cargo</strong> ${escapeHtml(datos.contratistaCargo)}</td>
+      <td><strong>Cargo</strong> ${escapeHtml(datos.interventoriaCargo)}</td>
     </tr>
   </table>
 
@@ -2444,6 +2608,127 @@ function construirHTML(
 </html>`;
 }
 
+// CSS compartido por los PDF de Visita Técnica de formato por ítems (v2 y v3).
+function cssVisitaFormato(): string {
+  return `
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    ${membreteCss()}
+    body {
+      font-family: 'Arial Narrow', Arial, sans-serif;
+      margin: 0;
+      color: #2d3436;
+      line-height: 1.4;
+    }
+    .doc-titulo {
+      text-align: center;
+      border-bottom: 2px solid #1B5E20;
+      padding-bottom: 6px;
+      margin-bottom: 12px;
+    }
+    .doc-titulo h1 { color: #1B5E20; font-size: 13pt; letter-spacing: 0.3px; margin-bottom: 3px; }
+    .doc-titulo p { color: #444; font-size: 8.5pt; }
+    .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 12px; }
+    .card {
+      background: #f8f9fa;
+      border-radius: 8px;
+      padding: 12px 14px;
+      border-left: 4px solid #1B5E20;
+      break-inside: avoid;
+    }
+    .card-title {
+      color: #1B5E20; font-size: 12.5px; font-weight: bold;
+      border-bottom: 1px solid #e0e0e0; padding-bottom: 5px; margin-bottom: 6px;
+    }
+    .row { display: flex; font-size: 11.5px; margin: 2px 0; }
+    .label { font-weight: bold; color: #555; min-width: 110px; flex-shrink: 0; }
+    .value { flex: 1; color: #2d3436; }
+    .section {
+      margin: 12px 0;
+      padding: 12px 14px;
+      background: #f8f9fa;
+      border-radius: 8px;
+      border-left: 4px solid #1B5E20;
+      break-inside: avoid;
+    }
+    .section h2 {
+      color: #1B5E20; font-size: 13px; margin-bottom: 8px;
+      border-bottom: 1px solid #e0e0e0; padding-bottom: 5px;
+    }
+    .desc-detallada {
+      font-size: 12px; color: #2d3436; background: #fff;
+      padding: 8px 10px; border-radius: 4px; border: 1px solid #e0e0e0;
+      margin-top: 4px; line-height: 1.5;
+    }
+    /* --- Valoración del cumplimiento (ítem 6) --- */
+    .v2-barra-wrap { display: flex; align-items: center; gap: 10px; margin-top: 4px; }
+    .v2-barra {
+      flex: 1; height: 14px; background: #dfe6e9; border-radius: 7px; overflow: hidden;
+    }
+    .v2-barra-fill { height: 100%; background: #1B5E20; }
+    .v2-barra-valor { font-size: 12px; font-weight: bold; color: #1B5E20; min-width: 130px; text-align: right; }
+    /* --- Listas (compromisos) --- */
+    .v2-lista { margin: 4px 0 0 18px; font-size: 12px; }
+    .v2-lista li { margin-bottom: 4px; }
+    /* --- Mapas estáticos --- */
+    .v2-mapa { text-align: center; margin-top: 10px; break-inside: avoid; }
+    .v2-mapa-titulo { font-size: 11px; font-weight: bold; color: #1B5E20; margin: 8px 0 2px; }
+    .v2-mapa-wrap { display: inline-block; }
+    /* --- Fotografías y firmas (mismos criterios que el PDF antiguo) --- */
+    .photo-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    .foto-item { padding: 10px; background: #fff; border-radius: 6px; border: 1px solid #e0e0e0; break-inside: avoid; }
+    .evidencia-label { font-size: 11px; color: #0984e3; font-weight: bold; margin-bottom: 6px; }
+    .foto-img { width: 100%; height: 5.2cm; object-fit: contain; background: #f4f4f4; border-radius: 4px; display: block; }
+    .foto-coords, .foto-heading { font-size: 10px; color: #636e72; font-family: monospace; margin-top: 3px; }
+    .firmas-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 8px; }
+    .firma-item { padding: 12px; background: #fff; border-radius: 6px; border: 1px solid #e0e0e0; break-inside: avoid; }
+    .firma-item .evidencia-label { font-size: 11px; color: #6c5ce7; }
+    .firma-img {
+      width: 100%; height: 2.6cm; object-fit: contain; background: #fff;
+      border: 1px dashed #b2bec3; border-radius: 4px; padding: 6px;
+      display: block; margin: 0 auto;
+    }
+    .huella-wrap { display: flex; justify-content: center; margin-top: 8px; }
+    .huella-sello { max-width: 480px; break-inside: avoid; }
+    .huella-sello-inner {
+      background: linear-gradient(135deg, #f0fdf4 0%, #dcfce7 100%);
+      border: 2px solid #1B5E20; border-radius: 12px; padding: 16px;
+      box-shadow: 0 2px 8px rgba(27, 94, 32, 0.15);
+    }
+    .huella-sello-header {
+      display: flex; align-items: center; gap: 14px;
+      border-bottom: 1px solid #bbf7d0; padding-bottom: 10px; margin-bottom: 10px;
+    }
+    .huella-sello-img { width: 52px; height: 52px; flex-shrink: 0; }
+    .huella-sello-titles { flex: 1; }
+    .huella-sello-verificado { font-size: 18px; font-weight: bold; color: #15803d; }
+    .huella-sello-label { font-size: 12px; color: #16a34a; }
+    .huella-sello-body { margin-bottom: 10px; }
+    .huella-sello-table { width: 100%; border-collapse: collapse; }
+    .huella-sello-table td { padding: 3px 6px; font-size: 12px; }
+    .huella-sello-label-cell { color: #555; font-weight: bold; width: 110px; }
+    .huella-sello-value-cell { color: #2d3436; }
+    .huella-sello-exitoso { display: inline-block; background: #15803d; color: #fff; font-size: 11px; font-weight: bold; padding: 2px 10px; border-radius: 10px; }
+    .huella-sello-footer { text-align: center; border-top: 1px solid #bbf7d0; padding-top: 8px; }
+    .huella-sello-stamp { display: inline-block; font-size: 12px; font-weight: bold; color: #15803d; letter-spacing: 1px; border: 2px solid #15803d; border-radius: 6px; padding: 3px 14px; transform: rotate(-2deg); }
+    /* --- Anexo videos --- */
+    .annex-videos { border-left-color: #0984e3 !important; }
+    .annex-note { font-size: 11px; color: #636e72; margin-bottom: 8px; }
+    .video-ref { display: flex; gap: 12px; font-size: 11px; padding: 4px 0; border-bottom: 1px dotted #e0e0e0; }
+    .video-num { font-weight: bold; color: #0984e3; min-width: 60px; }
+    .video-info { color: #636e72; }
+    .no-data { font-size: 11px; color: #b2bec3; font-style: italic; padding: 4px 0; }
+    .footer {
+      margin-top: 26px; padding-top: 12px; border-top: 1px solid #e0e0e0;
+      text-align: center; font-size: 10px; color: #b2bec3;
+    }
+    @media print {
+      .grid-2 { break-inside: auto; }
+      .card, .section, .v2-mapa, .foto-item, .firma-item { break-inside: avoid; }
+      .photo-grid { break-inside: auto; }
+    }
+  `;
+}
+
 // ============================================================
 // construirHTMLVisitaV2 — Visita Técnica formato nuevo (v2)
 // ============================================================
@@ -2564,121 +2849,7 @@ async function construirHTMLVisitaV2(
   <meta charset="utf-8" />
   <title>Visita Técnica 2 — ${escapeHtml(form.beneficiario?.nombre || 'Beneficiario')}</title>
   <style>
-    * { margin: 0; padding: 0; box-sizing: border-box; }
-    ${membreteCss()}
-    body {
-      font-family: 'Arial Narrow', Arial, sans-serif;
-      margin: 0;
-      color: #2d3436;
-      line-height: 1.4;
-    }
-    .doc-titulo {
-      text-align: center;
-      border-bottom: 2px solid #1B5E20;
-      padding-bottom: 6px;
-      margin-bottom: 12px;
-    }
-    .doc-titulo h1 { color: #1B5E20; font-size: 13pt; letter-spacing: 0.3px; margin-bottom: 3px; }
-    .doc-titulo p { color: #444; font-size: 8.5pt; }
-    .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 12px; }
-    .card {
-      background: #f8f9fa;
-      border-radius: 8px;
-      padding: 12px 14px;
-      border-left: 4px solid #1B5E20;
-      break-inside: avoid;
-    }
-    .card-title {
-      color: #1B5E20; font-size: 12.5px; font-weight: bold;
-      border-bottom: 1px solid #e0e0e0; padding-bottom: 5px; margin-bottom: 6px;
-    }
-    .row { display: flex; font-size: 11.5px; margin: 2px 0; }
-    .label { font-weight: bold; color: #555; min-width: 110px; flex-shrink: 0; }
-    .value { flex: 1; color: #2d3436; }
-    .section {
-      margin: 12px 0;
-      padding: 12px 14px;
-      background: #f8f9fa;
-      border-radius: 8px;
-      border-left: 4px solid #1B5E20;
-      break-inside: avoid;
-    }
-    .section h2 {
-      color: #1B5E20; font-size: 13px; margin-bottom: 8px;
-      border-bottom: 1px solid #e0e0e0; padding-bottom: 5px;
-    }
-    .desc-detallada {
-      font-size: 12px; color: #2d3436; background: #fff;
-      padding: 8px 10px; border-radius: 4px; border: 1px solid #e0e0e0;
-      margin-top: 4px; line-height: 1.5;
-    }
-    /* --- Valoración del cumplimiento (ítem 6) --- */
-    .v2-barra-wrap { display: flex; align-items: center; gap: 10px; margin-top: 4px; }
-    .v2-barra {
-      flex: 1; height: 14px; background: #dfe6e9; border-radius: 7px; overflow: hidden;
-    }
-    .v2-barra-fill { height: 100%; background: #1B5E20; }
-    .v2-barra-valor { font-size: 12px; font-weight: bold; color: #1B5E20; min-width: 130px; text-align: right; }
-    /* --- Listas (compromisos) --- */
-    .v2-lista { margin: 4px 0 0 18px; font-size: 12px; }
-    .v2-lista li { margin-bottom: 4px; }
-    /* --- Mapas estáticos --- */
-    .v2-mapa { text-align: center; margin-top: 10px; break-inside: avoid; }
-    .v2-mapa-titulo { font-size: 11px; font-weight: bold; color: #1B5E20; margin: 8px 0 2px; }
-    .v2-mapa-wrap { display: inline-block; }
-    /* --- Fotografías y firmas (mismos criterios que el PDF antiguo) --- */
-    .photo-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
-    .foto-item { padding: 10px; background: #fff; border-radius: 6px; border: 1px solid #e0e0e0; break-inside: avoid; }
-    .evidencia-label { font-size: 11px; color: #0984e3; font-weight: bold; margin-bottom: 6px; }
-    .foto-img { width: 100%; height: 5.2cm; object-fit: contain; background: #f4f4f4; border-radius: 4px; display: block; }
-    .foto-coords, .foto-heading { font-size: 10px; color: #636e72; font-family: monospace; margin-top: 3px; }
-    .firmas-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 8px; }
-    .firma-item { padding: 12px; background: #fff; border-radius: 6px; border: 1px solid #e0e0e0; break-inside: avoid; }
-    .firma-item .evidencia-label { font-size: 11px; color: #6c5ce7; }
-    .firma-img {
-      width: 100%; height: 2.6cm; object-fit: contain; background: #fff;
-      border: 1px dashed #b2bec3; border-radius: 4px; padding: 6px;
-      display: block; margin: 0 auto;
-    }
-    .huella-wrap { display: flex; justify-content: center; margin-top: 8px; }
-    .huella-sello { max-width: 480px; break-inside: avoid; }
-    .huella-sello-inner {
-      background: linear-gradient(135deg, #f0fdf4 0%, #dcfce7 100%);
-      border: 2px solid #1B5E20; border-radius: 12px; padding: 16px;
-      box-shadow: 0 2px 8px rgba(27, 94, 32, 0.15);
-    }
-    .huella-sello-header {
-      display: flex; align-items: center; gap: 14px;
-      border-bottom: 1px solid #bbf7d0; padding-bottom: 10px; margin-bottom: 10px;
-    }
-    .huella-sello-img { width: 52px; height: 52px; flex-shrink: 0; }
-    .huella-sello-titles { flex: 1; }
-    .huella-sello-verificado { font-size: 18px; font-weight: bold; color: #15803d; }
-    .huella-sello-label { font-size: 12px; color: #16a34a; }
-    .huella-sello-body { margin-bottom: 10px; }
-    .huella-sello-table { width: 100%; border-collapse: collapse; }
-    .huella-sello-table td { padding: 3px 6px; font-size: 12px; }
-    .huella-sello-label-cell { color: #555; font-weight: bold; width: 110px; }
-    .huella-sello-value-cell { color: #2d3436; }
-    .huella-sello-exitoso { display: inline-block; background: #15803d; color: #fff; font-size: 11px; font-weight: bold; padding: 2px 10px; border-radius: 10px; }
-    .huella-sello-footer { text-align: center; border-top: 1px solid #bbf7d0; padding-top: 8px; }
-    .huella-sello-stamp { display: inline-block; font-size: 12px; font-weight: bold; color: #15803d; letter-spacing: 1px; border: 2px solid #15803d; border-radius: 6px; padding: 3px 14px; transform: rotate(-2deg); }
-    /* --- Anexo videos --- */
-    .annex-videos { border-left-color: #0984e3 !important; }
-    .annex-note { font-size: 11px; color: #636e72; margin-bottom: 8px; }
-    .video-ref { display: flex; gap: 12px; font-size: 11px; padding: 4px 0; border-bottom: 1px dotted #e0e0e0; }
-    .video-num { font-weight: bold; color: #0984e3; min-width: 60px; }
-    .video-info { color: #636e72; }
-    .no-data { font-size: 11px; color: #b2bec3; font-style: italic; padding: 4px 0; }
-    .footer {
-      margin-top: 26px; padding-top: 12px; border-top: 1px solid #e0e0e0;
-      text-align: center; font-size: 10px; color: #b2bec3;
-    }
-    @media print {
-      .grid-2 { break-inside: auto; }
-      .card, .section, .v2-mapa, .foto-item, .firma-item { break-inside: avoid; }
-      .photo-grid { break-inside: auto; }
-    }
+    ${cssVisitaFormato()}
   </style>
 </head>
 <body>
@@ -2790,6 +2961,176 @@ async function construirHTMLVisitaV2(
     ${act.observaciones
       ? `<div class="desc-detallada">${escapeHtml(act.observaciones)}</div>`
       : '<p class="no-data">Sin registrar</p>'}
+  </div>
+
+  ${anexoVideosHtml}
+
+  <div class="footer">
+    <p>Documento generado por GEODAILY — ${new Date().toISOString()}</p>
+    <p>Este es un documento digital válido como evidencia de campo.</p>
+  </div>
+  ${membreteCierreHtml()}
+</body>
+</html>`;
+}
+
+// ============================================================
+// construirHTMLVisitaV3 — Visita Técnica 3 (formato v3)
+// ============================================================
+// Mismo criterio que v2: el documento sigue el orden del formulario
+// (técnico/beneficiario → actividad → preguntas → seguimiento a compromisos
+// → observaciones/recomendaciones → evidencias). Lee `actividad.visita3_datos`;
+// los campos legibles solo se usan de respaldo.
+async function construirHTMLVisitaV3(
+  form: Formulario,
+  fotosHtml: string,
+  firmaBenefHtml: string,
+  firmaTecHtml: string,
+  huellaHtml: string
+): Promise<string> {
+  const act = form.actividad;
+  const d = hidratarEstadoV3(act.visita3_datos as any);
+  const coordenadas = form.coordenadas;
+
+  const ubicacionTexto =
+    [form.beneficiario?.municipio, form.beneficiario?.vereda || form.beneficiario?.corregimiento]
+      .filter(Boolean)
+      .join(' · ') || undefined;
+  const tieneGps = coordenadas?.latitud != null && coordenadas?.longitud != null &&
+    (Number(coordenadas.latitud) !== 0 || Number(coordenadas.longitud) !== 0);
+  const mapaUbicacionHtml = tieneGps
+    ? await construirMapaEstaticoHtml(coordenadas.latitud, coordenadas.longitud, ubicacionTexto)
+    : '';
+
+  const bloqueTexto = (texto?: string | null) =>
+    texto && texto.trim()
+      ? `<div class="desc-detallada">${escapeHtml(texto)}</div>`
+      : '<p class="no-data">Sin registrar</p>';
+
+  const preguntasHtml = PREGUNTAS_V3.map(({ clave, numero, texto }) => `
+    <div class="v3-q">
+      <div class="v3-q-t">${numero}. ${escapeHtml(texto)}</div>
+      <div class="v3-q-a">${escapeHtml(respuestaPreguntaV3(d, clave)) || '—'}</div>
+    </div>`).join('');
+
+  const compromisosHtml = COMPROMISOS_V3.map(({ clave, pregunta }, i) => `
+    <div class="v3-q">
+      <div class="v3-q-t">${i + 1}. ${escapeHtml(pregunta)}</div>
+      <div class="v3-q-a">${escapeHtml(textoCompromiso(d.compromisos[clave])) || '—'}</div>
+    </div>`).join('') + `
+    <div class="v3-q">
+      <div class="v3-q-t">5. ¿Las actividades realizadas cumplen con las recomendaciones técnicas impartidas en la visita anterior?</div>
+      <div class="v3-q-a">${escapeHtml(d.cumple_recomendaciones) || '—'}</div>
+    </div>
+    <div class="v3-q">
+      <div class="v3-q-t">6. ¿Qué dificultades se presentaron para cumplir los compromisos establecidos?</div>
+      <div class="v3-q-a">${escapeHtml(d.dificultades) || '—'}</div>
+    </div>`;
+
+  const videos = (form.fotos || []).filter((f) => f.tipo === 'video');
+  const anexoVideosHtml = videos.length > 0 ? `
+    <div class="section annex-videos">
+      <h2>📎 ANEXO — VIDEOS DE LA VISITA (${videos.length})</h2>
+      <p class="annex-note">Los videos no pueden incrustarse en el PDF. Quedan almacenados en el servidor (MinIO, carpeta videos/) como evidencia complementaria.</p>
+      ${videos.map((v, i) => `
+        <div class="video-ref">
+          <span class="video-num">Video ${i + 1}</span>
+          <span class="video-info">${formatFecha(v.timestamp)} · 📍 ${v.coordenadas ? `${v.coordenadas.latitud?.toFixed(6)}, ${v.coordenadas.longitud?.toFixed(6)}` : '—'}</span>
+        </div>`).join('')}
+    </div>` : '';
+
+  const ubicacionBloque = tieneGps ? `
+  <div class="section">
+    <h2>UBICACIÓN DE LA VISITA</h2>
+    ${card('📍 Coordenadas', [
+      r('Latitud', Number(coordenadas.latitud).toFixed(6)),
+      r('Longitud', Number(coordenadas.longitud).toFixed(6)),
+      coordenadas.altitud != null ? r('Altitud', `${Number(coordenadas.altitud).toFixed(1)} m`) : '',
+      coordenadas.precision_gps != null ? r('Precisión GPS', `±${Math.round(Number(coordenadas.precision_gps))} m`) : '',
+      coordenadas.lugar || ubicacionTexto ? r('Lugar', coordenadas.lugar || ubicacionTexto) : '',
+    ].join(''))}
+    ${mapaUbicacionHtml ? `<div class="v2-mapa"><div class="v2-mapa-wrap">${mapaUbicacionHtml}</div></div>` : ''}
+  </div>` : '';
+
+  return `<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <title>Visita Técnica 3 — ${escapeHtml(form.beneficiario?.nombre || 'Beneficiario')}</title>
+  <style>
+    ${cssVisitaFormato()}
+    .v3-q { margin-bottom: 8px; break-inside: avoid; }
+    .v3-q-t { font-size: 11.5px; font-weight: bold; color: #1B5E20; margin-bottom: 2px; }
+    .v3-q-a { font-size: 12px; color: #2d3436; background: #fff; padding: 6px 10px; border-radius: 4px; border: 1px solid #e0e0e0; white-space: pre-wrap; }
+  </style>
+</head>
+<body>
+  ${membreteAperturaHtml('ejecucion', 'tecnica')}
+
+  <div class="doc-titulo">
+    <h1>FORMULARIO DE VISITA TÉCNICA 3</h1>
+    <p><strong>Beneficiario:</strong> ${escapeHtml(form.beneficiario?.nombre || '—')}
+       &nbsp;·&nbsp; <strong>C.C.:</strong> ${escapeHtml(form.beneficiario?.cedula || '—')}
+       &nbsp;·&nbsp; <strong>Vereda:</strong> ${escapeHtml(form.beneficiario?.vereda || form.beneficiario?.corregimiento || '—')}
+       &nbsp;·&nbsp; <strong>Fecha:</strong> ${formatFecha(form.created_at)}</p>
+  </div>
+
+  ${grid2(
+    card('👤 Datos del técnico', [
+      r('Nombre', form.tecnico?.nombre),
+      r('Cédula', form.tecnico?.cedula),
+      r('Teléfono', form.tecnico?.telefono),
+      r('Correo', form.tecnico?.email),
+    ].join('')),
+    card('👥 Datos del beneficiario', [
+      r('Nombre', form.beneficiario?.nombre),
+      r('Cédula', form.beneficiario?.cedula),
+      r('Teléfono', form.beneficiario?.telefono),
+      r('Municipio', form.beneficiario?.municipio),
+      r('Vereda', form.beneficiario?.vereda),
+      r('Finca', form.beneficiario?.finca),
+    ].join(''))
+  )}
+
+  <div class="section">
+    <h2>ACTIVIDAD REALIZADA</h2>
+    <p class="v3-q-t">Objetivo de la visita</p>
+    ${bloqueTexto(d.objetivo || act.objetivo)}
+    <p class="v3-q-t" style="margin-top:8px;">Descripción de la visita</p>
+    ${bloqueTexto(d.descripcion_visita || act.descripcion)}
+  </div>
+
+  <div class="section">
+    <h2>PREGUNTAS</h2>
+    ${preguntasHtml}
+  </div>
+
+  <div class="section">
+    <h2>SEGUIMIENTO A COMPROMISOS</h2>
+    ${compromisosHtml}
+  </div>
+
+  <div class="section">
+    <h2>OBSERVACIONES Y RECOMENDACIONES</h2>
+    <p class="v3-q-t">Observaciones durante la visita</p>
+    ${bloqueTexto(d.observaciones || act.observaciones)}
+    <p class="v3-q-t" style="margin-top:8px;">Recomendaciones</p>
+    ${bloqueTexto(d.recomendaciones || act.recomendaciones)}
+  </div>
+
+  ${ubicacionBloque}
+
+  <div class="section">
+    <h2>EVIDENCIAS</h2>
+    <p style="font-size:12px;font-weight:bold;color:#0984e3;margin:6px 0 4px;">Fotografías</p>
+    <div class="photo-grid">${fotosHtml}</div>
+    <p style="font-size:12px;font-weight:bold;color:#6c5ce7;margin:14px 0 4px;">Firmas</p>
+    <div class="firmas-grid">
+      ${firmaBenefHtml}
+      ${firmaTecHtml}
+    </div>
+    <p style="font-size:12px;font-weight:bold;color:#15803d;margin:14px 0 4px;">Registro Biométrico</p>
+    <div class="huella-wrap">${huellaHtml}</div>
   </div>
 
   ${anexoVideosHtml}
@@ -3113,3 +3454,16 @@ export function escapeHtml(text: string): string {
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#039;');
 }
+
+// ─── Constructores de HTML de "Otros formatos" (para imprimir en web y para
+// regenerar el PDF desde supervisión sin pasar por expo-print) ───────────────
+export const construirHtmlActaCompromiso = (datos: DatosActaCompromiso): string => construirHTMLActaCompromiso(datos);
+export const construirHtmlAutorizacionImagen = (datos: DatosAutorizacionImagen): string =>
+  construirHTMLAutorizacionImagen(datos);
+export const construirHtmlAutorizacionImagenMenor = (datos: DatosAutorizacionImagenMenor): string =>
+  construirHTMLAutorizacionImagenMenor(datos);
+export const construirHtmlConsentimientoDatos = (datos: DatosConsentimientoDatos): string =>
+  construirHTMLConsentimientoDatos(datos);
+export const construirHtmlEvaluacionEca = (datos: DatosEvaluacionEca): string => construirHTMLEvaluacionEca(datos);
+export const construirHtmlActaEntregaIndividual = (datos: DatosActaEntregaIndividual): string =>
+  construirHTMLActaEntregaIndividual(datos);

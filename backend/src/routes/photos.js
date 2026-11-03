@@ -45,6 +45,12 @@ router.post('/subir', authenticateToken, upload.single('archivo'), async (req, r
     // momento y de otro lugar (la foto no se tomó en esta visita).
     // 'camara' (o vacío) = captura en terreno: se mantiene la marca completa.
     const sinMetadatos = esOrigenAlmacenamiento(origen);
+    if (sinMetadatos && req.user?.rol !== 'admin') {
+      return res.status(403).json({
+        estado: 'error',
+        mensaje: 'Solo el administrador puede adjuntar fotos sin georreferencia',
+      });
+    }
 
     // ─── Dueño efectivo del formulario ───
     // La evidencia se amarra al DUEÑO DEL FORMULARIO (y al beneficiario), no
@@ -163,12 +169,12 @@ router.post('/subir', authenticateToken, upload.single('archivo'), async (req, r
     if (!cedulaResuelta && formulario_id) {
       try {
         const formulario = await db.queryOne(
-          `SELECT tipo, beneficiario_json->>'cedula' AS cedula FROM formularios WHERE id = $1`,
+          `SELECT tipo, actividad_json->>'visita_numero' AS visita_numero, beneficiario_json->>'cedula' AS cedula FROM formularios WHERE id = $1`,
           [formulario_id]
         );
         if (formulario) {
           cedulaResuelta = formulario.cedula || null;
-          tipoFormularioResuelto = tipoFormularioResuelto || formulario.tipo || null;
+          tipoFormularioResuelto = tipoFormularioResuelto || storage.claveCarpetaFormulario(formulario.tipo, formulario.visita_numero) || null;
         }
       } catch (lookupErr) {
         console.warn('[Photos] Error resolviendo beneficiario desde formulario:', lookupErr.message);

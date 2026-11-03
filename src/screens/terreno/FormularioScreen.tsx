@@ -575,7 +575,12 @@ const FormularioScreen: React.FC<FormularioScreenProps> = ({ navigation, route }
 
       // ---- PASO 3: asociar número de visita programada a la actividad si aplica ----
       try {
-        const visitasPendientes = await getVisitasProgramadas();
+        // La caracterización siempre es la visita 1 y el servidor la cruza
+        // solo. Asignar aquí la primera planificada pendiente (de cualquier
+        // número) etiquetaba la visita equivocada.
+        const visitasPendientes = form.tipo === 'caracterizacion'
+          ? []
+          : await getVisitasProgramadas();
         const visitaProgramada = visitasPendientes.find((v) => {
           if (!v.beneficiario_cedula || v.estado !== 'pendiente' || !v.actividad_numero) return false;
           return v.beneficiario_cedula.trim() === (beneficiario.cedula || '').trim();

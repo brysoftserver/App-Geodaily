@@ -95,7 +95,7 @@ router.put('/:item/asignacion', authenticateToken, async (req, res) => {
             // sin ningún aviso: el beneficiario cambiaba de técnico pero sus
             // visitas seguían "a nombre" del anterior.
             try {
-              for (const tipoForm of ['caracterizacion', 'visita_tecnica']) {
+              for (const tipoForm of ['caracterizacion', 'visita_tecnica', 'visita_tecnica_3']) {
                 await storage.createBeneficiaryFolders(
                   tecData.rol,
                   tecData.usuario,
@@ -424,7 +424,7 @@ router.post('/regenerar-carpetas', authenticateToken, async (req, res) => {
     for (const benef of asignados) {
       try {
         // Crear carpetas para ambos tipos de formulario
-        for (const tipoForm of ['caracterizacion', 'visita_tecnica']) {
+        for (const tipoForm of ['caracterizacion', 'visita_tecnica', 'visita_tecnica_3']) {
           await storage.createBeneficiaryFolders(
             benef.rol,
             benef.usuario,

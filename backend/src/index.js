@@ -119,7 +119,11 @@ app.use('/api/revisiones', require('./routes/revisiones'));
 app.use('/api/seguimientos', require('./routes/seguimientos'));
 app.use('/api/archivos', require('./routes/archivos'));
 app.use('/api/notificaciones', require('./routes/notificaciones'));
+app.use('/api/otros-formatos', require('./routes/otrosFormatos'));
 app.use('/api/ia', require('./routes/ia'));
+app.use('/api/analisis-suelos', require('./routes/analisisSuelos'));
+app.use('/api/actividades-hectareas', require('./routes/actividadesHectareas'));
+app.use('/api/asistencia-tecnica', require('./routes/asistenciaTecnica'));
 
 // --- 404 handler ---
 app.use((_req, res) => {

@@ -105,6 +105,14 @@ const FormulariosIncompletosScreen: React.FC<FormulariosIncompletosScreenProps> 
     // Visitas técnicas con el formato nuevo por ítems (v2): se continúan en
     // su propia pantalla. Las del formato antiguo siguen abriendo
     // `Formulario` para no romper los borradores ya guardados.
+    if (draft.actividad?.formato_visita === 'v3') {
+      navigation.navigate('VisitaTecnica3Form', {
+        visitaNumero: 3,
+        draftId: draft.id,
+      });
+      return;
+    }
+
     if (draft.actividad?.formato_visita === 'v2') {
       navigation.navigate('VisitaTecnicaForm', {
         visitaNumero: draft.actividad?.visita_numero ?? 2,
@@ -196,7 +204,7 @@ const FormulariosIncompletosScreen: React.FC<FormulariosIncompletosScreenProps> 
                 <Text style={styles.draftStep} numberOfLines={1}>
                   {item.tipo === 'caracterizacion'
                     ? '📋 Completo'
-                    : item.actividad?.formato_visita === 'v2'
+                    : item.actividad?.formato_visita === 'v2' || item.actividad?.formato_visita === 'v3'
                     ? '📋 En progreso'
                     : `Paso ${item.step || 1} de 4`}
                 </Text>

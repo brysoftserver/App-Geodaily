@@ -3,7 +3,7 @@
 // ============================================================
 
 import React, { useEffect, useState } from 'react';
-import { LogBox } from 'react-native';
+import { LogBox, Platform } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
@@ -18,7 +18,13 @@ import { initDatabase } from './src/services/database';
 import { initBeneficiariosDB } from './src/services/beneficiariosDB.service';
 import { migrarBorradoresDesdeSecureStore } from './src/store/FormDraftStore';
 import { compactarDatosOtrosFormatos } from './src/store/OtrosFormatosDraftStore';
-import LoadingSpinner from './src/components/LoadingSpinner';
+import UpdateScreen from './src/screens/UpdateScreen';
+import {
+  buscarYDescargarActualizacion,
+  aplicarActualizacion,
+  actualizacionRecienAplicada,
+  type ProgresoActualizacion,
+} from './src/services/updateChecker.service';
 
 // LOGBOX_ENABLED=false por defecto (env.example/.env) — desactiva la pantalla
 // roja de errores en pantalla completa (LogBox), que interrumpe el trabajo
@@ -30,8 +36,20 @@ if (process.env.LOGBOX_ENABLED !== 'true') {
   LogBox.ignoreAllLogs(true);
 }
 
+// Evita el "flash" gris/blanco en web mientras carga el bundle.
+if (Platform.OS === 'web' && typeof document !== 'undefined') {
+  document.body.style.backgroundColor = '#0D3B0F';
+  document.documentElement.style.backgroundColor = '#0D3B0F';
+}
+
+const ARRANQUE: ProgresoActualizacion = { estado: 'inactivo', progreso: 0, mensaje: '' };
+
 export default function App() {
   const [dbReady, setDbReady] = useState(false);
+  // Pantalla de arranque única (misma instancia para "inicializando" y
+  // "actualizando": el fondo no se desmonta/vuelve a montar entre ambas).
+  // `null` = la comprobación OTA terminó.
+  const [progresoUpdate, setProgresoUpdate] = useState<ProgresoActualizacion | null>(ARRANQUE);
 
   useEffect(() => {
     const init = async () => {
@@ -58,8 +76,61 @@ export default function App() {
     init();
   }, []);
 
-  if (!dbReady) {
-    return <LoadingSpinner branded message="Inicializando GEODAILY..." />;
+  // ------------------------------------------------------------
+  // Actualización OTA con pantalla de progreso real.
+  // Se ejecuta en paralelo con la inicialización de la base de datos.
+  // Si no hay red, falla o tarda demasiado, la app arranca normal
+  // (offline-first: nunca se bloquea el trabajo de campo).
+  // ------------------------------------------------------------
+  useEffect(() => {
+    let cancelado = false;
+
+    const revisarActualizacion = async () => {
+      // La descarga OTA la hace expo-updates ANTES de iniciar el JS; si esta
+      // apertura ya viene con un update nuevo, lo confirmamos en pantalla.
+      if (await actualizacionRecienAplicada()) {
+        if (cancelado) return;
+        setProgresoUpdate({
+          estado: 'actualizado',
+          progreso: 1,
+          mensaje: '¡Actualización instalada!',
+        });
+        await new Promise((r) => setTimeout(r, 1800));
+        if (cancelado) return;
+      }
+
+      const hayUpdate = await buscarYDescargarActualizacion((info) => {
+        if (cancelado) return;
+        // Solo mostramos la pantalla cuando hay algo real que mostrar.
+        if (info.estado === 'comprobando' || info.estado === 'descargando' || info.estado === 'instalando') {
+          setProgresoUpdate(info);
+        }
+      });
+
+      if (cancelado) return;
+
+      if (hayUpdate) {
+        // Dejamos que el usuario vea "Instalando…" antes de recargar.
+        await new Promise((r) => setTimeout(r, 600));
+        await aplicarActualizacion();
+        // Si reloadAsync falla, seguimos con la app normal.
+      }
+
+      setProgresoUpdate(null);
+    };
+
+    revisarActualizacion().catch(() => {
+      if (!cancelado) setProgresoUpdate(null);
+    });
+
+    return () => {
+      cancelado = true;
+    };
+  }, []);
+
+  // Pantalla de actualización (solo si hay progreso real que mostrar).
+  if (progresoUpdate || !dbReady) {
+    return <UpdateScreen progreso={progresoUpdate ?? ARRANQUE} />;
   }
 
   return (
