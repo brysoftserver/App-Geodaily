@@ -911,6 +911,13 @@ export interface DatosActaEntregaIndividual {
   tipoDocumento: string;
   /** Identifica esta acta entre las varias que puede firmar un beneficiario. */
   instancia?: string;
+  /**
+   * Actividad del proyecto en la que se diligenció el acta (ej. 'preparacion_terreno').
+   * Ausente = acta de "Otros formatos". Mantiene separadas las actas de cada actividad.
+   */
+  actividadId?: string;
+  /** Datos que el técnico dejó pendientes al completar el acta (vacío = acta lista). */
+  faltantes?: string[];
   /** Fecha de la entrega (ISO). */
   fecha: string;
   corregimiento: string;

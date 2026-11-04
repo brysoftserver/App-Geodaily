@@ -254,6 +254,21 @@ async function initSchema() {
       PRIMARY KEY (actividad, beneficiario_item)
     )`,
 
+    // Evidencia fotográfica de una actividad por beneficiario: hasta 3 fotos por
+    // momento (antes / durante / despues). El archivo vive en MinIO.
+    `CREATE TABLE IF NOT EXISTS actividad_evidencias (
+      id SERIAL PRIMARY KEY,
+      actividad VARCHAR(50) NOT NULL,
+      beneficiario_item INTEGER NOT NULL,
+      momento VARCHAR(10) NOT NULL,
+      storage_key TEXT NOT NULL,
+      nombre_archivo VARCHAR(255),
+      tamano INTEGER,
+      tecnico_id VARCHAR(20) NOT NULL,
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_actividad_evidencias ON actividad_evidencias(actividad, beneficiario_item, momento)`,
+
     `CREATE TABLE IF NOT EXISTS revisiones_formulario (
       id SERIAL PRIMARY KEY,
       formulario_id VARCHAR(100) NOT NULL,
@@ -743,6 +758,22 @@ async function initSchema() {
       'consentimiento_datos','evaluacion_eca','acta_entrega_individual'
     ))`);
     await query(`CREATE INDEX IF NOT EXISTS idx_otros_formatos_cedula ON otros_formatos(beneficiario_cedula)`);
+    // Observaciones de los roles superiores sobre un formato (dato errado o
+    // faltante). El técnico las ve en su panel y las corrige; quien la hizo
+    // (o un admin) la marca como resuelta.
+    await query(`CREATE TABLE IF NOT EXISTS otros_formatos_observaciones (
+      id SERIAL PRIMARY KEY,
+      formato_id VARCHAR(160) NOT NULL,
+      autor_id VARCHAR(20) NOT NULL,
+      autor_nombre VARCHAR(200),
+      autor_rol VARCHAR(20) NOT NULL,
+      comentario TEXT NOT NULL,
+      resuelta BOOLEAN NOT NULL DEFAULT FALSE,
+      resuelta_por VARCHAR(20),
+      resuelta_en TIMESTAMPTZ,
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    )`);
+    await query(`CREATE INDEX IF NOT EXISTS idx_otros_formatos_obs ON otros_formatos_observaciones(formato_id)`);
     await query(`CREATE INDEX IF NOT EXISTS idx_otros_formatos_tecnico ON otros_formatos(tecnico_id)`);
   } catch (err) {
     console.error('[DB] Error creando otros_formatos:', err.message);

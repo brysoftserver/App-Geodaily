@@ -40,12 +40,14 @@ import {
   eliminarDatosOtroFormato,
 } from '../../store/OtrosFormatosDraftStore';
 import BotonGuardarBorrador, { useGuardarBorrador } from '../../components/BotonGuardarBorrador';
-import { registrarOtroFormato, adjuntarPdfOtroFormato } from '../../services/otrosFormatos.service';
+import { registrarOtroFormato, adjuntarPdfOtroFormato, cargarActaExistente } from '../../services/otrosFormatos.service';
+import { avisar, confirmar } from '../../utils/dialogos';
 import { abrirVentanaDeCarga, imprimirHtmlEnVentana } from '../../utils/printWeb';
+import { buscarActividad } from '../../data/actividades';
 
 type Props = {
   navigation: NativeStackNavigationProp<Record<string, any>>;
-  route?: { params?: { beneficiario?: DatosBeneficiario } };
+  route?: { params?: { beneficiario?: DatosBeneficiario; actividadId?: string; instancia?: string } };
 };
 
 type Firmante = 'beneficiario' | 'tecnico' | 'interventoria';
@@ -66,12 +68,23 @@ const ACTIVIDAD_INICIAL: ActividadActaEntrega = {
  * técnico no genera el PDF, al volver a entrar retoma la acta en curso; al
  * generarla se suelta, y la siguiente apertura empieza una acta nueva.
  */
-const claveActaEnCurso = (cedula: string) => `geodaily.acta_entrega.en_curso.${cedula}`;
+/**
+ * Cada actividad tiene sus propias actas: el acta en curso se guarda por
+ * (beneficiario, actividad) para que una acta empezada en "Otros formatos" no
+ * se retome dentro de una actividad, ni al revés.
+ */
+const claveActaEnCurso = (cedula: string, actividadId?: string) =>
+  actividadId ? `geodaily.acta_entrega.en_curso.${cedula}.${actividadId}` : `geodaily.acta_entrega.en_curso.${cedula}`;
 
 const ActaEntregaIndividualScreen: React.FC<Props> = ({ route, navigation }) => {
   const { user } = useAuth();
   const insets = useSafeAreaInsets();
   const beneficiario = route?.params?.beneficiario;
+  /** Actividad en la que se diligencia el acta (undefined = desde "Otros formatos"). */
+  const actividadId = route?.params?.actividadId;
+  const actividadDelActa = buscarActividad(actividadId);
+  /** Acta ya completada que se reabre para corregirla (ej. tras una observación). */
+  const instanciaExistente = route?.params?.instancia;
 
   const [nombre, setNombre] = useState(beneficiario?.nombre || '');
   const [cedula, setCedula] = useState(beneficiario?.cedula || '');
@@ -79,7 +92,11 @@ const ActaEntregaIndividualScreen: React.FC<Props> = ({ route, navigation }) => 
   const [vereda, setVereda] = useState(beneficiario?.vereda || '');
   const [corregimiento, setCorregimiento] = useState(beneficiario?.corregimiento || '');
   const [predio, setPredio] = useState(beneficiario?.finca || '');
-  const [actividades, setActividades] = useState<ActividadActaEntrega[]>([{ ...ACTIVIDAD_INICIAL }]);
+  const [actividades, setActividades] = useState<ActividadActaEntrega[]>([
+    actividadId && actividadId !== 'preparacion_terreno'
+      ? { descripcion: actividadDelActa?.nombre ?? '', actividad: '', cantidad: '', unidad: '' }
+      : { ...ACTIVIDAD_INICIAL },
+  ]);
 
   const [contratistaNombre, setContratistaNombre] = useState(user?.nombre || '');
   const [contratistaCargo, setContratistaCargo] = useState('Técnico de campo');
@@ -92,6 +109,7 @@ const ActaEntregaIndividualScreen: React.FC<Props> = ({ route, navigation }) => 
   const [padActivo, setPadActivo] = useState<Firmante | null>(null);
 
   const [generando, setGenerando] = useState(false);
+  const [completando, setCompletando] = useState(false);
   const [cargando, setCargando] = useState(true);
   const cargadoRef = useRef(false);
   const [instancia, setInstancia] = useState('');
@@ -103,17 +121,22 @@ const ActaEntregaIndividualScreen: React.FC<Props> = ({ route, navigation }) => 
     (async () => {
       try {
         let inst = '';
-        if (beneficiario?.cedula) {
-          inst = (await AsyncStorage.getItem(claveActaEnCurso(beneficiario.cedula))) || '';
+        if (beneficiario?.cedula && instanciaExistente) {
+          inst = instanciaExistente;
+          setInstancia(inst);
+        } else if (beneficiario?.cedula) {
+          inst = (await AsyncStorage.getItem(claveActaEnCurso(beneficiario.cedula, actividadId))) || '';
           if (!inst) {
             inst = Date.now().toString(36);
-            await AsyncStorage.setItem(claveActaEnCurso(beneficiario.cedula), inst);
+            await AsyncStorage.setItem(claveActaEnCurso(beneficiario.cedula, actividadId), inst);
           }
           setInstancia(inst);
         }
-        const g = inst
+        let g = inst
           ? await cargarDatosOtroFormato<Record<string, any>>('acta_entrega_individual', `${beneficiario?.cedula}__${inst}`)
           : null;
+        // Al reabrir un acta completada: lo que se estaba corrigiendo (borrador) o, si no hay, el acta tal como se publicó.
+        if (!g && instanciaExistente && beneficiario?.cedula) g = await cargarActaExistente(beneficiario.cedula, instanciaExistente);
         if (g) {
           setNombre(g.nombre ?? nombre);
           setCedula(g.cedula ?? cedula);
@@ -193,6 +216,8 @@ const ActaEntregaIndividualScreen: React.FC<Props> = ({ route, navigation }) => 
         cedula: cedula.trim(),
         tipoDocumento,
         instancia,
+        ...(actividadId ? { actividadId } : {}),
+        faltantes: [],
         fecha: new Date().toISOString(),
         corregimiento: corregimiento.trim(),
         vereda: vereda.trim(),
@@ -224,7 +249,7 @@ const ActaEntregaIndividualScreen: React.FC<Props> = ({ route, navigation }) => 
       // Acta terminada: se suelta el borrador y la próxima apertura será una acta nueva.
       const cerrarActa = async () => {
         if (claveBorrador) await eliminarDatosOtroFormato('acta_entrega_individual', claveBorrador);
-        if (beneficiario?.cedula) await AsyncStorage.removeItem(claveActaEnCurso(beneficiario.cedula));
+        if (beneficiario?.cedula && !instanciaExistente) await AsyncStorage.removeItem(claveActaEnCurso(beneficiario.cedula, actividadId));
       };
 
       if (Platform.OS === 'web') {
@@ -263,8 +288,87 @@ const ActaEntregaIndividualScreen: React.FC<Props> = ({ route, navigation }) => 
   }, [
     nombre, cedula, tipoDocumento, vereda, corregimiento, predio, actividades,
     contratistaNombre, contratistaCargo, interventoriaNombre, interventoriaCargo,
-    firmaBeneficiario, firmaTecnico, firmaInterventoria, user, instancia, claveBorrador, beneficiario?.cedula, navigation,
+    firmaBeneficiario, firmaTecnico, firmaInterventoria, user, instancia, claveBorrador, beneficiario?.cedula, actividadId, instanciaExistente, navigation,
   ]);
+
+  // "Completar acta": la publica para los demás roles con los datos que haya
+  // (sin exigir firmas ni todos los campos); ellos avisan de lo errado o
+  // faltante y el técnico puede reabrirla desde la actividad para corregirla.
+  const handleCompletar = async () => {
+    if (completando) return;
+    if (!nombre.trim() || !cedula.trim()) {
+      avisar('Faltan datos', 'El nombre y la identificación del beneficiario son obligatorios.');
+      return;
+    }
+    const completas = actividades.filter((a) => a.descripcion.trim());
+    const faltantes: string[] = [];
+    if (completas.length === 0) faltantes.push('Actividades entregadas');
+    if (!predio.trim()) faltantes.push('Predio');
+    if (!vereda.trim()) faltantes.push('Vereda');
+    if (!corregimiento.trim()) faltantes.push('Corregimiento');
+    if (!firmaBeneficiario) faltantes.push('Firma del beneficiario');
+    if (!firmaTecnico) faltantes.push('Firma del contratista (técnico)');
+
+    const pregunta = faltantes.length
+      ? `Quedan pendientes: ${faltantes.join(', ')}.\n\nSe publicará para que los revisores la vean y te avisen de cualquier dato errado o faltante. Podrás reabrirla y completarla desde la actividad.`
+      : 'Se publicará para que los revisores la vean. Podrás reabrirla desde la actividad si te piden una corrección.';
+    if (!(await confirmar('Completar acta', pregunta, 'Completar'))) return;
+
+    setCompletando(true);
+    try {
+      const datos: DatosActaEntregaIndividual = {
+        nombre: nombre.trim(),
+        cedula: cedula.trim(),
+        tipoDocumento,
+        instancia,
+        ...(actividadId ? { actividadId } : {}),
+        faltantes,
+        fecha: new Date().toISOString(),
+        corregimiento: corregimiento.trim(),
+        vereda: vereda.trim(),
+        predio: predio.trim(),
+        actividades: completas.map((a) => ({
+          descripcion: a.descripcion.trim(),
+          actividad: a.actividad.trim(),
+          cantidad: a.cantidad.trim(),
+          unidad: a.unidad.trim(),
+        })),
+        contratistaNombre: contratistaNombre.trim(),
+        contratistaCargo: contratistaCargo.trim(),
+        interventoriaNombre: interventoriaNombre.trim(),
+        interventoriaCargo: interventoriaCargo.trim(),
+        firmaBeneficiario: firmaBeneficiario || '',
+        firmaTecnico: firmaTecnico || '',
+        firmaInterventoria,
+      };
+      const r = await registrarOtroFormato({
+        tipo: 'acta_entrega_individual',
+        beneficiarioCedula: datos.cedula,
+        beneficiarioNombre: datos.nombre,
+        datos: datos as unknown as Record<string, any>,
+        user,
+      });
+      if (!r.guardado) {
+        avisar('No se pudo completar', 'No se pudo guardar el acta en este dispositivo. Revisa el espacio e intenta de nuevo.');
+        return;
+      }
+      // Publicada: se suelta el borrador; la próxima apertura será una acta nueva (o la reabres desde la actividad).
+      if (claveBorrador) await eliminarDatosOtroFormato('acta_entrega_individual', claveBorrador);
+      if (beneficiario?.cedula && !instanciaExistente) await AsyncStorage.removeItem(claveActaEnCurso(beneficiario.cedula, actividadId));
+      avisar(
+        'Acta completada',
+        r.sincronizado
+          ? 'Los revisores ya pueden verla.'
+          : 'Quedó guardada en este dispositivo y se publicará cuando haya señal.'
+      );
+      navigation.goBack();
+    } catch (e) {
+      console.warn('[ActaEntregaIndividual] Error al completar:', e);
+      avisar('Error', 'No se pudo completar el acta. Intenta de nuevo.');
+    } finally {
+      setCompletando(false);
+    }
+  };
 
   if (cargando) {
     return (
@@ -396,6 +500,14 @@ const ActaEntregaIndividualScreen: React.FC<Props> = ({ route, navigation }) => 
       <View style={[styles.footer, { paddingBottom: insets.bottom + SPACING.md }]}>
         <BotonGuardarBorrador onPress={guardar} guardando={guardando} />
         <TouchableOpacity
+          style={[styles.completarBtn, completando && styles.generarBtnDisabled]}
+          onPress={handleCompletar}
+          disabled={completando || generando}
+          activeOpacity={0.8}
+        >
+          {completando ? <ActivityIndicator color="#fff" /> : <Text style={styles.generarBtnText}>✅ Completar acta</Text>}
+        </TouchableOpacity>
+        <TouchableOpacity
           style={[styles.generarBtn, generando && styles.generarBtnDisabled]}
           onPress={handleGenerar}
           disabled={generando}
@@ -485,6 +597,14 @@ const styles = StyleSheet.create({
     paddingVertical: SPACING.md,
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  completarBtn: {
+    backgroundColor: COLORS.success,
+    borderRadius: BORDER_RADIUS.lg,
+    paddingVertical: SPACING.md,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: SPACING.sm,
   },
   generarBtnDisabled: { opacity: 0.6 },
   generarBtnText: { color: '#fff', fontWeight: FONTS.weights.bold, fontSize: FONTS.sizes.md },

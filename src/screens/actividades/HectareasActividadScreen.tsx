@@ -7,8 +7,8 @@
 //   · técnico (modo 'ejecutar')  → 2 tortas del proyecto + SUS beneficiarios.
 //   · superior (modo 'revisar')  → 2 tortas + lista de técnicos; al elegir uno,
 //     sus beneficiarios.
-// Al tocar un beneficiario con la visita completada se abre el Detalle de ese
-// formulario (el consolidado de la actividad).
+// Al tocar un beneficiario se abre su panel de la actividad (acta de entrega y
+// evidencia fotográfica antes / durante / después): ActividadBeneficiarioScreen.
 // ============================================================
 
 import React, { useCallback, useLayoutEffect, useMemo, useState } from 'react';
@@ -26,8 +26,6 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { COLORS, FONTS, SPACING, BORDER_RADIUS, SHADOWS } from '../../theme';
 import { buscarActividad, verboActividad } from '../../data/actividades';
 import { avisar } from '../../utils/dialogos';
-import { useAuth } from '../../store/AuthContext';
-import { abrirDetalleFormulario } from '../../utils/abrirDetalleFormulario';
 import TortaResumen, { COLOR_FALTA, COLOR_HECHO, PALETA_TECNICOS } from '../../components/actividades/TortaResumen';
 import {
   BeneficiarioHectareas,
@@ -43,7 +41,6 @@ const mensajeError = (e: any, porDefecto: string) =>
 
 const HectareasActividadScreen: React.FC<any> = ({ navigation, route }) => {
   const insets = useSafeAreaInsets();
-  const { user } = useAuth();
   const actividadId: string = route?.params?.actividadId;
   const actividad = buscarActividad(actividadId);
   const modo: 'ejecutar' | 'revisar' = route?.params?.modo === 'revisar' ? 'revisar' : 'ejecutar';
@@ -55,9 +52,6 @@ const HectareasActividadScreen: React.FC<any> = ({ navigation, route }) => {
   const [beneficiarios, setBeneficiarios] = useState<BeneficiarioHectareas[]>([]);
   const [cargando, setCargando] = useState(true);
   const [refrescando, setRefrescando] = useState(false);
-
-  // Beneficiario cuyo formulario se está abriendo
-  const [abriendo, setAbriendo] = useState<number | null>(null);
 
   useLayoutEffect(() => {
     navigation.setOptions({
@@ -82,15 +76,13 @@ const HectareasActividadScreen: React.FC<any> = ({ navigation, route }) => {
 
   useFocusEffect(useCallback(() => { cargar(); }, [cargar]));
 
-  // Abre el Detalle del Formulario de la visita que respalda las hectáreas.
-  const abrirFormulario = async (b: BeneficiarioHectareas) => {
-    if (!b.formularioId || abriendo !== null) return;
-    setAbriendo(b.item);
-    try {
-      await abrirDetalleFormulario(navigation, user?.rol, b.formularioId);
-    } finally {
-      setAbriendo(null);
-    }
+  // Abre el panel del beneficiario en esta actividad (no navega a ninguna visita).
+  const abrirBeneficiario = (b: BeneficiarioHectareas) => {
+    navigation.navigate('ActividadBeneficiario', {
+      actividadId,
+      modo,
+      beneficiario: { item: b.item, nombre: b.nombre, cedula: b.cedula, corregimiento: b.corregimiento, vereda: b.vereda },
+    });
   };
 
   const totalTecnico = useMemo(() => beneficiarios.reduce((s, b) => s + b.hectareas, 0), [beneficiarios]);
@@ -186,9 +178,8 @@ const HectareasActividadScreen: React.FC<any> = ({ navigation, route }) => {
           return (
             <TouchableOpacity
               style={[styles.card, { borderLeftColor: completada ? COLOR_HECHO : COLOR_FALTA }]}
-              activeOpacity={completada ? 0.7 : 1}
-              onPress={() => abrirFormulario(b)}
-              disabled={!completada}
+              activeOpacity={0.7}
+              onPress={() => abrirBeneficiario(b)}
             >
               <View style={{ flex: 1 }}>
                 <Text style={styles.nombre}>{b.nombre}</Text>
@@ -201,11 +192,7 @@ const HectareasActividadScreen: React.FC<any> = ({ navigation, route }) => {
               <Text style={[styles.hectareas, !completada && { color: COLORS.textLight }]}>
                 {formatearHectareas(b.hectareas)} ha
               </Text>
-              {abriendo === b.item ? (
-                <ActivityIndicator style={styles.flecha} color={COLORS.primary} />
-              ) : (
-                completada && <Text style={styles.flecha}>›</Text>
-              )}
+              <Text style={styles.flecha}>›</Text>
             </TouchableOpacity>
           );
         }}

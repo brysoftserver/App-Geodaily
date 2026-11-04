@@ -22,6 +22,7 @@ const multer = require('multer');
 const storage = require('../storage');
 const { authenticateToken } = require('../middleware/auth');
 const db = require('../database');
+const { crearNotificacion } = require('./notificaciones');
 const router = express.Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 25 * 1024 * 1024 } });
 
@@ -209,6 +210,93 @@ router.get('/', authenticateToken, async (req, res) => {
   } catch (error) {
     console.error('[OtrosFormatos] Error al listar:', error);
     res.status(500).json({ estado: 'error', mensaje: 'Error al obtener otros formatos' });
+  }
+});
+
+// ------------------------------------------------------------
+// GET /api/otros-formatos/:id — Un formato con sus datos completos.
+// El técnico autor o un rol superior. (Para reabrir un acta a corregir o
+// armar su PDF cuando todavía no hay uno guardado.)
+// ------------------------------------------------------------
+router.get('/:id', authenticateToken, async (req, res) => {
+  try {
+    const f = await db.queryOne(
+      `SELECT id, tecnico_id, tecnico_nombre, tecnico_usuario, beneficiario_cedula, beneficiario_nombre,
+              tipo, datos, completo, instancia, (pdf_path IS NOT NULL) AS tiene_pdf, created_at, updated_at
+         FROM otros_formatos WHERE id = $1`,
+      [req.params.id]
+    );
+    if (!f) return res.status(404).json({ estado: 'error', mensaje: 'Formato no encontrado' });
+    if (!esSuperior(req.user) && f.tecnico_id !== req.user.id) {
+      return res.status(403).json({ estado: 'error', mensaje: 'No autorizado' });
+    }
+    res.json({ estado: 'ok', formato: f });
+  } catch (error) {
+    console.error('[OtrosFormatos] Error al obtener:', error);
+    res.status(500).json({ estado: 'error', mensaje: 'Error al obtener el formato' });
+  }
+});
+
+// ------------------------------------------------------------
+// POST /api/otros-formatos/:id/observaciones — Un rol superior avisa de un dato
+// errado o faltante. Body: { comentario }. Notifica al técnico autor.
+// ------------------------------------------------------------
+router.post('/:id/observaciones', authenticateToken, async (req, res) => {
+  try {
+    if (!esSuperior(req.user)) {
+      return res.status(403).json({ estado: 'error', mensaje: 'Solo los roles de revisión pueden dejar observaciones' });
+    }
+    const comentario = String(req.body?.comentario || '').trim().slice(0, 2000);
+    if (!comentario) {
+      return res.status(400).json({ estado: 'error', mensaje: 'Escribe el dato errado o faltante' });
+    }
+    const f = await db.queryOne(
+      'SELECT id, tecnico_id, beneficiario_nombre, tipo FROM otros_formatos WHERE id = $1',
+      [req.params.id]
+    );
+    if (!f) return res.status(404).json({ estado: 'error', mensaje: 'Formato no encontrado' });
+
+    const fila = await db.queryOne(
+      `INSERT INTO otros_formatos_observaciones (formato_id, autor_id, autor_nombre, autor_rol, comentario)
+       VALUES ($1, $2, $3, $4, $5) RETURNING id`,
+      [f.id, req.user.id, req.user.nombre || req.user.usuario, req.user.rol, comentario]
+    );
+    await crearNotificacion(
+      f.tecnico_id,
+      'observacion_formato',
+      `Observación en el acta de ${f.beneficiario_nombre || 'un beneficiario'}`,
+      `${req.user.nombre || req.user.usuario}: ${comentario}`,
+      null
+    );
+    console.log(`[OtrosFormatos] Observación ${fila.id} en ${f.id} por ${req.user.usuario}`);
+    res.json({ estado: 'ok', id: fila.id });
+  } catch (error) {
+    console.error('[OtrosFormatos] Error al registrar observación:', error);
+    res.status(500).json({ estado: 'error', mensaje: 'Error al registrar la observación' });
+  }
+});
+
+// ------------------------------------------------------------
+// POST /api/otros-formatos/observaciones/:obsId/resolver — la marca como
+// atendida quien la hizo, o un admin.
+// ------------------------------------------------------------
+router.post('/observaciones/:obsId/resolver', authenticateToken, async (req, res) => {
+  try {
+    const id = parseInt(req.params.obsId, 10);
+    if (!Number.isInteger(id)) return res.status(400).json({ estado: 'error', mensaje: 'Observación inválida' });
+    const o = await db.queryOne('SELECT id, autor_id, resuelta FROM otros_formatos_observaciones WHERE id = $1', [id]);
+    if (!o) return res.status(404).json({ estado: 'error', mensaje: 'Observación no encontrada' });
+    if (o.autor_id !== req.user.id && req.user.rol !== 'admin') {
+      return res.status(403).json({ estado: 'error', mensaje: 'Solo quien la dejó puede marcarla como resuelta' });
+    }
+    await db.query(
+      'UPDATE otros_formatos_observaciones SET resuelta = TRUE, resuelta_por = $2, resuelta_en = NOW() WHERE id = $1',
+      [id, req.user.id]
+    );
+    res.json({ estado: 'ok' });
+  } catch (error) {
+    console.error('[OtrosFormatos] Error al resolver observación:', error);
+    res.status(500).json({ estado: 'error', mensaje: 'Error al resolver la observación' });
   }
 });
 

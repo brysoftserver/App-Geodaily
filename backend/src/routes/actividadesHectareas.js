@@ -264,4 +264,8 @@ router.put('/:actividad/:item', authenticateToken, async (req, res) => {
   }
 });
 
+// Para la Bitácora del Beneficiario (mismas reglas de hectáreas y actividades).
+router.ACTIVIDADES = ACTIVIDADES;
+router.DERIVADAS_DE_VISITA = DERIVADAS_DE_VISITA;
+
 module.exports = router;

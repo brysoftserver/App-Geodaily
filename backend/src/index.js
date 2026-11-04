@@ -123,6 +123,8 @@ app.use('/api/otros-formatos', require('./routes/otrosFormatos'));
 app.use('/api/ia', require('./routes/ia'));
 app.use('/api/analisis-suelos', require('./routes/analisisSuelos'));
 app.use('/api/actividades-hectareas', require('./routes/actividadesHectareas'));
+app.use('/api/actividades-evidencias', require('./routes/actividadesEvidencias'));
+app.use('/api/bitacora', require('./routes/bitacora'));
 app.use('/api/asistencia-tecnica', require('./routes/asistenciaTecnica'));
 
 // --- 404 handler ---

@@ -7,6 +7,7 @@ import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { COLORS, FONTS } from '../theme';
 import ActividadesListScreen from '../screens/ActividadesListScreen';
 import ActividadDetalleScreen from '../screens/ActividadDetalleScreen';
+import ActividadBeneficiarioScreen from '../screens/actividades/ActividadBeneficiarioScreen';
 import GerenteMenuScreen from '../screens/gerente/GerenteMenuScreen';
 import DashboardGerencialScreen from '../screens/gerente/DashboardGerencialScreen';
 import PerfilTecnicosScreen from '../screens/gerente/PerfilTecnicosScreen';
@@ -37,6 +38,11 @@ export type GerenteStackParamList = {
   RevisarAnexos: undefined;
   RevisionActividades: { modo?: 'ejecutar' | 'revisar' } | undefined;
   ActividadDetalle: { actividadId: string; modo: 'ejecutar' | 'revisar'; tecnico?: { usuario: string; nombre: string } };
+  ActividadBeneficiario: {
+    actividadId: string;
+    modo: 'ejecutar' | 'revisar';
+    beneficiario: { item: number; nombre: string; cedula: string; corregimiento?: string; vereda?: string };
+  };
 };
 
 const Stack = createNativeStackNavigator<GerenteStackParamList>();
@@ -133,6 +139,11 @@ const GerenteNavigator: React.FC = () => {
         name="ActividadDetalle"
         component={ActividadDetalleScreen}
         options={{ title: 'Actividad' }}
+      />
+      <Stack.Screen
+        name="ActividadBeneficiario"
+        component={ActividadBeneficiarioScreen}
+        options={{ title: 'Beneficiario' }}
       />
     </Stack.Navigator>
   );

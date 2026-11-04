@@ -7,6 +7,7 @@ import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { COLORS, FONTS } from '../theme';
 import ActividadesListScreen from '../screens/ActividadesListScreen';
 import ActividadDetalleScreen from '../screens/ActividadDetalleScreen';
+import ActividadBeneficiarioScreen from '../screens/actividades/ActividadBeneficiarioScreen';
 import InterventorMenuScreen from '../screens/interventor/InterventorMenuScreen';
 import DashboardScreen from '../screens/supervision/DashboardScreen';
 import ProyeccionScreen from '../screens/gerente/ProyeccionScreen';
@@ -22,6 +23,8 @@ import SeguimientoListScreen from '../screens/supervision/SeguimientoListScreen'
 import SeguimientoIncompletosScreen from '../screens/supervision/SeguimientoIncompletosScreen';
 import SeguimientoDetailScreen from '../screens/supervision/SeguimientoDetailScreen';
 import RevisarAnexosScreen from '../screens/supervision/RevisarAnexosScreen';
+import BitacoraListScreen from '../screens/interventor/BitacoraListScreen';
+import BitacoraBeneficiarioScreen from '../screens/interventor/BitacoraBeneficiarioScreen';
 
 export type InterventorStackParamList = {
   InterventorMenu: undefined;
@@ -39,8 +42,15 @@ export type InterventorStackParamList = {
   BaseDatosBeneficiarios: undefined;
   InterventorPlantacionesPorTecnico: undefined;
   RevisarAnexos: undefined;
+  BitacoraBeneficiarios: undefined;
+  BitacoraBeneficiario: { item: number; nombre?: string };
   RevisionActividades: { modo?: 'ejecutar' | 'revisar' } | undefined;
   ActividadDetalle: { actividadId: string; modo: 'ejecutar' | 'revisar'; tecnico?: { usuario: string; nombre: string } };
+  ActividadBeneficiario: {
+    actividadId: string;
+    modo: 'ejecutar' | 'revisar';
+    beneficiario: { item: number; nombre: string; cedula: string; corregimiento?: string; vereda?: string };
+  };
 };
 
 const Stack = createNativeStackNavigator<InterventorStackParamList>();
@@ -144,9 +154,24 @@ const InterventorNavigator: React.FC = () => {
         options={{ title: 'Revisión de Actividades' }}
       />
       <Stack.Screen
+        name="BitacoraBeneficiarios"
+        component={BitacoraListScreen}
+        options={{ title: 'Bitácora del Beneficiario' }}
+      />
+      <Stack.Screen
+        name="BitacoraBeneficiario"
+        component={BitacoraBeneficiarioScreen}
+        options={{ title: 'Bitácora' }}
+      />
+      <Stack.Screen
         name="ActividadDetalle"
         component={ActividadDetalleScreen}
         options={{ title: 'Actividad' }}
+      />
+      <Stack.Screen
+        name="ActividadBeneficiario"
+        component={ActividadBeneficiarioScreen}
+        options={{ title: 'Beneficiario' }}
       />
     </Stack.Navigator>
   );

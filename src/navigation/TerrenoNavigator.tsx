@@ -7,6 +7,7 @@ import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { COLORS, FONTS } from '../theme';
 import ActividadesListScreen from '../screens/ActividadesListScreen';
 import ActividadDetalleScreen from '../screens/ActividadDetalleScreen';
+import ActividadBeneficiarioScreen from '../screens/actividades/ActividadBeneficiarioScreen';
 import TerrenoMenuScreen from '../screens/terreno/TerrenoMenuScreen';
 import BeneficiariosListScreen from '../screens/terreno/BeneficiariosListScreen';
 import BeneficiarioDetailScreen from '../screens/terreno/BeneficiarioDetailScreen';
@@ -95,7 +96,7 @@ export type TerrenoStackParamList = {
   AutorizacionImagenMenor: { beneficiario?: DatosBeneficiario } | undefined;
   ConsentimientoDatos: { beneficiario?: DatosBeneficiario } | undefined;
   EvaluacionEca: { beneficiario?: DatosBeneficiario } | undefined;
-  ActaEntregaIndividual: { beneficiario?: DatosBeneficiario } | undefined;
+  ActaEntregaIndividual: { beneficiario?: DatosBeneficiario; actividadId?: string; instancia?: string } | undefined;
   HistorialFormatos: { beneficiario?: DatosBeneficiario } | undefined;
   TerrenoCalendario: undefined;
   /**
@@ -127,6 +128,11 @@ export type TerrenoStackParamList = {
   TerrenoCapacitacion: undefined;
   ListadoActividades: { modo?: 'ejecutar' | 'revisar' } | undefined;
   ActividadDetalle: { actividadId: string; modo: 'ejecutar' | 'revisar'; tecnico?: { usuario: string; nombre: string } };
+  ActividadBeneficiario: {
+    actividadId: string;
+    modo: 'ejecutar' | 'revisar';
+    beneficiario: { item: number; nombre: string; cedula: string; corregimiento?: string; vereda?: string };
+  };
 };
 
 const Stack = createNativeStackNavigator<TerrenoStackParamList>();
@@ -314,6 +320,11 @@ const TerrenoNavigator: React.FC = () => {
         name="ActividadDetalle"
         component={ActividadDetalleScreen}
         options={{ title: 'Actividad' }}
+      />
+      <Stack.Screen
+        name="ActividadBeneficiario"
+        component={ActividadBeneficiarioScreen}
+        options={{ title: 'Beneficiario' }}
       />
     </Stack.Navigator>
   );

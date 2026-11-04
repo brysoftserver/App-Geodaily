@@ -20,6 +20,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as FileSystem from 'expo-file-system/legacy';
 import apiClient from './api';
 import { API_CONFIG } from '../theme';
+import { buscarActividad } from '../data/actividades';
 import { cabecerasDeArchivo } from './archivos.service';
 import {
   generarPDFActaCompromiso,
@@ -467,7 +468,10 @@ export const tituloDocumentoFormato = (f: OtroFormatoLocal): string => {
   const dia = fecha
     ? new Date(fecha).toLocaleDateString('es-CO', { day: 'numeric', month: 'short', year: 'numeric' })
     : '';
-  return dia ? `${base} · ${dia}` : base;
+  // Las actas hechas dentro de una actividad se rotulan con ella para no confundirlas.
+  const actividad = buscarActividad(f.datos?.actividadId)?.nombre;
+  const titulo = actividad ? `${base} (${actividad})` : base;
+  return dia ? `${titulo} · ${dia}` : titulo;
 };
 
 /** Resumen de una línea del contenido (solo Acta de Entrega: qué se entregó). */
@@ -475,4 +479,26 @@ export const resumenDocumentoFormato = (f: OtroFormatoLocal): string => {
   if (f.tipo !== 'acta_entrega_individual') return '';
   const acts: Array<{ descripcion?: string }> = Array.isArray(f.datos?.actividades) ? f.datos.actividades : [];
   return acts.map((a) => a.descripcion).filter(Boolean).join(', ');
+};
+
+/**
+ * Datos de un acta ya completada para volver a editarla: primero la copia
+ * local de este dispositivo y, si el acta se hizo en otro, la del servidor.
+ */
+export const cargarActaExistente = async (cedula: string, instancia: string): Promise<Record<string, any> | null> => {
+  const id = idOtroFormato('acta_entrega_individual', cedula, instancia);
+  try {
+    const local = (await getOtrosFormatosLocales(cedula)).find((f) => f.id === id);
+    if (local?.datos) return local.datos;
+  } catch (e) {
+    console.warn('[OtrosFormatos] No se pudo leer el acta local:', e);
+  }
+  try {
+    const r = await apiClient.get(`${API_CONFIG.ENDPOINTS.OTROS_FORMATOS}/${encodeURIComponent(id)}`);
+    const d = r.data.formato?.datos;
+    return typeof d === 'string' ? JSON.parse(d) : d || null;
+  } catch (e) {
+    console.warn('[OtrosFormatos] No se pudo leer el acta del servidor:', e);
+    return null;
+  }
 };

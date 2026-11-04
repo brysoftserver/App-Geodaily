@@ -144,6 +144,8 @@ export const API_CONFIG = {
     IA: '/api/ia',
     ANALISIS_SUELOS: '/api/analisis-suelos',
     ACTIVIDADES_HECTAREAS: '/api/actividades-hectareas',
+    ACTIVIDADES_EVIDENCIAS: '/api/actividades-evidencias',
+    BITACORA: '/api/bitacora',
     ASISTENCIA_TECNICA: '/api/asistencia-tecnica',
   },
 };

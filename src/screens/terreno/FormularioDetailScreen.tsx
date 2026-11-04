@@ -20,7 +20,6 @@ import {
   Pressable,
   TextInput,
   ActivityIndicator,
-  Linking,
 } from 'react-native';
 import * as FileSystem from 'expo-file-system/legacy';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
@@ -58,6 +57,7 @@ import {
 import { construirSeccionesEncuesta, esEncuestaSocial } from '../../utils/encuestaSchema';
 import { soloNumero, valorParaEditar } from '../../utils/respuestasCompuestas';
 import { esVisitaTecnicaV2, esVisitaTecnicaV3, tipoFormularioEvidencia, tituloVisitaTecnica } from '../../utils/visitaTecnica';
+import { abrirMapaEnGoogle } from '../../utils/abrirMapa';
 import {
   COMPROMISOS_V3,
   PREGUNTAS_V3,
@@ -2447,9 +2447,18 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
     ...(formulario.huella_beneficiario ? [true] : []),
   ].length;
 
-  /** Abre Google Maps (app o navegador) centrado en la coordenada capturada. */
+  /**
+   * Abre Google Maps centrado en la coordenada capturada.
+   * En la app web se usa el visor embed (ver `utils/abrirMapa.ts`): el enlace
+   * clásico de Maps dispara en Android un `intent://` y el teléfono mostraba
+   * el diálogo «Abrir con…» en vez del mapa.
+   */
   const abrirEnGoogleMaps = (lat: string, lon: string) => {
-    Linking.openURL(`https://www.google.com/maps?q=${lat},${lon}`);
+    abrirMapaEnGoogle(lat, lon).then((abierto) => {
+      if (!abierto) {
+        Alert.alert('No se pudo abrir el mapa', 'La ubicación no tiene coordenadas válidas.');
+      }
+    });
   };
 
   // Coordenadas crudas (no el texto ya formateado) de las preguntas 20 y 32,
