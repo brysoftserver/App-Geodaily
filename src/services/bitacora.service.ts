@@ -83,3 +83,23 @@ export const obtenerFichaBitacora = async (item: number): Promise<BitacoraFicha>
 /** "Visita 2"; "Visita Técnica" para las del formato antiguo sin número. */
 export const etiquetaVisitaBitacora = (v: Pick<BitacoraVisita, 'numero'>): string =>
   v.numero != null ? `Visita ${v.numero}` : 'Visita Técnica';
+
+// ─── Informe general (todos los beneficiarios) ─────────────
+
+export interface BitacoraFilaInforme {
+  item: number;
+  nombre: string;
+  cedula: string;
+  corregimiento: string;
+  vereda: string;
+  tecnico: string | null;
+  /** Una entrada por número de visita realizada (con su fecha más reciente). */
+  visitas: Array<{ numero: number | null; fecha: string }>;
+  suelos: { fecha: string } | null;
+  enHectareas: BitacoraActividadHectareas[];
+}
+
+export const obtenerInformeGeneral = async (): Promise<BitacoraFilaInforme[]> => {
+  const r = await apiClient.get(`${ENDPOINT}/informe-general`, { timeout: 60000 });
+  return r.data.beneficiarios;
+};

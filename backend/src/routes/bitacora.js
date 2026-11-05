@@ -12,6 +12,7 @@ const express = require('express');
 const { authenticateToken } = require('../middleware/auth');
 const db = require('../database');
 const { sqlCedulaNormalizada, normalizarCedula } = require('../lib/visitas');
+const { sqlNoEsPrueba } = require('../lib/usuariosPrueba');
 const hectareas = require('./actividadesHectareas');
 
 const router = express.Router();
@@ -69,6 +70,86 @@ router.get('/beneficiarios', authenticateToken, soloBitacora, async (_req, res) 
   } catch (error) {
     console.error('[Bitacora] Error listando:', error);
     res.status(500).json({ estado: 'error', mensaje: 'Error al listar beneficiarios' });
+  }
+});
+
+// GET /api/bitacora/informe-general — datos de TODOS los beneficiarios para el
+// PDF consolidado. Igual que los demás consolidados, deja fuera a los
+// beneficiarios asignados a usuarios de prueba.
+router.get('/informe-general', authenticateToken, soloBitacora, async (_req, res) => {
+  try {
+    const benefs = await db.queryAll(
+      `SELECT b.item, b.nombre_completo, b.cedula, b.corregimiento, b.vereda,
+              COALESCE(u.nombre, b.tecnico_asignado_nombre) AS tecnico
+       FROM beneficiarios b
+       LEFT JOIN usuarios u ON u.id = b.tecnico_asignado_id
+       WHERE u.usuario IS NULL OR ${sqlNoEsPrueba('u.usuario')}
+       ORDER BY COALESCE(u.nombre, b.tecnico_asignado_nombre, 'zzz'), b.nombre_completo`
+    );
+
+    // Una sola pasada por `formularios`: última fecha de cada visita por cédula.
+    const visitasFilas = await db.queryAll(
+      `SELECT ced, numero, MAX(created_at) AS fecha FROM (
+         SELECT ${sqlCedulaNormalizada("f.beneficiario_json->>'cedula'")} AS ced,
+                ${SQL_NUMERO_VISITA} AS numero, f.created_at
+         FROM formularios f WHERE f.tipo IN ${TIPOS_VISITA}
+       ) x WHERE ced <> '' GROUP BY ced, numero`
+    );
+    const suelosFilas = await db.queryAll('SELECT beneficiario_item, updated_at FROM analisis_suelos');
+    const manuales = await db.queryAll('SELECT actividad, beneficiario_item, hectareas::float8 AS hectareas FROM actividad_hectareas');
+    const fotosFilas = await db.queryAll(
+      'SELECT actividad, beneficiario_item, momento, COUNT(*)::int AS n FROM actividad_evidencias GROUP BY 1, 2, 3'
+    );
+    const actasFilas = await db.queryAll(
+      `SELECT o.beneficiario_cedula AS cedula, o.datos->>'actividadId' AS actividad, COUNT(*)::int AS n,
+              COALESCE(SUM((SELECT COUNT(*) FROM otros_formatos_observaciones x
+                            WHERE x.formato_id = o.id AND NOT x.resuelta)), 0)::int AS observaciones
+       FROM otros_formatos o
+       WHERE o.tipo = 'acta_entrega_individual' AND o.completo = TRUE AND o.datos->>'actividadId' IS NOT NULL
+       GROUP BY 1, 2`
+    );
+
+    const visitasPorCed = new Map();
+    for (const v of visitasFilas) {
+      if (!visitasPorCed.has(v.ced)) visitasPorCed.set(v.ced, []);
+      visitasPorCed.get(v.ced).push({ numero: v.numero ?? null, fecha: v.fecha });
+    }
+    const suelosPorItem = new Map(suelosFilas.map((r) => [r.beneficiario_item, r.updated_at]));
+
+    const beneficiarios = benefs.map((b) => {
+      const visitas = (visitasPorCed.get(normalizarCedula(b.cedula)) || []).sort(
+        (x, y) => (x.numero ?? 99) - (y.numero ?? 99)
+      );
+      const enHectareas = [];
+      for (const id of hectareas.ACTIVIDADES) {
+        const derivada = hectareas.DERIVADAS_DE_VISITA[id];
+        let ha = manuales.find((m) => m.actividad === id && m.beneficiario_item === b.item)?.hectareas ?? 0;
+        if (derivada) ha = visitas.some((v) => v.numero === derivada.visita) ? derivada.hectareas : 0;
+        const f = fotosFilas.filter((x) => x.actividad === id && x.beneficiario_item === b.item);
+        const foto = (m) => f.find((x) => x.momento === m)?.n ?? 0;
+        const a = actasFilas.find((x) => x.actividad === id && x.cedula === b.cedula);
+        const fotos = { antes: foto('antes'), durante: foto('durante'), despues: foto('despues') };
+        // Solo las que ya tienen algo (o la derivada de visita, que siempre se reporta).
+        if (!derivada && !ha && !a && !(fotos.antes + fotos.durante + fotos.despues)) continue;
+        enHectareas.push({ id, hectareas: ha, actas: a?.n ?? 0, observacionesPendientes: a?.observaciones ?? 0, fotos });
+      }
+      return {
+        item: b.item,
+        nombre: b.nombre_completo,
+        cedula: b.cedula,
+        corregimiento: b.corregimiento,
+        vereda: b.vereda,
+        tecnico: b.tecnico || null,
+        visitas,
+        suelos: suelosPorItem.has(b.item) ? { fecha: suelosPorItem.get(b.item) } : null,
+        enHectareas,
+      };
+    });
+
+    res.json({ estado: 'ok', generado: new Date().toISOString(), beneficiarios });
+  } catch (error) {
+    console.error('[Bitacora] Error en informe general:', error);
+    res.status(500).json({ estado: 'error', mensaje: 'Error al armar el informe general' });
   }
 });
 

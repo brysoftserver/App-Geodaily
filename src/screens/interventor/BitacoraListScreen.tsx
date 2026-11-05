@@ -5,7 +5,7 @@
 // ficha completa (BitacoraBeneficiarioScreen).
 // ============================================================
 
-import React, { useCallback, useMemo, useState } from 'react';
+import React, { useCallback, useLayoutEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   FlatList,
@@ -20,12 +20,16 @@ import { useFocusEffect } from '@react-navigation/native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { COLORS, FONTS, SPACING, BORDER_RADIUS, SHADOWS } from '../../theme';
 import { avisar } from '../../utils/dialogos';
+import { useAuth } from '../../store/AuthContext';
 import { BitacoraResumen, listarBitacora } from '../../services/bitacora.service';
+import { generarYAbrirInformeGeneral } from '../../services/bitacoraPdf.service';
 
 const sinTildes = (t: string) => t.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
 
 const BitacoraListScreen: React.FC<any> = ({ navigation }) => {
   const insets = useSafeAreaInsets();
+  const { user } = useAuth();
+  const [generando, setGenerando] = useState(false);
   const [lista, setLista] = useState<BitacoraResumen[]>([]);
   const [cargando, setCargando] = useState(true);
   const [refrescando, setRefrescando] = useState(false);
@@ -47,6 +51,27 @@ const BitacoraListScreen: React.FC<any> = ({ navigation }) => {
   }, []);
 
   useFocusEffect(useCallback(() => { cargar(); }, [cargar]));
+
+  // Botón del encabezado: PDF con todos los beneficiarios (membrete de interventoría).
+  const generarInforme = useCallback(async () => {
+    if (generando) return;
+    setGenerando(true);
+    try {
+      await generarYAbrirInformeGeneral(user?.nombre || '');
+    } finally {
+      setGenerando(false);
+    }
+  }, [generando, user?.nombre]);
+
+  useLayoutEffect(() => {
+    navigation.setOptions({
+      headerRight: () => (
+        <TouchableOpacity style={[styles.btnHeader, generando && { opacity: 0.6 }]} onPress={generarInforme} disabled={generando} activeOpacity={0.8}>
+          {generando ? <ActivityIndicator size="small" color="#fff" /> : <Text style={styles.btnHeaderTxt} numberOfLines={2}>Generar Informe General PDF</Text>}
+        </TouchableOpacity>
+      ),
+    });
+  }, [navigation, generarInforme, generando]);
 
   const filtrada = useMemo(() => {
     const q = sinTildes(busqueda.trim());
@@ -127,6 +152,8 @@ const styles = StyleSheet.create({
   chipOk: { color: COLORS.success, backgroundColor: '#E8F5E9' },
   chipNo: { color: COLORS.textSecondary, backgroundColor: COLORS.background },
   flecha: { fontSize: 24, color: COLORS.textLight, marginLeft: SPACING.sm },
+  btnHeader: { backgroundColor: COLORS.roleInterventor, borderRadius: BORDER_RADIUS.md, paddingVertical: 6, paddingHorizontal: SPACING.sm, maxWidth: 130, minWidth: 64, alignItems: 'center', justifyContent: 'center' },
+  btnHeaderTxt: { color: '#fff', fontSize: FONTS.sizes.xs, fontWeight: FONTS.weights.bold, textAlign: 'center' },
 });
 
 export default BitacoraListScreen;

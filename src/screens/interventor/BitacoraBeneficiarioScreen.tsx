@@ -29,6 +29,7 @@ import { useAuth } from '../../store/AuthContext';
 import { abrirDetalleFormulario } from '../../utils/abrirDetalleFormulario';
 import PdfViewer from '../../components/PdfViewer';
 import { descargarPdfSuelos } from '../../services/analisisSuelos.service';
+import { generarYAbrirInformeBeneficiario } from '../../services/bitacoraPdf.service';
 import { formatearHectareas } from '../../services/actividadesHectareas.service';
 import {
   BitacoraFicha,
@@ -59,9 +60,31 @@ const BitacoraBeneficiarioScreen: React.FC<any> = ({ navigation, route }) => {
   const [abriendoPdf, setAbriendoPdf] = useState(false);
   const [visor, setVisor] = useState<{ uri: string; titulo: string; key: string } | null>(null);
 
+  const [generando, setGenerando] = useState(false);
+
+  // Botón del encabezado: PDF de este beneficiario (membrete de interventoría).
+  const generarInforme = useCallback(async () => {
+    if (generando || !ficha) return;
+    setGenerando(true);
+    try {
+      await generarYAbrirInformeBeneficiario(ficha, user?.nombre || '');
+    } finally {
+      setGenerando(false);
+    }
+  }, [generando, ficha, user?.nombre]);
+
   useLayoutEffect(() => {
-    navigation.setOptions({ title: 'Bitácora' });
-  }, [navigation]);
+    navigation.setOptions({
+      title: 'Bitácora',
+      headerRight: ficha
+        ? () => (
+            <TouchableOpacity style={[styles.btnHeader, generando && { opacity: 0.6 }]} onPress={generarInforme} disabled={generando} activeOpacity={0.8}>
+              {generando ? <ActivityIndicator size="small" color="#fff" /> : <Text style={styles.btnHeaderTxt} numberOfLines={2}>Generar Informe PDF</Text>}
+            </TouchableOpacity>
+          )
+        : undefined,
+    });
+  }, [navigation, ficha, generando, generarInforme]);
 
   const cargar = useCallback(async (esRefresh = false) => {
     try {
@@ -320,6 +343,8 @@ const styles = StyleSheet.create({
   estado: { fontSize: FONTS.sizes.xs, fontWeight: FONTS.weights.semibold, marginTop: 2 },
   flecha: { fontSize: 24, color: COLORS.textLight, marginLeft: SPACING.sm },
   btnVer: { borderWidth: 1, borderColor: COLORS.primary, borderRadius: BORDER_RADIUS.md, paddingVertical: 6, paddingHorizontal: SPACING.md, marginLeft: SPACING.sm, minWidth: 78, alignItems: 'center' },
+  btnHeader: { backgroundColor: COLORS.roleInterventor, borderRadius: BORDER_RADIUS.md, paddingVertical: 6, paddingHorizontal: SPACING.sm, maxWidth: 120, minWidth: 64, alignItems: 'center', justifyContent: 'center' },
+  btnHeaderTxt: { color: '#fff', fontSize: FONTS.sizes.xs, fontWeight: FONTS.weights.bold, textAlign: 'center' },
   btnVerTxt: { color: COLORS.primary, fontWeight: FONTS.weights.semibold, fontSize: FONTS.sizes.sm },
 });
 
