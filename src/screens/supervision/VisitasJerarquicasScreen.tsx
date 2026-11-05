@@ -37,6 +37,8 @@ import { getFormulariosLocales, mergeFormulariosDelServidor, OtroFormatoLocal } 
 import {
   fetchFormulariosDelServidor,
   eliminarFormularioDelServidor,
+  cambiarFechaOtroFormato,
+  fechaDMAaISO,
 } from '../../services/formularios.service';
 import { fetchBeneficiariosDelServidor } from '../../services/beneficiariosDB.service';
 import LoadingSpinner from '../../components/LoadingSpinner';
@@ -105,6 +107,22 @@ interface TecnicoConEstadisticas extends TecnicoAgrupado {
   visitasStats: VisitaStat[];
 }
 
+/**
+ * Fecha a mostrar de una visita. Si el admin corrigió la "Fecha" de la
+ * caracterización (dd/MM/yyyy dentro de caracterizacion_nueva), esa manda
+ * sobre created_at, que nunca cambia.
+ */
+const fechaVisitaFormulario = (f: any): Date => {
+  const raw = f?.caracterizacion_nueva?.fecha;
+  if (typeof raw === 'string') {
+    const m = raw.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+    if (m) return new Date(Number(m[3]), Number(m[2]) - 1, Number(m[1]), 12);
+    const iso = raw.match(/^(\d{4})-(\d{2})-(\d{2})/);
+    if (iso) return new Date(Number(iso[1]), Number(iso[2]) - 1, Number(iso[3]), 12);
+  }
+  return new Date(f?.created_at);
+};
+
 const MAX_VISITAS_TARJETA = 12;
 
 interface BeneficiarioAgrupado {
@@ -135,6 +153,8 @@ const VisitasJerarquicasScreen: React.FC<VisitasJerarquicasScreenProps> = ({ nav
 
   // Estado de navegación jerárquica
   const [nivel, setNivel] = useState<Nivel>('tecnicos');
+  // Buscador por nombre/cédula (aplica a técnicos y beneficiarios); se limpia al cambiar de nivel.
+  const [busqueda, setBusqueda] = useState('');
   const nivelRef = useRef<Nivel>('tecnicos');
   const [tecnicoSeleccionado, setTecnicoSeleccionado] = useState<TecnicoConEstadisticas | null>(null);
   const [beneficiarioSeleccionado, setBeneficiarioSeleccionado] = useState<BeneficiarioAgrupado | null>(null);
@@ -151,6 +171,30 @@ const VisitasJerarquicasScreen: React.FC<VisitasJerarquicasScreenProps> = ({ nav
   const [otrosFormatos, setOtrosFormatos] = useState<OtroFormatoLocal[]>([]);
   const [cargandoOtrosFormatos, setCargandoOtrosFormatos] = useState(false);
   const [imprimiendoFormatoId, setImprimiendoFormatoId] = useState<string | null>(null);
+  // Cambio de fecha de un anexo (solo admin)
+  const [fechaFormato, setFechaFormato] = useState<OtroFormatoLocal | null>(null);
+  const [textoFechaFormato, setTextoFechaFormato] = useState('');
+  const [guardandoFechaFormato, setGuardandoFechaFormato] = useState(false);
+
+  const guardarFechaFormato = async () => {
+    if (!fechaFormato) return;
+    const iso = fechaDMAaISO(textoFechaFormato);
+    if (!iso) {
+      Alert.alert('Fecha inválida', 'Escribe la fecha como día/mes/año, por ejemplo 26/10/2026.');
+      return;
+    }
+    setGuardandoFechaFormato(true);
+    try {
+      await cambiarFechaOtroFormato(fechaFormato.id, iso);
+      setFechaFormato(null);
+      if (beneficiarioSeleccionado?.cedula) await cargarOtrosFormatos(beneficiarioSeleccionado.cedula);
+      Alert.alert('Fecha actualizada', 'La fecha del formato quedó cambiada.');
+    } catch (e: any) {
+      Alert.alert('No se pudo cambiar la fecha', e?.message || String(e));
+    } finally {
+      setGuardandoFechaFormato(false);
+    }
+  };
 
   const cargarOtrosFormatos = useCallback(async (cedula: string) => {
     if (!cedula) {
@@ -252,7 +296,7 @@ const VisitasJerarquicasScreen: React.FC<VisitasJerarquicasScreenProps> = ({ nav
       tec.beneficiarios.sort((a, b) => a.nombre?.localeCompare(b.nombre || '') || 0);
       for (const benef of tec.beneficiarios) {
         benef.visitas.sort(
-          (a, b) => new Date(a.created_at || 0).getTime() - new Date(b.created_at || 0).getTime()
+          (a, b) => fechaVisitaFormulario(a).getTime() - fechaVisitaFormulario(b).getTime()
         );
       }
     }
@@ -403,6 +447,18 @@ const VisitasJerarquicasScreen: React.FC<VisitasJerarquicasScreenProps> = ({ nav
         : [],
     [tecnicoSeleccionado, visitaSeleccionada, beneficiariosDeVisita]
   );
+
+  const normalizar = (t: string) =>
+    (t || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+  const filtrarPorBusqueda = <T extends { nombre?: string; cedula?: string; telefono?: string }>(
+    lista: T[]
+  ): T[] => {
+    const q = normalizar(busqueda.trim());
+    if (!q) return lista;
+    return lista.filter(
+      (x) => normalizar(x.nombre || '').includes(q) || (x.cedula || '').includes(q)
+    );
+  };
 
   // --- Cargar datos (servidor + local) ---
   const loadData = useCallback(async () => {
@@ -567,6 +623,7 @@ const VisitasJerarquicasScreen: React.FC<VisitasJerarquicasScreenProps> = ({ nav
   // Mantener ref sincronizada con estado nivel
   useEffect(() => {
     nivelRef.current = nivel;
+    setBusqueda('');
   }, [nivel]);
 
   const volverATecnicos = () => {
@@ -794,7 +851,7 @@ const VisitasJerarquicasScreen: React.FC<VisitasJerarquicasScreenProps> = ({ nav
           </Text>
         )}
         <Text style={styles.visitaFecha}>
-          {new Date(item.created_at).toLocaleDateString('es-CO', {
+          {fechaVisitaFormulario(item).toLocaleDateString('es-CO', {
             day: 'numeric',
             month: 'long',
             year: 'numeric',
@@ -1024,7 +1081,7 @@ const VisitasJerarquicasScreen: React.FC<VisitasJerarquicasScreenProps> = ({ nav
       {otrosFormatos.map((formato) => {
         const etiqueta = etiquetaOtroFormato(formato.tipo);
         const ocupado = imprimiendoFormatoId === formato.id;
-        const fecha = formato.updated_at || formato.created_at;
+        const fecha = formato.created_at || formato.updated_at;
         return (
           <View key={formato.id} style={styles.anexoCard}>
             <View style={styles.anexoRow}>
@@ -1061,6 +1118,20 @@ const VisitasJerarquicasScreen: React.FC<VisitasJerarquicasScreenProps> = ({ nav
                   {formato.sincronizado ? 'Sincronizado' : 'Pendiente de subir'}
                 </Text>
               </View>
+              {isAdmin && formato.sincronizado && (
+                <TouchableOpacity
+                  style={[styles.actionBtn, styles.actionBtnFirmar]}
+                  onPress={() => {
+                    const d = new Date(formato.created_at || formato.updated_at || Date.now());
+                    setTextoFechaFormato(
+                      `${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')}/${d.getFullYear()}`
+                    );
+                    setFechaFormato(formato);
+                  }}
+                >
+                  <Text style={styles.actionBtnTextFirmar}>📅 Fecha</Text>
+                </TouchableOpacity>
+              )}
               {formato.tipo === 'acta_entrega_individual' && (isInterventor || isAdmin) && (
                 <TouchableOpacity
                   style={[styles.actionBtn, styles.actionBtnFirmar]}
@@ -1102,6 +1173,32 @@ const VisitasJerarquicasScreen: React.FC<VisitasJerarquicasScreenProps> = ({ nav
             }}
           />
         )}
+      </Modal>
+
+      <Modal visible={fechaFormato !== null} transparent animationType="fade" onRequestClose={() => setFechaFormato(null)}>
+        <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', padding: SPACING.lg }}>
+          <View style={{ backgroundColor: COLORS.surface, borderRadius: 12, padding: SPACING.lg }}>
+            <Text style={styles.firmaModalTitle}>Cambiar fecha del formato</Text>
+            <Text style={styles.firmaModalHint}>Formato día/mes/año (ej. 26/10/2026)</Text>
+            <TextInput
+              style={styles.firmaInput}
+              value={textoFechaFormato}
+              onChangeText={setTextoFechaFormato}
+              placeholder="dd/mm/aaaa"
+              placeholderTextColor={COLORS.textLight}
+              keyboardType="numbers-and-punctuation"
+              autoFocus
+            />
+            <View style={{ flexDirection: 'row', justifyContent: 'flex-end', gap: SPACING.md, marginTop: SPACING.md }}>
+              <TouchableOpacity onPress={() => setFechaFormato(null)} disabled={guardandoFechaFormato}>
+                <Text style={styles.firmaModalClose}>Cancelar</Text>
+              </TouchableOpacity>
+              <TouchableOpacity onPress={guardarFechaFormato} disabled={guardandoFechaFormato}>
+                <Text style={[styles.firmaModalClose, { fontWeight: '700' }]}>{guardandoFechaFormato ? 'Guardando...' : 'Guardar'}</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
       </Modal>
 
       <Modal visible={firmaActa !== null} animationType="slide" onRequestClose={() => setFirmaActa(null)}>
@@ -1174,13 +1271,32 @@ const VisitasJerarquicasScreen: React.FC<VisitasJerarquicasScreenProps> = ({ nav
         </View>
       </View>
 
-      {/* Breadcrumb */}
-      {renderBreadcrumb()}
+      {/* Breadcrumb + buscador a la derecha */}
+      <View style={styles.barraNavegacion}>
+        <View style={{ flex: 1 }}>{renderBreadcrumb()}</View>
+        {nivel !== 'visitas' && (
+          <View style={styles.searchBox}>
+            <TextInput
+              style={styles.searchInput}
+              placeholder={nivel === 'tecnicos' ? 'Buscar técnico...' : 'Buscar beneficiario...'}
+              placeholderTextColor={COLORS.textLight}
+              value={busqueda}
+              onChangeText={setBusqueda}
+              autoCorrect={false}
+            />
+            {busqueda.length > 0 && (
+              <TouchableOpacity onPress={() => setBusqueda('')} hitSlop={8} style={styles.searchClear}>
+                <Text style={styles.searchClearText}>✕</Text>
+              </TouchableOpacity>
+            )}
+          </View>
+        )}
+      </View>
 
       {/* Lista según nivel */}
       {nivel === 'tecnicos' && (
         <FlatList
-          data={tecnicosConStats}
+          data={filtrarPorBusqueda(tecnicosConStats)}
           keyExtractor={(item) => item.id}
           renderItem={renderTecnico}
           contentContainerStyle={styles.listContent}
@@ -1207,7 +1323,7 @@ const VisitasJerarquicasScreen: React.FC<VisitasJerarquicasScreenProps> = ({ nav
 
       {nivel === 'beneficiarios' && tecnicoSeleccionado && (
         <FlatList
-          data={tecnicoSeleccionado.beneficiarios}
+          data={filtrarPorBusqueda(tecnicoSeleccionado.beneficiarios)}
           keyExtractor={(item) => item.cedula || item.nombre}
           renderItem={renderBeneficiario}
           contentContainerStyle={styles.listContent}
@@ -1240,7 +1356,7 @@ const VisitasJerarquicasScreen: React.FC<VisitasJerarquicasScreenProps> = ({ nav
 
       {nivel === 'visita' && tecnicoSeleccionado && visitaSeleccionada != null && (
         <FlatList
-          data={beneficiariosVisitaSeleccionada}
+          data={filtrarPorBusqueda(beneficiariosVisitaSeleccionada)}
           keyExtractor={(item) => item.cedula || item.nombre}
           renderItem={renderBeneficiario}
           contentContainerStyle={styles.listContent}
@@ -1335,6 +1451,46 @@ const styles = StyleSheet.create({
   },
 
   // --- Breadcrumb ---
+  barraNavegacion: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: COLORS.surfaceAlt,
+    borderBottomWidth: 1,
+    borderBottomColor: COLORS.divider,
+  },
+  searchBox: {
+    width: '38%',
+    minWidth: 150,
+    maxWidth: 320,
+    marginRight: SPACING.md,
+    justifyContent: 'center',
+  },
+  searchInput: {
+    height: 38,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    borderRadius: BORDER_RADIUS.sm,
+    paddingHorizontal: SPACING.md,
+    paddingRight: 30,
+    fontSize: FONTS.sizes.sm,
+    color: COLORS.textPrimary,
+    backgroundColor: COLORS.surface,
+  },
+  searchClear: {
+    position: 'absolute',
+    right: 6,
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    backgroundColor: COLORS.textLight + '30',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  searchClearText: {
+    fontSize: FONTS.sizes.xs,
+    color: COLORS.textSecondary,
+    fontWeight: FONTS.weights.bold,
+  },
   breadcrumb: {
     flexDirection: 'row',
     alignItems: 'center',
