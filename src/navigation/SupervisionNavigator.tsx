@@ -8,6 +8,8 @@ import { COLORS, FONTS } from '../theme';
 import ActividadesListScreen from '../screens/ActividadesListScreen';
 import ActividadDetalleScreen from '../screens/ActividadDetalleScreen';
 import ActividadBeneficiarioScreen from '../screens/actividades/ActividadBeneficiarioScreen';
+import BitacoraListScreen from '../screens/interventor/BitacoraListScreen';
+import BitacoraBeneficiarioScreen from '../screens/interventor/BitacoraBeneficiarioScreen';
 import SupervisionMenuScreen from '../screens/supervision/SupervisionMenuScreen';
 import DashboardScreen from '../screens/supervision/DashboardScreen';
 import ProyeccionScreen from '../screens/gerente/ProyeccionScreen';
@@ -42,6 +44,8 @@ export type SupervisionStackParamList = {
   RevisarAnexos: undefined;
   RevisionActividades: { modo?: 'ejecutar' | 'revisar' } | undefined;
   ActividadDetalle: { actividadId: string; modo: 'ejecutar' | 'revisar'; tecnico?: { usuario: string; nombre: string } };
+  BitacoraBeneficiarios: undefined;
+  BitacoraBeneficiario: { item: number; nombre?: string };
   ActividadBeneficiario: {
     actividadId: string;
     modo: 'ejecutar' | 'revisar';
@@ -153,6 +157,16 @@ const SupervisionNavigator: React.FC = () => {
         name="ActividadDetalle"
         component={ActividadDetalleScreen}
         options={{ title: 'Actividad' }}
+      />
+      <Stack.Screen
+        name="BitacoraBeneficiarios"
+        component={BitacoraListScreen}
+        options={{ title: 'Bitácora del Beneficiario' }}
+      />
+      <Stack.Screen
+        name="BitacoraBeneficiario"
+        component={BitacoraBeneficiarioScreen}
+        options={{ title: 'Bitácora' }}
       />
       <Stack.Screen
         name="ActividadBeneficiario"

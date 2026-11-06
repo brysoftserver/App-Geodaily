@@ -27,6 +27,8 @@ export interface BitacoraVisita {
   numero: number | null;
   fecha: string;
   tecnico: string | null;
+  /** false = este usuario no puede abrir el formulario (ej. un técnico con la visita de otro). */
+  abrible?: boolean;
 }
 
 export interface BitacoraActividadHectareas {
@@ -63,6 +65,8 @@ export interface BitacoraFicha {
     gpsVisita1: (Coordenada & { precision: number | null; lugar: string | null }) | null;
   };
   visitas: BitacoraVisita[];
+  /** false = no puede abrir el panel de actividad ni el PDF de suelos (técnico con beneficiario ajeno). */
+  detalleActividades?: boolean;
   actividades: {
     analisisSuelos: { subido: boolean; nombreArchivo?: string | null; fecha?: string };
     enHectareas: BitacoraActividadHectareas[];
@@ -76,8 +80,8 @@ export const listarBitacora = async (): Promise<BitacoraResumen[]> => {
 
 export const obtenerFichaBitacora = async (item: number): Promise<BitacoraFicha> => {
   const r = await apiClient.get(`${ENDPOINT}/beneficiarios/${item}`);
-  const { beneficiario, predio, ubicacion, visitas, actividades } = r.data;
-  return { beneficiario, predio, ubicacion, visitas, actividades };
+  const { beneficiario, predio, ubicacion, visitas, detalleActividades, actividades } = r.data;
+  return { beneficiario, predio, ubicacion, visitas, detalleActividades, actividades };
 };
 
 /** "Visita 2"; "Visita Técnica" para las del formato antiguo sin número. */

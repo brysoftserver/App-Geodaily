@@ -11,7 +11,7 @@ import { Platform } from 'react-native';
 import * as Print from 'expo-print';
 import * as FileSystem from 'expo-file-system/legacy';
 import { avisar } from '../utils/dialogos';
-import { membreteAperturaHtml, membreteCierreHtml, membreteCss } from '../utils/membrete';
+import { membreteAperturaHtml, membreteCierreHtml, membreteCss, MembreteVariante } from '../utils/membrete';
 import { escapeHtml } from './pdfLocal.service';
 import { abrirPdf } from './informeTecnicoPdf.service';
 import { descargarHtmlComoPdfWeb } from '../utils/printWeb';
@@ -66,11 +66,14 @@ const dato = (v?: string | number | null) =>
 
 const CALIDAD: Record<string, string> = { propietario: 'Propietario', poseedor: 'Poseedor', otro: 'Otro' };
 
-function envolver(titulo: string, subtitulo: string, cuerpo: string): string {
+/** Interventoría usa su membrete; el resto de roles, el de ejecución (igual que el informe de suelos). */
+const varianteDe = (rol?: string): MembreteVariante => (rol === 'interventor' ? 'interventoria' : 'ejecucion');
+
+function envolver(titulo: string, subtitulo: string, cuerpo: string, variante: MembreteVariante = 'interventoria'): string {
   const ahora = new Date().toLocaleString('es-CO', { dateStyle: 'long', timeStyle: 'short' });
   return `<!DOCTYPE html><html lang="es"><head><meta charset="utf-8"/><title>${escapeHtml(titulo)}</title><style>${CSS}</style></head>
 <body>
-  ${membreteAperturaHtml('interventoria')}
+  ${membreteAperturaHtml(variante)}
   <div class="doc-titulo"><h1>${escapeHtml(titulo)}</h1></div>
   <div class="doc-subtitulo">${escapeHtml(subtitulo)} · ${ahora}</div>
   ${cuerpo}
@@ -110,7 +113,7 @@ const slug = (t: string) =>
 
 // ─── Informe individual ─────────────────────────────────────
 
-export function htmlInformeBeneficiario(f: BitacoraFicha, generadoPor: string): string {
+export function htmlInformeBeneficiario(f: BitacoraFicha, generadoPor: string, variante: MembreteVariante = 'interventoria'): string {
   const { beneficiario: b, predio, ubicacion, visitas, actividades } = f;
   const prep = actividades.enHectareas.find((a) => a.id === 'preparacion_terreno');
   // Igual que la pantalla: las conectadas en la app y cualquiera que ya tenga registros.
@@ -193,12 +196,12 @@ export function htmlInformeBeneficiario(f: BitacoraFicha, generadoPor: string): 
         .join('')}
     </tbody></table>`;
 
-  return envolver(`Informe del Beneficiario — ${b.nombre}`, `Generado por ${generadoPor}`, cuerpo);
+  return envolver(`Informe del Beneficiario — ${b.nombre}`, `Generado por ${generadoPor}`, cuerpo, variante);
 }
 
-export async function generarYAbrirInformeBeneficiario(ficha: BitacoraFicha, generadoPor: string): Promise<void> {
+export async function generarYAbrirInformeBeneficiario(ficha: BitacoraFicha, generadoPor: string, rol?: string): Promise<void> {
   try {
-    await entregarPdf(htmlInformeBeneficiario(ficha, generadoPor), `Informe_${slug(ficha.beneficiario.nombre)}`);
+    await entregarPdf(htmlInformeBeneficiario(ficha, generadoPor, varianteDe(rol)), `Informe_${slug(ficha.beneficiario.nombre)}`);
   } catch (error: any) {
     console.warn('[Bitácora PDF] Error (individual):', error?.message || error);
     avisar('No se pudo generar el informe', 'Inténtalo de nuevo.');
@@ -210,7 +213,7 @@ export async function generarYAbrirInformeBeneficiario(ficha: BitacoraFicha, gen
 const visita = (f: BitacoraFilaInforme, n: number) => f.visitas.find((v) => v.numero === n);
 const prepDe = (f: BitacoraFilaInforme) => f.enHectareas.find((a) => a.id === 'preparacion_terreno');
 
-export function htmlInformeGeneral(filas: BitacoraFilaInforme[], generadoPor: string): string {
+export function htmlInformeGeneral(filas: BitacoraFilaInforme[], generadoPor: string, variante: MembreteVariante = 'interventoria'): string {
   const n = filas.length;
   const conV1 = filas.filter((f) => visita(f, 1)).length;
   const conV2 = filas.filter((f) => visita(f, 2)).length;
@@ -298,13 +301,13 @@ export function htmlInformeGeneral(filas: BitacoraFilaInforme[], generadoPor: st
       .join('')}
     <p class="peq" style="margin-top:8px">Fotos = antes / durante / después (máximo 3 por momento). V.T. = visita técnica del formato antiguo, sin número. No incluye beneficiarios asignados a usuarios de prueba.</p>`;
 
-  return envolver('Informe General — Bitácora de Beneficiarios', `Generado por ${generadoPor}`, cuerpo);
+  return envolver('Informe General — Bitácora de Beneficiarios', `Generado por ${generadoPor}`, cuerpo, variante);
 }
 
-export async function generarYAbrirInformeGeneral(generadoPor: string): Promise<void> {
+export async function generarYAbrirInformeGeneral(generadoPor: string, rol?: string): Promise<void> {
   try {
     const filas = await obtenerInformeGeneral();
-    await entregarPdf(htmlInformeGeneral(filas, generadoPor), 'Informe_General_Beneficiarios');
+    await entregarPdf(htmlInformeGeneral(filas, generadoPor, varianteDe(rol)), 'Informe_General_Beneficiarios');
   } catch (error: any) {
     console.warn('[Bitácora PDF] Error (general):', error?.message || error);
     avisar(

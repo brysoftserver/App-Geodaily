@@ -61,6 +61,14 @@ const MENU_ITEMS = [
     screen: 'RevisionActividades',
   },
   {
+    id: 'bitacora',
+    title: 'Bitácora del Beneficiario',
+    subtitle: 'Ficha completa: datos, predio, ubicación, visitas y actividades',
+    icon: '📖',
+    color: COLORS.roleGerente,
+    screen: 'BitacoraBeneficiarios',
+  },
+  {
     id: 'cronograma',
     title: 'Cronograma',
     subtitle: 'Visitas programadas y realizadas',

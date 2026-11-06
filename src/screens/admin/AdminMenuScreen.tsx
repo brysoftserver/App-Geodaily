@@ -109,6 +109,14 @@ const MENU_ITEMS = [
     screen: 'RevisionActividades',
   },
   {
+    id: 'bitacora',
+    title: 'Bitácora del Beneficiario',
+    subtitle: 'Ficha completa: datos, predio, ubicación, visitas y actividades',
+    icon: '📖',
+    color: COLORS.roleAdmin,
+    screen: 'BitacoraBeneficiarios',
+  },
+  {
     id: 'beneficiarios',
     title: 'Base de Datos Beneficiarios',
     subtitle: 'Beneficiarios, asignación a técnicos',

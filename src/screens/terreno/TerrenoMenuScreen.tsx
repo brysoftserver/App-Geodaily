@@ -66,6 +66,14 @@ const MENU_ITEMS = [
     screen: 'ListadoActividades',
   },
   {
+    id: 'bitacora',
+    title: 'Bitácora del Beneficiario',
+    subtitle: 'Ficha completa: datos, predio, ubicación, visitas y actividades',
+    icon: '📖',
+    color: COLORS.primary,
+    screen: 'BitacoraBeneficiarios',
+  },
+  {
     id: 'incompletos',
     title: 'Formularios Incompletos',
     subtitle: 'Retoma los formularios guardados como borrador',

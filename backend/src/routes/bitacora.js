@@ -3,7 +3,7 @@
 // ============================================================
 // Vista consolidada de un beneficiario: datos personales, predio, ubicación,
 // visitas realizadas y avance en cada actividad (análisis de suelos,
-// preparación del terreno…). Solo lectura; la consultan interventoría y admin.
+// preparación del terreno…). Solo lectura; la puede consultar cualquier rol.
 //   GET /api/bitacora/beneficiarios        → lista (con conteos)
 //   GET /api/bitacora/beneficiarios/:item  → ficha completa
 // ============================================================
@@ -17,8 +17,10 @@ const hectareas = require('./actividadesHectareas');
 
 const router = express.Router();
 
-const ROLES_BITACORA = ['interventor', 'admin'];
-const soloBitacora = (req, res, next) => {
+// Todos los roles actuales la consultan. Se lista explícito (y no "cualquier
+// usuario autenticado") para que un rol nuevo NO gane acceso sin decidirlo aquí.
+const ROLES_BITACORA = ['tecnico', 'coordinador', 'interventor', 'gerente', 'admin'];
+const rolesBitacora = (req, res, next) => {
   if (!ROLES_BITACORA.includes(req.user?.rol)) {
     return res.status(403).json({ estado: 'error', mensaje: 'No autorizado' });
   }
@@ -34,7 +36,7 @@ const SQL_NUMERO_VISITA = `
 const TIPOS_VISITA = `('caracterizacion', 'visita_tecnica')`;
 
 // GET /api/bitacora/beneficiarios
-router.get('/beneficiarios', authenticateToken, soloBitacora, async (_req, res) => {
+router.get('/beneficiarios', authenticateToken, rolesBitacora, async (_req, res) => {
   try {
     // Una sola pasada por `formularios`: la cédula se normaliza UNA vez por fila.
     const filas = await db.queryAll(
@@ -76,7 +78,7 @@ router.get('/beneficiarios', authenticateToken, soloBitacora, async (_req, res) 
 // GET /api/bitacora/informe-general — datos de TODOS los beneficiarios para el
 // PDF consolidado. Igual que los demás consolidados, deja fuera a los
 // beneficiarios asignados a usuarios de prueba.
-router.get('/informe-general', authenticateToken, soloBitacora, async (_req, res) => {
+router.get('/informe-general', authenticateToken, rolesBitacora, async (_req, res) => {
   try {
     const benefs = await db.queryAll(
       `SELECT b.item, b.nombre_completo, b.cedula, b.corregimiento, b.vereda,
@@ -154,7 +156,7 @@ router.get('/informe-general', authenticateToken, soloBitacora, async (_req, res
 });
 
 // GET /api/bitacora/beneficiarios/:item
-router.get('/beneficiarios/:item', authenticateToken, soloBitacora, async (req, res) => {
+router.get('/beneficiarios/:item', authenticateToken, rolesBitacora, async (req, res) => {
   try {
     const item = parseInt(req.params.item, 10);
     if (!Number.isInteger(item)) return res.status(400).json({ estado: 'error', mensaje: 'Beneficiario inválido' });
@@ -165,7 +167,7 @@ router.get('/beneficiarios/:item', authenticateToken, soloBitacora, async (req, 
 
     // ─── Visitas realizadas (más recientes primero) ─────────
     const visitasFilas = await db.queryAll(
-      `SELECT f.id, f.tipo, ${SQL_NUMERO_VISITA} AS numero, f.created_at, u.nombre AS tecnico
+      `SELECT f.id, f.tipo, f.usuario_id, ${SQL_NUMERO_VISITA} AS numero, f.created_at, u.nombre AS tecnico
        FROM formularios f
        LEFT JOIN usuarios u ON u.id = f.usuario_id
        WHERE f.tipo IN ${TIPOS_VISITA}
@@ -173,13 +175,20 @@ router.get('/beneficiarios/:item', authenticateToken, soloBitacora, async (req, 
        ORDER BY f.created_at DESC`,
       [ced]
     );
+    // El técnico solo puede abrir SUS formularios (GET /api/formularios/:id lo
+    // restringe); el resto de roles abre cualquiera. Se avisa a la pantalla para
+    // no ofrecer un enlace que terminaría en "sin acceso".
+    const esTecnico = req.user.rol === 'tecnico';
     const visitas = visitasFilas.map((v) => ({
       id: v.id,
       tipo: v.tipo,
       numero: v.numero ?? null,
       fecha: v.created_at,
       tecnico: v.tecnico || null,
+      abrible: !esTecnico || v.usuario_id === req.user.id,
     }));
+    // Panel de actividad y PDF de suelos: el técnico solo en sus beneficiarios.
+    const detalleActividades = !esTecnico || b.tecnico_asignado_id === req.user.id;
 
     // GPS capturado en la caracterización (Visita 1), si existe.
     const car = await db.queryOne(
@@ -267,6 +276,7 @@ router.get('/beneficiarios/:item', authenticateToken, soloBitacora, async (req, 
           : null,
       },
       visitas,
+      detalleActividades,
       actividades: {
         analisisSuelos: suelos ? { subido: true, nombreArchivo: suelos.nombre_archivo, fecha: suelos.updated_at } : { subido: false },
         enHectareas: actividadesHa,

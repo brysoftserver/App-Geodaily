@@ -67,7 +67,7 @@ const BitacoraBeneficiarioScreen: React.FC<any> = ({ navigation, route }) => {
     if (generando || !ficha) return;
     setGenerando(true);
     try {
-      await generarYAbrirInformeBeneficiario(ficha, user?.nombre || '');
+      await generarYAbrirInformeBeneficiario(ficha, user?.nombre || '', user?.rol);
     } finally {
       setGenerando(false);
     }
@@ -198,6 +198,7 @@ const BitacoraBeneficiarioScreen: React.FC<any> = ({ navigation, route }) => {
   }
 
   const { beneficiario: b, predio, ubicacion, visitas, actividades } = ficha;
+  const detalleActividades = ficha.detalleActividades !== false;
   // Se listan las actividades en hectáreas ya conectadas, y cualquiera que ya tenga registros.
   const enHectareas = actividades.enHectareas.filter(
     (a) => ACTIVIDADES_EN_HECTAREAS.includes(a.id) || a.hectareas > 0 || a.actas > 0 || a.fotos.antes + a.fotos.durante + a.fotos.despues > 0
@@ -246,15 +247,26 @@ const BitacoraBeneficiarioScreen: React.FC<any> = ({ navigation, route }) => {
           visitas.length === 0 ? (
             <Text style={styles.vacio}>Aún no se han realizado visitas a este beneficiario.</Text>
           ) : (
-            visitas.map((v) => (
-              <TouchableOpacity key={v.id} style={styles.item} activeOpacity={0.7} onPress={() => abrirVisita(v)}>
+            <>
+            {visitas.map((v) => (
+              <TouchableOpacity
+                key={v.id}
+                style={styles.item}
+                activeOpacity={v.abrible === false ? 1 : 0.7}
+                onPress={() => abrirVisita(v)}
+                disabled={v.abrible === false}
+              >
                 <View style={{ flex: 1 }}>
                   <Text style={styles.itemTitulo}>{etiquetaVisitaBitacora(v)}</Text>
                   <Text style={styles.dato}>{fecha(v.fecha)}{v.tecnico ? ` · ${v.tecnico}` : ''}</Text>
                 </View>
-                {abriendoVisita === v.id ? <ActivityIndicator color={COLORS.primary} /> : <Text style={styles.flecha}>›</Text>}
+                {abriendoVisita === v.id ? <ActivityIndicator color={COLORS.primary} /> : v.abrible === false ? null : <Text style={styles.flecha}>›</Text>}
               </TouchableOpacity>
-            ))
+            ))}
+            {visitas.some((v) => v.abrible === false) && (
+              <Text style={styles.vacio}>Solo puedes abrir las visitas que realizaste tú.</Text>
+            )}
+            </>
           )
         ))}
 
@@ -271,7 +283,7 @@ const BitacoraBeneficiarioScreen: React.FC<any> = ({ navigation, route }) => {
                   <Text style={[styles.estado, { color: COLORS.warning }]}>Pendiente</Text>
                 )}
               </View>
-              {actividades.analisisSuelos.subido && (
+              {actividades.analisisSuelos.subido && detalleActividades && (
                 <TouchableOpacity style={styles.btnVer} onPress={verPdfSuelos} disabled={abriendoPdf}>
                   {abriendoPdf ? <ActivityIndicator size="small" color={COLORS.primary} /> : <Text style={styles.btnVerTxt}>Ver PDF</Text>}
                 </TouchableOpacity>
@@ -283,7 +295,13 @@ const BitacoraBeneficiarioScreen: React.FC<any> = ({ navigation, route }) => {
               const nFotos = a.fotos.antes + a.fotos.durante + a.fotos.despues;
               const iniciada = a.hectareas > 0 || a.actas > 0 || nFotos > 0;
               return (
-                <TouchableOpacity key={a.id} style={styles.item} activeOpacity={0.7} onPress={() => abrirActividad(a.id)}>
+                <TouchableOpacity
+                  key={a.id}
+                  style={styles.item}
+                  activeOpacity={detalleActividades ? 0.7 : 1}
+                  onPress={() => abrirActividad(a.id)}
+                  disabled={!detalleActividades}
+                >
                   <View style={{ flex: 1 }}>
                     <Text style={styles.itemTitulo}>{act?.icon} {act?.nombre ?? a.id}</Text>
                     <Text style={[styles.estado, { color: iniciada ? COLORS.success : COLORS.warning }]}>
@@ -299,10 +317,13 @@ const BitacoraBeneficiarioScreen: React.FC<any> = ({ navigation, route }) => {
                       </Text>
                     )}
                   </View>
-                  <Text style={styles.flecha}>›</Text>
+                  {detalleActividades && <Text style={styles.flecha}>›</Text>}
                 </TouchableOpacity>
               );
             })}
+            {!detalleActividades && (
+              <Text style={styles.vacio}>El detalle de las actividades solo lo ve el técnico asignado y los roles de revisión.</Text>
+            )}
           </>
         ))}
       </ScrollView>

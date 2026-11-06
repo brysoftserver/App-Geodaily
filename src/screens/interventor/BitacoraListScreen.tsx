@@ -57,11 +57,11 @@ const BitacoraListScreen: React.FC<any> = ({ navigation }) => {
     if (generando) return;
     setGenerando(true);
     try {
-      await generarYAbrirInformeGeneral(user?.nombre || '');
+      await generarYAbrirInformeGeneral(user?.nombre || '', user?.rol);
     } finally {
       setGenerando(false);
     }
-  }, [generando, user?.nombre]);
+  }, [generando, user?.nombre, user?.rol]);
 
   useLayoutEffect(() => {
     navigation.setOptions({
