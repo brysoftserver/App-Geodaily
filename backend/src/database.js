@@ -269,6 +269,24 @@ async function initSchema() {
     )`,
     `CREATE INDEX IF NOT EXISTS idx_actividad_evidencias ON actividad_evidencias(actividad, beneficiario_item, momento)`,
 
+    // Fortalecimiento de Capacidades: archivos compartidos por ECA y grupo de
+    // veredas (protocolo, informes, listado de asistencia, registro
+    // fotográfico). El archivo vive en MinIO; ver lib/fortalecimiento.js.
+    `CREATE TABLE IF NOT EXISTS fortalecimiento_archivos (
+      id SERIAL PRIMARY KEY,
+      componente VARCHAR(20) NOT NULL,
+      eca SMALLINT NOT NULL,
+      grupo SMALLINT NOT NULL,
+      seccion VARCHAR(30) NOT NULL,
+      storage_key TEXT NOT NULL,
+      nombre_archivo VARCHAR(255),
+      mime VARCHAR(50) NOT NULL,
+      tamano INTEGER,
+      subido_por VARCHAR(20) NOT NULL,
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_fortalecimiento_archivos ON fortalecimiento_archivos(componente, eca, grupo, seccion)`,
+
     `CREATE TABLE IF NOT EXISTS revisiones_formulario (
       id SERIAL PRIMARY KEY,
       formulario_id VARCHAR(100) NOT NULL,

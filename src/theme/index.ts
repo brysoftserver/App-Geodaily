@@ -147,5 +147,6 @@ export const API_CONFIG = {
     ACTIVIDADES_EVIDENCIAS: '/api/actividades-evidencias',
     BITACORA: '/api/bitacora',
     ASISTENCIA_TECNICA: '/api/asistencia-tecnica',
+    FORTALECIMIENTO: '/api/fortalecimiento',
   },
 };

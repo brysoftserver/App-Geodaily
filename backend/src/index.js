@@ -126,6 +126,7 @@ app.use('/api/actividades-hectareas', require('./routes/actividadesHectareas'));
 app.use('/api/actividades-evidencias', require('./routes/actividadesEvidencias'));
 app.use('/api/bitacora', require('./routes/bitacora'));
 app.use('/api/asistencia-tecnica', require('./routes/asistenciaTecnica'));
+app.use('/api/fortalecimiento', require('./routes/fortalecimiento'));
 
 // --- 404 handler ---
 app.use((_req, res) => {

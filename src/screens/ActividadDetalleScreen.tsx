@@ -9,12 +9,14 @@ import { COLORS, FONTS, SPACING } from '../theme';
 import AnalisisSuelosScreen from './actividades/AnalisisSuelosScreen';
 import HectareasActividadScreen from './actividades/HectareasActividadScreen';
 import AsistenciaTecnicaScreen from './actividades/AsistenciaTecnicaScreen';
+import FortalecimientoScreen from './actividades/FortalecimientoScreen';
 import { ACTIVIDADES_EN_HECTAREAS } from '../data/actividades';
 
 const ActividadDetalleScreen: React.FC<any> = (props) => {
   const { route } = props;
   if (route?.params?.actividadId === 'analisis_suelos') return <AnalisisSuelosScreen {...props} />;
   if (route?.params?.actividadId === 'asistencia_tecnica') return <AsistenciaTecnicaScreen {...props} />;
+  if (route?.params?.actividadId === 'fortalecimiento_capacidades') return <FortalecimientoScreen {...props} />;
   if (ACTIVIDADES_EN_HECTAREAS.includes(route?.params?.actividadId)) return <HectareasActividadScreen {...props} />;
 
   const modo: ModoActividades = route?.params?.modo === 'revisar' ? 'revisar' : 'ejecutar';
