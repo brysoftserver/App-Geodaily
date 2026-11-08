@@ -830,6 +830,59 @@ router.patch('/:id/respuesta', authenticateToken, async (req, res) => {
   }
 });
 
+// ── PATCH /api/formularios/:id/fecha — El admin cambia la fecha de la visita ──
+//
+// Sirve para CUALQUIER tipo de formulario (caracterización, visitas técnicas,
+// plantación...). La "fecha de la visita" es `created_at`: de ahí leen las
+// tarjetas, el calendario, los filtros desde/hasta, el orden y los PDF.
+// Se conserva la hora original (en hora de Colombia) para no mover la visita
+// de día por zona horaria. POST /guardar nunca toca created_at en el UPDATE,
+// así que una resincronización del teléfono no deshace el cambio.
+// updated_at = NOW() para que el merge del dispositivo traiga la fecha nueva.
+// En la caracterización además se alinea la respuesta "Fecha" (dd/MM/yyyy)
+// del formulario, si la tiene, para que el PDF y la tarjeta coincidan.
+router.patch('/:id/fecha', authenticateToken, async (req, res) => {
+  if (req.user.rol !== 'admin') {
+    return res.status(403).json({ estado: 'error', mensaje: 'Solo el administrador puede cambiar la fecha' });
+  }
+  const { fecha } = req.body || {};
+  const m = typeof fecha === 'string' ? fecha.match(/^(\d{4})-(\d{2})-(\d{2})$/) : null;
+  const valida = m && !Number.isNaN(Date.parse(`${fecha}T12:00:00Z`))
+    && new Date(`${fecha}T12:00:00Z`).toISOString().slice(0, 10) === fecha;
+  if (!valida) {
+    return res.status(400).json({ estado: 'error', mensaje: 'Fecha inválida (use AAAA-MM-DD)' });
+  }
+  try {
+    const row = await db.queryOne(
+      `UPDATE formularios
+          SET created_at = ($1::date + (created_at AT TIME ZONE 'America/Bogota')::time)
+                           AT TIME ZONE 'America/Bogota',
+              updated_at = NOW()
+        WHERE id = $2
+        RETURNING id, tipo, created_at, updated_at, caracterizacion_nueva_json`,
+      [fecha, req.params.id]
+    );
+    if (!row) {
+      return res.status(404).json({ estado: 'error', mensaje: 'Formulario no encontrado' });
+    }
+    const enc = row.caracterizacion_nueva_json;
+    if (enc && typeof enc === 'object' && String(enc.fecha || '').trim() !== '') {
+      await db.query(
+        'UPDATE formularios SET caracterizacion_nueva_json = $1 WHERE id = $2',
+        [JSON.stringify({ ...enc, fecha: `${m[3]}/${m[2]}/${m[1]}` }), req.params.id]
+      );
+    }
+    await db.query(
+      'INSERT INTO actividad_log (usuario_id, accion, detalle_json) VALUES ($1, $2, $3)',
+      [req.user.id, 'cambiar_fecha_formulario', JSON.stringify({ formulario_id: req.params.id, fecha })]
+    );
+    res.json({ estado: 'ok', created_at: row.created_at, updated_at: row.updated_at });
+  } catch (error) {
+    console.error('[Forms] Cambiar fecha error:', error);
+    res.status(500).json({ estado: 'error', mensaje: 'Error al cambiar la fecha' });
+  }
+});
+
 // DELETE /api/formularios/:id — Solo admin puede eliminar
 //
 // Borrado EN CASCADA de todo el árbol que depende del formulario: antes

@@ -114,7 +114,7 @@ import { useRevisiones } from '../../hooks/useRevisiones';
 import { estaNovedadResuelta, rolEstaOk } from '../../utils/revisiones';
 import { descargarPaqueteMedia } from '../../services/mediaPackage.service';
 import SeguimientoCoordinacionSection from '../../components/SeguimientoCoordinacionSection';
-import { actualizarRespuestaFormulario } from '../../services/formularios.service';
+import { actualizarRespuestaFormulario, cambiarFechaFormulario, fechaDMAaISO } from '../../services/formularios.service';
 import { guardarFirmaEnFormulario, FirmaNoPermitidaError } from '../../services/firmas.service';
 
 type FormularioDetailScreenProps = {
@@ -1035,6 +1035,10 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
     tecnico: FirmaResuelta | null;
   } | null>(null);
   const [respuestaEditando, setRespuestaEditando] = useState<{ path: string; texto: string; espec?: EspecRespuesta; modo?: 'completar' | 'corregir'; compuesta?: CampoCompuesto[] } | null>(null);
+  // Cambio de fecha de la visita (solo admin)
+  const [editandoFecha, setEditandoFecha] = useState(false);
+  const [textoFecha, setTextoFecha] = useState('');
+  const [guardandoFecha, setGuardandoFecha] = useState(false);
   const [valorRespuesta, setValorRespuesta] = useState('');
   /**
    * Valores de los subcampos cuando la pregunta se edita como bloque
@@ -1223,6 +1227,36 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
       Alert.alert('No se pudo guardar', error instanceof Error ? error.message : String(error));
     } finally {
       setGuardandoRespuesta(false);
+    }
+  };
+
+  const abrirCambioFecha = () => {
+    setTextoFecha(formatFecha(formulario.created_at));
+    setEditandoFecha(true);
+  };
+
+  const guardarCambioFecha = async () => {
+    const iso = fechaDMAaISO(textoFecha);
+    if (!iso) {
+      Alert.alert('Fecha inválida', 'Escribe la fecha como día/mes/año, por ejemplo 26/10/2026.');
+      return;
+    }
+    setGuardandoFecha(true);
+    try {
+      const nuevoCreatedAt = await cambiarFechaFormulario(formulario.id, iso);
+      const [y, mo, d] = iso.split('-');
+      const actualizado: any = { ...formulario, created_at: nuevoCreatedAt || formulario.created_at, updated_at: new Date().toISOString() };
+      if (actualizado.caracterizacion_nueva?.fecha) {
+        actualizado.caracterizacion_nueva = { ...actualizado.caracterizacion_nueva, fecha: `${d}/${mo}/${y}` };
+      }
+      setFormulario(actualizado);
+      saveFormularioLocal(actualizado).catch(() => {});
+      setEditandoFecha(false);
+      Alert.alert('Fecha actualizada', 'La fecha de la visita quedó cambiada.');
+    } catch (error) {
+      Alert.alert('No se pudo cambiar la fecha', error instanceof Error ? error.message : String(error));
+    } finally {
+      setGuardandoFecha(false);
     }
   };
 
@@ -1502,23 +1536,6 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
     (uri: string) => fuenteConAuth(uri, authHeaders),
     [authHeaders]
   );
-
-  /**
-   * "  ·  📍 lat, lon" solo si la evidencia trae una ubicación REAL.
-   *
-   * Las evidencias agregadas desde el ALMACENAMIENTO del dispositivo se suben
-   * sin datos de captura (no se consultó el GPS), pero la cola local las
-   * representa con 0,0. Ese 0,0 no es una ubicación: mostrarlo como si lo
-   * fuera confundiría al revisor, así que se omite.
-   */
-  const sufijoUbicacion = (c?: { latitud?: number; longitud?: number } | null) => {
-    const lat = c?.latitud;
-    const lon = c?.longitud;
-    if (typeof lat !== 'number' || typeof lon !== 'number') return '';
-    if (!Number.isFinite(lat) || !Number.isFinite(lon)) return '';
-    if (lat === 0 && lon === 0) return '';
-    return `  ·  📍 ${lat.toFixed(6)}, ${lon.toFixed(6)}`;
-  };
 
   /**
    * Agregar evidencia nueva a esta visita ya completada. Abre la cámara en
@@ -2560,6 +2577,17 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
           </Text>
         </View>
 
+        {rolActual === 'admin' && (
+          <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: SPACING.md, paddingVertical: SPACING.sm }}>
+            <Text style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.sm }}>
+              📅 Fecha de la visita: {formatFecha(formulario.created_at)}
+            </Text>
+            <TouchableOpacity style={styles.adminEditarBtn} onPress={abrirCambioFecha}>
+              <Text style={styles.adminEditarBtnText}>✎ Cambiar fecha</Text>
+            </TouchableOpacity>
+          </View>
+        )}
+
         {/* Revisión jerárquica: novedades y vistos buenos — solo en modo
             "Revisión en línea"/"Revisión en campo", nunca en el formulario
             normal que ve el técnico. */}
@@ -2810,13 +2838,15 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
             Si algún día se necesita reactivar, recuperar el bloque desde el
             historial de Git (buscaba `formulario.coordenadas.latitud`). */}
 
-        {/* Fecha */}
+        {/* Panel Fechas oculto a pedido (no eliminado). Para reactivar, quitar el false && */}
+        {false && (
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>⏱️ Fechas</Text>
           <View style={styles.row}><Text style={styles.label}>Creado:</Text><Text style={styles.value}>{formatFecha(formulario.created_at)}</Text></View>
           <View style={styles.row}><Text style={styles.label}>Actualizado:</Text><Text style={styles.value}>{formatFecha(formulario.updated_at)}</Text></View>
           {renderMiniRevision('Fechas')}
         </View>
+        )}
 
         {/* ───── Evidencias al FINAL del detalle ─────
             Resumen, miniaturas de fotos/videos, firmas y documentos de la
@@ -3121,6 +3151,45 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
       </ScrollView>
 
       <Modal
+        visible={editandoFecha}
+        transparent
+        animationType="fade"
+        onRequestClose={() => !guardandoFecha && setEditandoFecha(false)}
+      >
+        <View style={styles.adminModalOverlay}>
+          <View style={styles.adminModalCard}>
+            <Text style={styles.adminModalTitle}>Cambiar fecha de la visita</Text>
+            <Text style={styles.adminModalQuestion}>Formato día/mes/año (ej. 26/10/2026)</Text>
+            <TextInput
+              style={styles.adminRespuestaInput}
+              value={textoFecha}
+              onChangeText={setTextoFecha}
+              placeholder="dd/mm/aaaa"
+              placeholderTextColor={COLORS.textLight}
+              keyboardType="numbers-and-punctuation"
+              autoFocus
+            />
+            <View style={styles.adminModalButtons}>
+              <TouchableOpacity
+                style={[styles.adminModalButton, styles.adminCancelButton]}
+                onPress={() => setEditandoFecha(false)}
+                disabled={guardandoFecha}
+              >
+                <Text style={styles.adminCancelText}>Cancelar</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.adminModalButton, styles.adminSaveButton]}
+                onPress={guardarCambioFecha}
+                disabled={guardandoFecha}
+              >
+                <Text style={styles.adminSaveText}>{guardandoFecha ? 'Guardando...' : 'Guardar'}</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      <Modal
         visible={!!respuestaEditando}
         transparent
         animationType="fade"
@@ -3297,15 +3366,6 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
         visible={!!videoPreview}
         onClose={() => setVideoPreview(null)}
         headers={authHeaders}
-        subtitulo={
-          videoPreview
-            ? `📅 ${formatFecha(videoPreview.timestamp)}${sufijoUbicacion(videoPreview.coordenadas)}${
-                formulario.coordenadas?.lugar || formulario.clima?.actual?.ubicacion?.nombre
-                  ? `  ·  🏙️ ${formulario.coordenadas?.lugar || formulario.clima?.actual?.ubicacion?.nombre}`
-                  : ''
-              }`
-            : undefined
-        }
       />
 
       {/* 📸 Visor de foto ampliada */}
@@ -3323,15 +3383,6 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
                 style={styles.fotoModalImage}
                 resizeMode="contain"
               />
-              <Text style={styles.fotoModalInfo}>
-                📅 {formatFecha(fotoPreview.timestamp)}
-                {sufijoUbicacion(fotoPreview.coordenadas)}
-                {/* Municipio de la visita — todas las evidencias de una
-                    misma visita están a metros de distancia, comparten lugar */}
-                {(formulario.coordenadas?.lugar || formulario.clima?.actual?.ubicacion?.nombre)
-                  ? `  ·  🏙️ ${formulario.coordenadas?.lugar || formulario.clima?.actual?.ubicacion?.nombre}`
-                  : ''}
-              </Text>
               {esPendienteDeSubir(fotoPreview.id) && (
                 <Text style={styles.fotoModalPendiente}>
                   ⏳ Guardada en este teléfono — pendiente de subir. Se enviará automáticamente en la

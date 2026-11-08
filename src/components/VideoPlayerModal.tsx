@@ -136,8 +136,9 @@ const styles = StyleSheet.create({
   overlay: {
     flex: 1,
     backgroundColor: 'rgba(0,0,0,0.92)',
-    justifyContent: 'center',
     paddingHorizontal: SPACING.md,
+    paddingTop: SPACING.xl,
+    paddingBottom: SPACING.md,
   },
   header: {
     flexDirection: 'row',
@@ -164,9 +165,10 @@ const styles = StyleSheet.create({
     fontWeight: FONTS.weights.bold,
   },
   playerWrapper: {
+    // Ocupa todo el espacio disponible (vertical u horizontal) y el
+    // video se ajusta con contentFit="contain", centrado y sin recortes.
+    flex: 1,
     width: '100%',
-    aspectRatio: 9 / 16,
-    maxHeight: '75%',
     borderRadius: BORDER_RADIUS.md,
     overflow: 'hidden',
     backgroundColor: '#000',

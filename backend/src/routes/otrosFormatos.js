@@ -436,6 +436,41 @@ router.get('/:id/pdf', authenticateToken, async (req, res) => {
 });
 
 // ------------------------------------------------------------
+// PATCH /api/otros-formatos/:id/fecha — Solo admin
+// Cambia la fecha del formato (created_at, conservando la hora en hora de
+// Colombia). El upsert de /sync no toca created_at, así que el cambio resiste
+// las resincronizaciones.
+// ------------------------------------------------------------
+router.patch('/:id/fecha', authenticateToken, async (req, res) => {
+  if (req.user.rol !== 'admin') {
+    return res.status(403).json({ estado: 'error', mensaje: 'Solo el administrador puede cambiar la fecha' });
+  }
+  const { fecha } = req.body || {};
+  const m = typeof fecha === 'string' ? fecha.match(/^(\d{4})-(\d{2})-(\d{2})$/) : null;
+  const valida = m && new Date(`${fecha}T12:00:00Z`).toISOString().slice(0, 10) === fecha;
+  if (!valida) {
+    return res.status(400).json({ estado: 'error', mensaje: 'Fecha inválida (use AAAA-MM-DD)' });
+  }
+  try {
+    const row = await db.queryOne(
+      `UPDATE otros_formatos
+          SET created_at = ($1::date + (created_at AT TIME ZONE 'America/Bogota')::time)
+                           AT TIME ZONE 'America/Bogota'
+        WHERE id = $2
+        RETURNING id, created_at`,
+      [fecha, req.params.id]
+    );
+    if (!row) {
+      return res.status(404).json({ estado: 'error', mensaje: 'Formato no encontrado' });
+    }
+    res.json({ estado: 'ok', created_at: row.created_at });
+  } catch (error) {
+    console.error('[OtrosFormatos] Error al cambiar fecha:', error);
+    res.status(500).json({ estado: 'error', mensaje: 'Error al cambiar la fecha' });
+  }
+});
+
+// ------------------------------------------------------------
 // DELETE /api/otros-formatos/:id — El autor o un admin
 // ------------------------------------------------------------
 router.delete('/:id', authenticateToken, async (req, res) => {

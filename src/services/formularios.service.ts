@@ -192,3 +192,44 @@ export const eliminarFormularioDelServidor = async (id: string): Promise<void> =
 
   throw new Error(response.data?.mensaje || 'No se pudo eliminar el formulario');
 };
+
+/**
+ * Cambiar la fecha de la visita — SOLO admin (el backend lo valida de nuevo).
+ * `fecha` va como AAAA-MM-DD. Sirve para cualquier tipo de formulario.
+ * Devuelve el created_at nuevo que fijó el servidor.
+ */
+export const cambiarFechaFormulario = async (id: string, fecha: string): Promise<string> => {
+  try {
+    const r = await apiClient.patch(`${API_CONFIG.ENDPOINTS.FORMS}/${encodeURIComponent(id)}/fecha`, { fecha });
+    return r.data?.created_at as string;
+  } catch (error) {
+    const err = error as { response?: { status?: number; data?: { mensaje?: string } } };
+    if (err?.response?.data?.mensaje) throw new Error(err.response.data.mensaje);
+    if (err?.response?.status === 404) {
+      throw new Error('El formulario no existe todavía en el servidor (puede ser una visita sin sincronizar).');
+    }
+    throw error;
+  }
+};
+
+/** Cambiar la fecha de un formato de "Otros anexos" — SOLO admin. */
+export const cambiarFechaOtroFormato = async (id: string, fecha: string): Promise<string> => {
+  try {
+    const r = await apiClient.patch(`${API_CONFIG.ENDPOINTS.OTROS_FORMATOS}/${encodeURIComponent(id)}/fecha`, { fecha });
+    return r.data?.created_at as string;
+  } catch (error) {
+    const err = error as { response?: { data?: { mensaje?: string } } };
+    if (err?.response?.data?.mensaje) throw new Error(err.response.data.mensaje);
+    throw error;
+  }
+};
+
+/** dd/MM/yyyy → AAAA-MM-DD, o null si no es una fecha real. */
+export const fechaDMAaISO = (texto: string): string | null => {
+  const m = texto.trim().match(/^(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{4})$/);
+  if (!m) return null;
+  const d = Number(m[1]), mo = Number(m[2]), y = Number(m[3]);
+  const dt = new Date(Date.UTC(y, mo - 1, d, 12));
+  if (dt.getUTCFullYear() !== y || dt.getUTCMonth() !== mo - 1 || dt.getUTCDate() !== d) return null;
+  return `${y}-${String(mo).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+};

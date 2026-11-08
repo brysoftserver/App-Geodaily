@@ -224,6 +224,12 @@ const VisitasJerarquicasScreen: React.FC<VisitasJerarquicasScreenProps> = ({ nav
   // --- Agrupar datos (con protección contra null) ---
   const tecnicos = useMemo(() => {
     const mapa = new Map<string, TecnicoAgrupado>();
+    // Nombre vigente por cédula: los formularios guardan una copia del nombre
+    // al momento de crearse, que queda desactualizada si se corrige después.
+    const nombreActualPorCedula = new Map<string, string>();
+    for (const b of beneficiariosAsignados) {
+      if (b.cedula && b.nombre_completo) nombreActualPorCedula.set(b.cedula, b.nombre_completo);
+    }
 
     for (const form of formularios) {
       try {
@@ -274,7 +280,7 @@ const VisitasJerarquicasScreen: React.FC<VisitasJerarquicasScreenProps> = ({ nav
         );
         if (!benefGrupo) {
           benefGrupo = {
-            nombre: benef.nombre || 'Sin nombre',
+            nombre: (benef.cedula && nombreActualPorCedula.get(benef.cedula)) || benef.nombre || 'Sin nombre',
             cedula: benef.cedula || '',
             telefono: benef.telefono || '',
             municipio: benef.municipio || '',
@@ -302,7 +308,7 @@ const VisitasJerarquicasScreen: React.FC<VisitasJerarquicasScreenProps> = ({ nav
     }
 
     return Array.from(mapa.values()).sort((a, b) => (a.nombre || '').localeCompare(b.nombre || ''));
-  }, [formularios]);
+  }, [formularios, beneficiariosAsignados]);
 
   // --- Estadísticas de progreso por técnico (Visita 1..12 sobre beneficiarios ASIGNADOS) ---
   // A diferencia de `totalBeneficiarios` (que solo cuenta beneficiarios que ya
