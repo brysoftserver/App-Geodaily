@@ -34,6 +34,8 @@ export interface MaterialVerificacion {
   icono: string;
   /** "Tipo de Material Vegetal" predeterminado del encabezado. */
   tipoMaterial: string;
+  /** true = el tipo de material es texto libre (arranca vacío); false = fijo con `tipoMaterial`. */
+  tipoMaterialEditable?: boolean;
   /** false = el formato aún no está definido (la opción se muestra, pero no abre). */
   disponible: boolean;
   modulos: ModuloVerificacion[];
@@ -99,22 +101,113 @@ const COLINOS_PLATANO: MaterialVerificacion = {
   danos: ['Daño Mecánico', 'Presencia de Plaga', 'Pudrición/Bacteriosis'],
 };
 
-/** Formatos aún no entregados: la opción se muestra pero no abre hasta tener su definición. */
-const pendiente = (id: MaterialVerificacionId, nombreCorto: string, icono: string): MaterialVerificacion => ({
-  id,
-  titulo: `RECEPCIÓN Y VERIFICACIÓN DE MATERIAL VEGETAL – ${nombreCorto.toUpperCase()}`,
-  nombreCorto,
-  icono,
-  tipoMaterial: nombreCorto,
-  disponible: false,
-  modulos: [],
-  danos: [],
-});
+const PLANTULAS_CACAO: MaterialVerificacion = {
+  id: 'plantulas_cacao',
+  titulo: 'RECEPCIÓN Y VERIFICACIÓN DE MATERIAL VEGETAL – PLANTULAS DE CACAO',
+  nombreCorto: 'Plántulas de Cacao',
+  icono: '🌱',
+  tipoMaterial: 'Plántulas de Cacao',
+  // En el formato de cacao el tipo de material es texto libre.
+  tipoMaterialEditable: true,
+  disponible: true,
+  modulos: [
+    {
+      id: 'm1',
+      titulo: 'MÓDULO 1: Legalidad y Documentación del Transporte',
+      subtitulo: 'Verificación de soporte documental al momento del arribo',
+      criterios: [
+        { id: '1.1', pregunta: '¿Presenta Guía de Movilización / Salvoconducto fitosanitario vigente para el trayecto?', ayuda: 'Adjuntar foto de la guía o texto libre' },
+        { id: '1.2', pregunta: '¿El material proviene de un vivero con Registro ICA vigente?', ayuda: 'Adjuntar foto del certificado o texto libre' },
+        { id: '1.3', pregunta: '¿El certificado de origen acredita el material vegetal contratado?', ayuda: 'Foto Material Vegetal o texto libre' },
+        { id: '1.4', pregunta: '¿La cantidad física transportada coincide con la orden de despacho/remisión?', ayuda: 'Texto libre o fotos' },
+      ],
+    },
+    {
+      id: 'm2',
+      titulo: 'MÓDULO 2: Condiciones del Vehículo y Manejo en Transporte',
+      subtitulo: 'Evaluación del acondicionamiento logístico para evitar deshidratación y daño mecánico',
+      criterios: [
+        { id: '2.1', pregunta: '¿El material fue cargado en estantes o hileras sin apilamiento excesivo que aplaste los ápices?', ayuda: 'Foto del interior del furgón o texto libre' },
+        { id: '2.2', pregunta: '¿El material viaja protegido contra radiación solar directa, viento o lluvia?', ayuda: 'Foto de carpa/cobertura o texto libre' },
+        { id: '2.3', pregunta: '¿El furgón/planchón se encuentra limpio, desinfectado y libre de residuos ajenos al material?', ayuda: 'Texto libre o foto' },
+        { id: '2.4', pregunta: '¿El material arriba con temperatura adecuada (sin evidencia de sofocamiento o calentamiento del follaje)?', ayuda: 'Texto libre o foto' },
+      ],
+    },
+    {
+      id: 'm3',
+      titulo: 'MÓDULO 3: Especificaciones Morfométricas y Vigor de las Plántulas',
+      subtitulo: 'Inspección técnica de arquitectura y calidad física del lote maderable',
+      criterios: [
+        { id: '3.1', rotulo: 'Altura Útil', pregunta: '¿Las plántulas cumplen con la altura mínima requerida?', ayuda: 'Foto o texto libre' },
+        { id: '3.2', rotulo: 'Grosor del Tallo (Cuello)', pregunta: '¿El diámetro a la altura del cuello cumple con lo establecido?', ayuda: 'Foto o texto libre' },
+        { id: '3.3', rotulo: 'Lignificación', pregunta: '¿El tallo es erguido, recto y presenta consistencia semileñosa (bien lignificada)?', ayuda: 'Foto o texto libre' },
+        { id: '3.4', rotulo: 'Firmeza del Sustrato', pregunta: '¿El pilón de tierra es firme, retiene humedad adecuada y no se desmorona al tacto?', ayuda: 'Foto o texto libre' },
+        { id: '3.5', rotulo: 'Integridad de Bolsa', pregunta: '¿La bolsa plástica está entera, bien llena, con perforaciones de drenaje y sin romper?', ayuda: 'Foto o texto libre' },
+      ],
+    },
+    {
+      id: 'm4',
+      titulo: 'MÓDULO 4: Inspección Fitosanitaria y Calidad Radicular (Muestreo)',
+      subtitulo: 'Evaluación patológica y de estructura subterránea en plántulas seleccionadas al azar',
+      criterios: [
+        { id: '4.1', rotulo: 'Ausencia de Brotes Anormales', pregunta: '¿Ápice y brotes 100% libres de malformaciones, agallas o hipertrofias?', ayuda: 'Foto o texto libre' },
+        { id: '4.2', rotulo: 'Ausencia de Hongos de Cuello/Tallo', pregunta: '¿Tallo y punto de injerto libres de exudados, chancros o pudrición?', ayuda: 'Fotos o texto libre' },
+        { id: '4.3', rotulo: 'Sanidad Foliar', pregunta: '¿Follaje libre de perforaciones, manchas necrosadas?', ayuda: 'Foto o texto libre' },
+        { id: '4.4', rotulo: 'Ausencia de Insectos Plaga', pregunta: '¿Lote libre de pulgones, cochinillas harinosas, ácaros o trips en el envés de las hojas y yemas?', ayuda: 'Foto o texto libre' },
+        { id: '4.5', rotulo: 'Sistema Radicular', pregunta: '¿Raíces claras/sanas, sin entorchamiento ("cola de marrano") ni pudrición?', ayuda: 'Foto o texto libre' },
+        { id: '4.6', rotulo: 'Sanidad Radicular', pregunta: '¿Las raíces secundarias presentan color claro/sano, bien ramificadas y sin síntomas de pudrición?', ayuda: 'Foto o texto libre' },
+      ],
+    },
+  ],
+  danos: ['Daño Mecánico', 'Presencia de Plaga', 'Pudrición/Bacteriosis'],
+};
 
+const PLANTULAS_MADERABLES: MaterialVerificacion = {
+  id: 'plantulas_maderables',
+  titulo: 'RECEPCIÓN Y VERIFICACIÓN DE MATERIAL VEGETAL – PLANTULAS DE MADERABLES',
+  nombreCorto: 'Plántulas de Maderables',
+  icono: '🌳',
+  tipoMaterial: 'Plántulas de Maderables',
+  // Igual que en cacao, el tipo de material es texto libre.
+  tipoMaterialEditable: true,
+  disponible: true,
+  modulos: [
+    {
+      id: 'm1',
+      titulo: 'MÓDULO 1: Legalidad y Documentación del Transporte',
+      subtitulo: 'Verificación de soporte documental al momento del arribo',
+      criterios: [
+        { id: '1.1', pregunta: '¿Presenta Guía de Movilización / Salvoconducto fitosanitario vigente para el trayecto?', ayuda: 'Adjuntar foto de la guía o texto libre' },
+        { id: '1.2', pregunta: '¿El material proviene de un vivero con Registro ICA vigente?', ayuda: 'Adjuntar foto del certificado o texto libre' },
+        { id: '1.3', pregunta: '¿El certificado de origen acredita el material vegetal contratado?', ayuda: 'Foto Material Vegetal o texto libre' },
+        { id: '1.4', pregunta: '¿La cantidad física transportada coincide con la orden de despacho/remisión?', ayuda: 'Texto libre o foto' },
+      ],
+    },
+    // Módulos 2 y 3: idénticos a los del formato de cacao.
+    PLANTULAS_CACAO.modulos[1],
+    PLANTULAS_CACAO.modulos[2],
+    {
+      id: 'm4',
+      titulo: 'MÓDULO 4: Inspección Fitosanitaria y Calidad Radicular (Muestreo)',
+      subtitulo: 'Evaluación patológica y de estructura subterránea en plántulas seleccionadas al azar',
+      criterios: [
+        { id: '4.1', rotulo: 'Ausencia de Barrenadores', pregunta: '¿Tallo y brotes libres de perforaciones producidas por barrenadores?', ayuda: 'Foto o texto libre' },
+        { id: '4.2', rotulo: 'Ausencia de Defoliadores/Plagas', pregunta: '¿Follaje 100% libre de insectos plaga?', ayuda: 'Fotos o texto libre' },
+        { id: '4.3', rotulo: 'Ausencia de Enfermedades Foliares', pregunta: '¿Hojas libres de clorosis severa, manchas necrosadas (Phytophthora, Cercospora) o marchitez?', ayuda: 'Foto o texto libre' },
+        { id: '4.4', rotulo: 'Arquitectura Radicular', pregunta: '¿La raíz pivotante está recta, vertical y libre de deformación en espiral ("cola de marrano")?', ayuda: 'Foto o texto libre' },
+        { id: '4.5', rotulo: 'Sistema Radicular', pregunta: '¿Raíces claras/sanas, sin entorchamiento ("cola de marrano") ni pudrición?', ayuda: 'Foto o texto libre' },
+        { id: '4.6', rotulo: 'Sanidad Radicular', pregunta: '¿Las raíces secundarias presentan color claro/sano, bien ramificadas y sin síntomas de pudrición?', ayuda: 'Foto o texto libre' },
+      ],
+    },
+  ],
+  danos: ['Daño Mecánico', 'Presencia de Plaga', 'Pudrición/Bacteriosis'],
+};
+
+// Un formato futuro se agrega aquí con `disponible: false` hasta tener su definición.
 export const MATERIALES_VERIFICACION: MaterialVerificacion[] = [
   COLINOS_PLATANO,
-  pendiente('plantulas_cacao', 'Plantulas de Cacao', '🌱'),
-  pendiente('plantulas_maderables', 'Plantulas de Maderables', '🌳'),
+  PLANTULAS_CACAO,
+  PLANTULAS_MADERABLES,
 ];
 
 export const buscarMaterialVerificacion = (id?: string) => MATERIALES_VERIFICACION.find((m) => m.id === id);
@@ -173,7 +266,7 @@ export const datosVacios = (m: MaterialVerificacion, interventorNombre = ''): Da
     precision: '',
     proveedor: '',
     placa: '',
-    tipoMaterial: m.tipoMaterial,
+    tipoMaterial: m.tipoMaterialEditable ? '' : m.tipoMaterial,
     remision: '',
     cantidadDeclarada: '',
   },

@@ -392,10 +392,14 @@ const VerificacionFormScreen: React.FC<any> = ({ navigation, route }) => {
           </View>
           {campo('Nombre del Proveedor / Vivero', e.proveedor, (t) => cambiar((x) => { x.encabezado.proveedor = t; }))}
           {campo('Placa del Vehículo', e.placa, (t) => cambiar((x) => { x.encabezado.placa = t.toUpperCase(); }), { autoCapitalize: 'characters' })}
-          <View style={styles.campo}>
-            <Text style={styles.campoLabel}>Tipo de Material Vegetal</Text>
-            <Text style={styles.valorFijo}>{e.tipoMaterial}</Text>
-          </View>
+          {material.tipoMaterialEditable ? (
+            campo('Tipo de Material Vegetal', e.tipoMaterial, (t) => cambiar((x) => { x.encabezado.tipoMaterial = t; }))
+          ) : (
+            <View style={styles.campo}>
+              <Text style={styles.campoLabel}>Tipo de Material Vegetal</Text>
+              <Text style={styles.valorFijo}>{e.tipoMaterial}</Text>
+            </View>
+          )}
           {campo('N.° de Remisión / Guía de Despacho', e.remision, (t) => cambiar((x) => { x.encabezado.remision = t; }))}
           {campo('Cantidad Declarada en Remisión', e.cantidadDeclarada, (t) => cambiar((x) => { x.encabezado.cantidadDeclarada = soloDigitos(t); }), { keyboardType: 'number-pad' })}
         </View>

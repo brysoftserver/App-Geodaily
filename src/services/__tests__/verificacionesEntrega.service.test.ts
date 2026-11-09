@@ -132,3 +132,55 @@ describe('Formato de Colinos de Plátano', () => {
     expect(fechaVerificacionIso('')).toBeNull();
   });
 });
+
+describe('Formato de Plántulas de Cacao', () => {
+  const cacao = buscarMaterialVerificacion('plantulas_cacao')!;
+
+  it('está disponible con sus 4 módulos y 19 criterios', () => {
+    expect(cacao.disponible).toBe(true);
+    const ids = cacao.modulos.flatMap((m) => m.criterios.map((c) => c.id));
+    expect(ids).toEqual(['1.1', '1.2', '1.3', '1.4', '2.1', '2.2', '2.3', '2.4', '3.1', '3.2', '3.3', '3.4', '3.5', '4.1', '4.2', '4.3', '4.4', '4.5', '4.6']);
+    expect(cacao.danos).toEqual(['Daño Mecánico', 'Presencia de Plaga', 'Pudrición/Bacteriosis']);
+  });
+
+  it('el tipo de material es texto libre (arranca vacío) y la fecha es manual', () => {
+    const d = datosVacios(cacao);
+    expect(cacao.tipoMaterialEditable).toBe(true);
+    expect(d.encabezado.tipoMaterial).toBe('');
+    expect(d.encabezado.fecha).toBe('');
+    expect(Object.keys(d.respuestas)).toHaveLength(19);
+  });
+
+  it('plátano conserva su tipo de material fijo', () => {
+    expect(datosVacios(material).encabezado.tipoMaterial).toBe('Colinos de Plátano');
+  });
+
+});
+
+describe('Formato de Plántulas de Maderables', () => {
+  const mad = buscarMaterialVerificacion('plantulas_maderables')!;
+  const cacao = buscarMaterialVerificacion('plantulas_cacao')!;
+
+  it('está disponible con sus 4 módulos y 19 criterios', () => {
+    expect(mad.disponible).toBe(true);
+    const ids = mad.modulos.flatMap((m) => m.criterios.map((c) => c.id));
+    expect(ids).toEqual(['1.1', '1.2', '1.3', '1.4', '2.1', '2.2', '2.3', '2.4', '3.1', '3.2', '3.3', '3.4', '3.5', '4.1', '4.2', '4.3', '4.4', '4.5', '4.6']);
+  });
+
+  it('comparte módulos 2 y 3 con cacao, pero su módulo 4 es propio', () => {
+    expect(mad.modulos[1]).toEqual(cacao.modulos[1]);
+    expect(mad.modulos[2]).toEqual(cacao.modulos[2]);
+    expect(mad.modulos[3].criterios[0].rotulo).toBe('Ausencia de Barrenadores');
+    expect(mad.modulos[3]).not.toEqual(cacao.modulos[3]);
+  });
+
+  it('tipo de material libre y fecha manual', () => {
+    const d = datosVacios(mad);
+    expect(d.encabezado.tipoMaterial).toBe('');
+    expect(d.encabezado.fecha).toBe('');
+  });
+
+  it('los tres materiales quedan disponibles', () => {
+    expect(['colinos_platano', 'plantulas_cacao', 'plantulas_maderables'].map((id) => buscarMaterialVerificacion(id)!.disponible)).toEqual([true, true, true]);
+  });
+});
