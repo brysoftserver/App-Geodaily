@@ -55,6 +55,7 @@ import { subirDocumento } from '../services/documentos.service';
 import { subirFirma } from '../services/firmas.service';
 import { registrarSeguimiento, esSeguimientoEliminado } from '../services/seguimientos.service';
 import { sincronizarOtrosFormatos } from '../services/otrosFormatos.service';
+import { getVerificacionesNoSincronizadas, sincronizarVerificacionesEntrega } from '../services/verificacionesEntrega.service';
 import { generarPDF } from '../services/pdf.service';
 import { limpiarEvidenciasAntiguas, archivoLocalFaltante } from '../services/mediaStorage.service';
 import { resolverClimaYUbicacion } from '../services/climate.service';
@@ -1156,7 +1157,9 @@ export const SyncProvider: React.FC<{ children: React.ReactNode }> = ({
         getSeguimientosNoSincronizados(),
         getOtrosFormatosNoSincronizados(),
       ]);
-      const total = forms.length + plantas.length + mediciones.length + tracking.length + visitas.length + documentos.length + evidencias.fotos.length + evidencias.videos.length + seguimientos.length + otrosFormatos.length;
+      // Aparte del Promise.all: si falla, no debe tumbar el resto del conteo.
+      const verificaciones = await getVerificacionesNoSincronizadas().catch(() => []);
+      const total = forms.length + plantas.length + mediciones.length + tracking.length + visitas.length + documentos.length + evidencias.fotos.length + evidencias.videos.length + seguimientos.length + otrosFormatos.length + verificaciones.length;
       dispatch({ type: 'SET_PENDING', count: total });
     } catch {
       // Ignorar errores al verificar pendientes
@@ -1228,6 +1231,9 @@ export const SyncProvider: React.FC<{ children: React.ReactNode }> = ({
         getOtrosFormatosNoSincronizados(),
       ]);
 
+      // Verificaciones de entrega: fuera del Promise.all para que un fallo aquí no frene el resto.
+      const pendingVerificaciones = await getVerificacionesNoSincronizadas().catch(() => []);
+
       if (
         pendingForms.length === 0 &&
         pendingPlantaciones.length === 0 &&
@@ -1239,7 +1245,8 @@ export const SyncProvider: React.FC<{ children: React.ReactNode }> = ({
         pendingEvidencias.videos.length === 0 &&
         climaPendientes.length === 0 &&
         pendingSeguimientos.length === 0 &&
-        pendingOtrosFormatos.length === 0
+        pendingOtrosFormatos.length === 0 &&
+        pendingVerificaciones.length === 0
       ) {
         dispatch({
           type: 'SYNC_SUCCESS',
@@ -1288,6 +1295,12 @@ export const SyncProvider: React.FC<{ children: React.ReactNode }> = ({
       dispatch({ type: 'SET_STAGE', stage: 'Sincronizando otros formatos...' });
       const otrosFormatosFallidos = await sincronizarOtrosFormatos();
       warnings.push(...otrosFormatosFallidos.map(id => `formato-${id}`));
+
+      // 3g. Verificaciones de entrega (interventoría). NO crítico, igual que
+      // otros formatos: lo que falle se reintenta en el próximo ciclo.
+      dispatch({ type: 'SET_STAGE', stage: 'Sincronizando verificaciones de entrega...' });
+      const verificacionesFallidas = await sincronizarVerificacionesEntrega();
+      warnings.push(...verificacionesFallidas.map(id => `verif-${id}`));
 
       // 3d. Clima/ubicación pendiente de formularios guardados sin señal
       if (climaPendientes.length > 0) {

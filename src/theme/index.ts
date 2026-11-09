@@ -146,6 +146,7 @@ export const API_CONFIG = {
     ACTIVIDADES_HECTAREAS: '/api/actividades-hectareas',
     ACTIVIDADES_EVIDENCIAS: '/api/actividades-evidencias',
     BITACORA: '/api/bitacora',
+    VERIFICACIONES_ENTREGA: '/api/verificaciones-entrega',
     ASISTENCIA_TECNICA: '/api/asistencia-tecnica',
     FORTALECIMIENTO: '/api/fortalecimiento',
   },

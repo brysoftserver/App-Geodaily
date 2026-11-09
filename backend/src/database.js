@@ -792,6 +792,33 @@ async function initSchema() {
       created_at TIMESTAMPTZ DEFAULT NOW()
     )`);
     await query(`CREATE INDEX IF NOT EXISTS idx_otros_formatos_obs ON otros_formatos_observaciones(formato_id)`);
+    // Verificación de Entregas (interventoría): recepción de material vegetal
+    // (colinos de plátano, plántulas de cacao, maderables). El formulario
+    // completo viaja en `datos`; fotos y firmas viven en MinIO y se registran
+    // en verificaciones_entrega_archivos. Offline-first: el cliente sube
+    // primero los archivos y luego el registro (UPSERT por id).
+    await query(`CREATE TABLE IF NOT EXISTS verificaciones_entrega (
+      id VARCHAR(100) PRIMARY KEY,
+      material VARCHAR(40) NOT NULL,
+      autor_id VARCHAR(20) NOT NULL,
+      autor_nombre VARCHAR(200),
+      autor_usuario VARCHAR(100),
+      datos JSONB NOT NULL DEFAULT '{}',
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      updated_at TIMESTAMPTZ DEFAULT NOW()
+    )`);
+    await query(`CREATE INDEX IF NOT EXISTS idx_verif_entrega_autor ON verificaciones_entrega(autor_id, material)`);
+    await query(`CREATE TABLE IF NOT EXISTS verificaciones_entrega_archivos (
+      id SERIAL PRIMARY KEY,
+      verificacion_id VARCHAR(100) NOT NULL,
+      cliente_id VARCHAR(100) NOT NULL,
+      campo VARCHAR(40),
+      tipo VARCHAR(10) NOT NULL CHECK (tipo IN ('foto','firma')),
+      storage_key TEXT NOT NULL,
+      autor_id VARCHAR(20) NOT NULL,
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      UNIQUE (verificacion_id, cliente_id)
+    )`);
     await query(`CREATE INDEX IF NOT EXISTS idx_otros_formatos_tecnico ON otros_formatos(tecnico_id)`);
   } catch (err) {
     console.error('[DB] Error creando otros_formatos:', err.message);

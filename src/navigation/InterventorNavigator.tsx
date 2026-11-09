@@ -25,6 +25,10 @@ import SeguimientoDetailScreen from '../screens/supervision/SeguimientoDetailScr
 import RevisarAnexosScreen from '../screens/supervision/RevisarAnexosScreen';
 import BitacoraListScreen from '../screens/interventor/BitacoraListScreen';
 import BitacoraBeneficiarioScreen from '../screens/interventor/BitacoraBeneficiarioScreen';
+import VerificacionEntregasMenuScreen from '../screens/interventor/verificaciones/VerificacionEntregasMenuScreen';
+import VerificacionMaterialScreen from '../screens/interventor/verificaciones/VerificacionMaterialScreen';
+import VerificacionListaScreen from '../screens/interventor/verificaciones/VerificacionListaScreen';
+import VerificacionFormScreen from '../screens/interventor/verificaciones/VerificacionFormScreen';
 
 export type InterventorStackParamList = {
   InterventorMenu: undefined;
@@ -44,6 +48,10 @@ export type InterventorStackParamList = {
   RevisarAnexos: undefined;
   BitacoraBeneficiarios: undefined;
   BitacoraBeneficiario: { item: number; nombre?: string };
+  VerificacionEntregas: undefined;
+  VerificacionMaterial: { material: string };
+  VerificacionLista: { material: string; tipo: 'borradores' | 'completas' };
+  VerificacionForm: { material: string; id?: string; soloLectura?: boolean; servidor?: import('../services/verificacionesEntrega.service').VerificacionServidor };
   RevisionActividades: { modo?: 'ejecutar' | 'revisar' } | undefined;
   ActividadDetalle: { actividadId: string; modo: 'ejecutar' | 'revisar'; tecnico?: { usuario: string; nombre: string } };
   ActividadBeneficiario: {
@@ -152,6 +160,26 @@ const InterventorNavigator: React.FC = () => {
         component={ActividadesListScreen}
         initialParams={{ modo: 'revisar' }}
         options={{ title: 'Revisión de Actividades' }}
+      />
+      <Stack.Screen
+        name="VerificacionEntregas"
+        component={VerificacionEntregasMenuScreen}
+        options={{ title: 'Verificación de Entregas' }}
+      />
+      <Stack.Screen
+        name="VerificacionMaterial"
+        component={VerificacionMaterialScreen}
+        options={{ title: 'Verificación' }}
+      />
+      <Stack.Screen
+        name="VerificacionLista"
+        component={VerificacionListaScreen}
+        options={{ title: 'Verificaciones' }}
+      />
+      <Stack.Screen
+        name="VerificacionForm"
+        component={VerificacionFormScreen}
+        options={{ title: 'Nueva Verificación' }}
       />
       <Stack.Screen
         name="BitacoraBeneficiarios"

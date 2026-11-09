@@ -95,6 +95,24 @@ const SeguimientoMenuScreen: React.FC<SeguimientoMenuScreenProps> = ({ navigatio
         <Text style={styles.chevron}>›</Text>
       </TouchableOpacity>
 
+      {/* Solo interventoría: la ruta existe únicamente en su navegador. */}
+      {isInterventor && (
+        <TouchableOpacity
+          style={styles.card}
+          activeOpacity={0.7}
+          onPress={() => navigation.navigate('VerificacionEntregas')}
+        >
+          <View style={[styles.iconContainer, { backgroundColor: rolColor + '15' }]}>
+            <Text style={styles.icon}>🚚</Text>
+          </View>
+          <View style={styles.cardBody}>
+            <Text style={styles.cardTitle}>Verificación de Entregas</Text>
+            <Text style={styles.cardSubtitle}>Recepción y verificación de material vegetal</Text>
+          </View>
+          <Text style={styles.chevron}>›</Text>
+        </TouchableOpacity>
+      )}
+
       <TouchableOpacity
         style={styles.card}
         activeOpacity={0.7}
