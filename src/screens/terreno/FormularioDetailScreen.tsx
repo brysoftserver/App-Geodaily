@@ -66,6 +66,7 @@ import {
   textoCompromiso,
 } from '../../utils/visitaTecnica3';
 import MedicionCaptura from '../../components/MedicionCaptura';
+import EdicionVisita2Panel from '../../components/EdicionVisita2Panel';
 import type { MedicionCapturaDatos } from '../../components/MedicionCaptura';
 import {
   RECONOCIMIENTO_OPTS,
@@ -2808,6 +2809,24 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
                     <MedicionCaptura medicion={medicionVisita} altura={200} mostrarAcciones />
                   </View>
                 )}
+                {/* Polígono 2 (opcional): lo carga un admin autorizado. */}
+                {puntosValidos(formulario.actividad.medicion_historial_2?.puntos).length >= 3 && (
+                  <View style={styles.bloqueTexto}>
+                    <Text style={styles.bloqueTextoLabel}>Captura de la medición — polígono 2</Text>
+                    <MedicionCaptura
+                      medicion={{
+                        nombre: formulario.actividad.medicion_historial_2!.nombre,
+                        area_hectareas: formulario.actividad.medicion_historial_2!.area_hectareas,
+                        area_metros2: formulario.actividad.medicion_historial_2!.area_metros2,
+                        perimetro_metros: formulario.actividad.medicion_historial_2!.perimetro_metros,
+                        puntos: puntosValidos(formulario.actividad.medicion_historial_2!.puntos),
+                        created_at: formulario.actividad.medicion_historial_2!.created_at,
+                      }}
+                      altura={200}
+                      mostrarAcciones
+                    />
+                  </View>
+                )}
                 {(formulario.actividad.compromisos_siguiente_visita || []).length > 0 && (
                   <View style={styles.bloqueTexto}>
                     <Text style={styles.bloqueTextoLabel}>Compromisos próxima visita</Text>
@@ -2819,6 +2838,12 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
                 {!!formulario.actividad.observaciones && (
                   <BloqueTexto titulo="Observaciones" texto={formulario.actividad.observaciones} />
                 )}
+                {/* Edición de la Visita 2 (solo el admin que autorice el servidor). */}
+                <EdicionVisita2Panel
+                  formularioId={formulario.id}
+                  actividad={formulario.actividad}
+                  onActualizada={(actividad) => setFormulario((prev) => ({ ...prev, actividad }))}
+                />
               </>
             ) : (
               <>
