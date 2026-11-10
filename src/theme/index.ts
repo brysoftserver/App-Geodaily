@@ -148,6 +148,7 @@ export const API_CONFIG = {
     BITACORA: '/api/bitacora',
     VERIFICACIONES_ENTREGA: '/api/verificaciones-entrega',
     ACTIVIDADES_ENTREGAS: '/api/actividades-entregas',
+    EDICION_VISITAS: '/api/edicion-visitas',
     ASISTENCIA_TECNICA: '/api/asistencia-tecnica',
     FORTALECIMIENTO: '/api/fortalecimiento',
   },

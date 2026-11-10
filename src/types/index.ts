@@ -171,6 +171,8 @@ export interface MedicionAdjunta {
   puntos: { latitud: number; longitud: number }[];
   /** Fecha de la medición (ISO). */
   created_at?: string;
+  /** 'kml' cuando el polígono se cargó desde un archivo KML/KMZ. */
+  origen?: string;
 }
 
 export interface ActividadRealizada {
@@ -205,6 +207,8 @@ export interface ActividadRealizada {
    * la captura del polígono y pueda abrirla en Google Earth.
    */
   medicion_historial?: MedicionAdjunta;
+  /** Ítem 4 — Segundo polígono opcional (lo carga un admin autorizado). */
+  medicion_historial_2?: MedicionAdjunta;
   /**
    * Estado completo del formulario de visita técnica (formato v2).
    * Permite reabrir un borrador y reconstruir exactamente lo que el

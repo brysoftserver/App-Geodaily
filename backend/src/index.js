@@ -127,6 +127,7 @@ app.use('/api/actividades-evidencias', require('./routes/actividadesEvidencias')
 app.use('/api/bitacora', require('./routes/bitacora'));
 app.use('/api/verificaciones-entrega', require('./routes/verificacionesEntrega'));
 app.use('/api/actividades-entregas', require('./routes/actividadesEntregas'));
+app.use('/api/edicion-visitas', require('./routes/edicionVisitas'));
 app.use('/api/asistencia-tecnica', require('./routes/asistenciaTecnica'));
 app.use('/api/fortalecimiento', require('./routes/fortalecimiento'));
 
