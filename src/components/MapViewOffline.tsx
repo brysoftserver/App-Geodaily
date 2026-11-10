@@ -141,6 +141,12 @@ interface MapViewOfflineProps {
   onMarkerDragEnd?: (id: string, coords: { latitud: number; longitud: number }) => void;
   onMapPress?: (latitud: number, longitud: number) => void;
   /**
+   * El usuario tocó, arrastró o hizo zoom en el mapa con sus dedos (no un
+   * movimiento programático). Sirve para apagar el seguimiento GPS: si no,
+   * cada lectura del GPS recentra el mapa mientras el técnico traza.
+   */
+  onUserInteraction?: () => void;
+  /**
    * Centrado puntual "de una sola vez", independiente del seguimiento
    * continuo de `center`: cuando `nonce` cambia, la cámara se mueve a
    * `coords` SIN tocar el zoom actual (a diferencia de `center`, que
@@ -308,6 +314,7 @@ const MapViewOffline: React.FC<MapViewOfflineProps> = ({
   onFeaturePress,
   onMarkerDragEnd,
   onMapPress,
+  onUserInteraction,
   foco,
   resetNonce,
   fitBounds,
@@ -560,12 +567,14 @@ const MapViewOffline: React.FC<MapViewOfflineProps> = ({
           onMarkerDragEnd(msg.id, { latitud: msg.lat, longitud: msg.lng });
         } else if (msg.type === 'featurePress' && onFeaturePress) {
           onFeaturePress(msg.layerId, msg.properties || {});
+        } else if (msg.type === 'userInteraction' && onUserInteraction) {
+          onUserInteraction();
         }
       } catch { /* ignorar mensajes no JSON */ }
     };
     window.addEventListener('message', handler);
     return () => window.removeEventListener('message', handler);
-  }, [onMapPress, onMarkerPress, onMarkerDragEnd, onFeaturePress]);
+  }, [onMapPress, onMarkerPress, onMarkerDragEnd, onFeaturePress, onUserInteraction]);
 
   // Web: sincronizar marcadores
   useEffect(() => {
@@ -726,6 +735,22 @@ const MapViewOffline: React.FC<MapViewOfflineProps> = ({
     window._userMovedMap = false;
     map.on('zoomstart', function() { window._userMovedMap = true; });
     map.on('dragstart', function() { window._userMovedMap = true; });
+
+    // Avisar a la app que el USUARIO tocó/arrastró/hizo zoom (no un setView
+    // programático) para que apague el seguimiento GPS. Máximo 1 aviso/0,8 s.
+    var _ultimaInteraccion = 0;
+    function _avisarInteraccion() {
+      var ahora = Date.now();
+      if (ahora - _ultimaInteraccion < 800) return;
+      _ultimaInteraccion = ahora;
+      try {
+        if (window.ReactNativeWebView) window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'userInteraction' }));
+      } catch (e) {}
+    }
+    map.on('dragstart', _avisarInteraccion);
+    ['touchstart', 'mousedown', 'wheel'].forEach(function(ev) {
+      map.getContainer().addEventListener(ev, _avisarInteraccion, { passive: true });
+    });
 
       // --- Almacenes dinámicos (se actualizan vía injectJavaScript) ---
     window._markers = {};
@@ -1100,12 +1125,14 @@ const MapViewOffline: React.FC<MapViewOfflineProps> = ({
           onMarkerDragEnd(msg.id, { latitud: msg.lat, longitud: msg.lng });
         } else if (msg.type === 'featurePress' && onFeaturePress) {
           onFeaturePress(msg.layerId, msg.properties || {});
+        } else if (msg.type === 'userInteraction' && onUserInteraction) {
+          onUserInteraction();
         }
       } catch (e) {
         console.warn('[MapViewOffline] Error parsing WebView message:', e);
       }
     },
-    [onMapPress, onMarkerPress, onMarkerDragEnd, onFeaturePress]
+    [onMapPress, onMarkerPress, onMarkerDragEnd, onFeaturePress, onUserInteraction]
   );
 
   // Si no hay módulo nativo, usar WebView (nativo) o iframe (web) con Leaflet + OpenStreetMap
@@ -1229,6 +1256,15 @@ const MapViewOffline: React.FC<MapViewOfflineProps> = ({
         scrollEnabled={interactive}
         rotateEnabled={interactive}
         onDidFinishLoadingMap={() => setIsLoaded(true)}
+        // Solo movimientos hechos con los dedos (isUserInteraction): los de
+        // setCamera (seguimiento GPS, centrar) no cuentan.
+        onRegionWillChange={
+          onUserInteraction
+            ? (feature: Record<string, any>) => {
+                if (feature?.properties?.isUserInteraction) onUserInteraction();
+              }
+            : undefined
+        }
         onPress={
           onMapPress
             ? (e: Record<string, any>) => {

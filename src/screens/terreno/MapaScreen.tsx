@@ -155,13 +155,20 @@ const MapaScreen: React.FC = () => {
   }, []);
 
   // Seguir al usuario en tiempo real mientras el seguimiento esté activo.
-  // El técnico lo apaga al hacer pan/zoom manual (para ubicar cada punto con
-  // precisión) y lo reactiva con el botón "Mi Ubicación".
+  // El técnico lo apaga al tocar/arrastrar/hacer zoom en el mapa (para ubicar
+  // cada punto con precisión) y lo reactiva con el botón "Mi Ubicación".
   useEffect(() => {
     if (siguiendoGPS && userLocation && mapCenterInitialized.current) {
       setMapCenter(userLocation);
     }
   }, [siguiendoGPS, userLocation]);
+
+  // Apaga el seguimiento en cuanto el técnico interactúa con el mapa. Antes
+  // esto solo estaba descrito en los comentarios: nada lo apagaba, así que
+  // cada lectura del GPS recentraba el mapa y no dejaba trazar ni editar.
+  const detenerSeguimiento = useCallback(() => {
+    setSiguiendoGPS(false);
+  }, [setSiguiendoGPS]);
 
   // --- Estado para Medición ---
   const [poligono, setPoligono] = useState<PuntoPoligono[]>([]);
@@ -645,6 +652,8 @@ const MapaScreen: React.FC = () => {
     (latitud: number, longitud: number) => {
       // En modo consulta el mapa no captura toques para trazar.
       if (soloLectura) return;
+      // Está trazando: el mapa no debe moverse solo mientras ubica puntos.
+      setSiguiendoGPS(false);
       // Un toque fuera de Colombia (p. ej. el mapa quedó en otro continente
       // por un encuadre corrupto) NO debe crear un vértice: en la base real
       // hay 9 mediciones con puntos en Madrid que rompían el mapa general.
@@ -672,13 +681,14 @@ const MapaScreen: React.FC = () => {
         ]);
       }
     },
-    [modo, soloLectura]
+    [modo, soloLectura, setSiguiendoGPS]
   );
 
   // Mover un punto ya puesto (arrastrar para corregir un error sin borrar
   // todo el polígono) — el resultado calculado queda desactualizado hasta
   // volver a presionar "Calcular".
   const moverPuntoPoligono = useCallback((id: string, coords: { latitud: number; longitud: number }) => {
+    setSiguiendoGPS(false);
     if (id.startsWith('pp_')) {
       const orden = parseInt(id.slice(3), 10);
       setPlantacionPoligono((prev) => prev.map((p) => (p.orden === orden ? { ...p, ...coords } : p)));
@@ -689,7 +699,7 @@ const MapaScreen: React.FC = () => {
       setResultadoDistancia(null);
       setMostrarResultado(false);
     }
-  }, []);
+  }, [setSiguiendoGPS]);
 
   /** Tocar el marcador de una plantación YA guardada abre su detalle (especie, cantidad, beneficiario, vereda). */
   const handleMarkerPress = useCallback(
@@ -1173,6 +1183,8 @@ const MapaScreen: React.FC = () => {
   const verMedicionPreview = useCallback((medicion: Record<string, any>) => {
     const puntos = (medicion.puntos || []) as { latitud: number; longitud: number }[];
     if (puntos.length === 0) return;
+    // Se va a editar ese polígono: el GPS no debe sacar el mapa de ahí.
+    setSiguiendoGPS(false);
     // Cargar los puntos en el estado editable de medición (con su orden).
     const puntosEditables: PuntoPoligono[] = puntos.map((p, i) => ({
       latitud: p.latitud,
@@ -1198,7 +1210,7 @@ const MapaScreen: React.FC = () => {
     setMedicionPersistida(true);
     setFoco({ coords: puntos[0], nonce: Date.now() });
     setMostrarHistorialMediciones(false);
-  }, [calcularDistanciaHaversine]);
+  }, [calcularDistanciaHaversine, setSiguiendoGPS]);
 
   const cerrarMedicionPreview = useCallback(() => setMedicionPreview(null), []);
 
@@ -1248,10 +1260,11 @@ const MapaScreen: React.FC = () => {
     setSugerenciasBeneficiario([]);
     setPlantacionEditandoId(pl.id);
     setUltimoPunto({ lat: pl.latitud, lon: pl.longitud });
+    setSiguiendoGPS(false);
     setFoco({ coords: { latitud: pl.latitud, longitud: pl.longitud }, nonce: Date.now() });
     setMostrarPanelConteo(true);
     setMostrarHistorialPlantaciones(false);
-  }, []);
+  }, [setSiguiendoGPS]);
 
   // Abre el modal de confirmación (Alert.alert no muestra botones en web).
   const eliminarPlantacionGuardada = useCallback((pl: Plantacion) => {
@@ -1291,11 +1304,11 @@ const MapaScreen: React.FC = () => {
         setPlantacionPoligono([]);
       }
       // La navegación está inmersa en ambos modos: reactivamos el seguimiento
-      // en tiempo real al cambiar de pestaña. El técnico puede apagarlo
-      // tocando el mapa y reactivarlo con "Mi Ubicación".
-      setSiguiendoGPS(true);
+      // al cambiar de pestaña, SALVO que haya un polígono a medio trazar (el
+      // mapa se iría de donde el técnico está trabajando).
+      if (poligono.length === 0) setSiguiendoGPS(true);
     },
-    [setSiguiendoGPS]
+    [setSiguiendoGPS, poligono.length]
   );
 
   return (
@@ -1462,6 +1475,7 @@ const MapaScreen: React.FC = () => {
           interactive={true}
           onMapPress={soloLectura ? undefined : handleMapPress}
           onMarkerDragEnd={soloLectura ? undefined : moverPuntoPoligono}
+          onUserInteraction={detenerSeguimiento}
           onMarkerPress={handleMarkerPress}
           foco={foco}
         />
