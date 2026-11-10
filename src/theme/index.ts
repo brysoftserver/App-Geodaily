@@ -147,6 +147,7 @@ export const API_CONFIG = {
     ACTIVIDADES_EVIDENCIAS: '/api/actividades-evidencias',
     BITACORA: '/api/bitacora',
     VERIFICACIONES_ENTREGA: '/api/verificaciones-entrega',
+    ACTIVIDADES_ENTREGAS: '/api/actividades-entregas',
     ASISTENCIA_TECNICA: '/api/asistencia-tecnica',
     FORTALECIMIENTO: '/api/fortalecimiento',
   },

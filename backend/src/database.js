@@ -808,6 +808,30 @@ async function initSchema() {
       updated_at TIMESTAMPTZ DEFAULT NOW()
     )`);
     await query(`CREATE INDEX IF NOT EXISTS idx_verif_entrega_autor ON verificaciones_entrega(autor_id, material)`);
+    // Entregas de una actividad (ej. Entrega de Colinos de Plátano en Siembra
+    // de Plátano): cada entrega numerada del técnico guarda lugar, beneficiario,
+    // la instancia de su acta (otros_formatos) y sus fotos (MinIO).
+    await query(`CREATE TABLE IF NOT EXISTS actividad_entregas (
+      id VARCHAR(100) PRIMARY KEY,
+      actividad VARCHAR(50) NOT NULL,
+      numero INTEGER NOT NULL,
+      tecnico_id VARCHAR(20) NOT NULL,
+      tecnico_usuario VARCHAR(100),
+      beneficiario_item INTEGER,
+      datos JSONB NOT NULL DEFAULT '{}',
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      updated_at TIMESTAMPTZ DEFAULT NOW()
+    )`);
+    await query(`CREATE INDEX IF NOT EXISTS idx_actividad_entregas ON actividad_entregas(tecnico_id, actividad)`);
+    await query(`CREATE TABLE IF NOT EXISTS actividad_entregas_fotos (
+      id SERIAL PRIMARY KEY,
+      entrega_id VARCHAR(100) NOT NULL,
+      cliente_id VARCHAR(100) NOT NULL,
+      storage_key TEXT NOT NULL,
+      tecnico_id VARCHAR(20) NOT NULL,
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      UNIQUE (entrega_id, cliente_id)
+    )`);
     await query(`CREATE TABLE IF NOT EXISTS verificaciones_entrega_archivos (
       id SERIAL PRIMARY KEY,
       verificacion_id VARCHAR(100) NOT NULL,

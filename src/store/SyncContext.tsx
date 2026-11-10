@@ -56,6 +56,7 @@ import { subirFirma } from '../services/firmas.service';
 import { registrarSeguimiento, esSeguimientoEliminado } from '../services/seguimientos.service';
 import { sincronizarOtrosFormatos } from '../services/otrosFormatos.service';
 import { getVerificacionesNoSincronizadas, sincronizarVerificacionesEntrega } from '../services/verificacionesEntrega.service';
+import { getEntregasNoSincronizadas, sincronizarEntregasActividad } from '../services/actividadesEntregas.service';
 import { generarPDF } from '../services/pdf.service';
 import { limpiarEvidenciasAntiguas, archivoLocalFaltante } from '../services/mediaStorage.service';
 import { resolverClimaYUbicacion } from '../services/climate.service';
@@ -1159,7 +1160,8 @@ export const SyncProvider: React.FC<{ children: React.ReactNode }> = ({
       ]);
       // Aparte del Promise.all: si falla, no debe tumbar el resto del conteo.
       const verificaciones = await getVerificacionesNoSincronizadas().catch(() => []);
-      const total = forms.length + plantas.length + mediciones.length + tracking.length + visitas.length + documentos.length + evidencias.fotos.length + evidencias.videos.length + seguimientos.length + otrosFormatos.length + verificaciones.length;
+      const entregasAct = await getEntregasNoSincronizadas().catch(() => []);
+      const total = forms.length + plantas.length + mediciones.length + tracking.length + visitas.length + documentos.length + evidencias.fotos.length + evidencias.videos.length + seguimientos.length + otrosFormatos.length + verificaciones.length + entregasAct.length;
       dispatch({ type: 'SET_PENDING', count: total });
     } catch {
       // Ignorar errores al verificar pendientes
@@ -1233,6 +1235,7 @@ export const SyncProvider: React.FC<{ children: React.ReactNode }> = ({
 
       // Verificaciones de entrega: fuera del Promise.all para que un fallo aquí no frene el resto.
       const pendingVerificaciones = await getVerificacionesNoSincronizadas().catch(() => []);
+      const pendingEntregasAct = await getEntregasNoSincronizadas().catch(() => []);
 
       if (
         pendingForms.length === 0 &&
@@ -1246,7 +1249,8 @@ export const SyncProvider: React.FC<{ children: React.ReactNode }> = ({
         climaPendientes.length === 0 &&
         pendingSeguimientos.length === 0 &&
         pendingOtrosFormatos.length === 0 &&
-        pendingVerificaciones.length === 0
+        pendingVerificaciones.length === 0 &&
+        pendingEntregasAct.length === 0
       ) {
         dispatch({
           type: 'SYNC_SUCCESS',
@@ -1301,6 +1305,11 @@ export const SyncProvider: React.FC<{ children: React.ReactNode }> = ({
       dispatch({ type: 'SET_STAGE', stage: 'Sincronizando verificaciones de entrega...' });
       const verificacionesFallidas = await sincronizarVerificacionesEntrega();
       warnings.push(...verificacionesFallidas.map(id => `verif-${id}`));
+
+      // 3h. Entregas de actividades del técnico (ej. colinos de plátano). NO crítico.
+      dispatch({ type: 'SET_STAGE', stage: 'Sincronizando entregas de actividades...' });
+      const entregasFallidas = await sincronizarEntregasActividad();
+      warnings.push(...entregasFallidas.map(id => `entrega-${id}`));
 
       // 3d. Clima/ubicación pendiente de formularios guardados sin señal
       if (climaPendientes.length > 0) {

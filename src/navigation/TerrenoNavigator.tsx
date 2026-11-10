@@ -10,6 +10,8 @@ import ActividadDetalleScreen from '../screens/ActividadDetalleScreen';
 import ActividadBeneficiarioScreen from '../screens/actividades/ActividadBeneficiarioScreen';
 import BitacoraListScreen from '../screens/interventor/BitacoraListScreen';
 import BitacoraBeneficiarioScreen from '../screens/interventor/BitacoraBeneficiarioScreen';
+import EntregasActividadScreen from '../screens/actividades/EntregasActividadScreen';
+import EntregaDetalleScreen from '../screens/actividades/EntregaDetalleScreen';
 import TerrenoMenuScreen from '../screens/terreno/TerrenoMenuScreen';
 import BeneficiariosListScreen from '../screens/terreno/BeneficiariosListScreen';
 import BeneficiarioDetailScreen from '../screens/terreno/BeneficiarioDetailScreen';
@@ -132,6 +134,8 @@ export type TerrenoStackParamList = {
   ActividadDetalle: { actividadId: string; modo: 'ejecutar' | 'revisar'; tecnico?: { usuario: string; nombre: string } };
   BitacoraBeneficiarios: undefined;
   BitacoraBeneficiario: { item: number; nombre?: string };
+  EntregasActividad: { actividadId: string; subactividadId?: string };
+  EntregaDetalle: { actividadId: string; entregaId: string };
   ActividadBeneficiario: {
     actividadId: string;
     modo: 'ejecutar' | 'revisar';
@@ -324,6 +328,16 @@ const TerrenoNavigator: React.FC = () => {
         name="ActividadDetalle"
         component={ActividadDetalleScreen}
         options={{ title: 'Actividad' }}
+      />
+      <Stack.Screen
+        name="EntregasActividad"
+        component={EntregasActividadScreen}
+        options={{ title: 'Entregas' }}
+      />
+      <Stack.Screen
+        name="EntregaDetalle"
+        component={EntregaDetalleScreen}
+        options={{ title: 'Entrega' }}
       />
       <Stack.Screen
         name="BitacoraBeneficiarios"

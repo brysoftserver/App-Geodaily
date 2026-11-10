@@ -43,7 +43,7 @@ import BotonGuardarBorrador, { useGuardarBorrador } from '../../components/Boton
 import { registrarOtroFormato, adjuntarPdfOtroFormato, cargarActaExistente } from '../../services/otrosFormatos.service';
 import { avisar, confirmar } from '../../utils/dialogos';
 import { abrirVentanaDeCarga, imprimirHtmlEnVentana } from '../../utils/printWeb';
-import { buscarActividad } from '../../data/actividades';
+import { buscarActividad, FILA_INICIAL_ACTA } from '../../data/actividades';
 
 type Props = {
   navigation: NativeStackNavigationProp<Record<string, any>>;
@@ -92,10 +92,14 @@ const ActaEntregaIndividualScreen: React.FC<Props> = ({ route, navigation }) => 
   const [vereda, setVereda] = useState(beneficiario?.vereda || '');
   const [corregimiento, setCorregimiento] = useState(beneficiario?.corregimiento || '');
   const [predio, setPredio] = useState(beneficiario?.finca || '');
+  // Fila inicial: la de la actividad si tiene una definida (ej. siembra de plátano),
+  // la de preparación del terreno desde "Otros formatos", o el nombre de la actividad.
   const [actividades, setActividades] = useState<ActividadActaEntrega[]>([
-    actividadId && actividadId !== 'preparacion_terreno'
-      ? { descripcion: actividadDelActa?.nombre ?? '', actividad: '', cantidad: '', unidad: '' }
-      : { ...ACTIVIDAD_INICIAL },
+    !actividadId
+      ? { ...ACTIVIDAD_INICIAL }
+      : FILA_INICIAL_ACTA[actividadId]
+        ? { ...FILA_INICIAL_ACTA[actividadId] }
+        : { descripcion: actividadDelActa?.nombre ?? '', actividad: '', cantidad: '', unidad: '' },
   ]);
 
   const [contratistaNombre, setContratistaNombre] = useState(user?.nombre || '');
