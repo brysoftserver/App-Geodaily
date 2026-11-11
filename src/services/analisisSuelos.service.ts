@@ -5,10 +5,12 @@
 // sube/ve/quita los suyos; los roles superiores consultan todos.
 // ============================================================
 
-import { Platform } from 'react-native';
+import { Alert, Platform } from 'react-native';
 import * as FileSystem from 'expo-file-system/legacy';
+import * as Sharing from 'expo-sharing';
 import apiClient, { getApiAuthToken } from './api';
 import { API_CONFIG } from '../theme';
+import { descargarBlobEnNavegador } from '../utils/webDownload';
 
 const ENDPOINT = API_CONFIG.ENDPOINTS.ANALISIS_SUELOS;
 
@@ -189,6 +191,56 @@ export const descargarPdfSuelos = async (item: number): Promise<string> => {
   });
   if (status !== 200) throw new Error(`Descarga fallida (${status})`);
   return uri;
+};
+
+/**
+ * Descarga el PDF de laboratorio y lo guarda en el dispositivo:
+ *  - Web: descarga directa del navegador.
+ *  - Android: selector de carpetas (Storage Access Framework) — descarga real.
+ *  - iOS: menú de compartir ("Guardar en Archivos").
+ * Devuelve false si el usuario canceló el selector.
+ */
+export const guardarPdfSuelosEnDispositivo = async (item: number, nombreBeneficiario: string): Promise<boolean> => {
+  const url = `${API_CONFIG.BASE_URL}${ENDPOINT}/${item}/pdf`;
+  const token = await getApiAuthToken();
+  const headers: Record<string, string> = token ? { Authorization: `Bearer ${token}` } : {};
+  const base = `Estudio_suelos_${String(nombreBeneficiario || item).trim()}`
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^A-Za-z0-9_-]+/g, '_').replace(/_+/g, '_').slice(0, 80);
+  const nombreArchivo = `${base}.pdf`;
+
+  if (Platform.OS === 'web') {
+    const r = await fetch(url, { headers });
+    if (!r.ok) throw new Error(r.status === 404 ? 'No hay PDF cargado.' : `Descarga fallida (${r.status})`);
+    descargarBlobEnNavegador(await r.blob(), nombreArchivo);
+    return true;
+  }
+
+  const enCache = `${FileSystem.cacheDirectory}${base}_${Date.now()}.pdf`;
+  const { uri, status } = await FileSystem.downloadAsync(url, enCache, { headers });
+  if (status === 404) throw new Error('No hay PDF cargado.');
+  if (status !== 200) throw new Error(`Descarga fallida (${status})`);
+
+  if (Platform.OS === 'android') {
+    try {
+      const permiso = await FileSystem.StorageAccessFramework.requestDirectoryPermissionsAsync();
+      if (!permiso.granted) return false;
+      const destino = await FileSystem.StorageAccessFramework.createFileAsync(permiso.directoryUri, base, 'application/pdf');
+      const contenido = await FileSystem.readAsStringAsync(uri, { encoding: FileSystem.EncodingType.Base64 });
+      await FileSystem.writeAsStringAsync(destino, contenido, { encoding: FileSystem.EncodingType.Base64 });
+      Alert.alert('PDF descargado', `El archivo se guardó como ${nombreArchivo}.`);
+      return true;
+    } catch (error) {
+      console.warn('[AnalisisSuelos] No se pudo guardar con el selector de carpetas:', error);
+    }
+  }
+
+  if (await Sharing.isAvailableAsync()) {
+    await Sharing.shareAsync(uri, { mimeType: 'application/pdf', UTI: 'com.adobe.pdf', dialogTitle: 'Guardar PDF de estudio de suelos' });
+  } else {
+    Alert.alert('PDF descargado', `Archivo guardado en: ${uri}`);
+  }
+  return true;
 };
 
 /**

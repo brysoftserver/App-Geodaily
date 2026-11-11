@@ -40,6 +40,7 @@ import {
   descargarMatrizExcelSuelos,
   descargarPdfSuelos,
   eliminarInformeSuelos,
+  guardarPdfSuelosEnDispositivo,
   InformeHistorialSuelos,
   listarBeneficiariosConAnalisis,
   listarInformesSuelos,
@@ -211,6 +212,17 @@ const AnalisisSuelosScreen: React.FC<any> = ({ navigation, route }) => {
     } catch (e) {
       ventana?.close();
       avisar('No se pudo abrir el PDF', mensajeError(e, 'Inténtalo de nuevo.'));
+    } finally {
+      setOcupado(null);
+    }
+  };
+
+  const descargar = async (b: BeneficiarioSuelos) => {
+    setOcupado(b.item);
+    try {
+      await guardarPdfSuelosEnDispositivo(b.item, b.nombre);
+    } catch (e) {
+      avisar('No se pudo descargar el PDF', mensajeError(e, 'Inténtalo de nuevo.'));
     } finally {
       setOcupado(null);
     }
@@ -407,6 +419,15 @@ const AnalisisSuelosScreen: React.FC<any> = ({ navigation, route }) => {
                       {b.tieneArchivo && (
                         <TouchableOpacity style={[styles.btn, styles.btnSecundario]} onPress={() => ver(b)}>
                           <Text style={styles.btnSecundarioTxt}>Ver</Text>
+                        </TouchableOpacity>
+                      )}
+                      {b.tieneArchivo && (
+                        <TouchableOpacity
+                          style={[styles.btn, styles.btnSecundario]}
+                          onPress={() => descargar(b)}
+                          accessibilityLabel={`Descargar PDF de ${b.nombre}`}
+                        >
+                          <Text style={styles.btnSecundarioTxt}>⬇ Descargar PDF</Text>
                         </TouchableOpacity>
                       )}
                       {b.tieneArchivo && (puedeEscribir || esAdmin) && (
