@@ -43,3 +43,6 @@ backend/uploads/
 backend/.env
 # Respaldos de base de datos (no versionar)
 backend/backups/
+
+# PDFs de resultados de laboratorio (pesados, datos personales)
+resultado_estudio_suelos/
