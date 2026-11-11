@@ -83,7 +83,10 @@ router.put('/:id', async (req, res) => {
     if (upsert.rowCount === 0) {
       const actual = await db.queryOne('SELECT usuario_id FROM formularios_borradores WHERE id = $1', [id]);
       if (actual && actual.usuario_id !== req.user.id) {
-        return res.status(403).json({ estado: 'error', mensaje: 'No autorizado para modificar este borrador' });
+        // El beneficiario se reasignó y el borrador pasó a otro técnico
+        // (PUT /api/beneficiarios/:item/asignacion). No es un error del
+        // teléfono: la app deja su copia local quieta y oculta.
+        return res.status(409).json({ estado: 'reasignado', mensaje: 'El borrador pertenece ahora a otro técnico' });
       }
       return res.status(409).json({ estado: 'desactualizado', mensaje: 'Existe una versión más reciente del borrador' });
     }

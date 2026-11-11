@@ -29,6 +29,7 @@ import {
   restaurarFormulariosPurgados,
 } from '../../services/database';
 import { fetchFormulariosDelServidor } from '../../services/formularios.service';
+import { cargarFiltroAsignacion, FiltroAsignacion, SIN_FILTRO } from '../../utils/visibilidadAsignacion';
 import { fetchResumenRevisiones, EstadoRevision } from '../../services/revisiones.service';
 import { descargarPaqueteMedia } from '../../services/mediaPackage.service';
 import { Formulario } from '../../types';
@@ -68,6 +69,10 @@ const FormularioListScreen: React.FC<FormularioListScreenProps> = ({ navigation,
   const [descargandoMediaId, setDescargandoMediaId] = useState<string | null>(null);
   /** Cuántos formularios eliminados en el servidor siguen recuperables aquí. */
   const [papeleraCount, setPapeleraCount] = useState(0);
+  // Un técnico solo ve los formularios de sus beneficiarios asignados HOY;
+  // los de beneficiarios desasignados o reasignados se ocultan (no se borran
+  // del teléfono ni del servidor) — ver utils/visibilidadAsignacion.ts.
+  const [visibleParaMi, setVisibleParaMi] = useState<FiltroAsignacion>(() => SIN_FILTRO);
   /** Evita que el merge/purga corra dos veces a la vez (mount + focus). */
   const cargaEnCursoRef = useRef(false);
 
@@ -79,15 +84,18 @@ const FormularioListScreen: React.FC<FormularioListScreenProps> = ({ navigation,
   const beneficiarioCedula = route?.params?.beneficiarioCedula;
   const filtrarPorBeneficiario = beneficiarioCedula !== undefined;
   const formulariosFiltrados = useMemo(() => {
-    if (!filtrarPorBeneficiario) return formularios;
-    return formularios.filter(
+    const asignados = formularios.filter((f) => visibleParaMi(f.beneficiario?.cedula));
+    if (!filtrarPorBeneficiario) return asignados;
+    return asignados.filter(
       (f) => (f.beneficiario?.cedula || '') === (beneficiarioCedula || '')
     );
-  }, [formularios, beneficiarioCedula, filtrarPorBeneficiario]);
+  }, [formularios, beneficiarioCedula, filtrarPorBeneficiario, visibleParaMi]);
 
   /** Lee la BD local y publica al contexto */
   const publicarLocales = useCallback(async () => {
     const localForms = await getFormulariosLocales(user?.id);
+    const filtro = await cargarFiltroAsignacion(user);
+    setVisibleParaMi(() => filtro);
     // Filtrar formularios inválidos para evitar white screen
     const validForms = localForms.filter(isValidFormulario);
     if (validForms.length < localForms.length) {
@@ -97,7 +105,7 @@ const FormularioListScreen: React.FC<FormularioListScreenProps> = ({ navigation,
     }
     // Siempre actualizar contexto, incluso si está vacío (limpia datos de otro usuario)
     cargarFormularios(validForms);
-  }, [cargarFormularios, user?.id]);
+  }, [cargarFormularios, user]);
 
   /**
    * Formularios pendientes de recuperar EN ESTE TELÉFONO para el usuario actual.

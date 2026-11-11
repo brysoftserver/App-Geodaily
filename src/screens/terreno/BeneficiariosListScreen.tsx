@@ -23,6 +23,7 @@ import { Formulario, DatosBeneficiario, BeneficiarioDB } from '../../types';
 import { getFormulariosLocales } from '../../services/database';
 import { fetchFormulariosDelServidor } from '../../services/formularios.service';
 import { getBeneficiariosByTecnico, sincronizarBeneficiariosDesdeServidor } from '../../services/beneficiariosDB.service';
+import { cargarFiltroAsignacion, FiltroAsignacion, SIN_FILTRO } from '../../utils/visibilidadAsignacion';
 import { useAuth } from '../../store/AuthContext';
 import LoadingSpinner from '../../components/LoadingSpinner';
 
@@ -46,6 +47,9 @@ const BeneficiariosListScreen: React.FC<BeneficiariosListScreenProps> = ({ navig
   const [refreshing, setRefreshing] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [busquedaCedula, setBusquedaCedula] = useState('');
+  // Oculta (sin borrar) los beneficiarios que ya no están asignados a este
+  // técnico aunque tenga visitas hechas — ver utils/visibilidadAsignacion.ts.
+  const [visibleParaMi, setVisibleParaMi] = useState<FiltroAsignacion>(() => SIN_FILTRO);
 
   // --- Agrupar formularios por beneficiario y fusionar con asignados de BD ---
   const beneficiarios = useMemo(() => {
@@ -56,6 +60,7 @@ const BeneficiariosListScreen: React.FC<BeneficiariosListScreenProps> = ({ navig
       try {
         const benef = form.beneficiario;
         if (!benef || !benef.nombre) continue;
+        if (!visibleParaMi(benef.cedula)) continue;
         const key = benef.cedula || benef.nombre;
 
         if (!mapa.has(key)) {
@@ -109,7 +114,7 @@ const BeneficiariosListScreen: React.FC<BeneficiariosListScreenProps> = ({ navig
     }
 
     return Array.from(mapa.values()).sort((a, b) => (a.nombre || '').localeCompare(b.nombre || ''));
-  }, [formularios, assignedDB]);
+  }, [formularios, assignedDB, visibleParaMi]);
 
   // --- Filtro por cédula: para encontrar rápido a un beneficiario cuando
   // hay muchos asignados. Compara solo dígitos, así que funciona igual si
@@ -128,6 +133,8 @@ const BeneficiariosListScreen: React.FC<BeneficiariosListScreenProps> = ({ navig
       // llegan las asignaciones hechas por admin/supervisión desde otros
       // dispositivos). Sin conexión, se usa el espejo local anterior.
       await sincronizarBeneficiariosDesdeServidor();
+      const filtro = await cargarFiltroAsignacion(user);
+      setVisibleParaMi(() => filtro);
 
       const [locales, servidor, asignadosBD] = await Promise.all([
         getFormulariosLocales(user?.id),
@@ -169,6 +176,8 @@ const BeneficiariosListScreen: React.FC<BeneficiariosListScreenProps> = ({ navig
           getFormulariosLocales(user?.id),
           getBeneficiariosByTecnico(user?.id || ''),
         ]);
+        const filtro = await cargarFiltroAsignacion(user);
+        setVisibleParaMi(() => filtro);
         setFormularios(locales);
         setAssignedDB(asignadosBD);
         if (locales.length === 0 && asignadosBD.length === 0) {
@@ -183,7 +192,7 @@ const BeneficiariosListScreen: React.FC<BeneficiariosListScreenProps> = ({ navig
       setIsLoading(false);
       setRefreshing(false);
     }
-  }, [user?.id]);
+  }, [user]);
 
   useFocusEffect(
     useCallback(() => {

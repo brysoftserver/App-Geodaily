@@ -23,6 +23,7 @@ import {
   sincronizarBorradoresConServidor,
 } from '../../store/FormDraftStore';
 import { useAuth } from '../../store/AuthContext';
+import { cargarFiltroAsignacion } from '../../utils/visibilidadAsignacion';
 import LoadingSpinner from '../../components/LoadingSpinner';
 import { tituloVisitaTecnica } from '../../utils/visitaTecnica';
 
@@ -40,9 +41,14 @@ const FormulariosIncompletosScreen: React.FC<FormulariosIncompletosScreenProps> 
   const loadDrafts = useCallback(async () => {
     try {
       let loaded = await cargarBorradores();
+      // Borradores de beneficiarios que ya no están asignados a este técnico
+      // se ocultan, no se borran (siguen respaldándose en el servidor) — ver
+      // utils/visibilidadAsignacion.ts.
+      const visibleParaMi = await cargarFiltroAsignacion(user);
       const filtrarUsuario = (borradores: FormDraft[]): FormDraft[] => {
         if (!user?.id) return borradores;
         return borradores.filter((draft) => {
+          if (!visibleParaMi(draft.beneficiario?.cedula)) return false;
           if (draft.tecnico?.usuario_id) return draft.tecnico.usuario_id === user.id;
           if (user.cedula && draft.tecnico?.cedula) return draft.tecnico.cedula === user.cedula;
           return !draft.tecnico?.usuario_id && !draft.tecnico?.cedula;
@@ -76,7 +82,7 @@ const FormulariosIncompletosScreen: React.FC<FormulariosIncompletosScreenProps> 
       setIsLoading(false);
       setRefreshing(false);
     }
-  }, [user?.id, user?.cedula]);
+  }, [user?.id, user?.cedula, user?.rol]);
 
   useEffect(() => {
     loadDrafts();

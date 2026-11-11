@@ -25,7 +25,7 @@ export const listarBorradoresDelServidor = async (): Promise<FormDraft[]> => {
 
 export const guardarBorradorEnServidor = async (
   draft: FormDraft
-): Promise<'saved' | 'conflict' | 'completed' | 'failed'> => {
+): Promise<'saved' | 'conflict' | 'completed' | 'reassigned' | 'failed'> => {
   try {
     await apiClient.put(
       `${ENDPOINT}/${encodeURIComponent(draft.id)}`,
@@ -37,6 +37,8 @@ export const guardarBorradorEnServidor = async (
     const status = (error as { response?: { status?: number; data?: { estado?: string } } })?.response?.status;
     const estado = (error as { response?: { data?: { estado?: string } } })?.response?.data?.estado;
     if (status === 409 && estado === 'completado') return 'completed';
+    // El beneficiario se reasignó y el borrador ya es de otro técnico.
+    if (status === 409 && estado === 'reasignado') return 'reassigned';
     if (status === 409) return 'conflict';
     console.warn('[Borradores] No se pudo subir el borrador:', draft.id, error);
     return 'failed';

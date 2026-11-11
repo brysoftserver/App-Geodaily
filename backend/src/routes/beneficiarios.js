@@ -143,6 +143,34 @@ router.put('/:item/asignacion', authenticateToken, async (req, res) => {
                 console.log(`[Beneficiarios] 📝 ${actualizados.rowCount} formulario(s) reasignado(s) a ${tecnico_nombre} (item ${item})`);
               }
 
+              // Borradores (formularios a medio diligenciar) del beneficiario:
+              // también pasan al técnico nuevo, igual que los completos. No se
+              // borra nada: se cambia el dueño y el técnico dentro del payload.
+              // updated_at = NOW() para que esta versión gane sobre la copia
+              // vieja que aún tenga el teléfono del técnico anterior (el PUT
+              // de borradores solo acepta versiones más nuevas del dueño).
+              // Se excluyen los que ya tienen formulario completo (esos ya
+              // quedaron reasignados en el UPDATE de arriba).
+              const borradoresMovidos = await db.query(
+                `UPDATE formularios_borradores b
+                 SET usuario_id = $1,
+                     payload_json = jsonb_set(
+                       b.payload_json,
+                       '{tecnico}',
+                       COALESCE(b.payload_json->'tecnico', '{}'::jsonb) || $2::jsonb
+                     ),
+                     updated_at = NOW()
+                 WHERE regexp_replace(COALESCE(b.payload_json->'beneficiario'->>'cedula', ''), '[^0-9A-Za-z]', '', 'g')
+                       = regexp_replace($3, '[^0-9A-Za-z]', '', 'g')
+                   AND b.usuario_id <> $1
+                   AND NOT EXISTS (SELECT 1 FROM formularios f WHERE f.id = b.id)
+                 RETURNING b.id`,
+                [tecnico_id, nuevoTecnicoJson, benefData.cedula.trim()]
+              );
+              if (borradoresMovidos.rowCount > 0) {
+                console.log(`[Beneficiarios] 📝 ${borradoresMovidos.rowCount} borrador(es) reasignado(s) a ${tecnico_nombre} (item ${item})`);
+              }
+
               // Los formularios de Caracterización guardan una TERCERA copia
               // del técnico y la cédula del beneficiario, dentro de
               // caracterizacion_nueva_json (las respuestas literales del

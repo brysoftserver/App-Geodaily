@@ -27,6 +27,8 @@ import { BORDER_RADIUS, COLORS, FONTS, SHADOWS, SPACING } from '../theme';
 import type { BeneficiarioDB, DatosBeneficiario, Formulario } from '../types';
 import { getBeneficiarios, getBeneficiariosByTecnico } from '../services/beneficiariosDB.service';
 import { getFormulariosLocales } from '../services/database';
+import { useAuth } from '../store/AuthContext';
+import { cargarFiltroAsignacion } from '../utils/visibilidadAsignacion';
 import { buscarVisitaCompletada, normalizarCedula } from '../utils/llaveVisita';
 
 interface Props {
@@ -68,6 +70,7 @@ const SelectorBeneficiarioModal: React.FC<Props> = ({
   const [beneficiarios, setBeneficiarios] = useState<BeneficiarioDB[]>([]);
   const [formularios, setFormularios] = useState<Formulario[]>([]);
   const [busqueda, setBusqueda] = useState('');
+  const { user } = useAuth();
 
   useEffect(() => {
     if (!visible) return;
@@ -77,8 +80,13 @@ const SelectorBeneficiarioModal: React.FC<Props> = ({
     (async () => {
       try {
         let lista = tecnicoId ? await getBeneficiariosByTecnico(tecnicoId).catch(() => []) : [];
-        // Sin asignados en el espejo local: se ofrece el padrón completo.
-        if (lista.length === 0) lista = await getBeneficiarios().catch(() => []);
+        // Sin asignados en el espejo local: se ofrece el padrón completo,
+        // pero a un técnico nunca se le ofrecen beneficiarios desasignados o
+        // de otro técnico (ver utils/visibilidadAsignacion.ts).
+        if (lista.length === 0) {
+          const visibleParaMi = await cargarFiltroAsignacion(user);
+          lista = (await getBeneficiarios().catch(() => [])).filter((b) => visibleParaMi(b.cedula));
+        }
         const forms = await getFormulariosLocales().catch(() => [] as Formulario[]);
         if (!activo) return;
         setBeneficiarios(lista.filter((b) => !!normalizarCedula(b.cedula)));
@@ -90,7 +98,7 @@ const SelectorBeneficiarioModal: React.FC<Props> = ({
     return () => {
       activo = false;
     };
-  }, [visible, tecnicoId]);
+  }, [visible, tecnicoId, user]);
 
   const filas = useMemo<Fila[]>(() => {
     const cedActual = normalizarCedula(cedulaActual);
