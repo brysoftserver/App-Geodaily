@@ -155,6 +155,25 @@ router.post('/sync', authenticateToken, async (req, res) => {
         datos = conservado;
       }
 
+      // La interventoría puede haber firmado el BORRADOR del servidor desde las
+      // entregas antes de que el técnico publicara: esa firma no se pierde.
+      if (tipo === TIPO_MULTIPLE && !esFirma(datos.firmaInterventoria)) {
+        const bor = await db.queryOne(
+          'SELECT datos FROM otros_formatos_borradores WHERE id = $1',
+          [idFormato(cedula, tipo, instancia)]
+        );
+        const dbor = bor && parsear(bor.datos);
+        if (dbor && esFirma(dbor.firmaInterventoria)) {
+          datos = {
+            ...datos,
+            firmaInterventoria: dbor.firmaInterventoria,
+            interventoriaNombre: dbor.interventoriaNombre || datos.interventoriaNombre || '',
+            interventoriaCargo: dbor.interventoriaCargo || datos.interventoriaCargo || '',
+          };
+          console.log(`[OtrosFormatos] ${f.id}: se tomó la firma de interventoría del borrador del servidor`);
+        }
+      }
+
       // El autor SIEMPRE es quien sube (nunca se confía en el tecnico_id que
       // manda el cliente): así el registro queda atribuido a su dueño real.
       await db.query(
@@ -267,6 +286,11 @@ router.put('/borradores/:id', authenticateToken, async (req, res) => {
       for (const campo of CAMPOS_FIRMA) {
         if (esFirma(dp[campo]) && !esFirma(datos[campo])) final[campo] = dp[campo];
       }
+      // Firma de interventoría conservada → también quién firmó.
+      if (esFirma(dp.firmaInterventoria) && !esFirma(datos.firmaInterventoria)) {
+        final.interventoriaNombre = dp.interventoriaNombre || datos.interventoriaNombre || '';
+        final.interventoriaCargo = dp.interventoriaCargo || datos.interventoriaCargo || '';
+      }
     }
 
     await db.query(
@@ -312,6 +336,152 @@ router.get('/borradores/:id', authenticateToken, async (req, res) => {
   } catch (error) {
     console.error('[OtrosFormatos] Error leyendo borrador:', error);
     res.status(500).json({ estado: 'error', mensaje: 'Error al obtener el borrador' });
+  }
+});
+
+// ------------------------------------------------------------
+// Acta de Entrega vista y firmada por la interventoría desde las entregas
+// ------------------------------------------------------------
+// El acta puede estar publicada (otros_formatos), en borrador respaldado
+// (otros_formatos_borradores) o en ambas. Estas rutas la combinan: los datos
+// de la publicada (o del borrador si no hay publicada) y, si a una le falta
+// una firma que la otra tiene, se completa. La firma de interventoría se
+// escribe en TODAS las copias que existan y NUNCA cambia el técnico dueño.
+
+const parsear = (d) => (typeof d === 'string' ? JSON.parse(d) : d || {});
+const CAMPOS_FIRMA_ACTA = ['firmaBeneficiario', 'firmaTecnico', 'firmaInterventoria'];
+
+const combinarActa = (pub, bor) => {
+  const dp = pub ? parsear(pub.datos) : null;
+  const db_ = bor ? parsear(bor.datos) : null;
+  const base = { ...(dp || db_ || {}) };
+  const otra = dp ? db_ : null;
+  if (otra) {
+    for (const c of CAMPOS_FIRMA_ACTA) {
+      if (!esFirma(base[c]) && esFirma(otra[c])) base[c] = otra[c];
+    }
+    if (esFirma(base.firmaInterventoria) && !esFirma(dp.firmaInterventoria)) {
+      base.interventoriaNombre = otra.interventoriaNombre || base.interventoriaNombre || '';
+      base.interventoriaCargo = otra.interventoriaCargo || base.interventoriaCargo || '';
+    }
+  }
+  return base;
+};
+
+const leerActaCombinada = async (id) => {
+  const pub = await db.queryOne(
+    `SELECT id, tecnico_id, tecnico_nombre, tecnico_usuario, beneficiario_cedula, beneficiario_nombre, datos, updated_at
+       FROM otros_formatos WHERE id = $1 AND tipo = $2`,
+    [id, TIPO_MULTIPLE]
+  );
+  const bor = await db.queryOne(
+    `SELECT id, tecnico_id, tecnico_usuario, beneficiario_cedula, datos, updated_at
+       FROM otros_formatos_borradores WHERE id = $1 AND tipo = $2`,
+    [id, TIPO_MULTIPLE]
+  );
+  return { pub, bor };
+};
+
+// POST /api/otros-formatos/actas/estado — { ids: [...] } → estado y firmas de cada acta.
+// Roles superiores (para pintar la lista de entregas).
+router.post('/actas/estado', authenticateToken, async (req, res) => {
+  try {
+    if (!esSuperior(req.user)) return res.status(403).json({ estado: 'error', mensaje: 'No autorizado' });
+    const ids = (Array.isArray(req.body?.ids) ? req.body.ids : []).map((x) => String(x)).slice(0, 2000);
+    if (!ids.length) return res.json({ estado: 'ok', actas: {} });
+    const resumen = (tabla) =>
+      db.queryAll(
+        `SELECT id,
+                (datos->>'firmaBeneficiario') LIKE 'data:image%' AS fb,
+                (datos->>'firmaTecnico') LIKE 'data:image%' AS ft,
+                (datos->>'firmaInterventoria') LIKE 'data:image%' AS fi
+           FROM ${tabla} WHERE tipo = $1 AND id = ANY($2::text[])`,
+        [TIPO_MULTIPLE, ids]
+      );
+    const [pubs, bors] = await Promise.all([resumen('otros_formatos'), resumen('otros_formatos_borradores')]);
+    const actas = {};
+    for (const b of bors) actas[b.id] = { estado: 'borrador', firmaBeneficiario: !!b.fb, firmaTecnico: !!b.ft, firmaInterventoria: !!b.fi };
+    for (const p of pubs) {
+      const b = actas[p.id];
+      actas[p.id] = {
+        estado: 'publicada',
+        firmaBeneficiario: !!p.fb || !!b?.firmaBeneficiario,
+        firmaTecnico: !!p.ft || !!b?.firmaTecnico,
+        firmaInterventoria: !!p.fi || !!b?.firmaInterventoria,
+      };
+    }
+    res.json({ estado: 'ok', actas });
+  } catch (error) {
+    console.error('[OtrosFormatos] Error en estado de actas:', error);
+    res.status(500).json({ estado: 'error', mensaje: 'Error al consultar las actas' });
+  }
+});
+
+// GET /api/otros-formatos/actas/:id — acta combinada (publicada + borrador).
+// Técnico dueño o roles superiores.
+router.get('/actas/:id', authenticateToken, async (req, res) => {
+  try {
+    const { pub, bor } = await leerActaCombinada(req.params.id);
+    if (!pub && !bor) return res.status(404).json({ estado: 'error', mensaje: 'Acta no encontrada' });
+    const dueno = pub?.tecnico_id || bor?.tecnico_id;
+    if (!esSuperior(req.user) && dueno !== req.user.id) {
+      return res.status(403).json({ estado: 'error', mensaje: 'No autorizado' });
+    }
+    res.json({
+      estado: 'ok',
+      acta: {
+        id: req.params.id,
+        estado: pub ? 'publicada' : 'borrador',
+        tecnico_id: dueno,
+        tecnico_nombre: pub?.tecnico_nombre || null,
+        tecnico_usuario: pub?.tecnico_usuario || bor?.tecnico_usuario || null,
+        beneficiario_cedula: pub?.beneficiario_cedula || bor?.beneficiario_cedula,
+        datos: combinarActa(pub, bor),
+        updated_at: pub?.updated_at || bor?.updated_at,
+      },
+    });
+  } catch (error) {
+    console.error('[OtrosFormatos] Error leyendo acta combinada:', error);
+    res.status(500).json({ estado: 'error', mensaje: 'Error al obtener el acta' });
+  }
+});
+
+// POST /api/otros-formatos/actas/:id/firma-interventoria — { firma, nombre, cargo }
+// SOLO el rol interventor. Firma la publicada y/o el borrador.
+router.post('/actas/:id/firma-interventoria', authenticateToken, async (req, res) => {
+  try {
+    if (req.user?.rol !== 'interventor') {
+      return res.status(403).json({ estado: 'error', mensaje: 'Solo la interventoría puede firmar esta acta' });
+    }
+    const { firma, nombre, cargo } = req.body || {};
+    if (!esFirma(firma)) return res.status(400).json({ estado: 'error', mensaje: 'Se requiere la firma como imagen' });
+    const nombreFirma = String(nombre || req.user.nombre || '').trim().slice(0, 200);
+    if (!nombreFirma) return res.status(400).json({ estado: 'error', mensaje: 'Falta el nombre de quien firma' });
+
+    const id = req.params.id;
+    const { pub, bor } = await leerActaCombinada(id);
+    if (!pub && !bor) return res.status(404).json({ estado: 'error', mensaje: 'Acta no encontrada' });
+
+    const parche = {
+      firmaInterventoria: firma,
+      interventoriaNombre: nombreFirma,
+      interventoriaCargo: String(cargo || '').trim().slice(0, 200),
+    };
+    const json = JSON.stringify(parche);
+    if (pub) {
+      // El PDF guardado queda sin la firma: se descarta para regenerarlo.
+      await db.query(`UPDATE otros_formatos SET datos = datos || $2::jsonb, pdf_path = NULL, updated_at = NOW() WHERE id = $1`, [id, json]);
+    }
+    if (bor) {
+      // cliente_updated_at no se toca: el técnico sigue pudiendo guardar su borrador
+      // (y la firma no se pierde porque nunca se reemplaza por vacío).
+      await db.query(`UPDATE otros_formatos_borradores SET datos = datos || $2::jsonb, updated_at = NOW() WHERE id = $1`, [id, json]);
+    }
+    console.log(`[OtrosFormatos] Firma de interventoría en ${id} (${pub ? 'publicada' : ''}${pub && bor ? '+' : ''}${bor ? 'borrador' : ''}) por ${req.user.usuario}`);
+    res.json({ estado: 'ok', mensaje: 'Firma registrada', datos: parche });
+  } catch (error) {
+    console.error('[OtrosFormatos] Error al firmar acta:', error);
+    res.status(500).json({ estado: 'error', mensaje: 'Error al registrar la firma' });
   }
 });
 

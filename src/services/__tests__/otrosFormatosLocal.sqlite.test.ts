@@ -115,6 +115,37 @@ describe('otros_formatos_locales con SQLite real', () => {
     expect((await db.getOtroFormatoLocalPorId('of-evaluacion_eca-96353946'))?.datos).toEqual({ a: 1 });
   });
 
+  it('guarda en la tabla vieja con datos_json NOT NULL (esquema real reportado por el teléfono de Deily)', async () => {
+    const sqlite = require('expo-sqlite');
+    const conexion = await sqlite.openDatabaseAsync('geodaily.db');
+    await conexion.execAsync(`
+      CREATE TABLE otros_formatos_locales (
+        id TEXT PRIMARY KEY,
+        tecnico_id TEXT,
+        tecnico_nombre TEXT,
+        tecnico_usuario TEXT,
+        beneficiario_cedula TEXT NOT NULL,
+        beneficiario_nombre TEXT,
+        tipo TEXT NOT NULL,
+        datos_json TEXT NOT NULL,
+        completo INTEGER DEFAULT 1,
+        sincronizado INTEGER DEFAULT 0,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+    `);
+    const db = require('../database');
+    await db.initDatabase();
+    await db.saveOtroFormatoLocal(formato('emwatmbxf761b'));
+    // Segundo guardado (actualización) por la misma vía.
+    await db.saveOtroFormatoLocal(formato('emwatmbxf761b', { predio: 'La Esperanza' }));
+    const id = db.idOtroFormato('acta_entrega_individual', '17646484', 'emwatmbxf761b');
+    const leido = await db.getOtroFormatoLocalPorId(id);
+    expect(leido?.datos.firmaBeneficiario).toBe(FIRMA);
+    expect(leido?.datos.predio).toBe('La Esperanza');
+    expect((await db.getOtrosFormatosNoSincronizados()).map((p: any) => p.id)).toContain(id);
+  });
+
   it('un guardado no queda dentro de la transacción larga de beneficiarios', async () => {
     const db = require('../database');
     await db.initDatabase();

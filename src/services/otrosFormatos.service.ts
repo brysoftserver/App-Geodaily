@@ -933,3 +933,71 @@ export const actaPublicadaEnServidor = async (cedula: string, instancia: string)
     return false;
   }
 };
+
+// ============================================================
+// Acta de Entrega vista y firmada por la interventoría (desde las entregas)
+// ============================================================
+
+export interface ActaServidor {
+  id: string;
+  estado: 'publicada' | 'borrador';
+  tecnico_id: string | null;
+  tecnico_nombre: string | null;
+  tecnico_usuario: string | null;
+  beneficiario_cedula: string;
+  datos: Record<string, any>;
+  updated_at: string;
+}
+
+export interface EstadoActaServidor {
+  estado: 'publicada' | 'borrador';
+  firmaBeneficiario: boolean;
+  firmaTecnico: boolean;
+  firmaInterventoria: boolean;
+}
+
+/**
+ * Acta combinada del servidor (publicada + borrador respaldado, con las
+ * firmas que tenga cualquiera de las dos). null si no hay o sin red.
+ */
+export const obtenerActaServidor = async (cedula: string, instancia: string): Promise<ActaServidor | null> => {
+  try {
+    const id = idOtroFormato(TIPO_ACTA, cedula, instancia);
+    const r = await apiClient.get(`${API_CONFIG.ENDPOINTS.OTROS_FORMATOS}/actas/${encodeURIComponent(id)}`, { timeout: 15000 });
+    const a = r.data?.acta;
+    if (!a) return null;
+    return { ...a, datos: typeof a.datos === 'string' ? JSON.parse(a.datos) : a.datos || {} };
+  } catch (err: any) {
+    if (err?.response?.status === 404) return null;
+    throw err;
+  }
+};
+
+/** Estado y firmas de varias actas (para la lista de entregas de los revisores). */
+export const estadoActasServidor = async (ids: string[]): Promise<Record<string, EstadoActaServidor>> => {
+  if (!ids.length) return {};
+  const r = await apiClient.post(`${API_CONFIG.ENDPOINTS.OTROS_FORMATOS}/actas/estado`, { ids }, { timeout: 20000 });
+  return r.data?.actas || {};
+};
+
+/**
+ * La interventoría firma el acta de una entrega (publicada y/o borrador).
+ * Solo el rol interventor (el servidor lo exige). Necesita red.
+ * Devuelve los campos a mezclar en `datos`.
+ */
+export const firmarActaEntregaInterventoria = async (params: {
+  cedula: string;
+  instancia: string;
+  firma: string;
+  nombre: string;
+  cargo: string;
+}): Promise<Record<string, any>> => {
+  const id = idOtroFormato(TIPO_ACTA, params.cedula, params.instancia);
+  const r = await apiClient.post(
+    `${API_CONFIG.ENDPOINTS.OTROS_FORMATOS}/actas/${encodeURIComponent(id)}/firma-interventoria`,
+    { firma: params.firma, nombre: params.nombre, cargo: params.cargo },
+    { timeout: 30000 }
+  );
+  if (r.data?.estado !== 'ok') throw new Error(r.data?.mensaje || 'No se pudo registrar la firma');
+  return r.data.datos || {};
+};

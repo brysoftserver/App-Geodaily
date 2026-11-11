@@ -32,6 +32,10 @@ import { avisar } from '../../utils/dialogos';
 import { BotonOkInterventoria, ESTILO_CARD_REVISADA, EtiquetaRevisado } from '../../components/actividades/RevisionInterventoria';
 import { useRevisionInterventoria } from '../../hooks/useRevisionInterventoria';
 import { EntregaServidor, FotoEntrega, fuenteFotoEntrega, listarEntregasServidor } from '../../services/actividadesEntregas.service';
+import { estadoActasServidor, EstadoActaServidor } from '../../services/otrosFormatos.service';
+import { idOtroFormato } from '../../services/database';
+import ActaEntregaRevision, { ActaARevisar } from '../../components/actividades/ActaEntregaRevision';
+import { useAuth } from '../../store/AuthContext';
 
 type Fuente = { uri: string; headers?: Record<string, string> };
 
@@ -106,6 +110,25 @@ const EntregasRevision: React.FC<{ actividadId: string; subId: string }> = ({ ac
   const [filtro, setFiltro] = useState('');
   const [abiertas, setAbiertas] = useState<Record<string, boolean>>({});
   const [visor, setVisor] = useState<Fuente | null>(null);
+  const { isInterventor } = useAuth();
+  /** Estado del acta de cada entrega en el servidor (por id del acta). */
+  const [actas, setActas] = useState<Record<string, EstadoActaServidor>>({});
+  const [actaAbierta, setActaAbierta] = useState<ActaARevisar | null>(null);
+
+  const idActa = (e: EntregaServidor) =>
+    e.datos.beneficiario?.cedula && e.datos.actaInstancia
+      ? idOtroFormato('acta_entrega_individual', e.datos.beneficiario.cedula, e.datos.actaInstancia)
+      : null;
+
+  const cargarActas = useCallback(async (lista: EntregaServidor[]) => {
+    const ids = lista.map(idActa).filter((x): x is string => !!x);
+    try {
+      setActas(await estadoActasServidor(ids));
+    } catch {
+      // Sin red: las tarjetas quedan sin estado del acta; el botón igual la abre.
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const cargar = useCallback(async (esRefresh = false) => {
     try {
@@ -113,7 +136,9 @@ const EntregasRevision: React.FC<{ actividadId: string; subId: string }> = ({ ac
         setRefrescando(true);
         revision.recargar();
       }
-      setEntregas(await listarEntregasServidor(actividadId));
+      const lista = await listarEntregasServidor(actividadId);
+      setEntregas(lista);
+      void cargarActas(lista);
     } catch (e) {
       avisar('No se pudo cargar', mensajeError(e, 'Inténtalo de nuevo.'));
     } finally {
@@ -168,6 +193,14 @@ const EntregasRevision: React.FC<{ actividadId: string; subId: string }> = ({ ac
           const b = e.datos.beneficiario;
           const fotos = e.datos.fotos ?? [];
           const abierta = !!abiertas[e.id];
+          const id = idActa(e);
+          const estadoActa = id ? actas[id] : undefined;
+          const textoActa = !id
+            ? 'Acta: sin beneficiario'
+            : !estadoActa
+              ? 'Acta: aún no está en el servidor'
+              : `Acta: ${estadoActa.estado === 'publicada' ? 'completada' : 'borrador'} · Interventoría: ${estadoActa.firmaInterventoria ? '✓ firmada' : 'pendiente'}`;
+          const colorActa = estadoActa?.firmaInterventoria ? COLORS.success : COLORS.warning;
           return (
             <View style={[styles.card, styles.cardEntrega, revisado && ESTILO_CARD_REVISADA]}>
               <View style={styles.filaEntrega}>
@@ -177,9 +210,27 @@ const EntregasRevision: React.FC<{ actividadId: string; subId: string }> = ({ ac
                   {b?.cedula ? <Text style={styles.dato}>C.C. {b.cedula}</Text> : null}
                   <Text style={styles.dato}>{e.datos.lugar?.trim() || 'Lugar sin registrar'}</Text>
                   <Text style={styles.dato}>{fechaCorta(e.created_at)}</Text>
+                  <Text style={[styles.dato, { color: colorActa, fontWeight: FONTS.weights.semibold }]}>{textoActa}</Text>
                   <EtiquetaRevisado revisado={revisado} pendiente />
                 </View>
                 <View style={styles.acciones}>
+                  {id && b?.cedula ? (
+                    <TouchableOpacity
+                      style={[styles.btnSec, { marginBottom: SPACING.xs }, isInterventor && estadoActa && !estadoActa.firmaInterventoria && styles.btnFirmar]}
+                      onPress={() =>
+                        setActaAbierta({
+                          cedula: b.cedula,
+                          instancia: e.datos.actaInstancia,
+                          beneficiarioNombre: b.nombre,
+                          titulo: `Acta · Entrega ${e.numero}`,
+                        })
+                      }
+                    >
+                      <Text style={[styles.btnSecTxt, isInterventor && estadoActa && !estadoActa.firmaInterventoria && { color: '#fff' }]}>
+                        {isInterventor && estadoActa && !estadoActa.firmaInterventoria ? '✍️ Firmar' : '📄 Acta'}
+                      </Text>
+                    </TouchableOpacity>
+                  ) : null}
                   <TouchableOpacity
                     style={[styles.btnSec, fotos.length === 0 && { opacity: 0.5 }]}
                     onPress={() => setAbiertas((a) => ({ ...a, [e.id]: !abierta }))}
@@ -205,6 +256,12 @@ const EntregasRevision: React.FC<{ actividadId: string; subId: string }> = ({ ac
             </View>
           );
         }}
+      />
+
+      <ActaEntregaRevision
+        acta={actaAbierta}
+        onClose={() => setActaAbierta(null)}
+        onFirmada={() => void cargarActas(entregas)}
       />
 
       <Modal visible={visor !== null} animationType="fade" transparent onRequestClose={() => setVisor(null)}>
@@ -246,6 +303,7 @@ const styles = StyleSheet.create({
   acciones: { marginLeft: SPACING.sm, minWidth: 80 },
   btnSec: { borderRadius: BORDER_RADIUS.md, paddingVertical: 6, paddingHorizontal: SPACING.sm, alignItems: 'center', borderWidth: 1, borderColor: COLORS.primary, backgroundColor: COLORS.surface },
   btnSecTxt: { color: COLORS.primary, fontWeight: FONTS.weights.semibold, fontSize: FONTS.sizes.sm },
+  btnFirmar: { backgroundColor: COLORS.primary },
   grilla: { flexDirection: 'row', flexWrap: 'wrap', gap: SPACING.sm, marginTop: SPACING.sm },
   mini: { width: TAM_MINI, height: TAM_MINI, borderRadius: BORDER_RADIUS.md, backgroundColor: COLORS.background, overflow: 'hidden', alignItems: 'center', justifyContent: 'center' },
   miniImg: { width: '100%', height: '100%' },

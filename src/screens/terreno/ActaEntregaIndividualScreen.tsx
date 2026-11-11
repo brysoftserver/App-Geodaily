@@ -45,7 +45,7 @@ import {
   adjuntarPdfOtroFormato,
   cargarActaExistente,
   republicarActaSiCambio,
-  obtenerBorradorActaServidor,
+  obtenerActaServidor,
   subirBorradorActa,
 } from '../../services/otrosFormatos.service';
 import { avisar, confirmar } from '../../utils/dialogos';
@@ -164,15 +164,30 @@ const ActaEntregaIndividualScreen: React.FC<Props> = ({ route, navigation }) => 
           }
         }
         // Abierta en otro dispositivo (p. ej. la tablet con la misma cuenta) o
-        // con firmas que no están aquí: el borrador respaldado en el servidor.
-        const firmasIncompletas = !g || !g.firmaBeneficiario || !g.firmaTecnico;
+        // con firmas que no están aquí —incluida la de interventoría, que el
+        // interventor pone desde su cuenta—: el acta del servidor (publicada
+        // y/o borrador respaldado).
+        const firmasIncompletas = !g || !g.firmaBeneficiario || !g.firmaTecnico || !g.firmaInterventoria;
         if (instanciaExistente && beneficiario?.cedula && firmasIncompletas) {
-          const srv = await obtenerBorradorActaServidor(beneficiario.cedula, instanciaExistente);
+          let srv: Record<string, any> | null = null;
+          try {
+            srv = (await obtenerActaServidor(beneficiario.cedula, instanciaExistente))?.datos ?? null;
+          } catch {
+            srv = null; // sin red: se sigue con lo local
+          }
           if (srv) {
             if (!g) g = srv;
             else {
-              for (const campo of ['firmaBeneficiario', 'firmaTecnico', 'firmaInterventoria'] as const) {
+              for (const campo of ['firmaBeneficiario', 'firmaTecnico'] as const) {
                 if (!g[campo] && srv[campo]) g = { ...g, [campo]: srv[campo] };
+              }
+              if (!g.firmaInterventoria && srv.firmaInterventoria) {
+                g = {
+                  ...g,
+                  firmaInterventoria: srv.firmaInterventoria,
+                  interventoriaNombre: srv.interventoriaNombre || g.interventoriaNombre || '',
+                  interventoriaCargo: srv.interventoriaCargo || g.interventoriaCargo || '',
+                };
               }
             }
           }

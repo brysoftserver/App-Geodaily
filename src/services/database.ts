@@ -2964,7 +2964,8 @@ export const idOtroFormato = (tipo: string, cedula: string, instancia?: string |
 const filaAOtroFormato = (row: any): OtroFormatoLocal => {
   let datos: Record<string, any> = {};
   try {
-    datos = row.datos ? JSON.parse(row.datos) : {};
+    const crudo = row.datos && row.datos !== '{}' ? row.datos : row.datos_json || row.datos;
+    datos = crudo ? JSON.parse(crudo) : {};
   } catch {
     datos = {};
   }
@@ -3005,17 +3006,21 @@ export const saveOtroFormatoLocal = async (
   await esperarTransaccionLarga();
   const ahora = new Date().toISOString();
   const id = idOtroFormato(f.tipo, f.beneficiario_cedula, f.datos?.instancia);
-  const insertar = () => database.runAsync(
+  const json = JSON.stringify(f.datos || {});
+  // Tablas creadas por una versión vieja de la app tienen `datos_json`
+  // (NOT NULL) en vez de `datos`: en ese caso se escriben las dos columnas.
+  const insertar = (conDatosJson: boolean) => database.runAsync(
     `INSERT INTO otros_formatos_locales
        (id, tecnico_id, tecnico_nombre, tecnico_usuario, beneficiario_cedula, beneficiario_nombre,
-        tipo, datos, completo, sincronizado, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+        tipo, datos, ${conDatosJson ? 'datos_json, ' : ''}completo, sincronizado, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ${conDatosJson ? '?, ' : ''}?, 0, ?, ?)
      ON CONFLICT(id) DO UPDATE SET
        tecnico_id = excluded.tecnico_id,
        tecnico_nombre = excluded.tecnico_nombre,
        tecnico_usuario = excluded.tecnico_usuario,
        beneficiario_nombre = excluded.beneficiario_nombre,
        datos = excluded.datos,
+       ${conDatosJson ? 'datos_json = excluded.datos_json,' : ''}
        completo = excluded.completo,
        sincronizado = 0,
        updated_at = excluded.updated_at`,
@@ -3027,14 +3032,16 @@ export const saveOtroFormatoLocal = async (
       f.beneficiario_cedula,
       f.beneficiario_nombre || null,
       f.tipo,
-      JSON.stringify(f.datos || {}),
+      json,
+      ...(conDatosJson ? [json] : []),
       f.completo ? 1 : 0,
       ahora,
       ahora,
     ]
   );
   try {
-    await insertar();
+    if (tablaFormatosConDatosJson === null) tablaFormatosConDatosJson = await tieneColumnaDatosJson(database);
+    await insertar(tablaFormatosConDatosJson);
   } catch (error) {
     // Se recoge el estado de la tabla para el diagnóstico remoto, se repara
     // (sin borrar nada) y se reintenta una vez.
@@ -3042,7 +3049,8 @@ export const saveOtroFormatoLocal = async (
     try {
       diagnostico.antes = await describirTablaOtrosFormatos(database);
       diagnostico.reparacion = await repararTablaOtrosFormatos(database);
-      await insertar();
+      tablaFormatosConDatosJson = await tieneColumnaDatosJson(database);
+      await insertar(tablaFormatosConDatosJson);
       console.warn('[DB] Formato guardado tras reparar otros_formatos_locales:', diagnostico.reparacion);
       return;
     } catch (error2) {
@@ -3051,6 +3059,17 @@ export const saveOtroFormatoLocal = async (
     const e = error instanceof Error ? error : new Error(String(error));
     (e as any).diagnostico = diagnostico;
     throw e;
+  }
+};
+
+/** ¿otros_formatos_locales es la versión vieja con `datos_json`? (se consulta una vez por sesión) */
+let tablaFormatosConDatosJson: boolean | null = null;
+const tieneColumnaDatosJson = async (database: SQLite.SQLiteDatabase): Promise<boolean> => {
+  try {
+    const cols = await database.getAllAsync<{ name: string }>('PRAGMA table_info(otros_formatos_locales)');
+    return cols.some((c) => c.name === 'datos_json');
+  } catch {
+    return false;
   }
 };
 
