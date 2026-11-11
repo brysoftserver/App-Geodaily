@@ -56,7 +56,7 @@ import {
   subirFotoEvidencia,
 } from '../../services/actividadesEvidencias.service';
 import { actasLocalesDeActividad } from '../../services/estadoActaLocal';
-import { presentacionActa, TonoActa } from '../../utils/estadoActa';
+import { esFirmaDibujada, presentacionActa, TonoActa } from '../../utils/estadoActa';
 
 const COLOR_TONO: Record<TonoActa, string> = {
   gris: COLORS.textSecondary,
@@ -153,7 +153,7 @@ const ActividadBeneficiarioScreen: React.FC<any> = ({ navigation, route }) => {
               instancia: String(f.datos?.instancia ?? ''),
               fecha: String(f.datos?.fecha || f.updated_at),
               tienePdf: false,
-              firmadaInterventoria: !!f.datos?.firmaInterventoria,
+              firmadaInterventoria: esFirmaDibujada(f.datos?.firmaInterventoria),
               resumen: (Array.isArray(f.datos?.actividades) ? f.datos.actividades : [])
                 .map((x: any) => x?.descripcion)
                 .filter(Boolean)
@@ -398,7 +398,7 @@ const ActividadBeneficiarioScreen: React.FC<any> = ({ navigation, route }) => {
       )}
       {listaActas.map((a) => {
         const pendientes = a.observaciones.filter((o) => !o.resuelta);
-        const estado = presentacionActa(a.pendienteSubir ? 'pendiente_subir' : 'completada', a.faltantes);
+        const estado = presentacionActa(a.pendienteSubir ? 'pendiente_subir' : 'completada', a.faltantes, a.firmadaInterventoria);
         return (
           <View key={a.id} style={styles.acta}>
             <TouchableOpacity style={styles.actaCabecera} onPress={() => abrirActa(a)} activeOpacity={0.7}>
@@ -407,11 +407,11 @@ const ActividadBeneficiarioScreen: React.FC<any> = ({ navigation, route }) => {
                   {new Date(a.fecha).toLocaleDateString('es-CO', { day: 'numeric', month: 'short', year: 'numeric' })}
                 </Text>
                 {a.resumen ? <Text style={styles.dato} numberOfLines={2}>{a.resumen}</Text> : null}
-                <Text style={[styles.estado, { color: COLOR_TONO[estado.tono] }]}>{estado.txt}</Text>
+                <Text style={[styles.estado, { color: COLOR_TONO[estado.tonoTxt] }]}>{estado.txt}</Text>
+                {estado.interventor ? (
+                  <Text style={[styles.estado, { color: COLOR_TONO[estado.interventor.tono] }]}>{estado.interventor.txt}</Text>
+                ) : null}
                 {estado.sub ? <Text style={styles.estadoSub}>{estado.sub}</Text> : null}
-                <Text style={[styles.estado, { color: a.firmadaInterventoria ? COLORS.success : COLORS.textSecondary }]}>
-                  {a.firmadaInterventoria ? '✓ Firmada por interventoría' : '⏳ Pendiente de firma de interventoría'}
-                </Text>
               </View>
               {abriendoActa === a.id ? <ActivityIndicator color={COLORS.primary} /> : <Text style={styles.flecha}>›</Text>}
             </TouchableOpacity>

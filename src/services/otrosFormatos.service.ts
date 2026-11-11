@@ -954,6 +954,8 @@ export interface EstadoActaServidor {
   firmaBeneficiario: boolean;
   firmaTecnico: boolean;
   firmaInterventoria: boolean;
+  /** Pendientes con los que el técnico la completó (solo publicadas). */
+  faltantes?: string[];
 }
 
 /**
@@ -973,7 +975,7 @@ export const obtenerActaServidor = async (cedula: string, instancia: string): Pr
   }
 };
 
-/** Estado y firmas de varias actas (para la lista de entregas de los revisores). */
+/** Estado y firmas de varias actas (lista de entregas: revisores, o el técnico con las suyas). */
 export const estadoActasServidor = async (ids: string[]): Promise<Record<string, EstadoActaServidor>> => {
   if (!ids.length) return {};
   const r = await apiClient.post(`${API_CONFIG.ENDPOINTS.OTROS_FORMATOS}/actas/estado`, { ids }, { timeout: 20000 });

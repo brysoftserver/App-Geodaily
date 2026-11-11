@@ -9,21 +9,19 @@ import { idOtroFormato, getOtrosFormatosLocales, OtroFormatoLocal } from './data
 import { listarRespaldos } from './otrosFormatosRespaldo';
 import { obtenerFormatoLocalPorId, borradorActaRespaldado } from './otrosFormatos.service';
 import { cargarDatosOtroFormato } from '../store/OtrosFormatosDraftStore';
-import { EstadoActa, limpiarFaltantes } from '../utils/estadoActa';
+import { ActaSegunTelefono, esFirmaDibujada, limpiarFaltantes } from '../utils/estadoActa';
 
-export interface EstadoActaLocal {
-  estado: EstadoActa;
-  faltantes: string[];
-}
+export type EstadoActaLocal = ActaSegunTelefono;
 
 export const leerEstadoActaLocal = async (cedula?: string | null, instancia?: string | null): Promise<EstadoActaLocal> => {
-  if (!cedula) return { estado: 'sin_diligenciar', faltantes: [] };
+  if (!cedula) return { estado: 'sin_diligenciar', faltantes: [], firmaInterventoria: false };
   try {
     const completada = await obtenerFormatoLocalPorId(idOtroFormato('acta_entrega_individual', cedula, instancia));
     if (completada) {
       return {
         estado: completada.sincronizado ? 'completada' : 'pendiente_subir',
         faltantes: limpiarFaltantes(completada.datos?.faltantes),
+        firmaInterventoria: esFirmaDibujada(completada.datos?.firmaInterventoria),
       };
     }
     const clave = `${cedula}__${instancia}`;
@@ -32,12 +30,13 @@ export const leerEstadoActaLocal = async (cedula?: string | null, instancia?: st
       return {
         estado: (await borradorActaRespaldado(cedula, String(instancia ?? ''))) ? 'borrador_respaldado' : 'borrador',
         faltantes: [],
+        firmaInterventoria: false,
       };
     }
   } catch {
     // Sin acceso a la base local: se muestra como sin diligenciar.
   }
-  return { estado: 'sin_diligenciar', faltantes: [] };
+  return { estado: 'sin_diligenciar', faltantes: [], firmaInterventoria: false };
 };
 
 /**

@@ -383,10 +383,12 @@ const leerActaCombinada = async (id) => {
 };
 
 // POST /api/otros-formatos/actas/estado — { ids: [...] } → estado y firmas de cada acta.
-// Roles superiores (para pintar la lista de entregas).
+// Roles superiores: cualquier acta (lista de entregas de los revisores).
+// Técnico: solo las suyas (su lista de entregas, también en otro dispositivo).
 router.post('/actas/estado', authenticateToken, async (req, res) => {
   try {
-    if (!esSuperior(req.user)) return res.status(403).json({ estado: 'error', mensaje: 'No autorizado' });
+    const superior = esSuperior(req.user);
+    if (!superior && !req.user?.id) return res.status(403).json({ estado: 'error', mensaje: 'No autorizado' });
     const ids = (Array.isArray(req.body?.ids) ? req.body.ids : []).map((x) => String(x)).slice(0, 2000);
     if (!ids.length) return res.json({ estado: 'ok', actas: {} });
     const resumen = (tabla) =>
@@ -394,20 +396,25 @@ router.post('/actas/estado', authenticateToken, async (req, res) => {
         `SELECT id,
                 (datos->>'firmaBeneficiario') LIKE 'data:image%' AS fb,
                 (datos->>'firmaTecnico') LIKE 'data:image%' AS ft,
-                (datos->>'firmaInterventoria') LIKE 'data:image%' AS fi
-           FROM ${tabla} WHERE tipo = $1 AND id = ANY($2::text[])`,
-        [TIPO_MULTIPLE, ids]
+                (datos->>'firmaInterventoria') LIKE 'data:image%' AS fi,
+                datos->'faltantes' AS faltantes
+           FROM ${tabla} WHERE tipo = $1 AND id = ANY($2::text[])
+           ${superior ? '' : 'AND tecnico_id = $3'}`,
+        superior ? [TIPO_MULTIPLE, ids] : [TIPO_MULTIPLE, ids, req.user.id]
       );
     const [pubs, bors] = await Promise.all([resumen('otros_formatos'), resumen('otros_formatos_borradores')]);
     const actas = {};
     for (const b of bors) actas[b.id] = { estado: 'borrador', firmaBeneficiario: !!b.fb, firmaTecnico: !!b.ft, firmaInterventoria: !!b.fi };
     for (const p of pubs) {
       const b = actas[p.id];
+      const faltantes = parsear(p.faltantes);
       actas[p.id] = {
         estado: 'publicada',
         firmaBeneficiario: !!p.fb || !!b?.firmaBeneficiario,
         firmaTecnico: !!p.ft || !!b?.firmaTecnico,
         firmaInterventoria: !!p.fi || !!b?.firmaInterventoria,
+        /** Lo que el técnico dejó pendiente al completar. */
+        faltantes: Array.isArray(faltantes) ? faltantes : [],
       };
     }
     res.json({ estado: 'ok', actas });

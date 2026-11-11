@@ -21,7 +21,9 @@ import {
   listarEntregasLocales,
 } from '../../services/actividadesEntregas.service';
 import { leerEstadoActaLocal, EstadoActaLocal } from '../../services/estadoActaLocal';
-import { presentacionActa, TonoActa } from '../../utils/estadoActa';
+import { estadoActasServidor } from '../../services/otrosFormatos.service';
+import { idOtroFormato } from '../../services/database';
+import { combinarActa, presentacionActa, TonoActa } from '../../utils/estadoActa';
 
 /** Borde de la tarjeta según el acta: verde completada, amarillo borrador/pendientes, gris sin diligenciar. */
 const COLOR_TONO: Record<TonoActa, string> = {
@@ -37,6 +39,35 @@ const leerActas = async (lista: EntregaLocal[]): Promise<Record<string, EstadoAc
     lista.map(async (e) => [e.id, await leerEstadoActaLocal(e.datos.beneficiario?.cedula, e.datos.actaInstancia)] as const)
   );
   return Object.fromEntries(pares);
+};
+
+/** Id del acta de una entrega (null si aún no tiene beneficiario). */
+const idActa = (e: EntregaLocal): string | null =>
+  e.datos.beneficiario?.cedula ? idOtroFormato('acta_entrega_individual', e.datos.beneficiario.cedula, e.datos.actaInstancia) : null;
+
+/**
+ * Completa lo del teléfono con lo del servidor (una sola consulta para toda la
+ * lista): actas hechas en otro dispositivo y la firma del interventor. Sin
+ * señal devuelve lo del teléfono tal cual.
+ */
+const completarConServidor = async (
+  lista: EntregaLocal[],
+  locales: Record<string, EstadoActaLocal>
+): Promise<Record<string, EstadoActaLocal>> => {
+  const ids = lista.map(idActa).filter((x): x is string => !!x);
+  if (!ids.length) return locales;
+  try {
+    const srv = await estadoActasServidor(ids);
+    const out: Record<string, EstadoActaLocal> = { ...locales };
+    for (const e of lista) {
+      const id = idActa(e);
+      if (!id) continue;
+      out[e.id] = combinarActa(locales[e.id] ?? { estado: 'sin_diligenciar', faltantes: [], firmaInterventoria: false }, srv[id]);
+    }
+    return out;
+  } catch {
+    return locales;
+  }
 };
 
 const EntregasActividadScreen: React.FC<any> = ({ navigation, route }) => {
@@ -60,14 +91,19 @@ const EntregasActividadScreen: React.FC<any> = ({ navigation, route }) => {
     const locales = await listarEntregasLocales(actividadId, user.id);
     setEntregas(locales);
     setCargando(false);
-    setActas(await leerActas(locales));
+    let lista = locales;
+    let actasTel = await leerActas(lista);
+    setActas(actasTel);
     // Con red: trae las hechas en otro teléfono y vuelve a listar.
     if (await importarEntregasDelServidor(actividadId, user.id)) {
-      const todas = await listarEntregasLocales(actividadId, user.id);
-      setEntregas(todas);
-      setActas(await leerActas(todas));
+      lista = await listarEntregasLocales(actividadId, user.id);
+      setEntregas(lista);
+      actasTel = await leerActas(lista);
+      setActas(actasTel);
     }
     setRefrescando(false);
+    // Con red: estado del acta en el servidor (otro dispositivo, firma del interventor).
+    setActas(await completarConServidor(lista, actasTel));
   }, [actividadId, user?.id]);
 
   useFocusEffect(useCallback(() => { cargar(); }, [cargar]));
@@ -111,7 +147,7 @@ const EntregasActividadScreen: React.FC<any> = ({ navigation, route }) => {
         }
         renderItem={({ item: e }) => {
           const ea = actas[e.id];
-          const acta = presentacionActa(ea?.estado ?? 'sin_diligenciar', ea?.faltantes);
+          const acta = presentacionActa(ea?.estado ?? 'sin_diligenciar', ea?.faltantes, ea?.firmaInterventoria);
           return (
           <TouchableOpacity style={[styles.card, { borderLeftColor: COLOR_TONO[acta.tono] }]} activeOpacity={0.7} onPress={() => abrir(e)}>
             <Text style={styles.icon}>📦</Text>
@@ -119,11 +155,15 @@ const EntregasActividadScreen: React.FC<any> = ({ navigation, route }) => {
               <Text style={styles.titulo}>Entrega {e.numero}</Text>
               <Text style={styles.dato} numberOfLines={1}>{resumen(e)}</Text>
               <Text style={styles.dato}>📷 {e.datos.fotos.length} foto(s)</Text>
-              <Text style={[styles.estado, { color: TEXTO_TONO[acta.tono] }]} numberOfLines={2}>
+              <Text style={[styles.estado, { color: TEXTO_TONO[acta.tonoTxt] }]} numberOfLines={2}>
                 {acta.txt}
               </Text>
-              <Text style={[styles.estado, { color: e.sincronizado ? COLORS.success : COLORS.warning }]}>
-                {e.sincronizado ? '☁️ En el servidor' : '📱 Pendiente de subir · se subirá con señal'}
+              {acta.interventor && (
+                <Text style={[styles.estado, { color: TEXTO_TONO[acta.interventor.tono] }]}>{acta.interventor.txt}</Text>
+              )}
+              {/* Estado de la entrega (fotos y lugar), no del acta. */}
+              <Text style={[styles.subEntrega, !e.sincronizado && { color: COLORS.warning }]}>
+                {e.sincronizado ? '☁️ Entrega subida al servidor' : '📱 Entrega pendiente de subir · se subirá con señal'}
               </Text>
             </View>
             <Text style={styles.arrow}>›</Text>
@@ -150,6 +190,7 @@ const styles = StyleSheet.create({
   titulo: { fontSize: FONTS.sizes.lg, fontWeight: FONTS.weights.semibold, color: COLORS.textPrimary },
   dato: { fontSize: FONTS.sizes.sm, color: COLORS.textSecondary, marginTop: 1 },
   estado: { fontSize: FONTS.sizes.xs, fontWeight: FONTS.weights.semibold, marginTop: 3 },
+  subEntrega: { fontSize: FONTS.sizes.xs, color: COLORS.textSecondary, marginTop: 3 },
   arrow: { fontSize: 24, color: COLORS.textLight, marginLeft: SPACING.sm },
   btnAgregar: { backgroundColor: COLORS.primary, borderRadius: BORDER_RADIUS.lg, paddingVertical: SPACING.md, alignItems: 'center', marginTop: SPACING.sm },
   btnAgregarTxt: { color: '#fff', fontWeight: FONTS.weights.bold, fontSize: FONTS.sizes.md },
