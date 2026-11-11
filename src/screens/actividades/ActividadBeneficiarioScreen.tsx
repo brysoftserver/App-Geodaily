@@ -36,6 +36,7 @@ import { buscarActividad } from '../../data/actividades';
 import { avisar, confirmar } from '../../utils/dialogos';
 import PdfViewer from '../../components/PdfViewer';
 import { useAuth } from '../../store/AuthContext';
+import ActaEntregaRevision, { ActaARevisar } from '../../components/actividades/ActaEntregaRevision';
 import { abrirVentanaDeCarga, imprimirHtmlEnVentana } from '../../utils/printWeb';
 import { construirHtmlActaEntregaIndividual, generarPDFActaEntregaIndividual } from '../../services/pdfLocal.service';
 import apiClient, { getApiAuthToken } from '../../services/api';
@@ -105,7 +106,7 @@ const ActividadBeneficiarioScreen: React.FC<any> = ({ navigation, route }) => {
   const actividadId: string = route?.params?.actividadId;
   const beneficiario: BeneficiarioParam = route?.params?.beneficiario;
   const modo: 'ejecutar' | 'revisar' = route?.params?.modo === 'revisar' ? 'revisar' : 'ejecutar';
-  const { user } = useAuth();
+  const { user, isInterventor } = useAuth();
   // El admin, desde la revisión, puede subir / quitar / reemplazar fotos y actas.
   const esAdminRevision = modo === 'revisar' && user?.rol === 'admin';
   const puedeEscribir = modo === 'ejecutar';
@@ -131,6 +132,8 @@ const ActividadBeneficiarioScreen: React.FC<any> = ({ navigation, route }) => {
   const [textoObservacion, setTextoObservacion] = useState('');
   const [enviandoObs, setEnviandoObs] = useState(false);
   const [visorPdf, setVisorPdf] = useState<{ uri: string; titulo: string; key: string } | null>(null);
+  // Acta que el interventor está revisando para firmarla (mismo panel que en las entregas).
+  const [actaAFirmar, setActaAFirmar] = useState<ActaARevisar | null>(null);
 
   useLayoutEffect(() => {
     navigation.setOptions({ title: beneficiario?.nombre ?? 'Beneficiario' });
@@ -322,20 +325,10 @@ const ActividadBeneficiarioScreen: React.FC<any> = ({ navigation, route }) => {
   };
 
   // ─── Fotos ──────────────────────────────────────────────
-  const agregarFotos = async (momento: MomentoEvidencia) => {
-    const actuales = data?.fotos[momento].length ?? 0;
-    const faltan = MAX_FOTOS - actuales;
-    if (faltan <= 0 || subiendo) return;
-
-    const r = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ['images'],
-      allowsMultipleSelection: true,
-      selectionLimit: faltan,
-      quality: 0.7,
-    });
-    if (r.canceled || !r.assets?.length) return;
-
-    const elegidas = r.assets.slice(0, faltan);
+  // Sube las fotos elegidas (galería) o tomadas (cámara) a un momento.
+  const subirArchivos = async (momento: MomentoEvidencia, assets: ImagePicker.ImagePickerAsset[], faltan: number) => {
+    const elegidas = assets.slice(0, faltan);
+    if (!elegidas.length) return;
     setSubiendo(momento);
     let fallas = 0;
     let ultimoError: any = null;
@@ -355,6 +348,40 @@ const ActividadBeneficiarioScreen: React.FC<any> = ({ navigation, route }) => {
     await cargar();
     if (fallas > 0) {
       avisar('Algunas fotos no se subieron', `${fallas} de ${elegidas.length}: ${mensajeError(ultimoError, 'Inténtalo de nuevo.')}`);
+    }
+  };
+
+  const cupoFotos = (momento: MomentoEvidencia) => MAX_FOTOS - (data?.fotos[momento].length ?? 0);
+
+  const agregarFotos = async (momento: MomentoEvidencia) => {
+    const faltan = cupoFotos(momento);
+    if (faltan <= 0 || subiendo) return;
+
+    const r = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ['images'],
+      allowsMultipleSelection: true,
+      selectionLimit: faltan,
+      quality: 0.7,
+    });
+    if (r.canceled || !r.assets?.length) return;
+    await subirArchivos(momento, r.assets, faltan);
+  };
+
+  // Una foto por toque: la cámara no toma varias de una vez.
+  const tomarFoto = async (momento: MomentoEvidencia) => {
+    const faltan = cupoFotos(momento);
+    if (faltan <= 0 || subiendo) return;
+    try {
+      const permiso = await ImagePicker.requestCameraPermissionsAsync();
+      if (!permiso.granted) {
+        avisar('Permiso requerido', 'Se necesita acceso a la cámara para tomar la foto.');
+        return;
+      }
+      const r = await ImagePicker.launchCameraAsync({ mediaTypes: ['images'], quality: 0.7 });
+      if (r.canceled || !r.assets?.length) return;
+      await subirArchivos(momento, r.assets, faltan);
+    } catch (e) {
+      avisar('No se pudo abrir la cámara', mensajeError(e, 'Inténtalo de nuevo.'));
     }
   };
 
@@ -436,6 +463,23 @@ const ActividadBeneficiarioScreen: React.FC<any> = ({ navigation, route }) => {
                   <Text style={styles.btnSecTxt}>✏️ {pendientes.length > 0 ? 'Corregir acta' : 'Editar acta'}</Text>
                 </TouchableOpacity>
               )}
+              {modo === 'revisar' && isInterventor && !a.datosLocales && beneficiario?.cedula && (
+                <TouchableOpacity
+                  style={[styles.btnSec, !a.firmadaInterventoria && styles.btnFirmar]}
+                  onPress={() =>
+                    setActaAFirmar({
+                      cedula: beneficiario.cedula,
+                      instancia: a.instancia,
+                      beneficiarioNombre: beneficiario.nombre,
+                      titulo: `Acta · ${actividad?.nombre ?? 'Actividad'}`,
+                    })
+                  }
+                >
+                  <Text style={[styles.btnSecTxt, !a.firmadaInterventoria && { color: '#fff' }]}>
+                    {a.firmadaInterventoria ? '✍️ Ver firma de interventoría' : '✍️ Firmar acta'}
+                  </Text>
+                </TouchableOpacity>
+              )}
               {puedeObservar && (
                 <TouchableOpacity style={styles.btnSec} onPress={() => { setTextoObservacion(''); setObservando(a); }}>
                   <Text style={styles.btnSecTxt}>⚠ Avisar dato errado o faltante</Text>
@@ -495,18 +539,37 @@ const ActividadBeneficiarioScreen: React.FC<any> = ({ navigation, route }) => {
           </View>
         )}
         {puedeGestionarFotos && (
-          <TouchableOpacity
-            style={[styles.btnPrimario, (lleno || subiendo !== null) && styles.btnDeshabilitado]}
-            onPress={() => agregarFotos(momento)}
-            disabled={lleno || subiendo !== null}
-            activeOpacity={0.8}
-          >
-            {subiendo === momento ? (
-              <><ActivityIndicator size="small" color="#fff" /><Text style={styles.btnPrimarioTxt}>  Subiendo…</Text></>
-            ) : (
-              <Text style={styles.btnPrimarioTxt}>{lleno ? 'Máximo de 3 fotos alcanzado' : '🖼️ Subir fotos desde el dispositivo'}</Text>
-            )}
-          </TouchableOpacity>
+          lleno ? (
+            <View style={[styles.btnPrimario, styles.btnDeshabilitado]}>
+              <Text style={styles.btnPrimarioTxt}>Máximo de 3 fotos alcanzado</Text>
+            </View>
+          ) : subiendo === momento ? (
+            <View style={[styles.btnPrimario, styles.btnDeshabilitado]}>
+              <ActivityIndicator size="small" color="#fff" /><Text style={styles.btnPrimarioTxt}>  Subiendo…</Text>
+            </View>
+          ) : (
+            <View style={styles.filaBotones}>
+              {/* En web la cámara del PC no aplica; el navegador del celular ya la ofrece desde Galería. */}
+              {Platform.OS !== 'web' && (
+                <TouchableOpacity
+                  style={[styles.btnPrimario, styles.btnMitad, subiendo !== null && styles.btnDeshabilitado]}
+                  onPress={() => tomarFoto(momento)}
+                  disabled={subiendo !== null}
+                  activeOpacity={0.8}
+                >
+                  <Text style={styles.btnPrimarioTxt}>📷 Tomar foto</Text>
+                </TouchableOpacity>
+              )}
+              <TouchableOpacity
+                style={[styles.btnPrimario, styles.btnMitad, subiendo !== null && styles.btnDeshabilitado]}
+                onPress={() => agregarFotos(momento)}
+                disabled={subiendo !== null}
+                activeOpacity={0.8}
+              >
+                <Text style={styles.btnPrimarioTxt}>🖼️ Galería</Text>
+              </TouchableOpacity>
+            </View>
+          )
         )}
       </View>,
       `${fotos.length}/${MAX_FOTOS}`
@@ -581,6 +644,8 @@ const ActividadBeneficiarioScreen: React.FC<any> = ({ navigation, route }) => {
         </View>
       </Modal>
 
+      <ActaEntregaRevision acta={actaAFirmar} onClose={() => setActaAFirmar(null)} onFirmada={() => { void cargar(); }} />
+
       <Modal visible={visorPdf !== null} animationType="slide" onRequestClose={() => setVisorPdf(null)}>
         {visorPdf && (
           <PdfViewer
@@ -625,6 +690,7 @@ const styles = StyleSheet.create({
   btnSec: { borderWidth: 1, borderColor: COLORS.primary, borderRadius: BORDER_RADIUS.md, paddingVertical: 6, paddingHorizontal: SPACING.sm, alignItems: 'center', backgroundColor: COLORS.surface },
   btnPeligro: { borderColor: COLORS.error },
   btnSecResalta: { backgroundColor: '#FFF4E5', borderColor: COLORS.warning },
+  btnFirmar: { backgroundColor: COLORS.primary, borderColor: COLORS.primary },
   btnSecTxt: { color: COLORS.primary, fontWeight: FONTS.weights.semibold, fontSize: FONTS.sizes.sm },
   modalFondo: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', padding: SPACING.lg },
   modalCaja: { backgroundColor: COLORS.surface, borderRadius: BORDER_RADIUS.lg, padding: SPACING.md, gap: SPACING.sm },
@@ -636,6 +702,8 @@ const styles = StyleSheet.create({
   flecha: { fontSize: 24, color: COLORS.textLight, marginLeft: SPACING.sm },
   btnPrimario: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', backgroundColor: COLORS.primary, borderRadius: BORDER_RADIUS.md, paddingVertical: SPACING.sm + 2, marginTop: SPACING.xs },
   btnDeshabilitado: { opacity: 0.5 },
+  filaBotones: { flexDirection: 'row', gap: SPACING.sm },
+  btnMitad: { flex: 1 },
   btnPrimarioTxt: { color: '#fff', fontWeight: FONTS.weights.semibold, fontSize: FONTS.sizes.sm },
   visorFondo: { flex: 1, backgroundColor: 'rgba(0,0,0,0.95)', justifyContent: 'center' },
   visorImg: { flex: 1, width: '100%' },

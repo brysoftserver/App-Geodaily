@@ -15,7 +15,7 @@ import { membreteAperturaHtml, membreteCierreHtml, membreteCss, MembreteVariante
 import { escapeHtml } from './pdfLocal.service';
 import { abrirPdf } from './informeTecnicoPdf.service';
 import { descargarHtmlComoPdfWeb } from '../utils/printWeb';
-import { ACTIVIDADES_EN_HECTAREAS, buscarActividad } from '../data/actividades';
+import { ACTIVIDADES_EN_HECTAREAS, buscarActividad, descomponerClaveEvidencia } from '../data/actividades';
 import { formatearHectareas } from './actividadesHectareas.service';
 import {
   BitacoraActividadHectareas,
@@ -86,6 +86,9 @@ const nombreActividad = (id: string) => {
   const a = buscarActividad(id);
   return a ? a.nombre : id;
 };
+
+/** Subactividad con acta + fotos ('siembra_platano.fertilizacion'): no se mide en hectáreas. */
+const esSub = (id: string) => descomponerClaveEvidencia(id).sub !== null;
 
 const fotosTexto = (f: BitacoraActividadHectareas['fotos']) => `${f.antes}/${f.durante}/${f.despues}`;
 
@@ -187,7 +190,7 @@ export function htmlInformeBeneficiario(f: BitacoraFicha, generadoPor: string, v
             <td><b>${escapeHtml(nombreActividad(a.id))}</b></td>
             <td class="${iniciada ? 'ok' : 'falta'}">${iniciada ? 'Registrada' : 'Pendiente'}</td>
             <td>
-              ${escapeHtml(formatearHectareas(a.hectareas))} ha${a.respaldadaPorVisita ? ` (respaldadas por la Visita ${a.respaldadaPorVisita})` : ''}<br/>
+              ${esSub(a.id) ? '' : `${escapeHtml(formatearHectareas(a.hectareas))} ha${a.respaldadaPorVisita ? ` (respaldadas por la Visita ${a.respaldadaPorVisita})` : ''}<br/>`}
               Actas de entrega: ${a.actas} · Fotos antes / durante / después: ${fotosTexto(a.fotos)} de 3
               ${a.observacionesPendientes > 0 ? `<br/><span class="falta">${a.observacionesPendientes} ${a.observacionesPendientes === 1 ? 'observación pendiente' : 'observaciones pendientes'} sobre el acta</span>` : ''}
             </td>
@@ -248,8 +251,11 @@ export function htmlInformeGeneral(filas: BitacoraFilaInforme[], generadoPor: st
   const celdaActividades = (f: BitacoraFilaInforme) => {
     const out = f.enHectareas.map((a) => {
       const nf = a.fotos.antes + a.fotos.durante + a.fotos.despues;
-      const corto = nombreActividad(a.id).split(' ').slice(0, 3).join(' ');
-      return `${escapeHtml(corto)}: <b>${escapeHtml(formatearHectareas(a.hectareas))} ha</b><br/><span class="peq">Acta ${a.actas} · Fotos ${fotosTexto(a.fotos)}${nf ? '' : ' (sin fotos)'}${
+      // Subactividad: el nombre de la actividad padre + la subactividad, sin hectáreas.
+      const corto = esSub(a.id)
+        ? nombreActividad(a.id).split(' · ').map((p) => p.split(' ').slice(0, 3).join(' ')).join(' · ')
+        : nombreActividad(a.id).split(' ').slice(0, 3).join(' ');
+      return `${escapeHtml(corto)}${esSub(a.id) ? '' : `: <b>${escapeHtml(formatearHectareas(a.hectareas))} ha</b>`}<br/><span class="peq">Acta ${a.actas} · Fotos ${fotosTexto(a.fotos)}${nf ? '' : ' (sin fotos)'}${
         a.observacionesPendientes ? ` · <span class="falta">${a.observacionesPendientes} obs.</span>` : ''
       }</span>`;
     });

@@ -9,6 +9,7 @@
 //      desde el almacenamiento del dispositivo.
 // Las fotos quedan en MinIO dentro de la carpeta del beneficiario:
 //   tecnicos/{usuario}/{item}_{nombre}/{actividad}/{momento}/{archivo}
+// (subactividad: .../{actividad}/{subactividad}/{momento}/{archivo})
 // El técnico dueño del beneficiario escribe; el admin también puede subir,
 // quitar y reemplazar fotos y actas. Los demás roles superiores solo leen.
 // ============================================================
@@ -19,21 +20,20 @@ const { authenticateToken, authenticateTokenOrQuery } = require('../middleware/a
 const db = require('../database');
 const { quitarRevision } = require('../lib/revisionInterventoria');
 const storage = require('../storage');
+const { sqlNoEsPrueba } = require('../lib/usuariosPrueba');
 
 const router = express.Router();
 
 const ROLES_SUPERIORES = ['coordinador', 'interventor', 'gerente', 'admin'];
 const esSuperior = (user) => ROLES_SUPERIORES.includes(user?.rol);
 
-/** Actividades con panel de evidencia (ids de src/data/actividades.ts del cliente). */
-const ACTIVIDADES = new Set([
-  'preparacion_terreno',
-  'siembra_cacao',
-  'siembra_platano',
-  'siembra_forestales',
-  'fertilizacion',
-  'control_sanitario',
-]);
+/** Actividades y subactividades con panel de evidencia: ver lib/actividadesEvidencia.js. */
+const { ACTIVIDADES, revisionDe, carpeta } = require('../lib/actividadesEvidencia');
+/** Quita el OK de la interventoría del beneficiario en esa actividad o subactividad. */
+const quitarRevisionEvidencia = (clave, item) => {
+  const r = revisionDe(clave, item);
+  return quitarRevision(r.actividad, r.referencia);
+};
 const MOMENTOS = ['antes', 'durante', 'despues'];
 const MAX_FOTOS_POR_MOMENTO = 3;
 
@@ -136,11 +136,70 @@ router.delete('/foto/:id', authenticateToken, async (req, res) => {
     await storage.deleteFile(foto.storage_key);
     await db.query('DELETE FROM actividad_evidencias WHERE id = $1', [foto.id]);
     // El registro cambió: vuelve a quedar pendiente de la interventoría.
-    await quitarRevision(foto.actividad, foto.beneficiario_item);
+    await quitarRevisionEvidencia(foto.actividad, foto.beneficiario_item);
     res.json({ estado: 'ok', mensaje: 'Foto eliminada' });
   } catch (error) {
     console.error('[ActividadEvidencias] Error al eliminar:', error);
     res.status(500).json({ estado: 'error', mensaje: 'Error al eliminar la foto' });
+  }
+});
+
+// GET /api/actividades-evidencias/:actividad/beneficiarios
+//   técnico → SUS beneficiarios · superiores → los de todos los técnicos activos.
+//   Cada uno con sus fotos por momento y sus actas en esta actividad/subactividad.
+// Va ANTES de /:actividad/:item para que 'beneficiarios' no se lea como item.
+router.get('/:actividad/beneficiarios', authenticateToken, async (req, res) => {
+  try {
+    const clave = req.params.actividad;
+    if (!ACTIVIDADES.has(clave)) return res.status(404).json({ estado: 'error', mensaje: 'Actividad no encontrada' });
+    const tecnico = req.user.rol === 'tecnico';
+    if (!tecnico && !esSuperior(req.user)) return res.status(403).json({ estado: 'error', mensaje: 'No autorizado' });
+
+    const filtro = tecnico
+      ? 'WHERE b.tecnico_asignado_id = $1'
+      : `JOIN usuarios u ON u.id = b.tecnico_asignado_id AND u.rol = 'tecnico' AND u.activo = TRUE AND ${sqlNoEsPrueba('u.usuario')}`;
+    const benefs = await db.queryAll(
+      `SELECT b.item, b.nombre_completo, b.cedula, b.corregimiento, b.vereda,
+              (SELECT nombre FROM usuarios t WHERE t.id = b.tecnico_asignado_id) AS tecnico
+       FROM beneficiarios b
+       ${filtro}
+       ORDER BY b.nombre_completo ASC`,
+      tecnico ? [req.user.id] : []
+    );
+    const fotos = await db.queryAll(
+      'SELECT beneficiario_item, momento, COUNT(*)::int AS n FROM actividad_evidencias WHERE actividad = $1 GROUP BY 1, 2',
+      [clave]
+    );
+    const actas = await db.queryAll(
+      `SELECT o.beneficiario_cedula AS cedula, COUNT(*)::int AS n,
+              COALESCE(SUM((SELECT COUNT(*) FROM otros_formatos_observaciones x
+                            WHERE x.formato_id = o.id AND NOT x.resuelta)), 0)::int AS observaciones
+       FROM otros_formatos o
+       WHERE o.tipo = 'acta_entrega_individual' AND o.completo = TRUE AND o.datos->>'actividadId' = $1
+       GROUP BY 1`,
+      [clave]
+    );
+    const actasPorCedula = new Map(actas.map((a) => [a.cedula, a]));
+    const beneficiarios = benefs.map((b) => {
+      const f = fotos.filter((x) => x.beneficiario_item === b.item);
+      const foto = (m) => f.find((x) => x.momento === m)?.n ?? 0;
+      const a = actasPorCedula.get(b.cedula);
+      return {
+        item: b.item,
+        nombre: b.nombre_completo,
+        cedula: b.cedula,
+        corregimiento: b.corregimiento,
+        vereda: b.vereda,
+        tecnico: b.tecnico || null,
+        actas: a?.n ?? 0,
+        observacionesPendientes: a?.observaciones ?? 0,
+        fotos: { antes: foto('antes'), durante: foto('durante'), despues: foto('despues') },
+      };
+    });
+    res.json({ estado: 'ok', maxPorMomento: MAX_FOTOS_POR_MOMENTO, beneficiarios });
+  } catch (error) {
+    console.error('[ActividadEvidencias] Error listando beneficiarios:', error);
+    res.status(500).json({ estado: 'error', mensaje: 'Error al listar beneficiarios' });
   }
 });
 
@@ -295,7 +354,7 @@ router.post('/:actividad/:item/acta', authenticateToken, upload.single('archivo'
       'UPDATE otros_formatos SET pdf_path = $2, pdf_size = $3, pdf_actualizado = NOW(), updated_at = NOW() WHERE id = $1',
       [acta.id, objeto.path, req.file.size]
     );
-    await quitarRevision(req.params.actividad, b.item);
+    await quitarRevisionEvidencia(req.params.actividad, b.item);
     console.log(`[ActividadEvidencias] Acta ${acta.id} ${actaId ? 'reemplazada' : 'cargada'} por admin ${req.user.usuario}`);
     res.json({ estado: 'ok', id: acta.id });
   } catch (error) {
@@ -321,7 +380,7 @@ router.delete('/:actividad/:item/acta/:id', authenticateToken, async (req, res) 
     if (acta.pdf_path) await storage.deleteFile(acta.pdf_path).catch(() => {});
     await db.query('DELETE FROM otros_formatos_observaciones WHERE formato_id = $1', [acta.id]);
     await db.query('DELETE FROM otros_formatos WHERE id = $1', [acta.id]);
-    await quitarRevision(req.params.actividad, b.item);
+    await quitarRevisionEvidencia(req.params.actividad, b.item);
     console.log(`[ActividadEvidencias] Acta ${acta.id} eliminada por admin ${req.user.usuario}`);
     res.json({ estado: 'ok', mensaje: 'Acta eliminada' });
   } catch (error) {
@@ -365,7 +424,7 @@ router.post('/:actividad/:item/:momento', authenticateToken, upload.single('arch
     const objeto = await storage.uploadFile(
       'tecnico',
       b.tecnico_usuario || req.user.usuario,
-      `${req.params.actividad}/${momento}`,
+      `${carpeta(req.params.actividad)}/${momento}`,
       filename,
       req.file.buffer,
       { contentType: imagen.mime, beneficiarioItem: b.item, beneficiarioNombre: b.nombre_completo }
@@ -384,7 +443,7 @@ router.post('/:actividad/:item/:momento', authenticateToken, upload.single('arch
         b.tecnico_asignado_id || req.user.id,
       ]
     );
-    if (esAdmin(req.user)) await quitarRevision(req.params.actividad, b.item);
+    if (esAdmin(req.user)) await quitarRevisionEvidencia(req.params.actividad, b.item);
     res.json({ estado: 'ok', id: fila.id });
   } catch (error) {
     console.error('[ActividadEvidencias] Error al subir:', error);

@@ -365,6 +365,8 @@ async function initSchema() {
       created_at TIMESTAMPTZ DEFAULT NOW()
     )`,
     `CREATE INDEX IF NOT EXISTS idx_notificaciones_usuario ON notificaciones(usuario_id, leida)`,
+    // Lo que la app necesita para abrir lo notificado (ej. el acta por firmar).
+    `ALTER TABLE notificaciones ADD COLUMN IF NOT EXISTS datos JSONB`,
 
     `CREATE INDEX IF NOT EXISTS idx_formularios_usuario ON formularios(usuario_id)`,
     `CREATE INDEX IF NOT EXISTS idx_formularios_tipo ON formularios(tipo)`,

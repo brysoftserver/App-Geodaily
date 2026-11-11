@@ -23,6 +23,7 @@ const storage = require('../storage');
 const { authenticateToken } = require('../middleware/auth');
 const db = require('../database');
 const { crearNotificacion } = require('./notificaciones');
+const { debeAvisarActa, avisarActaCompletada } = require('../lib/avisoActaCompletada');
 const router = express.Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 25 * 1024 * 1024 } });
 
@@ -107,7 +108,7 @@ router.post('/sync', authenticateToken, async (req, res) => {
 
       const instancia = limpiarInstancia(tipo, f.instancia || datos.instancia);
       const previo = await db.queryOne(
-        'SELECT datos, cliente_updated_at FROM otros_formatos WHERE beneficiario_cedula = $1 AND tipo = $2 AND instancia = $3',
+        'SELECT datos, completo, cliente_updated_at FROM otros_formatos WHERE beneficiario_cedula = $1 AND tipo = $2 AND instancia = $3',
         [cedula, tipo, instancia]
       );
 
@@ -209,6 +210,21 @@ router.post('/sync', authenticateToken, async (req, res) => {
         ]
       );
       sincronizados++;
+
+      // Primera vez completada: aviso en la campanita a todos los interventores.
+      const completo = f.completo === false ? false : true;
+      if (debeAvisarActa({ tipo, completo, datos, previoCompleto: !!previo?.completo })) {
+        await avisarActaCompletada({
+          db,
+          crearNotificacion,
+          id: idFormato(cedula, tipo, instancia),
+          cedula,
+          instancia,
+          datos,
+          beneficiarioNombre: f.beneficiario_nombre || datos.nombre || null,
+          tecnicoNombre: req.user.nombre || req.user.usuario,
+        });
+      }
     }
 
     console.log(
@@ -291,6 +307,8 @@ router.put('/borradores/:id', authenticateToken, async (req, res) => {
         final.interventoriaNombre = dp.interventoriaNombre || datos.interventoriaNombre || '';
         final.interventoriaCargo = dp.interventoriaCargo || datos.interventoriaCargo || '';
       }
+      // La actividad del acta tampoco se pierde (copias de versiones viejas de la app no la traen).
+      if (dp.actividadId && !final.actividadId) final.actividadId = dp.actividadId;
     }
 
     await db.query(
@@ -420,6 +438,59 @@ router.post('/actas/estado', authenticateToken, async (req, res) => {
     res.json({ estado: 'ok', actas });
   } catch (error) {
     console.error('[OtrosFormatos] Error en estado de actas:', error);
+    res.status(500).json({ estado: 'error', mensaje: 'Error al consultar las actas' });
+  }
+});
+
+// POST /api/otros-formatos/actas/por-actividad — { actividad } → actas de esa
+// actividad agrupadas por cédula del beneficiario (publicadas y borradores).
+// Para las tarjetas de beneficiarios (ej. Preparación del Terreno): cómo va
+// cada acta sin entrar. Técnico: solo las suyas. Roles superiores: todas.
+// Borradores de versiones viejas de la app no traen la actividad: los de
+// Preparación del Terreno se reconocen por su primera fila.
+router.post('/actas/por-actividad', authenticateToken, async (req, res) => {
+  try {
+    const actividad = String(req.body?.actividad || '').trim().slice(0, 100);
+    if (!actividad) return res.status(400).json({ estado: 'error', mensaje: 'Falta la actividad' });
+    const superior = esSuperior(req.user);
+    const params = [TIPO_MULTIPLE, actividad];
+    if (!superior) params.push(req.user.id);
+    const filtroDueno = superior ? '' : 'AND tecnico_id = $3';
+    const columnas = `id, beneficiario_cedula, instancia, updated_at,
+                (datos->>'firmaInterventoria') LIKE 'data:image%' AS fi,
+                datos->'faltantes' AS faltantes`;
+    const pubs = await db.queryAll(
+      `SELECT ${columnas} FROM otros_formatos
+        WHERE tipo = $1 AND completo = TRUE AND datos->>'actividadId' = $2 ${filtroDueno}`,
+      params
+    );
+    const bors = await db.queryAll(
+      `SELECT ${columnas} FROM otros_formatos_borradores
+        WHERE tipo = $1 ${filtroDueno}
+          AND (datos->>'actividadId' = $2
+               OR ($2 = 'preparacion_terreno' AND datos->>'actividadId' IS NULL
+                   AND datos->'actividades'->0->>'descripcion' = 'Preparación del terreno'))`,
+      params
+    );
+    const porCedula = {};
+    const agregar = (fila, estado, firmaExtra) => {
+      const faltantes = parsear(fila.faltantes);
+      (porCedula[fila.beneficiario_cedula] ||= []).push({
+        id: fila.id,
+        instancia: fila.instancia,
+        estado,
+        firmaInterventoria: !!fila.fi || !!firmaExtra,
+        faltantes: estado === 'publicada' && Array.isArray(faltantes) ? faltantes : [],
+        updated_at: fila.updated_at,
+      });
+    };
+    const borPorId = new Map(bors.map((b) => [b.id, b]));
+    for (const p of pubs) agregar(p, 'publicada', borPorId.get(p.id)?.fi);
+    const publicadas = new Set(pubs.map((p) => p.id));
+    for (const b of bors) if (!publicadas.has(b.id)) agregar(b, 'borrador');
+    res.json({ estado: 'ok', actas: porCedula });
+  } catch (error) {
+    console.error('[OtrosFormatos] Error en actas por actividad:', error);
     res.status(500).json({ estado: 'error', mensaje: 'Error al consultar las actas' });
   }
 });

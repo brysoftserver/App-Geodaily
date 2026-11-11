@@ -50,7 +50,7 @@ import {
 } from '../../services/otrosFormatos.service';
 import { avisar, confirmar } from '../../utils/dialogos';
 import { abrirVentanaDeCarga, imprimirHtmlEnVentana } from '../../utils/printWeb';
-import { buscarActividad, FILA_INICIAL_ACTA } from '../../data/actividades';
+import { filaInicialActa } from '../../data/actividades';
 
 type Props = {
   navigation: NativeStackNavigationProp<Record<string, any>>;
@@ -89,7 +89,6 @@ const ActaEntregaIndividualScreen: React.FC<Props> = ({ route, navigation }) => 
   const beneficiario = route?.params?.beneficiario;
   /** Actividad en la que se diligencia el acta (undefined = desde "Otros formatos"). */
   const actividadId = route?.params?.actividadId;
-  const actividadDelActa = buscarActividad(actividadId);
   /** Acta ya completada que se reabre para corregirla (ej. tras una observación). */
   const instanciaExistente = route?.params?.instancia;
 
@@ -100,13 +99,12 @@ const ActaEntregaIndividualScreen: React.FC<Props> = ({ route, navigation }) => 
   const [corregimiento, setCorregimiento] = useState(beneficiario?.corregimiento || '');
   const [predio, setPredio] = useState(beneficiario?.finca || '');
   // Fila inicial: la de la actividad si tiene una definida (ej. siembra de plátano),
-  // la de preparación del terreno desde "Otros formatos", o el nombre de la actividad.
+  // la de preparación del terreno desde "Otros formatos", la de la subactividad
+  // (ej. Trazado, Ahoyado y Encalado) o el nombre de la actividad.
   const [actividades, setActividades] = useState<ActividadActaEntrega[]>([
     !actividadId
       ? { ...ACTIVIDAD_INICIAL }
-      : FILA_INICIAL_ACTA[actividadId]
-        ? { ...FILA_INICIAL_ACTA[actividadId] }
-        : { descripcion: actividadDelActa?.nombre ?? '', actividad: '', cantidad: '', unidad: '' },
+      : filaInicialActa(actividadId),
   ]);
 
   const [contratistaNombre, setContratistaNombre] = useState(user?.nombre || '');
@@ -225,11 +223,14 @@ const ActaEntregaIndividualScreen: React.FC<Props> = ({ route, navigation }) => 
       nombre, cedula, tipoDocumento, vereda, corregimiento, predio, actividades,
       contratistaNombre, contratistaCargo, interventoriaNombre, interventoriaCargo,
       firmaBeneficiario, firmaTecnico, firmaInterventoria,
+      // A qué actividad pertenece (también en el borrador): la revisión y el
+      // estado del acta por actividad lo necesitan antes de que se complete.
+      ...(actividadId ? { actividadId } : {}),
     });
   }, [
     claveBorrador, nombre, cedula, tipoDocumento, vereda, corregimiento, predio, actividades,
     contratistaNombre, contratistaCargo, interventoriaNombre, interventoriaCargo,
-    firmaBeneficiario, firmaTecnico, firmaInterventoria,
+    firmaBeneficiario, firmaTecnico, firmaInterventoria, actividadId,
   ]);
 
   // Respaldo del borrador en el servidor (con firmas), unos segundos después

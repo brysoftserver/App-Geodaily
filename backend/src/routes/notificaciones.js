@@ -11,15 +11,28 @@ const { authenticateToken } = require('../middleware/auth');
 const db = require('../database');
 const router = express.Router();
 
-/** Crear una notificación para un usuario — usado por otras rutas (ej. revisiones.js) */
-async function crearNotificacion(usuarioId, tipo, titulo, mensaje, formularioId) {
+/**
+ * Crear una notificación para un usuario — usado por otras rutas (ej. revisiones.js).
+ * `datos` (opcional): lo que la app necesita para abrir lo notificado (ej. el
+ * acta por firmar: { actaId, cedula, instancia, … }).
+ */
+async function crearNotificacion(usuarioId, tipo, titulo, mensaje, formularioId, datos) {
   if (!usuarioId) return;
   try {
-    await db.query(
-      `INSERT INTO notificaciones (usuario_id, tipo, titulo, mensaje, formulario_id)
-       VALUES ($1, $2, $3, $4, $5)`,
-      [usuarioId, tipo, titulo, mensaje || null, formularioId || null]
-    );
+    if (datos) {
+      await db.query(
+        `INSERT INTO notificaciones (usuario_id, tipo, titulo, mensaje, formulario_id, datos)
+         VALUES ($1, $2, $3, $4, $5, $6::jsonb)`,
+        [usuarioId, tipo, titulo, mensaje || null, formularioId || null, JSON.stringify(datos)]
+      );
+    } else {
+      // Igual que siempre (los avisos existentes no dependen de la columna nueva).
+      await db.query(
+        `INSERT INTO notificaciones (usuario_id, tipo, titulo, mensaje, formulario_id)
+         VALUES ($1, $2, $3, $4, $5)`,
+        [usuarioId, tipo, titulo, mensaje || null, formularioId || null]
+      );
+    }
   } catch (error) {
     console.error('[Notificaciones] Error creando notificación:', error.message);
   }
@@ -29,7 +42,7 @@ async function crearNotificacion(usuarioId, tipo, titulo, mensaje, formularioId)
 router.get('/', authenticateToken, async (req, res) => {
   try {
     const notificaciones = await db.queryAll(
-      `SELECT id, tipo, titulo, mensaje, formulario_id, leida, created_at
+      `SELECT id, tipo, titulo, mensaje, formulario_id, datos, leida, created_at
        FROM notificaciones
        WHERE usuario_id = $1
        ORDER BY created_at DESC

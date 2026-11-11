@@ -10,6 +10,8 @@ export interface NotificacionApp {
   titulo: string;
   mensaje: string | null;
   formulario_id: string | null;
+  /** Lo necesario para abrir lo notificado (ej. el acta por firmar). */
+  datos?: Record<string, any> | null;
   leida: boolean;
   created_at: string;
 }

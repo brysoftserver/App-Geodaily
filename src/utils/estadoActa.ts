@@ -131,3 +131,63 @@ export const combinarActa = (tel: ActaSegunTelefono, srv?: ActaSegunServidor | n
   if (srv?.estado === 'borrador') return { estado: 'borrador_servidor', faltantes: [], firmaInterventoria: false };
   return tel;
 };
+
+// ─── Varias actas de un beneficiario (ej. Preparación del Terreno) ──────────
+
+/** Acta de una actividad según el servidor (resumen de POST /actas/por-actividad). */
+export interface ActaDeActividadSegunServidor extends ActaSegunServidor {
+  id: string;
+}
+
+/** Acta completada guardada en el teléfono (aún sin subir o ya subida). */
+export interface ActaCompletadaEnTelefono {
+  id: string;
+  sincronizado: boolean;
+  faltantes: string[];
+  firmaInterventoria: boolean;
+}
+
+/**
+ * Une, por id, las actas del servidor con las completadas en el teléfono.
+ * Lo completado en el teléfono manda (lo más nuevo del técnico); la firma del
+ * interventor basta que esté en cualquiera de los dos.
+ */
+export const unirActasBeneficiario = (
+  servidor: ActaDeActividadSegunServidor[] = [],
+  telefono: ActaCompletadaEnTelefono[] = []
+): ActaSegunTelefono[] => {
+  const porId = new Map<string, ActaSegunTelefono>();
+  for (const s of servidor) {
+    porId.set(
+      s.id,
+      s.estado === 'publicada'
+        ? { estado: 'completada_servidor', faltantes: limpiarFaltantes(s.faltantes), firmaInterventoria: !!s.firmaInterventoria }
+        : { estado: 'borrador_servidor', faltantes: [], firmaInterventoria: false }
+    );
+  }
+  for (const t of telefono) {
+    const srv = servidor.find((s) => s.id === t.id);
+    porId.set(t.id, {
+      estado: t.sincronizado ? 'completada' : 'pendiente_subir',
+      faltantes: limpiarFaltantes(t.faltantes),
+      firmaInterventoria: t.firmaInterventoria || !!srv?.firmaInterventoria,
+    });
+  }
+  return [...porId.values()];
+};
+
+/**
+ * Resume varias actas en la que más importa mostrar: primero la que necesita
+ * algo (falta el interventor o quedó con pendientes), luego una completa del
+ * todo, luego un borrador. `total` = cuántas actas tiene.
+ */
+export const resumirActas = (actas: ActaSegunTelefono[]): { acta: ActaSegunTelefono; total: number } => {
+  const completadas = actas.filter((a) => esCompletada(a.estado));
+  const porAtender = completadas.find((a) => !a.firmaInterventoria || limpiarFaltantes(a.faltantes).length > 0);
+  const acta =
+    porAtender ??
+    completadas[0] ??
+    actas.find((a) => !esCompletada(a.estado) && a.estado !== 'sin_diligenciar') ??
+    { estado: 'sin_diligenciar' as const, faltantes: [], firmaInterventoria: false };
+  return { acta, total: actas.length };
+};

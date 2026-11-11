@@ -22,7 +22,7 @@ import * as Sharing from 'expo-sharing';
 import { useFocusEffect } from '@react-navigation/native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { COLORS, FONTS, SPACING, BORDER_RADIUS, SHADOWS } from '../../theme';
-import { ACTIVIDADES_EN_HECTAREAS, buscarActividad } from '../../data/actividades';
+import { ACTIVIDADES_EN_HECTAREAS, buscarActividad, descomponerClaveEvidencia } from '../../data/actividades';
 import { avisar } from '../../utils/dialogos';
 import { abrirMapaEnGoogle } from '../../utils/abrirMapa';
 import { useAuth } from '../../store/AuthContext';
@@ -305,7 +305,8 @@ const BitacoraBeneficiarioScreen: React.FC<any> = ({ navigation, route }) => {
                   <View style={{ flex: 1 }}>
                     <Text style={styles.itemTitulo}>{act?.icon} {act?.nombre ?? a.id}</Text>
                     <Text style={[styles.estado, { color: iniciada ? COLORS.success : COLORS.warning }]}>
-                      {iniciada ? `${formatearHectareas(a.hectareas)} ha` : 'Pendiente'}
+                      {/* Subactividad (acta + fotos): no se mide en hectáreas. */}
+                      {!iniciada ? 'Pendiente' : descomponerClaveEvidencia(a.id).sub ? 'Con registros' : `${formatearHectareas(a.hectareas)} ha`}
                       {a.respaldadaPorVisita && a.hectareas === 0 ? ` · espera la Visita ${a.respaldadaPorVisita}` : ''}
                     </Text>
                     <Text style={styles.dato}>

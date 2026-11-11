@@ -40,6 +40,15 @@ import {
   listarTodosBeneficiariosHectareas,
   obtenerResumenHectareas,
 } from '../../services/actividadesHectareas.service';
+import { actasPorActividadServidor } from '../../services/otrosFormatos.service';
+import { actasCompletadasEnTelefonoPorCedula } from '../../services/estadoActaLocal';
+import { ActaSegunTelefono, presentacionActa, resumirActas, TonoActa, unirActasBeneficiario } from '../../utils/estadoActa';
+
+const COLOR_TONO_ACTA: Record<TonoActa, string> = {
+  gris: COLORS.textSecondary,
+  amarillo: COLORS.warning,
+  verde: COLORS.success,
+};
 
 const mensajeError = (e: any, porDefecto: string) =>
   e?.response?.data?.mensaje || (e?.message?.includes('Network') ? 'Sin conexión. Verifica tu internet.' : porDefecto);
@@ -59,6 +68,26 @@ const HectareasActividadScreen: React.FC<any> = ({ navigation, route }) => {
   const [beneficiarios, setBeneficiarios] = useState<BeneficiarioHectareas[]>([]);
   const [cargando, setCargando] = useState(true);
   const [refrescando, setRefrescando] = useState(false);
+  /** Actas de esta actividad por cédula (teléfono del técnico + servidor). */
+  const [actasPorCedula, setActasPorCedula] = useState<Record<string, ActaSegunTelefono[]>>({});
+
+  /** Estado de las actas: primero lo del teléfono (técnico), luego lo del servidor. */
+  const cargarActas = useCallback(async () => {
+    const telefono = revisar ? {} : await actasCompletadasEnTelefonoPorCedula(actividadId);
+    const unir = (servidor: Record<string, any[]>) => {
+      const out: Record<string, ActaSegunTelefono[]> = {};
+      for (const c of new Set([...Object.keys(servidor), ...Object.keys(telefono)])) {
+        out[c] = unirActasBeneficiario(servidor[c], telefono[c]);
+      }
+      return out;
+    };
+    setActasPorCedula(unir({}));
+    try {
+      setActasPorCedula(unir(await actasPorActividadServidor(actividadId)));
+    } catch {
+      // Sin señal (o servidor sin la consulta): queda lo del teléfono.
+    }
+  }, [actividadId, revisar]);
 
   useLayoutEffect(() => {
     navigation.setOptions({
@@ -76,6 +105,7 @@ const HectareasActividadScreen: React.FC<any> = ({ navigation, route }) => {
       setResumen(r);
       setBeneficiarios(lista);
       if (esRefresh) revision.recargar();
+      void cargarActas();
     } catch (e) {
       avisar('No se pudo cargar', mensajeError(e, 'Inténtalo de nuevo.'));
     } finally {
@@ -83,7 +113,7 @@ const HectareasActividadScreen: React.FC<any> = ({ navigation, route }) => {
       setRefrescando(false);
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [actividadId, revisar]);
+  }, [actividadId, revisar, cargarActas]);
 
   useFocusEffect(useCallback(() => { cargar(); }, [cargar]));
 
@@ -216,6 +246,21 @@ const HectareasActividadScreen: React.FC<any> = ({ navigation, route }) => {
                 <Text style={[styles.estadoVisita, { color: completada ? COLOR_HECHO : COLOR_FALTA }]}>
                   {completada ? '✓ Visita Técnica 2 completada' : 'Visita Técnica 2 pendiente'}
                 </Text>
+                {(() => {
+                  // Cómo va el acta (técnico e interventor), sin entrar.
+                  const { acta: a, total } = resumirActas(actasPorCedula[b.cedula] ?? []);
+                  const p = presentacionActa(a.estado, a.faltantes, a.firmaInterventoria);
+                  return (
+                    <>
+                      <Text style={[styles.estadoVisita, { color: COLOR_TONO_ACTA[p.tonoTxt] }]} numberOfLines={2}>
+                        {p.txt}{total > 1 ? ` · ${total} actas` : ''}
+                      </Text>
+                      {p.interventor && (
+                        <Text style={[styles.estadoVisita, { color: COLOR_TONO_ACTA[p.interventor.tono] }]}>{p.interventor.txt}</Text>
+                      )}
+                    </>
+                  );
+                })()}
                 {completada && <EtiquetaRevisado revisado={revisado} pendiente={modo === 'revisar'} />}
               </View>
               <Text style={[styles.hectareas, !completada && { color: COLORS.textLight }]}>

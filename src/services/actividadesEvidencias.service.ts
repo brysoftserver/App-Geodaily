@@ -60,6 +60,28 @@ export const obtenerEvidenciaBeneficiario = async (actividad: string, item: numb
   return { maxPorMomento: r.data.maxPorMomento ?? 3, actas: r.data.actas, fotos: r.data.fotos };
 };
 
+/** Beneficiario con su avance (fotos y actas) en una actividad o subactividad. */
+export interface BeneficiarioEvidencia {
+  item: number;
+  nombre: string;
+  cedula: string;
+  corregimiento?: string;
+  vereda?: string;
+  tecnico: string | null;
+  actas: number;
+  observacionesPendientes: number;
+  fotos: Record<MomentoEvidencia, number>;
+}
+
+/**
+ * Técnico: SUS beneficiarios · superiores: los de todos los técnicos activos.
+ * `actividad` es la clave de la evidencia (ver claveEvidencia en data/actividades).
+ */
+export const listarBeneficiariosEvidencia = async (actividad: string): Promise<{ maxPorMomento: number; beneficiarios: BeneficiarioEvidencia[] }> => {
+  const r = await apiClient.get(`${ENDPOINT}/${actividad}/beneficiarios`);
+  return { maxPorMomento: r.data.maxPorMomento ?? 3, beneficiarios: r.data.beneficiarios ?? [] };
+};
+
 export const subirFotoEvidencia = async (
   actividad: string,
   item: number,

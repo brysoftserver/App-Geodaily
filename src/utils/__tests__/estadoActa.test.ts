@@ -1,4 +1,4 @@
-import { presentacionActa, limpiarFaltantes, combinarActa, esFirmaDibujada } from '../estadoActa';
+import { presentacionActa, limpiarFaltantes, combinarActa, esFirmaDibujada, unirActasBeneficiario, resumirActas } from '../estadoActa';
 
 describe('presentacionActa', () => {
   it('completa por el técnico sin firma del interventor → amarillo, avisa que falta el interventor', () => {
@@ -89,5 +89,46 @@ describe('utilidades', () => {
     expect(esFirmaDibujada('data:image/png;base64,xx')).toBe(true);
     expect(esFirmaDibujada('')).toBe(false);
     expect(esFirmaDibujada(null)).toBe(false);
+  });
+});
+
+
+describe('unirActasBeneficiario', () => {
+  it('servidor: publicada → completada_servidor; borrador → borrador_servidor', () => {
+    const r = unirActasBeneficiario([
+      { id: 'a', estado: 'publicada', firmaInterventoria: true, faltantes: [] },
+      { id: 'b', estado: 'borrador', firmaInterventoria: true },
+    ]);
+    expect(r).toEqual([
+      { estado: 'completada_servidor', faltantes: [], firmaInterventoria: true },
+      { estado: 'borrador_servidor', faltantes: [], firmaInterventoria: false },
+    ]);
+  });
+
+  it('lo completado en el teléfono pisa al borrador del servidor y conserva la firma del servidor', () => {
+    const r = unirActasBeneficiario(
+      [{ id: 'a', estado: 'publicada', firmaInterventoria: true }],
+      [{ id: 'a', sincronizado: false, faltantes: [], firmaInterventoria: false }, { id: 'c', sincronizado: true, faltantes: ['Predio'], firmaInterventoria: false }]
+    );
+    expect(r).toEqual([
+      { estado: 'pendiente_subir', faltantes: [], firmaInterventoria: true },
+      { estado: 'completada', faltantes: ['Predio'], firmaInterventoria: false },
+    ]);
+  });
+});
+
+describe('resumirActas', () => {
+  const firmada = { estado: 'completada_servidor' as const, faltantes: [], firmaInterventoria: true };
+  const sinFirma = { estado: 'completada_servidor' as const, faltantes: [], firmaInterventoria: false };
+  const borrador = { estado: 'borrador_servidor' as const, faltantes: [], firmaInterventoria: false };
+
+  it('prioriza la que necesita algo', () => {
+    expect(resumirActas([firmada, borrador, sinFirma])).toEqual({ acta: sinFirma, total: 3 });
+  });
+
+  it('todas firmadas → una firmada; solo borrador → borrador; nada → sin diligenciar', () => {
+    expect(resumirActas([firmada]).acta).toBe(firmada);
+    expect(resumirActas([borrador]).acta).toBe(borrador);
+    expect(resumirActas([])).toEqual({ acta: { estado: 'sin_diligenciar', faltantes: [], firmaInterventoria: false }, total: 0 });
   });
 });

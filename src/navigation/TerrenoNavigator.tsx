@@ -11,6 +11,7 @@ import ActividadBeneficiarioScreen from '../screens/actividades/ActividadBenefic
 import BitacoraListScreen from '../screens/interventor/BitacoraListScreen';
 import BitacoraBeneficiarioScreen from '../screens/interventor/BitacoraBeneficiarioScreen';
 import EntregasActividadScreen from '../screens/actividades/EntregasActividadScreen';
+import EvidenciaActividadScreen from '../screens/actividades/EvidenciaActividadScreen';
 import EntregaDetalleScreen from '../screens/actividades/EntregaDetalleScreen';
 import TerrenoMenuScreen from '../screens/terreno/TerrenoMenuScreen';
 import BeneficiariosListScreen from '../screens/terreno/BeneficiariosListScreen';
@@ -135,6 +136,7 @@ export type TerrenoStackParamList = {
   BitacoraBeneficiarios: undefined;
   BitacoraBeneficiario: { item: number; nombre?: string };
   EntregasActividad: { actividadId: string; subactividadId?: string };
+  EvidenciaActividad: { actividadId: string; subactividadId?: string; modo?: 'ejecutar' | 'revisar' };
   EntregaDetalle: { actividadId: string; entregaId: string };
   ActividadBeneficiario: {
     actividadId: string;
@@ -333,6 +335,11 @@ const TerrenoNavigator: React.FC = () => {
         name="EntregasActividad"
         component={EntregasActividadScreen}
         options={{ title: 'Entregas' }}
+      />
+      <Stack.Screen
+        name="EvidenciaActividad"
+        component={EvidenciaActividadScreen}
+        options={{ title: 'Subactividad' }}
       />
       <Stack.Screen
         name="EntregaDetalle"

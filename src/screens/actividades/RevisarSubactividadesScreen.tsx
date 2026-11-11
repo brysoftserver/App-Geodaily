@@ -7,6 +7,7 @@
 //   · params.sub     → registros de esa subactividad de TODOS los técnicos.
 //     Admin e interventor marcan cada uno con "OK" → "Revisado por
 //     interventoría" (referencia = "{subactividad}:{id del registro}").
+//     Las de acta + fotos (EvidenciaActividad) usan "{subactividad}:{item}".
 // Todo vive dentro de la ruta ActividadDetalle (existe en todos los roles).
 // ============================================================
 
@@ -36,6 +37,7 @@ import { estadoActasServidor, EstadoActaServidor } from '../../services/otrosFor
 import { idOtroFormato } from '../../services/database';
 import ActaEntregaRevision, { ActaARevisar } from '../../components/actividades/ActaEntregaRevision';
 import { useAuth } from '../../store/AuthContext';
+import EvidenciaActividadScreen from './EvidenciaActividadScreen';
 
 type Fuente = { uri: string; headers?: Record<string, string> };
 
@@ -58,6 +60,15 @@ const RevisarSubactividadesScreen: React.FC<any> = ({ navigation, route }) => {
 
   if (sub?.pantalla === 'EntregasActividad') {
     return <EntregasRevision actividadId={actividadId} subId={sub.id} />;
+  }
+  // Acta + fotos por beneficiario (misma lista que ve el técnico, en modo revisar).
+  if (sub?.pantalla === 'EvidenciaActividad') {
+    return (
+      <EvidenciaActividadScreen
+        navigation={navigation}
+        route={{ ...route, params: { actividadId, subactividadId: sub.id, modo: 'revisar' } }}
+      />
+    );
   }
 
   return (

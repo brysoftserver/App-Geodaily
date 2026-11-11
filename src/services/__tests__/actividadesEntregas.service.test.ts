@@ -85,7 +85,7 @@ describe('Entregas de actividad', () => {
 });
 
 describe('Catálogo de Siembra de Plátano', () => {
-  it('tiene las 4 subactividades; solo Entrega de Colinos abre pantalla', () => {
+  it('tiene las 4 subactividades; la entrega abre Entregas y las demás acta + fotos', () => {
     const subs = SUBACTIVIDADES.siembra_platano;
     expect(subs.map((s) => s.nombre)).toEqual([
       'Entrega de Colinos de Plátano',
@@ -93,7 +93,8 @@ describe('Catálogo de Siembra de Plátano', () => {
       'Siembra de los Colinos de Plátano',
       'Fertilización',
     ]);
-    expect(subs.filter((s) => s.pantalla).map((s) => s.id)).toEqual(['entrega_colinos']);
+    expect(subs.filter((s) => s.pantalla === 'EntregasActividad').map((s) => s.id)).toEqual(['entrega_colinos']);
+    expect(subs.filter((s) => s.pantalla === 'EvidenciaActividad').map((s) => s.id)).toEqual(['trazado_ahoyado_encalado', 'siembra_colinos', 'fertilizacion']);
   });
 
   it('el acta de siembra de plátano arranca con la fila del formato', () => {
@@ -104,7 +105,7 @@ describe('Catálogo de Siembra de Plátano', () => {
 });
 
 describe('Catálogo de Siembra de Forestales (mismo diseño que plátano)', () => {
-  it('tiene las 4 subactividades; solo la entrega abre pantalla', () => {
+  it('tiene las 4 subactividades; la entrega abre Entregas y las demás acta + fotos', () => {
     const subs = SUBACTIVIDADES.siembra_forestales;
     expect(subs.map((s) => s.nombre)).toEqual([
       'Entrega de Plántulas Forestales',
@@ -112,7 +113,8 @@ describe('Catálogo de Siembra de Forestales (mismo diseño que plátano)', () =
       'Siembra de las Plántulas Forestales',
       'Fertilización',
     ]);
-    expect(subs.filter((s) => s.pantalla).map((s) => s.id)).toEqual(['entrega_plantulas']);
+    expect(subs.filter((s) => s.pantalla === 'EntregasActividad').map((s) => s.id)).toEqual(['entrega_plantulas']);
+    expect(subs.filter((s) => s.pantalla === 'EvidenciaActividad').map((s) => s.id)).toEqual(['trazado_ahoyado_encalado', 'siembra_plantulas', 'fertilizacion']);
     expect(ACTIVIDADES_CONECTADAS).toContain('siembra_forestales');
   });
 

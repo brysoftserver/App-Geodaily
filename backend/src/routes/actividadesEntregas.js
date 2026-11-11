@@ -21,7 +21,8 @@ const storage = require('../storage');
 
 const router = express.Router();
 
-const ACTIVIDADES = new Set(['siembra_platano', 'siembra_forestales']);
+// Actividades con entregas (cada una con su Acta de Entrega). Ver SUBACTIVIDADES en src/data/actividades.ts.
+const ACTIVIDADES = new Set(['siembra_platano', 'siembra_forestales', 'siembra_cacao']);
 const ROLES_SUPERIORES = ['coordinador', 'interventor', 'gerente', 'admin'];
 const esSuperior = (u) => ROLES_SUPERIORES.includes(u?.rol);
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 15 * 1024 * 1024 } });

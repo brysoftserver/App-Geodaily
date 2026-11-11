@@ -4,7 +4,8 @@
 // Ícono de campana con contador de no leídas — al tocar abre una lista de
 // notificaciones (ej. novedades marcadas por un revisor sobre un
 // formulario). Tocar una notificación la marca como leída y, si trae
-// formulario_id, intenta abrir el detalle de ese formulario.
+// formulario_id, intenta abrir el detalle de ese formulario. Un aviso de
+// "acta por firmar" abre el acta para revisarla y firmarla.
 
 import React, { useCallback, useEffect, useState } from 'react';
 import { View, Text, TouchableOpacity, StyleSheet, Modal, FlatList, Pressable, ActivityIndicator } from 'react-native';
@@ -18,6 +19,7 @@ import {
   NotificacionApp,
 } from '../services/notificaciones.service';
 import { fetchFormularioDelServidor } from '../services/formularios.service';
+import ActaEntregaRevision, { ActaARevisar } from './actividades/ActaEntregaRevision';
 
 const REFRESCO_MS = 60000;
 
@@ -41,6 +43,8 @@ const NotificacionBell: React.FC<NotificacionBellProps> = ({ formularioDetailScr
   const [notificaciones, setNotificaciones] = useState<NotificacionApp[]>([]);
   const [contador, setContador] = useState(0);
   const [cargandoDetalle, setCargandoDetalle] = useState<number | null>(null);
+  /** Acta abierta desde un aviso "acta por firmar". */
+  const [actaAbierta, setActaAbierta] = useState<ActaARevisar | null>(null);
 
   const cargarContador = useCallback(async () => {
     const total = await fetchContadorNoLeidas();
@@ -66,6 +70,17 @@ const NotificacionBell: React.FC<NotificacionBellProps> = ({ formularioDetailScr
       await marcarNotificacionLeida(n.id);
       setNotificaciones((prev) => prev.map((x) => (x.id === n.id ? { ...x, leida: true } : x)));
       setContador((prev) => Math.max(0, prev - 1));
+    }
+    // Acta completada por un técnico: se abre para revisarla y firmarla.
+    if (n.tipo === 'acta_por_firmar' && n.datos?.cedula && n.datos?.instancia) {
+      setVisible(false);
+      setActaAbierta({
+        cedula: String(n.datos.cedula),
+        instancia: String(n.datos.instancia),
+        beneficiarioNombre: n.datos.beneficiarioNombre ?? null,
+        titulo: String(n.datos.titulo || 'Acta de Entrega'),
+      });
+      return;
     }
     if (n.formulario_id && formularioDetailScreen && navigation) {
       setCargandoDetalle(n.id);
@@ -143,6 +158,8 @@ const NotificacionBell: React.FC<NotificacionBellProps> = ({ formularioDetailScr
           </Pressable>
         </Pressable>
       </Modal>
+
+      <ActaEntregaRevision acta={actaAbierta} onClose={() => setActaAbierta(null)} />
     </>
   );
 };

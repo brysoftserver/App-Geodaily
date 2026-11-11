@@ -14,6 +14,7 @@ const db = require('../database');
 const { sqlCedulaNormalizada, normalizarCedula } = require('../lib/visitas');
 const { sqlNoEsPrueba } = require('../lib/usuariosPrueba');
 const hectareas = require('./actividadesHectareas');
+const evidencia = require('../lib/actividadesEvidencia');
 
 const router = express.Router();
 
@@ -135,6 +136,15 @@ router.get('/informe-general', authenticateToken, rolesBitacora, async (_req, re
         if (!derivada && !ha && !a && !(fotos.antes + fotos.durante + fotos.despues)) continue;
         enHectareas.push({ id, hectareas: ha, actas: a?.n ?? 0, observacionesPendientes: a?.observaciones ?? 0, fotos });
       }
+      // Subactividades con acta + fotos (ej. 'siembra_platano.fertilizacion'): solo si ya tienen algo.
+      for (const id of evidencia.CLAVES_SUBACTIVIDADES) {
+        const f = fotosFilas.filter((x) => x.actividad === id && x.beneficiario_item === b.item);
+        const foto = (m) => f.find((x) => x.momento === m)?.n ?? 0;
+        const a = actasFilas.find((x) => x.actividad === id && x.cedula === b.cedula);
+        const fotos = { antes: foto('antes'), durante: foto('durante'), despues: foto('despues') };
+        if (!a && !(fotos.antes + fotos.durante + fotos.despues)) continue;
+        enHectareas.push({ id, hectareas: 0, actas: a?.n ?? 0, observacionesPendientes: a?.observaciones ?? 0, fotos });
+      }
       return {
         item: b.item,
         nombre: b.nombre_completo,
@@ -249,6 +259,15 @@ router.get('/beneficiarios/:item', authenticateToken, rolesBitacora, async (req,
         fotos: { antes: foto('antes'), durante: foto('durante'), despues: foto('despues') },
       };
     });
+    // Subactividades con acta + fotos: solo las que ya tienen registros.
+    for (const id of evidencia.CLAVES_SUBACTIVIDADES) {
+      const f = fotos.filter((x) => x.actividad === id);
+      const a = actas.find((x) => x.actividad === id);
+      const foto = (m) => f.find((x) => x.momento === m)?.n ?? 0;
+      const n = { antes: foto('antes'), durante: foto('durante'), despues: foto('despues') };
+      if (!a && !(n.antes + n.durante + n.despues)) continue;
+      actividadesHa.push({ id, hectareas: 0, respaldadaPorVisita: null, actas: a?.n ?? 0, observacionesPendientes: a?.observaciones ?? 0, fotos: n });
+    }
 
     res.json({
       estado: 'ok',

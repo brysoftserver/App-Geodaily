@@ -982,6 +982,25 @@ export const estadoActasServidor = async (ids: string[]): Promise<Record<string,
   return r.data?.actas || {};
 };
 
+/** Un acta de una actividad, según el servidor (POST /actas/por-actividad). */
+export interface ActaDeActividadServidor {
+  id: string;
+  instancia: string;
+  estado: 'publicada' | 'borrador';
+  firmaInterventoria: boolean;
+  faltantes: string[];
+  updated_at: string;
+}
+
+/**
+ * Actas de una actividad agrupadas por cédula (técnico: las suyas; roles
+ * superiores: todas). Lanza si no hay red (el llamador decide).
+ */
+export const actasPorActividadServidor = async (actividad: string): Promise<Record<string, ActaDeActividadServidor[]>> => {
+  const r = await apiClient.post(`${API_CONFIG.ENDPOINTS.OTROS_FORMATOS}/actas/por-actividad`, { actividad }, { timeout: 20000 });
+  return r.data?.actas || {};
+};
+
 /**
  * La interventoría firma el acta de una entrega (publicada y/o borrador).
  * Solo el rol interventor (el servidor lo exige). Necesita red.
