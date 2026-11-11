@@ -32,7 +32,7 @@ export interface DefCampoVisita2 {
 
 /** Campos corregibles, en el orden del formulario de la Visita 2. */
 export const CAMPOS_VISITA_2: DefCampoVisita2[] = [
-  { campo: 'objetivo', titulo: 'Objetivo', tipo: 'texto', leer: (a) => a.objetivo || '' },
+  // 'objetivo' ya no se corrige: es fijo para todas las Visitas 2.
   { campo: 'descripcion', titulo: 'Descripción de la visita', tipo: 'texto', leer: (a) => a.descripcion || '' },
   { campo: 'area_intervencion', titulo: 'Área a intervenir (ha)', tipo: 'area', leer: (a) => a.area_intervencion || '' },
   { campo: 'seguimiento_compromisos', titulo: 'Seguimiento de compromisos', tipo: 'texto', leer: (a) => a.seguimiento_compromisos || '' },

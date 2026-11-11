@@ -108,7 +108,57 @@ async function revisoresConNovedadesPendientes(db, formularioId) {
 }
 
 /**
+ * A quién avisar de una corrección. Primero, los revisores con novedades
+ * abiertas (como siempre). Si no hay ninguno — el técnico corrigió algo que
+ * le pidieron por fuera de la app (caso Jonathan Molano, nov-2026) — se
+ * avisa al revisor de la FASE ACTUAL del flujo:
+ *   1. el de ese rol que ya revisó este formulario (el más reciente), o
+ *   2. el de ese rol que revisó más recientemente formularios del mismo
+ *      técnico (no existe una asignación fija técnico → coordinador).
+ * Devuelve [{ revisor_id, conNovedad }].
+ */
+async function revisoresAAvisar(db, formularioId) {
+  const conNovedad = await revisoresConNovedadesPendientes(db, formularioId);
+  if (conNovedad.length > 0) return conNovedad.map((r) => ({ ...r, conNovedad: true }));
+
+  const [revisiones, correcciones] = await Promise.all([
+    db.queryAll(
+      `SELECT id, revisor_id, revisor_rol, tipo, seccion, created_at
+         FROM revisiones_formulario
+        WHERE formulario_id = $1 AND tipo IN ('novedad', 'visto_bueno')`,
+      [formularioId]
+    ),
+    listarCorrecciones(db, formularioId).catch(() => []),
+  ]);
+  const estado = calcularEstadoRevision(revisiones, correcciones);
+  if (!estado.correccion_sin_verificar || !estado.rol_flujo) return [];
+  const rol = estado.rol_flujo;
+
+  const delFormulario = revisiones
+    .filter((r) => r.revisor_rol === rol && r.revisor_id)
+    .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))[0];
+  if (delFormulario) return [{ revisor_id: delFormulario.revisor_id, conNovedad: false }];
+
+  const delTecnico = await db.queryOne(
+    `SELECT r.revisor_id
+       FROM revisiones_formulario r
+       JOIN formularios f ON f.id = r.formulario_id
+       JOIN usuarios u ON u.id = r.revisor_id AND COALESCE(u.activo, TRUE)
+      WHERE r.revisor_rol = $1
+        AND COALESCE(NULLIF(f.tecnico_json->>'usuario_id', ''), f.usuario_id) = (
+              SELECT COALESCE(NULLIF(tecnico_json->>'usuario_id', ''), usuario_id)
+                FROM formularios WHERE id = $2)
+      ORDER BY r.created_at DESC
+      LIMIT 1`,
+    [rol, formularioId]
+  );
+  return delTecnico?.revisor_id ? [{ revisor_id: delTecnico.revisor_id, conNovedad: false }] : [];
+}
+
+/**
  * Avisa a los revisores con novedades pendientes que el técnico corrigió.
+ * Sin novedades abiertas, avisa al revisor de la fase actual (ver
+ * revisoresAAvisar).
  * Anti-spam: si el revisor ya tiene un aviso SIN LEER de este formulario
  * no se crea otro (Deily hizo 5 correcciones en 2 minutos sobre un mismo
  * formulario: el coordinador debe recibir un aviso, no cinco).
@@ -116,7 +166,7 @@ async function revisoresConNovedadesPendientes(db, formularioId) {
  */
 async function notificarCorreccion(db, crearNotificacion, { formularioId, autor }) {
   try {
-    const revisores = await revisoresConNovedadesPendientes(db, formularioId);
+    const revisores = await revisoresAAvisar(db, formularioId);
     if (revisores.length === 0) return 0;
 
     const form = await db.queryOne(
@@ -127,7 +177,7 @@ async function notificarCorreccion(db, crearNotificacion, { formularioId, autor 
     const deQuien = form?.beneficiario ? ` de ${form.beneficiario}` : '';
 
     let enviados = 0;
-    for (const { revisor_id: revisorId } of revisores) {
+    for (const { revisor_id: revisorId, conNovedad } of revisores) {
       if (revisorId === autor?.id) continue;
       const yaAvisado = await db.queryOne(
         `SELECT id FROM notificaciones
@@ -141,7 +191,9 @@ async function notificarCorreccion(db, crearNotificacion, { formularioId, autor 
         revisorId,
         'correccion_formulario',
         `Corrección por verificar${deQuien}`,
-        `${quien} corrigió el formulario${deQuien} después de tus novedades. Ábrelo para verificar y dar el visto bueno.`,
+        conNovedad === false
+          ? `${quien} corrigió o completó el formulario${deQuien}. Ábrelo para verificar los cambios y dar el visto bueno.`
+          : `${quien} corrigió el formulario${deQuien} después de tus novedades. Ábrelo para verificar y dar el visto bueno.`,
         formularioId
       );
       enviados++;
@@ -161,5 +213,6 @@ module.exports = {
   novedadEstaCorregida,
   listarCorrecciones,
   revisoresConNovedadesPendientes,
+  revisoresAAvisar,
   notificarCorreccion,
 };

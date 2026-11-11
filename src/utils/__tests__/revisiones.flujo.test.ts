@@ -8,6 +8,7 @@ import datos from '../../../backend/src/lib/__tests__/casosEstadoRevision.json';
 type Caso = {
   nombre: string;
   revisiones: Array<Partial<Revision> & { id: number }>;
+  correcciones?: Array<{ created_at: string }>;
   esperado: { abiertas?: number[]; cerrado_coordinador?: boolean; secciones_aprobadas?: number; rol_flujo?: string | null };
 };
 
@@ -34,7 +35,7 @@ describe('regla de revisiones = backend (casos compartidos)', () => {
         expect(abiertas).toEqual(esp.abiertas);
       }
       if (esp.cerrado_coordinador !== undefined) {
-        expect(rolEstaOk('coordinador', revs)).toBe(esp.cerrado_coordinador);
+        expect(rolEstaOk('coordinador', revs, (caso.correcciones || []) as any)).toBe(esp.cerrado_coordinador);
       }
       if (esp.secciones_aprobadas !== undefined && esp.rol_flujo !== 'interventor') {
         expect(seccionesAprobadasPorRol('coordinador', revs).length).toBe(esp.secciones_aprobadas);

@@ -24,6 +24,14 @@
 //     Una novedad marcada después del cierre lo reabre.
 //   • Flujo: coordinador → interventoría. Interventoría solo actúa sobre
 //     formularios con la revisión del coordinador cerrada.
+//   • CORRECCIÓN SIN VERIFICAR (nov-2026, caso Jonathan Molano / Segundo
+//     Alfonso): una corrección del técnico (completar/corregir respuesta,
+//     borrar evidencia, «ya corregí») posterior al último movimiento del
+//     rol de la fase deja el formulario «por verificar» AUNQUE no hubiera
+//     novedad registrada. Antes, si la corrección se pedía por fuera de la
+//     app, quedaba en «sin revisar» sin ninguna señal y nadie la veía.
+//   • Una corrección POSTERIOR al cierre de un rol lo reabre: lo aprobado
+//     cambió, así que hay que volver a verificarlo y cerrar de nuevo.
 // ============================================================
 
 const ROLES = ['coordinador', 'interventor', 'gerente', 'admin'];
@@ -59,7 +67,14 @@ function estadoDeRol(revisiones, rol, correcciones = []) {
   const ultimaNovedad = novedades.reduce((m, n) => Math.max(m, t(n.created_at)), 0);
   const cierres = vistos.filter((vb) => vb.seccion == null);
   const ultimoCierre = cierres.reduce((m, vb) => Math.max(m, t(vb.created_at)), 0);
-  const cerrado = cierres.length > 0 && ultimoCierre >= ultimaNovedad;
+  const ultimaCorreccion = correcciones.reduce((m, c) => Math.max(m, t(c.created_at)), 0);
+  // Una corrección posterior al cierre lo reabre (estrictamente posterior:
+  // si el revisor cerró en el mismo instante, ya la vio).
+  // `cerradoSinCorreccion` es la regla anterior; calcularEstadoRevision la
+  // usa para no reabrir un rol cuando una fase POSTERIOR cerró después de
+  // la corrección (interventoría ya la verificó).
+  const cerradoSinCorreccion = cierres.length > 0 && ultimoCierre >= ultimaNovedad;
+  const cerrado = cerradoSinCorreccion && !(ultimaCorreccion > ultimoCierre);
 
   // Secciones cuyo ÚLTIMO movimiento de este rol es un visto bueno.
   const ultimoPorSeccion = new Map();
@@ -81,6 +96,9 @@ function estadoDeRol(revisiones, rol, correcciones = []) {
     rol,
     movimientos: propias.length,
     cerrado,
+    cerradoSinCorreccion,
+    ultimaCorreccion,
+    ultimoCierre,
     abiertas,
     porVerificar,
     seccionesAprobadas,
@@ -98,6 +116,18 @@ function calcularEstadoRevision(revisiones = [], correcciones = []) {
   const porRol = {};
   for (const rol of ROLES) porRol[rol] = estadoDeRol(revisiones, rol, correcciones);
 
+  // Un rol reabierto SOLO por una corrección vuelve a contar como cerrado
+  // si una fase posterior cerró después de esa corrección: interventoría
+  // ya verificó lo corregido y no tiene sentido devolvérselo al coordinador.
+  FASES.forEach((rol, i) => {
+    const e = porRol[rol];
+    if (e.cerrado || !e.cerradoSinCorreccion) return;
+    const verificadaDespues = FASES.slice(i + 1).some(
+      (sig) => porRol[sig].cerradoSinCorreccion && porRol[sig].ultimoCierre >= e.ultimaCorreccion
+    );
+    if (verificadaDespues) e.cerrado = true;
+  });
+
   // Compatibilidad: 'ok' ahora significa CERRADO (visto bueno final), no
   // "último clic fue un visto bueno". Las versiones viejas de la app leen
   // este campo, así que dejan de mostrar "Todo OK" falsos sin actualizarse.
@@ -112,6 +142,22 @@ function calcularEstadoRevision(revisiones = [], correcciones = []) {
     }
   }
 
+  const ultimaCorreccion = correcciones.reduce((m, c) => Math.max(m, t(c.created_at)), 0);
+
+  // ¿Hay una corrección que el rol de la fase aún no ha visto? Se compara
+  // con lo último que ese rol hizo en el formulario y, desde la segunda
+  // fase, con el cierre de la fase anterior (lo corregido antes de que el
+  // coordinador cerrara ya lo verificó el coordinador).
+  let correccionSinVerificar = false;
+  if (rolFlujo !== null && ultimaCorreccion > 0) {
+    const idx = FASES.indexOf(rolFlujo);
+    const referencia = Math.max(
+      porRol[rolFlujo].ultimoMovimiento,
+      ...FASES.slice(0, idx).map((r) => porRol[r].ultimoCierre)
+    );
+    correccionSinVerificar = ultimaCorreccion > referencia;
+  }
+
   let estadoFlujo;
   let turno; // 'tecnico' | rol revisor | null
   if (rolFlujo === null) {
@@ -120,7 +166,11 @@ function calcularEstadoRevision(revisiones = [], correcciones = []) {
   } else {
     const e = porRol[rolFlujo];
     if (e.movimientos === 0) {
-      estadoFlujo = rolFlujo === 'coordinador' ? 'sin_revisar' : 'en_interventoria';
+      estadoFlujo = correccionSinVerificar
+        ? 'por_verificar'
+        : rolFlujo === 'coordinador'
+          ? 'sin_revisar'
+          : 'en_interventoria';
       turno = rolFlujo;
     } else if (e.abiertas.length > 0) {
       if (e.porVerificar.length === e.abiertas.length) {
@@ -131,15 +181,15 @@ function calcularEstadoRevision(revisiones = [], correcciones = []) {
         turno = 'tecnico';
       }
     } else {
-      // Revisó, no dejó novedades abiertas, pero no ha cerrado.
-      estadoFlujo = 'por_cerrar';
+      // Sin novedades abiertas: si el técnico corrigió algo después de lo
+      // último que vio el revisor, está por verificar; si no, falta cerrar.
+      estadoFlujo = correccionSinVerificar ? 'por_verificar' : 'por_cerrar';
       turno = rolFlujo;
     }
   }
 
   const todasAbiertas = ROLES.flatMap((r) => porRol[r].abiertas);
   const todasPorVerificar = ROLES.flatMap((r) => porRol[r].porVerificar);
-  const ultimaCorreccion = correcciones.reduce((m, c) => Math.max(m, t(c.created_at)), 0);
   const ultimoMovimiento = Math.max(
     ultimaCorreccion,
     ...ROLES.map((r) => porRol[r].ultimoMovimiento)
@@ -153,7 +203,12 @@ function calcularEstadoRevision(revisiones = [], correcciones = []) {
     admin: estadoCompat(porRol.admin),
     novedades_total: todasAbiertas.length,
     por_verificar: todasPorVerificar.length,
-    ultima_correccion: todasPorVerificar.length > 0 && ultimaCorreccion ? new Date(ultimaCorreccion).toISOString() : null,
+    ultima_correccion:
+      (todasPorVerificar.length > 0 || correccionSinVerificar) && ultimaCorreccion
+        ? new Date(ultimaCorreccion).toISOString()
+        : null,
+    /** Hay una corrección posterior a lo último que vio el rol de la fase (con o sin novedad). */
+    correccion_sin_verificar: correccionSinVerificar,
     // ── Flujo ──
     estado_flujo: estadoFlujo,
     rol_flujo: rolFlujo,

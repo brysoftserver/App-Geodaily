@@ -27,13 +27,57 @@ const ts = (fecha: string): number => {
  * (seccion null — el «cierre») posterior o igual a su última novedad.
  * Aprobar secciones no cierra; una novedad posterior al cierre lo reabre.
  */
-export const rolEstaOk = (rol: string, revisiones: Revision[]): boolean => {
+/** Fases del flujo jerárquico (igual que FASES en el backend). */
+const FASES = ['coordinador', 'interventor'];
+
+/** Último cierre vigente del rol sin mirar correcciones (0 si no cerró). */
+const cierreSinCorreccion = (rol: string, revisiones: Revision[]): number => {
   const propias = revisiones.filter((r) => r.revisor_rol === rol && TIPOS_ESTADO.includes(r.tipo));
   const cierres = propias.filter((r) => r.tipo === 'visto_bueno' && !r.seccion);
-  if (cierres.length === 0) return false;
+  if (cierres.length === 0) return 0;
   const ultimoCierre = Math.max(...cierres.map((r) => ts(r.created_at)));
   const ultimaNovedad = Math.max(0, ...propias.filter((r) => r.tipo === 'novedad').map((r) => ts(r.created_at)));
-  return ultimoCierre >= ultimaNovedad;
+  return ultimoCierre >= ultimaNovedad ? ultimoCierre : 0;
+};
+
+/**
+ * Además (nov-2026): una corrección del técnico POSTERIOR al cierre lo
+ * reabre, salvo que una fase posterior (interventoría) haya cerrado después
+ * de esa corrección. `correcciones` es opcional para no romper llamadas
+ * antiguas: sin ella se comporta como antes.
+ */
+export const rolEstaOk = (rol: string, revisiones: Revision[], correcciones: Correccion[] = []): boolean => {
+  const ultimoCierre = cierreSinCorreccion(rol, revisiones);
+  if (!ultimoCierre) return false;
+  const ultimaCorreccion = Math.max(0, ...(correcciones || []).map((c) => ts(c.created_at)));
+  if (!(ultimaCorreccion > ultimoCierre)) return true;
+  const idx = FASES.indexOf(rol);
+  if (idx < 0) return false;
+  return FASES.slice(idx + 1).some((sig) => cierreSinCorreccion(sig, revisiones) >= ultimaCorreccion);
+};
+
+/**
+ * Correcciones del técnico que el rol todavía NO ha visto: posteriores a
+ * su último movimiento en el formulario y, para interventoría, también al
+ * cierre del coordinador. Mismo criterio que `correccion_sin_verificar` de
+ * backend/src/lib/estadoRevision.js. Sirve para mostrarle al revisor qué
+ * cambió aunque no hubiera marcado ninguna novedad (caso: el técnico usó
+ * «✎ Completar» a pedido del revisor por fuera de la app).
+ */
+export const correccionesSinVerificar = (
+  rol: string,
+  revisiones: Revision[],
+  correcciones: Correccion[] | undefined
+): Correccion[] => {
+  if (!correcciones?.length) return [];
+  const propias = revisiones.filter((r) => r.revisor_rol === rol && TIPOS_ESTADO.includes(r.tipo));
+  const ultimoPropio = Math.max(0, ...propias.map((r) => ts(r.created_at)));
+  const idx = FASES.indexOf(rol);
+  const cierresPrevios = idx > 0 ? FASES.slice(0, idx).map((r) => cierreSinCorreccion(r, revisiones)) : [];
+  const referencia = Math.max(ultimoPropio, ...cierresPrevios);
+  return correcciones
+    .filter((c) => ts(c.created_at) > referencia)
+    .sort((a, b) => ts(b.created_at) - ts(a.created_at));
 };
 
 /** Alias con el nombre que describe la regla actual. */

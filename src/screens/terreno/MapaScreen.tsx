@@ -52,6 +52,7 @@ import {
 import { Plantacion, Coordenadas, PuntoPoligono } from '../../types';
 import { PLANTAS_OPCIONES, getIconoEspecie } from '../../utils/constants';
 import { PADRON_BENEFICIARIOS } from '../../data/padronBeneficiarios';
+import { descargarHistorialMediciones } from '../../services/mediciones.service';
 
 const STORAGE_KEY_MAP = '@geodaily/mapa_estado';
 
@@ -1165,16 +1166,25 @@ const MapaScreen: React.FC = () => {
   const abrirHistorialMediciones = useCallback(async () => {
     setCargandoHistorialMediciones(true);
     setMostrarHistorialMediciones(true);
-    try {
+    // El técnico solo ve sus propias mediciones; los roles superiores ven
+    // todas (con la atribución de beneficiario/vereda de cada una).
+    const mostrarLocales = async () => {
       const todas = await getMediciones();
-      // El técnico solo ve sus propias mediciones; los roles superiores ven
-      // todas (con la atribución de beneficiario/vereda de cada una).
       setMedicionesGuardadas(
         canViewAll ? todas : todas.filter((m) => !user?.id || m.usuario_id === user.id)
       );
+    };
+    try {
+      // Primero lo local (inmediato, también offline)…
+      await mostrarLocales();
     } finally {
       setCargandoHistorialMediciones(false);
     }
+    // …y luego lo del servidor: mediciones hechas desde otro teléfono.
+    try {
+      const nuevas = await descargarHistorialMediciones();
+      if (nuevas > 0) await mostrarLocales();
+    } catch { /* sin conexión: se queda lo local */ }
   }, [user?.id, canViewAll]);
 
   // "Revive" una medición guardada: la carga en el polígono editable para

@@ -62,6 +62,7 @@ import { limpiarEvidenciasAntiguas, archivoLocalFaltante } from '../services/med
 import { resolverClimaYUbicacion } from '../services/climate.service';
 import { clearSyncFailures, resumirUltimoFallo } from '../services/syncDiagnostics';
 import apiClient from '../services/api';
+import { descargarHistorialMediciones } from '../services/mediciones.service';
 import { API_CONFIG } from '../theme';
 
 // ==================================================================
@@ -1452,6 +1453,13 @@ export const SyncProvider: React.FC<{ children: React.ReactNode }> = ({
   useEffect(() => {
     if (user?.id) void sincronizarBorradoresLocales();
   }, [user?.id, sincronizarBorradoresLocales]);
+
+  // Al iniciar sesión (o abrir la app con sesión) se precarga el historial
+  // de mediciones/polígonos guardado en el servidor, para verlo desde
+  // cualquier teléfono y también después sin señal. No pisa nada pendiente.
+  useEffect(() => {
+    if (user?.id) void descargarHistorialMediciones(20000);
+  }, [user?.id]);
 
   useEffect(() => {
     checkPending();

@@ -81,3 +81,59 @@ test('notificarCorreccion: nunca lanza aunque la BD falle', async () => {
   const n = await notificarCorreccion(roto, async () => {}, { formularioId: 'f1', autor: {} });
   assert.equal(n, 0);
 });
+
+// ── Sin novedades abiertas (caso Jonathan Molano, nov-2026) ──────────────
+/** db falso por texto de consulta: revisiones del formulario, correcciones y revisor del técnico. */
+const dbSinNovedad = ({ revisiones = [], correcciones = [], revisorDelTecnico = null }) => ({
+  queryAll: async (sql) => {
+    if (sql.includes('FROM actividad_log')) return correcciones;
+    return revisiones;
+  },
+  queryOne: async (sql) => {
+    if (sql.includes('FROM formularios WHERE id = $1') && sql.includes('beneficiario')) return { beneficiario: 'Segundo Alfonso' };
+    if (sql.includes('FROM notificaciones')) return null;
+    if (sql.includes('JOIN formularios f')) return revisorDelTecnico ? { revisor_id: revisorDelTecnico } : null;
+    return null;
+  },
+});
+
+test('notificarCorreccion: sin novedad y nadie revisó el formulario → avisa al coordinador habitual del técnico', async () => {
+  const enviados = [];
+  const n = await notificarCorreccion(
+    dbSinNovedad({ correcciones: [{ created_at: '2026-11-11T16:39:36Z' }], revisorDelTecnico: 'sup-002' }),
+    async (...args) => enviados.push(args),
+    { formularioId: 'f1', autor: { id: 'tec-010', nombre: 'Jonathan' } }
+  );
+  assert.equal(n, 1);
+  assert.equal(enviados[0][0], 'sup-002');
+  assert.match(enviados[0][3], /corrigió o completó/);
+});
+
+test('notificarCorreccion: sin novedad → avisa al coordinador que ya revisó ESTE formulario', async () => {
+  const enviados = [];
+  const n = await notificarCorreccion(
+    dbSinNovedad({
+      revisiones: [{ id: 1, revisor_id: 'sup-008', revisor_rol: 'coordinador', tipo: 'visto_bueno', seccion: 'A', created_at: '2026-11-10T10:00:00Z' }],
+      correcciones: [{ created_at: '2026-11-11T09:00:00Z' }],
+      revisorDelTecnico: 'sup-002',
+    }),
+    async (...args) => enviados.push(args),
+    { formularioId: 'f1', autor: { id: 'tec-010' } }
+  );
+  assert.equal(n, 1);
+  assert.equal(enviados[0][0], 'sup-008');
+});
+
+test('notificarCorreccion: el revisor ya vio la corrección (movió después) → no avisa', async () => {
+  const enviados = [];
+  const n = await notificarCorreccion(
+    dbSinNovedad({
+      revisiones: [{ id: 1, revisor_id: 'sup-002', revisor_rol: 'coordinador', tipo: 'visto_bueno', seccion: 'A', created_at: '2026-11-11T16:52:00Z' }],
+      correcciones: [{ created_at: '2026-11-11T16:40:05Z' }],
+      revisorDelTecnico: 'sup-002',
+    }),
+    async (...args) => enviados.push(args),
+    { formularioId: 'f1', autor: { id: 'tec-010' } }
+  );
+  assert.equal(n, 0);
+});

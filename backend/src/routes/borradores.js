@@ -6,6 +6,7 @@ const express = require('express');
 const { authenticateToken } = require('../middleware/auth');
 const db = require('../database');
 const { normalizarCedula, numeroVisitaFormulario, sqlFormularioEsVisita } = require('../lib/visitas');
+const { fijarObjetivoVisita2 } = require('../lib/objetivoVisita2');
 
 const router = express.Router();
 const MAX_DRAFT_BYTES = 15 * 1024 * 1024;
@@ -59,6 +60,8 @@ router.put('/:id', async (req, res) => {
 
     const fechaCliente = Date.parse(borrador.updated_at || '');
     const updatedAt = Number.isFinite(fechaCliente) ? new Date(fechaCliente).toISOString() : new Date().toISOString();
+    // Visita 2: objetivo fijo (borradores de apps sin actualizar).
+    fijarObjetivoVisita2(borrador.actividad);
     const payload = {
       ...borrador,
       tecnico: { ...(borrador.tecnico || {}), usuario_id: req.user.id },

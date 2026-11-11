@@ -340,6 +340,33 @@ export const saveFormularioLocal = async (
  * Si se provee usuarioId, filtra solo los de ese usuario (para técnicos).
  * Si no, devuelve todos (para coordinadores/gerentes/admin).
  */
+/**
+ * Actualiza SOLO las respuestas (caracterizacion_nueva_json) de la copia
+ * local, después de «✎ Completar» / «Corregir» en el servidor.
+ *
+ * Antes la respuesta se guardaba en el servidor pero el teléfono seguía con
+ * la copia vieja; si luego esa copia se re-sincronizaba, borraba lo
+ * completado. A propósito NO toca `sincronizado` (no dispara una resubida)
+ * ni `updated_at` (el servidor queda más nuevo y el próximo merge trae su
+ * versión, como antes). Si no hay copia local o no hay BD (web), no hace
+ * nada. Nunca lanza.
+ */
+export const actualizarRespuestasLocal = async (
+  formularioId: string,
+  caracterizacionNueva: Record<string, any>
+): Promise<void> => {
+  try {
+    const database = await ensureDb();
+    if (!database) return;
+    await database.runAsync(
+      'UPDATE formularios SET caracterizacion_nueva_json = ? WHERE id = ?',
+      [JSON.stringify(caracterizacionNueva), formularioId]
+    );
+  } catch (e) {
+    console.warn('[DB] No se pudo actualizar la respuesta en la copia local:', formularioId, e);
+  }
+};
+
 export const getFormulariosLocales = async (usuarioId?: string): Promise<Formulario[]> => {
   const database = await ensureDb();
   if (!database) {
@@ -2543,6 +2570,105 @@ export const actualizarNombreMedicion = async (
     console.error('[DB] Error al nombrar la medición:', error);
     throw error;
   }
+};
+
+/**
+ * Fusionar en el SQLite local las mediciones (polígonos) que trae el
+ * servidor (`GET /api/mediciones`), para que el historial se vea igual en
+ * cualquier teléfono donde el usuario inicie sesión.
+ *
+ * Reglas (no se pierde nada local):
+ *  · Si la medición existe localmente con `sincronizado = 0` (nombre o
+ *    puntos aún sin subir), se deja intacta: gana el cambio local.
+ *  · Si no existe o ya estaba sincronizada, se inserta/actualiza con los
+ *    datos del servidor y queda `sincronizado = 1` (no se vuelve a subir).
+ *  · No se borra nada local que el servidor no traiga.
+ *
+ * @returns cuántas mediciones se insertaron o actualizaron
+ */
+export const mergeMedicionesDelServidor = async (
+  remotas: Record<string, any>[]
+): Promise<number> => {
+  const database = await ensureDb();
+  if (!database || !Array.isArray(remotas) || remotas.length === 0) return 0;
+
+  const num = (v: unknown) => {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : 0;
+  };
+
+  let aplicadas = 0;
+  try {
+    const locales = await database.getAllAsync<{ id: string; sincronizado: number }>(
+      'SELECT id, sincronizado FROM mediciones_terreno'
+    );
+    const pendientes = new Set(locales.filter((l) => l.sincronizado !== 1).map((l) => l.id));
+    const formulariosLocales = new Set(
+      (await database.getAllAsync<{ id: string }>('SELECT id FROM formularios')).map((f) => f.id)
+    );
+
+    for (const m of remotas) {
+      const id = m?.id ? String(m.id) : '';
+      if (!id || pendientes.has(id)) continue;
+      const puntos = Array.isArray(m.puntos)
+        ? m.puntos
+            .map((p: any) => ({ latitud: Number(p?.latitud), longitud: Number(p?.longitud) }))
+            .filter((p: { latitud: number; longitud: number }) =>
+              Number.isFinite(p.latitud) && Number.isFinite(p.longitud))
+        : [];
+      if (puntos.length === 0) continue;
+
+      // Mismo criterio que saveMedicion: el vínculo solo si el formulario
+      // existe localmente (FK); si no, queda como pendiente de vincular.
+      const formSrv = m.formulario_id ? String(m.formulario_id) : null;
+      const formularioId = formSrv && formulariosLocales.has(formSrv) ? formSrv : null;
+      const formularioPendiente = formSrv && !formularioId ? formSrv : null;
+
+      const areaHa = m.area_hectareas != null
+        ? num(m.area_hectareas)
+        : m.tipo_medicion === 'area' ? num(m.valor) : 0;
+      const perimetro = m.perimetro_metros != null
+        ? num(m.perimetro_metros)
+        : m.tipo_medicion === 'distancia' ? num(m.valor) : 0;
+      const fecha = new Date(m.timestamp || m.created_at || Date.now());
+      const creada = Number.isNaN(fecha.getTime()) ? new Date() : fecha;
+
+      try {
+        await database.runAsync(
+          `INSERT OR REPLACE INTO mediciones_terreno (
+            id, formulario_id, formulario_id_pendiente, usuario_id, area_hectareas, area_metros2,
+            perimetro_metros, puntos_json, nombre, beneficiario_cedula,
+            beneficiario_nombre, vereda, corregimiento, usuario_nombre,
+            created_at, sincronizado
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`,
+          [
+            id,
+            formularioId,
+            formularioPendiente,
+            m.usuario_id || null,
+            areaHa,
+            m.area_metros2 != null ? num(m.area_metros2) : areaHa * 10000,
+            perimetro,
+            JSON.stringify(puntos),
+            m.nombre || null,
+            m.beneficiario_cedula || null,
+            m.beneficiario_nombre || null,
+            m.vereda || null,
+            m.corregimiento || null,
+            m.usuario_nombre || null,
+            creada.toISOString(),
+          ]
+        );
+        aplicadas++;
+      } catch (errFila) {
+        console.warn('[DB] No se pudo fusionar la medición del servidor', id, errFila);
+      }
+    }
+    if (aplicadas > 0) console.log(`[DB] Mediciones del servidor fusionadas: ${aplicadas}`);
+  } catch (error) {
+    console.warn('[DB] Error al fusionar mediciones del servidor:', error);
+  }
+  return aplicadas;
 };
 
 // ============================================================

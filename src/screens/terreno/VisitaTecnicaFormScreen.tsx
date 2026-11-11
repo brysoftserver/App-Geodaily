@@ -81,6 +81,7 @@ import {
 } from '../../utils/visitaTecnica';
 import { construirLlave, llaveCorrespondeACedula } from '../../utils/llaveVisita';
 import { formatFechaHoraColombia } from '../../utils/formatters';
+import { descargarHistorialMediciones } from '../../services/mediciones.service';
 import {
   filtrarParaBeneficiario,
   MAX_POLIGONOS_VISITA,
@@ -270,7 +271,9 @@ const hidratarEstado = (actividad: ActividadRealizada | undefined, numeroVisita:
   return {
     ...base,
     no_identificacion: actividad.no_identificacion || base.no_identificacion,
-    objetivo: actividad.objetivo || base.objetivo,
+    // Objetivo fijo de la Visita 2: aunque el borrador traiga otro texto
+    // (versiones anteriores lo dejaban editar), se usa el oficial.
+    objetivo: OBJETIVO_VISITA_DEFAULT,
     descripcion_visita: descripcion,
     seguimiento_compromisos: actividad.seguimiento_compromisos || '',
     valoracion_cumplimiento: actividad.valoracion_cumplimiento || '',
@@ -442,6 +445,9 @@ const VisitaTecnicaFormScreen: React.FC<Props> = ({ navigation, route }) => {
     setMostrarSelectorMediciones(true);
     setCargandoMediciones(true);
     try {
+      // Trae también las mediciones guardadas en el servidor (hechas desde
+      // otro teléfono). Sin conexión sigue con lo local.
+      await descargarHistorialMediciones(8000);
       const todas = await getMediciones();
       const propias = user?.id ? todas.filter((m) => !m.usuario_id || m.usuario_id === user.id) : todas;
       // Sin coordenadas no se puede dibujar la captura ni abrir en Earth.
@@ -670,7 +676,7 @@ const VisitaTecnicaFormScreen: React.FC<Props> = ({ navigation, route }) => {
       visita_numero: visitaNumero,
       formato_visita: 'v2',
       no_identificacion: data.no_identificacion,
-      objetivo: data.objetivo.trim(),
+      objetivo: OBJETIVO_VISITA_DEFAULT,
       seguimiento_compromisos: data.seguimiento_compromisos.trim(),
       valoracion_cumplimiento: data.valoracion_cumplimiento,
       compromisos_siguiente_visita: compromisosActivos,
@@ -681,6 +687,7 @@ const VisitaTecnicaFormScreen: React.FC<Props> = ({ navigation, route }) => {
       poligono,
       visita_datos: {
         ...data,
+        objetivo: OBJETIVO_VISITA_DEFAULT,
         medicion_historial: data.mediciones_historial[0] || undefined,
       } as unknown as Record<string, unknown>,
     };
@@ -1151,8 +1158,6 @@ const VisitaTecnicaFormScreen: React.FC<Props> = ({ navigation, route }) => {
   };
 
   // ─── Render ───────────────────────────────────────────────
-  const objetivoDefault = data.objetivo === OBJETIVO_VISITA_DEFAULT;
-
   return (
     <KeyboardAvoidingView
       style={styles.flex}
@@ -1247,25 +1252,15 @@ const VisitaTecnicaFormScreen: React.FC<Props> = ({ navigation, route }) => {
           numero={2}
           titulo="Objetivo de la visita"
           ayuda={DESCRIPCION_ITEM.objetivo}
-          completo={!!data.objetivo.trim()}
+          completo
         >
+          {/* Objetivo fijo para todas las Visitas 2 (no editable). */}
           <TextInput
-            style={[styles.input, styles.inputMultiline]}
-            value={data.objetivo}
-            onChangeText={(v) => set('objetivo', v)}
+            style={[styles.input, styles.inputMultiline, styles.inputSoloLectura]}
+            value={OBJETIVO_VISITA_DEFAULT}
+            editable={false}
             multiline
-            placeholder="Objetivo de la visita"
-            placeholderTextColor={COLORS.textLight}
           />
-          {!objetivoDefault && (
-            <TouchableOpacity
-              style={styles.linkBtn}
-              onPress={() => set('objetivo', OBJETIVO_VISITA_DEFAULT)}
-              activeOpacity={0.7}
-            >
-              <Text style={styles.linkBtnText}>↺ Restaurar objetivo sugerido</Text>
-            </TouchableOpacity>
-          )}
         </ItemCard>
 
         {/* ─── Ítem 3: Descripción de la visita ──────────── */}
@@ -1889,8 +1884,7 @@ const styles = StyleSheet.create({
     marginTop: SPACING.sm,
     marginBottom: SPACING.xs,
   },
-  linkBtn: { marginTop: SPACING.sm, alignSelf: 'flex-start' },
-  linkBtnText: { fontSize: FONTS.sizes.sm, color: COLORS.primary, fontWeight: FONTS.weights.medium },
+  inputSoloLectura: { backgroundColor: COLORS.surfaceAlt, color: COLORS.textPrimary },
 
   mapBtn: {
     marginTop: SPACING.sm,

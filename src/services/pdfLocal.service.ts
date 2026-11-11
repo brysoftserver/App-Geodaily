@@ -17,7 +17,7 @@ import {
   SeccionResuelta,
 } from '../utils/encuestaSchema';
 import { membreteAperturaHtml, membreteCierreHtml, membreteCss, MembreteVariante } from '../utils/membrete';
-import { esVisitaTecnicaV2, esVisitaTecnicaV3 } from '../utils/visitaTecnica';
+import { esVisitaTecnicaV2, esVisitaTecnicaV3, OBJETIVO_VISITA_DEFAULT } from '../utils/visitaTecnica';
 import { medicionesDeVisita, sumaHectareas } from '../utils/medicionesVisita';
 import {
   COMPROMISOS_V3,
@@ -2920,9 +2920,7 @@ async function construirHTMLVisitaV2(
   <!-- ÍTEM 2 -->
   <div class="section">
     <h2>2. OBJETIVO DE LA VISITA</h2>
-    ${act.objetivo
-      ? `<div class="desc-detallada">${escapeHtml(act.objetivo)}</div>`
-      : '<p class="no-data">Sin registrar</p>'}
+    <div class="desc-detallada">${escapeHtml(OBJETIVO_VISITA_DEFAULT)}</div>
   </div>
 
   <!-- ÍTEM 3 -->

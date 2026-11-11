@@ -95,6 +95,72 @@
       ],
       "correcciones": [],
       "esperado": { "estado_flujo": "aprobado", "turno": null, "rol_flujo": null, "coordinador": "ok", "interventor": "ok", "cerrado_coordinador": true }
+    },
+    {
+      "nombre": "CASO JONATHAN: el tecnico completa sin novedad previa -> por verificar (no 'sin revisar')",
+      "revisiones": [],
+      "correcciones": [ { "created_at": "2026-11-11T16:39:36Z" } ],
+      "esperado": { "estado_flujo": "por_verificar", "turno": "coordinador", "rol_flujo": "coordinador", "novedades_total": 0, "por_verificar": 0, "abiertas": [], "cerrado_coordinador": false, "correccion_sin_verificar": true }
+    },
+    {
+      "nombre": "coordinador aprueba secciones DESPUES de la correccion: ya la vio, falta cerrar",
+      "revisiones": [
+        { "id": 1, "revisor_rol": "coordinador", "tipo": "visto_bueno", "seccion": "A", "created_at": "2026-11-11T16:52:00Z" }
+      ],
+      "correcciones": [ { "created_at": "2026-11-11T16:40:05Z" } ],
+      "esperado": { "estado_flujo": "por_cerrar", "turno": "coordinador", "cerrado_coordinador": false, "correccion_sin_verificar": false }
+    },
+    {
+      "nombre": "correccion sin novedad despues de aprobar secciones: por verificar",
+      "revisiones": [
+        { "id": 1, "revisor_rol": "coordinador", "tipo": "visto_bueno", "seccion": "A", "created_at": "2026-11-10T10:00:00Z" }
+      ],
+      "correcciones": [ { "created_at": "2026-11-11T09:00:00Z" } ],
+      "esperado": { "estado_flujo": "por_verificar", "turno": "coordinador", "cerrado_coordinador": false, "secciones_aprobadas": 1, "correccion_sin_verificar": true }
+    },
+    {
+      "nombre": "correccion DESPUES del cierre del coordinador lo reabre: por verificar",
+      "revisiones": [
+        { "id": 1, "revisor_rol": "coordinador", "tipo": "visto_bueno", "seccion": null, "created_at": "2026-11-10T10:00:00Z" }
+      ],
+      "correcciones": [ { "created_at": "2026-11-11T09:00:00Z" } ],
+      "esperado": { "estado_flujo": "por_verificar", "turno": "coordinador", "rol_flujo": "coordinador", "coordinador": "novedades", "cerrado_coordinador": false }
+    },
+    {
+      "nombre": "correccion despues de AMBOS cierres reabre al coordinador",
+      "revisiones": [
+        { "id": 1, "revisor_rol": "coordinador", "tipo": "visto_bueno", "seccion": null, "created_at": "2026-11-10T10:00:00Z" },
+        { "id": 2, "revisor_rol": "interventor", "tipo": "visto_bueno", "seccion": null, "created_at": "2026-11-10T11:00:00Z" }
+      ],
+      "correcciones": [ { "created_at": "2026-11-11T09:00:00Z" } ],
+      "esperado": { "estado_flujo": "por_verificar", "rol_flujo": "coordinador", "cerrado_coordinador": false }
+    },
+    {
+      "nombre": "coordinador vuelve a cerrar tras la correccion: interventoria queda por cerrar de nuevo",
+      "revisiones": [
+        { "id": 1, "revisor_rol": "coordinador", "tipo": "visto_bueno", "seccion": null, "created_at": "2026-11-10T10:00:00Z" },
+        { "id": 2, "revisor_rol": "interventor", "tipo": "visto_bueno", "seccion": null, "created_at": "2026-11-10T11:00:00Z" },
+        { "id": 3, "revisor_rol": "coordinador", "tipo": "visto_bueno", "seccion": null, "created_at": "2026-11-11T10:00:00Z" }
+      ],
+      "correcciones": [ { "created_at": "2026-11-11T09:00:00Z" } ],
+      "esperado": { "estado_flujo": "por_cerrar", "rol_flujo": "interventor", "turno": "interventor", "cerrado_coordinador": true, "correccion_sin_verificar": false }
+    },
+    {
+      "nombre": "interventoria cerro DESPUES de la correccion: no se reabre al coordinador (caso Alirio/Argemiro)",
+      "revisiones": [
+        { "id": 1, "revisor_rol": "coordinador", "tipo": "visto_bueno", "seccion": null, "created_at": "2026-11-11T15:42:00Z" },
+        { "id": 2, "revisor_rol": "interventor", "tipo": "visto_bueno", "seccion": null, "created_at": "2026-11-11T15:50:00Z" }
+      ],
+      "correcciones": [ { "created_at": "2026-11-11T15:45:54Z" } ],
+      "esperado": { "estado_flujo": "aprobado", "rol_flujo": null, "cerrado_coordinador": true }
+    },
+    {
+      "nombre": "correccion ANTES del cierre del coordinador: interventoria la recibe normal (no por verificar)",
+      "revisiones": [
+        { "id": 1, "revisor_rol": "coordinador", "tipo": "visto_bueno", "seccion": null, "created_at": "2026-11-11T16:17:00Z" }
+      ],
+      "correcciones": [ { "created_at": "2026-11-11T12:57:00Z" } ],
+      "esperado": { "estado_flujo": "en_interventoria", "turno": "interventor", "cerrado_coordinador": true, "correccion_sin_verificar": false }
     }
   ]
 }

@@ -11,6 +11,16 @@ const { notificarCorreccion, ROLES_CORRECTORES } = require('../lib/correcciones'
 const { normalizarCedula, numeroVisitaFormulario, sqlCedulaNormalizada } = require('../lib/visitas');
 const { quitarRevision } = require('../lib/revisionInterventoria');
 const { conservarPoligonos } = require('../lib/poligonosVisita');
+const { fijarObjetivoVisita2 } = require('../lib/objetivoVisita2');
+const {
+  conservarRespuestasCorregidas,
+  ACCIONES_RESPUESTA,
+  RUTAS_SINO,
+  esRutaSiNo,
+  leerSiNo,
+  normalizarSiNo,
+  escribirSiNo,
+} = require('../lib/respuestasCorregidas');
 const {
   esTecnicoVigenteDelFormulario,
   resolverAtribucionFormulario,
@@ -193,6 +203,9 @@ async function guardarFormularioHandler(req, res) {
     const tecnico = formulario.tecnico || {};
     const beneficiario = formulario.beneficiario || {};
     const actividad = formulario.actividad || {};
+    // Visita 2: objetivo fijo (aunque llegue de una app vieja o de una copia
+    // local anterior con otro texto).
+    fijarObjetivoVisita2(actividad);
     const coordenadas = formulario.coordenadas || {};
     let fotos = formulario.fotos || [];
 
@@ -241,7 +254,7 @@ async function guardarFormularioHandler(req, res) {
     // undefined (correcto); solo se corrompía a '{}' después de pasar por
     // aquí y volver — de ahí que el bug solo apareciera tras sincronizar.
     const sociodemografico = formulario.sociodemografico || null;
-    const caracterizacion = formulario.caracterizacion_nueva || null;
+    let caracterizacion = formulario.caracterizacion_nueva || null;
     const georeferencia = formulario.georeferencia || null;
     const clima = formulario.clima || null;
     const jsonOrNull = (v) => (v ? JSON.stringify(v) : null);
@@ -273,7 +286,7 @@ async function guardarFormularioHandler(req, res) {
       // segundo supervisor reescribiera el responsable con sus propios datos.
       `SELECT id, usuario_id, tipo,
               COALESCE(NULLIF(tecnico_json->>'usuario_id', ''), usuario_id) AS dueno_efectivo,
-              tecnico_json, actividad_json
+              tecnico_json, actividad_json, caracterizacion_nueva_json, updated_at
          FROM formularios WHERE id = $1`,
       [formulario.id]
     );
@@ -342,6 +355,41 @@ async function guardarFormularioHandler(req, res) {
       if (existente.tipo === 'visita_tecnica' && formulario.tipo === 'visita_tecnica') {
         conservarPoligonos(actividad, existente.actividad_json);
       }
+      // Respuestas completadas/corregidas en el servidor («✎ Completar» /
+      // «Corregir») DESPUÉS de la última modificación de esta copia: se
+      // conservan. Antes una re-sincronización con la copia vieja del
+      // teléfono las borraba (ver lib/respuestasCorregidas.js).
+      let updatedAtParaGuardar = formulario.updated_at ? new Date(formulario.updated_at) : null;
+      if (caracterizacion && existente.caracterizacion_nueva_json) {
+        try {
+          const correccionesRespuesta = await db.queryAll(
+            `SELECT accion, detalle_json->>'path' AS path, created_at
+               FROM actividad_log
+              WHERE accion = ANY($1::text[]) AND detalle_json->>'formulario_id' = $2`,
+            [ACCIONES_RESPUESTA, formulario.id]
+          );
+          const { caracterizacion: protegida, conservados } = conservarRespuestasCorregidas(
+            caracterizacion,
+            existente.caracterizacion_nueva_json,
+            correccionesRespuesta,
+            formulario.updated_at
+          );
+          if (conservados.length > 0) {
+            caracterizacion = protegida;
+            // La fila queda con contenido más nuevo que la copia: no se
+            // retrocede updated_at, así el teléfono trae la versión del
+            // servidor en su próximo merge (igual que tras el PATCH).
+            const tServidor = new Date(existente.updated_at).getTime();
+            if (Number.isFinite(tServidor) && (!updatedAtParaGuardar || updatedAtParaGuardar.getTime() < tServidor)) {
+              updatedAtParaGuardar = new Date(existente.updated_at);
+            }
+            console.warn(`[Forms] 🛡️ Formulario ${formulario.id}: copia vieja del dispositivo — se conservan respuestas corregidas en el servidor: ${conservados.join(', ')}`);
+          }
+        } catch (protErr) {
+          // Nunca bloquear el guardado por esto (comportamiento anterior).
+          console.warn('[Forms] No se pudieron proteger respuestas corregidas:', protErr.message);
+        }
+      }
       await db.query(
         `UPDATE formularios SET
           tipo = $1, usuario_id = $2,
@@ -386,7 +434,7 @@ async function guardarFormularioHandler(req, res) {
           firmaTecnico,
           formulario.huella_beneficiario || false,
           pdfUrlRemoto,
-          formulario.updated_at ? new Date(formulario.updated_at) : null,
+          updatedAtParaGuardar,
           formulario.id,
         ]
       );
@@ -714,6 +762,8 @@ const RUTAS_RESPUESTA_PERMITIDAS = new Set([
   'acompaniamiento.seguimiento_obs',
   'acompaniamiento.entresacado_obs',
   'acompaniamiento.observaciones_visita',
+  // Ítems Sí/No (1, 4, 5, 6): ruta virtual, escribe <item>_si / <item>_no.
+  ...RUTAS_SINO,
 ]);
 
 router.patch('/:id/respuesta', authenticateToken, async (req, res) => {
@@ -790,6 +840,41 @@ router.patch('/:id/respuesta', authenticateToken, async (req, res) => {
     const encuesta = (form.caracterizacion_nueva_json && typeof form.caracterizacion_nueva_json === 'object')
       ? { ...form.caracterizacion_nueva_json }
       : {};
+
+    // Ítems Sí/No del acompañamiento (1, 4, 5, 6): la respuesta son las
+    // casillas <item>_si / <item>_no, no la observación. Mismas reglas de
+    // completar/corregir que el resto, evaluadas sobre las casillas.
+    if (esRutaSiNo(path)) {
+      const esSi = normalizarSiNo(value);
+      if (esSi === null) {
+        return res.status(400).json({ estado: 'error', mensaje: 'Esta pregunta solo admite «Sí» o «No»' });
+      }
+      const actualSiNo = leerSiNo(encuesta, path);
+      if (esCorreccion && !actualSiNo) {
+        return res.status(409).json({
+          estado: 'error',
+          mensaje: 'Esa respuesta está vacía: usa «Completar» en vez de «Corregir»',
+        });
+      }
+      if (!esCorreccion && actualSiNo) {
+        return res.status(409).json({ estado: 'error', mensaje: 'Esa respuesta ya está completa' });
+      }
+      const encuestaSiNo = escribirSiNo(encuesta, path, esSi);
+      await db.query(
+        'UPDATE formularios SET caracterizacion_nueva_json = $1, updated_at = NOW() WHERE id = $2',
+        [JSON.stringify(encuestaSiNo), req.params.id]
+      );
+      await db.query(
+        'INSERT INTO actividad_log (usuario_id, accion, detalle_json) VALUES ($1, $2, $3)',
+        [
+          req.user.id,
+          esCorreccion ? 'corregir_respuesta' : 'completar_respuesta',
+          JSON.stringify({ formulario_id: req.params.id, path, valor_anterior: esCorreccion ? actualSiNo : undefined }),
+        ]
+      );
+      await notificarCorreccion(db, crearNotificacion, { formularioId: req.params.id, autor: req.user });
+      return res.json({ estado: 'ok', mensaje: esCorreccion ? 'Respuesta corregida' : 'Respuesta completada' });
+    }
 
     const partes = path.split('.');
     const [seccion, campo] = partes;

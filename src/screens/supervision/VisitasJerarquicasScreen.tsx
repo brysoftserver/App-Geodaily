@@ -88,8 +88,8 @@ const CATEGORIAS_BANDEJA: Record<CategoriaBandeja, { icono: string; corto: strin
   por_verificar: {
     icono: '🔄',
     corto: 'por verificar',
-    ayuda: 'El técnico corrigió después de las novedades. Verifica y aprueba la sección o cierra la revisión.',
-    enTarjeta: 'El técnico corrigió después de las novedades — usa «Revisión en línea» para verificar',
+    ayuda: 'El técnico corrigió o completó el formulario después de tu última revisión (con o sin novedad). Verifica y aprueba la sección o cierra la revisión.',
+    enTarjeta: 'El técnico corrigió el formulario — usa «Revisión en línea» para verificar',
   },
   por_cerrar: {
     icono: '🔍',

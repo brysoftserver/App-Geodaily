@@ -14,7 +14,7 @@ for (const caso of casos) {
     const estado = calcularEstadoRevision(caso.revisiones, caso.correcciones);
     const pub = estadoPublico(estado, { conAbiertas: true });
     const esp = caso.esperado;
-    for (const campo of ['estado_flujo', 'turno', 'rol_flujo', 'coordinador', 'interventor', 'novedades_total', 'por_verificar', 'secciones_aprobadas']) {
+    for (const campo of ['estado_flujo', 'turno', 'rol_flujo', 'coordinador', 'interventor', 'novedades_total', 'por_verificar', 'secciones_aprobadas', 'correccion_sin_verificar']) {
       if (campo in esp) assert.equal(pub[campo], esp[campo], campo);
     }
     if ('abiertas' in esp) assert.deepEqual([...pub.novedades_abiertas_ids].sort(), esp.abiertas, 'abiertas');

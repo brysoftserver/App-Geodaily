@@ -38,7 +38,7 @@ import {
   FirmaResuelta,
   eliminarEvidenciaRemota,
 } from '../../services/archivos.service';
-import { deleteEvidenciaLocal, saveFormularioLocal, getUnsyncedPhotos, getUnsyncedVideos, saveFotoLocal, saveVideoLocal, saveDocumentoLocal, marcarDocumentoSincronizado } from '../../services/database';
+import { deleteEvidenciaLocal, saveFormularioLocal, actualizarRespuestasLocal, getUnsyncedPhotos, getUnsyncedVideos, saveFotoLocal, saveVideoLocal, saveDocumentoLocal, marcarDocumentoSincronizado } from '../../services/database';
 import { eliminarArchivoLocal, persistirEvidencia } from '../../services/mediaStorage.service';
 import { useSync } from '../../store/SyncContext';
 import { useAbrirDocumentoFinca } from '../../hooks/useAbrirDocumentoFinca';
@@ -60,7 +60,7 @@ import {
 } from '../../utils/permisosFormulario';
 import { construirSeccionesEncuesta, esEncuestaSocial } from '../../utils/encuestaSchema';
 import { soloNumero, valorParaEditar } from '../../utils/respuestasCompuestas';
-import { esVisitaTecnicaV2, esVisitaTecnicaV3, tipoFormularioEvidencia, tituloVisitaTecnica } from '../../utils/visitaTecnica';
+import { esVisitaTecnicaV2, esVisitaTecnicaV3, OBJETIVO_VISITA_DEFAULT, tipoFormularioEvidencia, tituloVisitaTecnica } from '../../utils/visitaTecnica';
 import { abrirMapaEnGoogle } from '../../utils/abrirMapa';
 import {
   COMPROMISOS_V3,
@@ -118,7 +118,7 @@ import {
   Correccion,
 } from '../../services/revisiones.service';
 import { useRevisiones } from '../../hooks/useRevisiones';
-import { estaNovedadResuelta, rolEstaOk, correccionPosterior, seccionesAprobadasPorRol } from '../../utils/revisiones';
+import { estaNovedadResuelta, rolEstaOk, correccionPosterior, seccionesAprobadasPorRol, correccionesSinVerificar } from '../../utils/revisiones';
 import { descargarPaqueteMedia } from '../../services/mediaPackage.service';
 import SeguimientoCoordinacionSection from '../../components/SeguimientoCoordinacionSection';
 import { actualizarRespuestaFormulario, cambiarFechaFormulario, fechaDMAaISO } from '../../services/formularios.service';
@@ -193,13 +193,73 @@ const RUTAS_RESPUESTAS_FORMULARIO_1: Record<string, string> = {
   'RECOMENDACIONES DEL TÉCNICO__51': 'recomendaciones.recomendaciones_tecnicas',
   'RECOMENDACIONES DEL TÉCNICO__52': 'recomendaciones.compromisos_productor',
   'RECOMENDACIONES DEL TÉCNICO__53': 'recomendaciones.recomendaciones_ambientales',
-  'DESARROLLO ACOMPAÑAMIENTO TÉCNICO__1': 'acompaniamiento.actividades_realizadas_obs',
+  'DESARROLLO ACOMPAÑAMIENTO TÉCNICO__1': 'acompaniamiento.actividades_realizadas',
   'DESARROLLO ACOMPAÑAMIENTO TÉCNICO__2': 'acompaniamiento.manejo_plagas_hectareas',
   'DESARROLLO ACOMPAÑAMIENTO TÉCNICO__3': 'acompaniamiento.manejo_suelo_cantidad',
+  'DESARROLLO ACOMPAÑAMIENTO TÉCNICO__4': 'acompaniamiento.capacitacion',
+  'DESARROLLO ACOMPAÑAMIENTO TÉCNICO__5': 'acompaniamiento.seguimiento',
+  'DESARROLLO ACOMPAÑAMIENTO TÉCNICO__6': 'acompaniamiento.entresacado',
+  'DESARROLLO ACOMPAÑAMIENTO TÉCNICO__7': 'acompaniamiento.observaciones_visita',
+};
+
+/**
+ * Ítems Sí/No del acompañamiento técnico (1, 4, 5 y 6). La respuesta que se
+ * VE es la casilla `<item>_si` / `<item>_no` (booleanos); la observación
+ * `<item>_obs` es un dato aparte que se muestra debajo como «Obs:».
+ *
+ * Antes el botón de estas preguntas editaba la OBSERVACIÓN, no la casilla:
+ * - casillas vacías + observación llena → «Sin responder» + «✎ Completar»
+ *   → el servidor respondía «Esa respuesta ya está completa» (la obs.);
+ * - casilla marcada + observación vacía → «✎ Corregir» → «Esa respuesta
+ *   está vacía»;
+ * - y si «completaba» con «Si», quedaba en la observación y la pregunta
+ *   seguía «Sin responder» para todos (caso Segundo Alfonso, nov-2026).
+ * Ahora el botón principal edita la casilla (ruta virtual
+ * `acompaniamiento.<item>`, la resuelve el backend) y la observación tiene
+ * su propio botón.
+ */
+const ITEMS_ACOMPANAMIENTO_SINO = ['actividades_realizadas', 'capacitacion', 'seguimiento', 'entresacado'];
+const esRutaSiNo = (ruta: string): boolean => {
+  const [sec, campo] = ruta.split('.');
+  return sec === 'acompaniamiento' && ITEMS_ACOMPANAMIENTO_SINO.includes(campo);
+};
+/** Observación de cada ítem Sí/No, por clave de pregunta. */
+const OBSERVACION_ACOMPANAMIENTO: Record<string, string> = {
+  'DESARROLLO ACOMPAÑAMIENTO TÉCNICO__1': 'acompaniamiento.actividades_realizadas_obs',
   'DESARROLLO ACOMPAÑAMIENTO TÉCNICO__4': 'acompaniamiento.capacitacion_obs',
   'DESARROLLO ACOMPAÑAMIENTO TÉCNICO__5': 'acompaniamiento.seguimiento_obs',
   'DESARROLLO ACOMPAÑAMIENTO TÉCNICO__6': 'acompaniamiento.entresacado_obs',
-  'DESARROLLO ACOMPAÑAMIENTO TÉCNICO__7': 'acompaniamiento.observaciones_visita',
+};
+/** Valor guardado tal cual de una ruta; los ítems Sí/No se leen de sus casillas. */
+const leerRespuestaCruda = (formulario: Formulario, ruta: string): string => {
+  const enc = ((formulario as any).caracterizacion_nueva || {}) as Record<string, any>;
+  const [sec, campo] = ruta.split('.');
+  if (esRutaSiNo(ruta)) {
+    const bloque = enc[sec] || {};
+    return bloque[`${campo}_si`] === true ? 'Sí' : bloque[`${campo}_no`] === true ? 'No' : '';
+  }
+  return campo ? String(enc[sec]?.[campo] ?? '') : String(enc[sec] ?? '');
+};
+/** Aplica una respuesta guardada a la encuesta (sin mutarla). */
+const aplicarRespuestaEnEncuesta = (
+  base: Record<string, any> | undefined,
+  ruta: string,
+  valor: string
+): Record<string, any> => {
+  const encuesta = { ...(base || {}) };
+  const partes = ruta.split('.');
+  if (partes.length === 1) {
+    encuesta[partes[0]] = valor;
+    return encuesta;
+  }
+  const [seccion, campo] = partes;
+  if (esRutaSiNo(ruta)) {
+    const si = /^s[ií]$/i.test(valor.trim());
+    encuesta[seccion] = { ...(encuesta[seccion] || {}), [`${campo}_si`]: si, [`${campo}_no`]: !si };
+  } else {
+    encuesta[seccion] = { ...(encuesta[seccion] || {}), [campo]: valor };
+  }
+  return encuesta;
 };
 
 /**
@@ -230,6 +290,11 @@ type EspecRespuesta = {
 };
 
 const RESPUESTA_ESPEC: Record<string, EspecRespuesta> = {
+  // --- ACOMPAÑAMIENTO: ítems Sí/No (ver ITEMS_ACOMPANAMIENTO_SINO) ---
+  'acompaniamiento.actividades_realizadas': { tipo: 'seleccion', opciones: ['Sí', 'No'] },
+  'acompaniamiento.capacitacion': { tipo: 'seleccion', opciones: ['Sí', 'No'] },
+  'acompaniamiento.seguimiento': { tipo: 'seleccion', opciones: ['Sí', 'No'] },
+  'acompaniamiento.entresacado': { tipo: 'seleccion', opciones: ['Sí', 'No'] },
   // --- DATOS GENERALES ---
   fecha: { tipo: 'texto' },
   municipio: { tipo: 'seleccion', opciones: ['Puerto Rico'] },
@@ -417,6 +482,27 @@ const EtiquetaCorregida: React.FC<{ novedad: Revision; correcciones?: Correccion
   );
 };
 
+/** Texto legible de una corrección del técnico (qué pregunta o qué evidencia). */
+const ACCION_CORRECCION_LABEL: Record<string, string> = {
+  completar_respuesta: 'Completó',
+  corregir_respuesta: 'Corrigió',
+  eliminar_evidencia: 'Eliminó una evidencia',
+  marcar_novedad_corregida: 'Avisó «ya corregí»',
+};
+const describirCorreccion = (c: Correccion): string => {
+  const accion = ACCION_CORRECCION_LABEL[c.accion] || 'Cambió';
+  if (!c.path) return accion;
+  const claveObs = Object.keys(OBSERVACION_ACOMPANAMIENTO).find((k) => OBSERVACION_ACOMPANAMIENTO[k] === c.path);
+  if (claveObs) {
+    const [seccion, numero] = claveObs.split('__');
+    return `${accion}: ${seccion} · pregunta ${numero} (observación)`;
+  }
+  const clave = Object.keys(RUTAS_RESPUESTAS_FORMULARIO_1).find((k) => RUTAS_RESPUESTAS_FORMULARIO_1[k] === c.path);
+  if (!clave) return `${accion}: ${c.path}`;
+  const [seccion, numero] = clave.split('__');
+  return `${accion}: ${seccion} · pregunta ${numero}`;
+};
+
 const SeccionRevision: React.FC<{
   formulario: Formulario;
   revisiones: Revision[];
@@ -453,15 +539,15 @@ const SeccionRevision: React.FC<{
       (x) => x.revisor_rol === r && (x.tipo === 'novedad' || x.tipo === 'visto_bueno')
     );
     if (propias.length === 0) return null;
-    if (rolEstaOk(r, revisiones)) return 'ok';
+    if (rolEstaOk(r, revisiones, correcciones)) return 'ok';
     const abiertas = propias.filter((x) => x.tipo === 'novedad' && !estaNovedadResuelta(x, revisiones));
     return abiertas.length > 0 ? 'novedades' : 'en_revision';
   };
   // «Ya cerré» solo con el visto bueno FINAL vigente. Antes bastaba con que
   // el último clic fuera la aprobación de UNA sección: el botón quedaba
   // deshabilitado («✔ Ya aprobado por ti») y la revisión nunca se cerraba.
-  const yaAprobePorMiRol = rolEstaOk(rol, revisiones);
-  const coordinadorCerro = rolEstaOk('coordinador', revisiones);
+  const yaAprobePorMiRol = rolEstaOk(rol, revisiones, correcciones);
+  const coordinadorCerro = rolEstaOk('coordinador', revisiones, correcciones);
   const bloqueadoPorJerarquia = rol === 'interventor' && !coordinadorCerro;
   // Solo las novedades SIN resolver se muestran en rojo: una novedad queda
   // resuelta cuando el mismo rol que la marcó la da por buena después
@@ -473,6 +559,9 @@ const SeccionRevision: React.FC<{
     (r) => r.tipo === 'novedad' && estaNovedadResuelta(r, revisiones)
   );
   const novedadesPorVerificar = novedadesPendientes.filter((n) => !!correccionPosterior(n, correcciones));
+  // Cambios del técnico que MI rol aún no ha visto, haya o no novedad
+  // (antes, si la corrección se pidió por fuera de la app, no se veía nada).
+  const cambiosPorVerificar = correccionesSinVerificar(rol, revisiones, correcciones);
 
   // Progreso de MI revisión sobre las secciones visibles.
   const misAprobadas = seccionesAprobadasPorRol(rol, revisiones);
@@ -632,6 +721,28 @@ const SeccionRevision: React.FC<{
         </TouchableOpacity>
       )}
 
+      {/* Cambios del técnico posteriores a lo último que revisó mi rol */}
+      {esRevisor && !bloqueadoPorJerarquia && cambiosPorVerificar.length > 0 && (
+        <View style={rev.novedadesBox}>
+          <Text style={rev.novedadesTitle}>
+            🔄 Cambios del técnico por verificar ({cambiosPorVerificar.length})
+          </Text>
+          {cambiosPorVerificar.map((c) => (
+            <View key={String(c.id)} style={[rev.novedadItem, rev.novedadItemCorregida]}>
+              <Text style={rev.novedadMeta}>
+                {c.usuario_nombre || 'Técnico'} · {formatFecha(c.created_at)}
+              </Text>
+              <Text style={rev.novedadTexto}>
+                {describirCorreccion(c)}
+                {c.comentario ? ` · «${c.comentario}»` : ''}
+              </Text>
+            </View>
+          ))}
+          <Text style={rev.etiquetaCorregida}>
+            Revisa lo que cambió y aprueba o cierra la revisión para darlo por verificado.
+          </Text>
+        </View>
+      )}
       {/* Novedades PENDIENTES (las resueltas van al historial plegable) */}
       {novedadesPendientes.length > 0 && (
         <View style={rev.novedadesBox}>
@@ -742,7 +853,7 @@ const SeccionMiniRevision: React.FC<{
   // Interventoría sin cierre del coordinador: el servidor rechazaría la
   // marca (409), así que no se ofrecen los botones (el panel superior ya
   // muestra el candado explicando por qué).
-  const puedeMarcar = esRevisor && !(rol === 'interventor' && !rolEstaOk('coordinador', revisiones));
+  const puedeMarcar = esRevisor && !(rol === 'interventor' && !rolEstaOk('coordinador', revisiones, correcciones));
   const [enviando, setEnviando] = useState(false);
   const [mostrarInput, setMostrarInput] = useState(false);
   const [texto, setTexto] = useState('');
@@ -1400,11 +1511,7 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
     if (modo === 'corregir' && !pregunta.valor) return;
 
     /** Valor guardado tal cual (sin el formato compuesto de la vista). */
-    const leerCrudo = (ruta: string): string => {
-      const enc = ((formulario as any).caracterizacion_nueva || {}) as Record<string, any>;
-      const [sec, campo] = ruta.split('.');
-      return campo ? String(enc[sec]?.[campo] ?? '') : String(enc[sec] ?? '');
-    };
+    const leerCrudo = (ruta: string): string => leerRespuestaCruda(formulario, ruta);
 
     const clave = `${seccionTitulo}__${pregunta.numero === '\u2022' ? pregunta.texto : pregunta.numero}`;
 
@@ -1475,6 +1582,23 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
     });
   };
 
+  /** Agregar / corregir la observación de un ítem Sí/No del acompañamiento. */
+  const abrirEdicionObservacion = (seccionTitulo: string, pregunta: { numero: string; texto: string }) => {
+    if (!puedeCompletarRespuestas) return;
+    const path = OBSERVACION_ACOMPANAMIENTO[`${seccionTitulo}__${pregunta.numero}`];
+    if (!path) return;
+    const actual = leerRespuestaCruda(formulario, path).trim();
+    setValoresCompuestos({});
+    setGpsCaptura(null);
+    setRespuestaEditando({
+      path,
+      texto: `${pregunta.texto} — Observación`,
+      espec: RESPUESTA_ESPEC[path] || { tipo: 'texto', multiline: true },
+      modo: actual ? 'corregir' : 'completar',
+    });
+    setValorRespuesta(actual);
+  };
+
   const guardarRespuestaAdmin = async () => {
     if (!respuestaEditando || !valorRespuesta.trim()) {
       Alert.alert('Respuesta vacía', 'Escribe una respuesta antes de guardar.');
@@ -1495,17 +1619,14 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
         valorAGuardar,
         respuestaEditando.modo || 'completar'
       );
-      const partes = respuestaEditando.path.split('.');
-      setFormulario((prev) => {
-        const encuesta = { ...((prev as any).caracterizacion_nueva || {}) };
-        if (partes.length === 1) {
-          encuesta[partes[0]] = valorAGuardar;
-        } else {
-          const [seccion, campo] = partes;
-          encuesta[seccion] = { ...(encuesta[seccion] || {}), [campo]: valorAGuardar };
-        }
-        return { ...prev, caracterizacion_nueva: encuesta } as typeof prev;
-      });
+      const rutaGuardada = respuestaEditando.path;
+      const aplicarRespuesta = (base: Record<string, any> | undefined) =>
+        aplicarRespuestaEnEncuesta(base, rutaGuardada, valorAGuardar);
+      setFormulario((prev) => ({ ...prev, caracterizacion_nueva: aplicarRespuesta((prev as any).caracterizacion_nueva) }) as typeof prev);
+      // También en la copia local del teléfono: si no, una re-sincronización
+      // posterior de esa copia vieja borraba la respuesta en el servidor.
+      // Solo cambia las respuestas (no marca el formulario para resubir).
+      void actualizarRespuestasLocal(formulario.id, aplicarRespuesta((formulario as any).caracterizacion_nueva));
       const fueCorreccion = respuestaEditando.modo === 'corregir';
       setRespuestaEditando(null);
       Alert.alert(
@@ -2444,7 +2565,7 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
       ? `
       ${row2('N° de visita', act?.visita_numero != null ? String(act.visita_numero) : undefined)}
       ${row2('Identificación', act?.no_identificacion)}
-      ${row2('Objetivo', act?.objetivo)}
+      ${row2('Objetivo', OBJETIVO_VISITA_DEFAULT)}
       ${act?.seguimiento_compromisos ? `<div class="row" style="margin-top:8px;"><span class="label">Seguimiento de compromisos:</span></div><div class="desc-detallada">${escapeHtml(act.seguimiento_compromisos)}</div>` : ''}
       ${row2('Valoración del cumplimiento', act?.valoracion_cumplimiento ? `${act.valoracion_cumplimiento}%` : undefined)}
       ${act?.area_intervencion ? row2('Área a intervenir', `${act.area_intervencion} ha`) : ''}
@@ -3035,6 +3156,17 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
                     {!!pregunta.observacion && (
                       <Text style={styles.preguntaObs}>Obs: {pregunta.observacion}</Text>
                     )}
+                    {puedeCompletarRespuestas && !!OBSERVACION_ACOMPANAMIENTO[`${seccion.titulo}__${pregunta.numero}`] && (
+                      <TouchableOpacity
+                        style={[styles.adminEditarBtn, { alignSelf: 'flex-start', marginTop: 4 }]}
+                        onPress={() => abrirEdicionObservacion(seccion.titulo, pregunta)}
+                        activeOpacity={0.7}
+                      >
+                        <Text style={styles.adminEditarBtnText}>
+                          {pregunta.observacion ? '✎ Corregir observación' : '✎ Agregar observación'}
+                        </Text>
+                      </TouchableOpacity>
+                    )}
                   </View>
                 );
               })}
@@ -3129,9 +3261,8 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
                     <Text style={styles.value}>{formulario.actividad.no_identificacion}</Text>
                   </View>
                 )}
-                {!!formulario.actividad.objetivo && (
-                  <BloqueTexto titulo="Objetivo" texto={formulario.actividad.objetivo} />
-                )}
+                {/* Objetivo fijo de la Visita 2 (también para copias viejas). */}
+                <BloqueTexto titulo="Objetivo" texto={OBJETIVO_VISITA_DEFAULT} />
                 {!!formulario.actividad.descripcion && (
                   <BloqueTexto titulo="Descripción de la visita" texto={formulario.actividad.descripcion} />
                 )}
