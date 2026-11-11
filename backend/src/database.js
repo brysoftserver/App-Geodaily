@@ -822,6 +822,9 @@ async function initSchema() {
     await query(`ALTER TABLE otros_formatos ADD COLUMN IF NOT EXISTS pdf_path TEXT`);
     await query(`ALTER TABLE otros_formatos ADD COLUMN IF NOT EXISTS pdf_size BIGINT`);
     await query(`ALTER TABLE otros_formatos ADD COLUMN IF NOT EXISTS pdf_actualizado TIMESTAMPTZ`);
+    // Momento en que el CLIENTE guardó la versión subida: el /sync no acepta
+    // una versión más vieja que la que ya está (subidas que llegan en desorden).
+    await query(`ALTER TABLE otros_formatos ADD COLUMN IF NOT EXISTS cliente_updated_at TIMESTAMPTZ`);
     await query(`ALTER TABLE otros_formatos DROP CONSTRAINT IF EXISTS otros_formatos_beneficiario_cedula_tipo_key`);
     await query(`CREATE UNIQUE INDEX IF NOT EXISTS uq_otros_formatos_instancia ON otros_formatos(beneficiario_cedula, tipo, instancia)`);
     // La tabla ya existe en producción con el CHECK anterior: se reemplaza

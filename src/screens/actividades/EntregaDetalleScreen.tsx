@@ -33,7 +33,8 @@ import { avisar, confirmar } from '../../utils/dialogos';
 import { persistirEvidencia, eliminarArchivoLocal } from '../../services/mediaStorage.service';
 import { getBeneficiariosByTecnico } from '../../services/beneficiariosDB.service';
 import { cargarDatosOtroFormato } from '../../store/OtrosFormatosDraftStore';
-import { getOtrosFormatosLocales, idOtroFormato } from '../../services/database';
+import { getOtroFormatoLocalPorId, idOtroFormato } from '../../services/database';
+import { actaTieneCambiosSinPublicar, republicarActaSiCambio } from '../../services/otrosFormatos.service';
 import { BeneficiarioDB } from '../../types';
 import { tituloActaEntregas } from '../../data/actividades';
 import {
@@ -47,7 +48,7 @@ import {
   sincronizarEntregasActividad,
 } from '../../services/actividadesEntregas.service';
 
-type EstadoActa = 'sin_diligenciar' | 'borrador' | 'completada';
+type EstadoActa = 'sin_diligenciar' | 'borrador' | 'completada' | 'pendiente_subir';
 
 const sinTildes = (t: string) => t.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
 
@@ -99,7 +100,18 @@ const EntregaDetalleScreen: React.FC<any> = ({ navigation, route }) => {
     if (!b?.cedula) return setEstadoActa('sin_diligenciar');
     try {
       const id = idOtroFormato('acta_entrega_individual', b.cedula, e.datos.actaInstancia);
-      if ((await getOtrosFormatosLocales(b.cedula)).some((f) => f.id === id)) return setEstadoActa('completada');
+      let completada = await getOtroFormatoLocalPorId(id);
+      if (completada) {
+        // Cambios hechos al reabrir el acta que quedaron solo en el borrador: se publican ya.
+        if (await actaTieneCambiosSinPublicar(b.cedula, e.datos.actaInstancia)) {
+          const borrador = await cargarDatosOtroFormato<Record<string, any>>('acta_entrega_individual', `${b.cedula}__${e.datos.actaInstancia}`);
+          if (borrador) {
+            await republicarActaSiCambio({ cedula: b.cedula, instancia: e.datos.actaInstancia, actual: borrador });
+            completada = (await getOtroFormatoLocalPorId(id)) ?? completada;
+          }
+        }
+        return setEstadoActa(completada.sincronizado ? 'completada' : 'pendiente_subir');
+      }
       const borrador = await cargarDatosOtroFormato('acta_entrega_individual', `${b.cedula}__${e.datos.actaInstancia}`);
       setEstadoActa(borrador ? 'borrador' : 'sin_diligenciar');
     } catch {
@@ -241,6 +253,7 @@ const EntregaDetalleScreen: React.FC<any> = ({ navigation, route }) => {
     sin_diligenciar: { txt: 'Sin diligenciar', color: COLORS.textSecondary, boton: '📝 Diligenciar acta' },
     borrador: { txt: '⏳ Borrador en este dispositivo', color: COLORS.warning, boton: '📝 Continuar acta' },
     completada: { txt: '✓ Acta completada', color: COLORS.success, boton: '✏️ Ver / editar acta' },
+    pendiente_subir: { txt: '✓ Acta completada · ⏳ pendiente de subir al servidor', color: COLORS.warning, boton: '✏️ Ver / editar acta' },
   };
   const filtrados = beneficiarios.filter((b) => sinTildes(`${b.nombre_completo} ${b.cedula} ${b.vereda}`).includes(sinTildes(busqueda.trim())));
 

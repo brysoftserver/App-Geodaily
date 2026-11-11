@@ -86,7 +86,29 @@ export const guardarDatosOtroFormato = async (
 export const cargarDatosOtroFormato = async <T = Record<string, any>>(
   tipo: TipoOtroFormato,
   cedulaBeneficiario: string | undefined | null
-): Promise<T | null> => {
+): Promise<T | null> => (await cargarBorradorOtroFormato<T>(tipo, cedulaBeneficiario))?.datos ?? null;
+
+/**
+ * Claves (lo que va después del tipo: "<cédula>" o, en el Acta de Entrega,
+ * "<cédula>__<instancia>") de los borradores guardados de un tipo.
+ */
+export const listarClavesBorradorOtroFormato = async (tipo: TipoOtroFormato): Promise<string[]> => {
+  try {
+    const prefijo = `${PREFIX}${tipo}.`;
+    return (await AsyncStorage.getAllKeys())
+      .filter((k) => k.startsWith(prefijo) && k !== CLAVE_INGRESO_BENEFICIARIOS)
+      .map((k) => k.slice(prefijo.length))
+      .filter(Boolean);
+  } catch {
+    return [];
+  }
+};
+
+/** Como `cargarDatosOtroFormato`, pero también devuelve cuándo se guardó el borrador. */
+export const cargarBorradorOtroFormato = async <T = Record<string, any>>(
+  tipo: TipoOtroFormato,
+  cedulaBeneficiario: string | undefined | null
+): Promise<{ datos: T; updated_at: string | null } | null> => {
   if (!cedulaBeneficiario) return null;
   try {
     const str = await AsyncStorage.getItem(claveStorage(tipo, cedulaBeneficiario));
@@ -94,6 +116,7 @@ export const cargarDatosOtroFormato = async <T = Record<string, any>>(
     const parsed = JSON.parse(str);
     const datos = parsed?.datos ?? null;
     if (!datos || typeof datos !== 'object') return null;
+    const updated_at: string | null = typeof parsed?.updated_at === 'string' ? parsed.updated_at : null;
 
     // Las firmas guardadas como archivo se devuelven como data URI, para que
     // las pantallas y el generador de PDF sigan recibiendo exactamente lo
@@ -105,7 +128,7 @@ export const cargarDatosOtroFormato = async <T = Record<string, any>>(
         hidratado[campo] = await hidratarFirma(valor);
       }
     }
-    return hidratado as T;
+    return { datos: hidratado as T, updated_at };
   } catch (e) {
     console.warn(`[OtrosFormatos] Error al cargar "${tipo}":`, e);
     return null;

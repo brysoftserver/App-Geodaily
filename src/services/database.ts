@@ -2821,6 +2821,35 @@ export interface OtroFormatoLocal {
   tiene_pdf?: boolean;
 }
 
+/**
+ * Marca un formato como subido SOLO si no cambió mientras se subía (mismo
+ * `updated_at` que la copia enviada). Si el técnico lo volvió a guardar en
+ * medio (p. ej. con la firma que faltaba), queda pendiente y se sube lo nuevo.
+ * Devuelve true si lo marcó.
+ */
+export const marcarOtroFormatoSincronizadoSiSinCambios = async (id: string, updatedAt: string): Promise<boolean> => {
+  const database = await ensureDb();
+  if (!database) throw new Error(`La base local no está disponible; ${id} sigue pendiente de sincronización`);
+  const r = await database.runAsync(
+    'UPDATE otros_formatos_locales SET sincronizado = 1 WHERE id = ? AND updated_at = ?',
+    [id, updatedAt]
+  );
+  return (r?.changes ?? 0) > 0;
+};
+
+/** Un formato guardado en este dispositivo, por id (null si no está). */
+export const getOtroFormatoLocalPorId = async (id: string): Promise<OtroFormatoLocal | null> => {
+  const database = await ensureDb();
+  if (!database) return null;
+  try {
+    const row = await database.getFirstAsync<any>('SELECT * FROM otros_formatos_locales WHERE id = ?', [id]);
+    return row ? filaAOtroFormato(row) : null;
+  } catch (error) {
+    console.error('[DB] Error leyendo un formato local:', error);
+    return null;
+  }
+};
+
 /** Id estable de un formato. Solo el Acta de Entrega tiene `instancia` (varias por beneficiario). */
 export const idOtroFormato = (tipo: string, cedula: string, instancia?: string | null): string => {
   const inst = tipo === 'acta_entrega_individual' ? String(instancia || '').replace(/[^A-Za-z0-9_-]/g, '') : '';

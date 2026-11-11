@@ -41,10 +41,12 @@ import {
   saveOtroFormatoLocal,
   getOtrosFormatosLocales,
   getOtrosFormatosNoSincronizados,
-  marcarSincronizado,
+  getOtroFormatoLocalPorId,
+  marcarOtroFormatoSincronizadoSiSinCambios,
   OtroFormatoLocal,
 } from './database';
 import type { Usuario } from '../types';
+import { cargarBorradorOtroFormato, listarClavesBorradorOtroFormato } from '../store/OtrosFormatosDraftStore';
 
 export type TipoOtroFormatoSync =
   | 'acta_compromiso'
@@ -119,76 +121,127 @@ export const registrarOtroFormato = async (params: {
   }
 
   // Intento inmediato: si hay red se sube ya; si no, queda pendiente.
+  // Solo ESTE formato (no todo lo pendiente) y con espera acotada: si ya hay
+  // una subida en curso, se pone en la cola detrás de ella; si tarda, el
+  // técnico sigue y el formato termina de subir en segundo plano.
+  const id = idOtroFormato(tipo, beneficiarioCedula, datos?.instancia);
+  if (!guardado) return { guardado, sincronizado: false };
   try {
-    // Timeout corto: con señal débil no se retiene el PDF; lo pendiente lo sube el auto-sync.
-    const fallaron = await sincronizarOtrosFormatos(10000);
-    const id = idOtroFormato(tipo, beneficiarioCedula, datos?.instancia);
-    return { guardado, sincronizado: !fallaron.includes(id) && guardado };
+    const habiaOtraEnCurso = subidasEnCola > 0;
+    // Timeout corto: con señal débil no se retiene al técnico; lo pendiente lo sube el auto-sync.
+    const tarea = sincronizarOtrosFormatos(10000, [id]);
+    const fallaron = habiaOtraEnCurso
+      ? await Promise.race([tarea, new Promise<null>((r) => setTimeout(() => r(null), 15000))])
+      : await tarea;
+    return { guardado, sincronizado: !!fallaron && !fallaron.includes(id) };
   } catch {
     return { guardado, sincronizado: false };
   }
 };
 
+// ─── Subida al servidor ─────────────────────────────────────
+// · En COLA: nunca corren dos subidas a la vez (la inmediata de "Completar"
+//   y la del auto-sync). Antes podían cruzarse y la respuesta de una subida
+//   vieja marcaba como subida la versión nueva (con la firma), que ya nunca
+//   se enviaba.
+// · Una por una: un acta pesada (firmas en base64) con señal débil ya no
+//   tumba el lote entero; las demás siguen subiendo.
+// · Solo se marca como subida si no cambió mientras se subía (`updated_at`).
+// · Viaja el `updated_at` local: el servidor no acepta una versión más vieja
+//   que la que ya tiene.
+
+let colaSubidas: Promise<unknown> = Promise.resolve();
+let subidasEnCola = 0;
+
 /**
- * Subir al servidor todos los formatos pendientes.
+ * Subir al servidor los formatos pendientes (o solo `soloIds`).
  * Devuelve los ids que NO se pudieron subir (mismo contrato que el resto de
- * `sincronizarX()` de SyncContext).
+ * `sincronizarX()` de SyncContext). Nunca lanza.
  */
-export const sincronizarOtrosFormatos = async (timeoutMs: number = 30000): Promise<string[]> => {
+export const sincronizarOtrosFormatos = (timeoutMs: number = 30000, soloIds?: string[]): Promise<string[]> => {
+  subidasEnCola++;
+  const tarea = colaSubidas
+    .then(() => subirOtrosFormatosPendientes(timeoutMs, soloIds))
+    .catch((err: any): string[] => {
+      console.warn('[Sync] Error sincronizando otros formatos:', err?.message);
+      return soloIds?.length ? [...soloIds] : ['error'];
+    })
+    .finally(() => {
+      subidasEnCola--;
+    });
+  colaSubidas = tarea;
+  return tarea;
+};
+
+const esErrorSinRed = (err: any): boolean =>
+  !err?.response && err?.code !== 'ECONNABORTED' && err?.code !== 'ETIMEDOUT' && !/timeout/i.test(String(err?.message || ''));
+
+const subirOtrosFormatosPendientes = async (timeoutMs: number, soloIds?: string[]): Promise<string[]> => {
   const fallaron: string[] = [];
-  let pendientes: OtroFormatoLocal[] = [];
+  let pendientes: OtroFormatoLocal[] = await getOtrosFormatosNoSincronizados();
+  if (soloIds) pendientes = pendientes.filter((f) => soloIds.includes(f.id));
 
-  try {
-    pendientes = await getOtrosFormatosNoSincronizados();
-    if (pendientes.length === 0) {
-      await subirPdfsPendientes();
-      return fallaron;
-    }
-
-    console.log(`[Sync] Subiendo ${pendientes.length} otro(s) formato(s)...`);
-
-    const response = await apiClient.post(
-      `${API_CONFIG.ENDPOINTS.OTROS_FORMATOS}/sync`,
-      {
-        formatos: pendientes.map((f) => ({
-          id: f.id,
-          tipo: f.tipo,
-          instancia: f.datos?.instancia || '',
-          beneficiario_cedula: f.beneficiario_cedula,
-          beneficiario_nombre: f.beneficiario_nombre,
-          datos: f.datos,
-          completo: f.completo,
-          created_at: f.created_at,
-        })),
-      },
-      { timeout: timeoutMs }
-    );
-
-    if (response.data?.estado === 'ok') {
-      const rechazados: string[] = (response.data?.rechazados || []).map(
-        (r: { id?: string }) => String(r.id || '')
-      );
-      for (const f of pendientes) {
-        if (rechazados.includes(f.id)) {
-          fallaron.push(f.id);
-          console.warn(`[Sync] Formato rechazado por el servidor: ${f.id}`);
-        } else {
-          await marcarSincronizado('otros_formatos_locales', f.id);
-        }
-      }
-      console.log(
-        `[Sync] ${pendientes.length - fallaron.length} otro(s) formato(s) sincronizado(s)`
-      );
-      // Los PDF van DESPUÉS de los datos: el servidor necesita el formato para colgarles el archivo.
-      await subirPdfsPendientes();
-    } else {
-      pendientes.forEach((f) => fallaron.push(f.id));
-    }
-  } catch (err: any) {
-    console.warn('[Sync] Error sincronizando otros formatos:', err?.message);
-    fallaron.push(...(pendientes.length ? pendientes.map((f) => f.id) : ['error']));
+  if (pendientes.length === 0) {
+    await subirPdfsPendientes();
+    return fallaron;
   }
 
+  console.log(`[Sync] Subiendo ${pendientes.length} otro(s) formato(s)...`);
+  let sinRed = false;
+
+  for (const f of pendientes) {
+    // Sin conexión no tiene caso esperar el timeout de cada uno.
+    if (sinRed) {
+      fallaron.push(f.id);
+      continue;
+    }
+    try {
+      const response = await apiClient.post(
+        `${API_CONFIG.ENDPOINTS.OTROS_FORMATOS}/sync`,
+        {
+          formatos: [
+            {
+              id: f.id,
+              tipo: f.tipo,
+              instancia: f.datos?.instancia || '',
+              beneficiario_cedula: f.beneficiario_cedula,
+              beneficiario_nombre: f.beneficiario_nombre,
+              datos: f.datos,
+              completo: f.completo,
+              created_at: f.created_at,
+              updated_at: f.updated_at,
+            },
+          ],
+        },
+        { timeout: timeoutMs }
+      );
+      if (response.data?.estado !== 'ok') {
+        fallaron.push(f.id);
+        continue;
+      }
+      const rechazado = (response.data?.rechazados || []).some(
+        (r: { id?: string }) => String(r.id || '') === f.id
+      );
+      if (rechazado) {
+        fallaron.push(f.id);
+        console.warn(`[Sync] Formato rechazado por el servidor: ${f.id}`);
+        continue;
+      }
+      if (!(await marcarOtroFormatoSincronizadoSiSinCambios(f.id, f.updated_at))) {
+        // Se volvió a guardar mientras subía: queda pendiente con lo nuevo.
+        fallaron.push(f.id);
+        console.log(`[Sync] ${f.id} cambió mientras subía; queda pendiente para subir la versión nueva`);
+      }
+    } catch (err: any) {
+      fallaron.push(f.id);
+      console.warn('[Sync] No se pudo subir el formato', f.id, err?.response?.status || err?.message);
+      if (esErrorSinRed(err)) sinRed = true;
+    }
+  }
+
+  console.log(`[Sync] ${pendientes.length - fallaron.length} otro(s) formato(s) sincronizado(s)`);
+  // Los PDF van DESPUÉS de los datos: el servidor necesita el formato para colgarles el archivo.
+  if (!sinRed) await subirPdfsPendientes();
   return fallaron;
 };
 
@@ -501,4 +554,163 @@ export const cargarActaExistente = async (cedula: string, instancia: string): Pr
     console.warn('[OtrosFormatos] No se pudo leer el acta del servidor:', e);
     return null;
   }
+};
+
+// ============================================================
+// Acta de Entrega: cambios hechos DESPUÉS de completarla
+// ============================================================
+// Al reabrir un acta completada ("Ver / editar acta") lo que se cambia —p. ej.
+// la firma del beneficiario que faltaba— quedaba solo en el borrador del
+// teléfono: si el técnico salía sin volver a pulsar "Completar" o "Generar
+// PDF", el servidor nunca lo recibía y en el navegador el acta seguía sin
+// firma. Ahora esos cambios se republican solos (al salir del acta y, para
+// lo que ya quedó atrapado en borradores, en cada sincronización).
+// Regla de oro: una firma nunca se reemplaza por vacío.
+
+const TIPO_ACTA = 'acta_entrega_individual' as const;
+
+const esFirmaImagen = (v: unknown): v is string => typeof v === 'string' && v.startsWith('data:image');
+const txt = (v: unknown): string => String(v ?? '').trim();
+
+/** Lo que el técnico dejó pendiente al completar un acta (mismo criterio que la pantalla). */
+export const calcularFaltantesActa = (d: Record<string, any>): string[] => {
+  const faltantes: string[] = [];
+  const actividades = Array.isArray(d.actividades) ? d.actividades : [];
+  if (!actividades.some((a: any) => txt(a?.descripcion))) faltantes.push('Actividades entregadas');
+  if (!txt(d.predio)) faltantes.push('Predio');
+  if (!txt(d.vereda)) faltantes.push('Vereda');
+  if (!txt(d.corregimiento)) faltantes.push('Corregimiento');
+  if (!esFirmaImagen(d.firmaBeneficiario)) faltantes.push('Firma del beneficiario');
+  if (!esFirmaImagen(d.firmaTecnico)) faltantes.push('Firma del contratista (técnico)');
+  return faltantes;
+};
+
+/**
+ * Datos publicables de un acta a partir de lo que hay en pantalla (o en el
+ * borrador), sobre la versión ya publicada `base`. Conserva fecha, instancia
+ * y actividad de la base; una firma vacía o ilegible toma la de la base.
+ */
+export const construirDatosActa = (actual: Record<string, any>, base: Record<string, any>): Record<string, any> => {
+  const actividadesActuales = Array.isArray(actual.actividades) ? actual.actividades : base.actividades || [];
+  const actividades = actividadesActuales
+    .filter((a: any) => txt(a?.descripcion))
+    .map((a: any) => ({ descripcion: txt(a.descripcion), actividad: txt(a.actividad), cantidad: txt(a.cantidad), unidad: txt(a.unidad) }));
+  const firma = (campo: string, vacio: '' | null) =>
+    esFirmaImagen(actual[campo]) ? actual[campo] : esFirmaImagen(base[campo]) ? base[campo] : vacio;
+  const texto = (campo: string) => (actual[campo] !== undefined && actual[campo] !== null ? txt(actual[campo]) : txt(base[campo]));
+
+  const datos: Record<string, any> = {
+    ...base,
+    nombre: texto('nombre') || txt(base.nombre),
+    cedula: texto('cedula') || txt(base.cedula),
+    tipoDocumento: texto('tipoDocumento') || base.tipoDocumento || 'CC',
+    corregimiento: texto('corregimiento'),
+    vereda: texto('vereda'),
+    predio: texto('predio'),
+    actividades,
+    contratistaNombre: texto('contratistaNombre'),
+    contratistaCargo: texto('contratistaCargo'),
+    interventoriaNombre: texto('interventoriaNombre'),
+    interventoriaCargo: texto('interventoriaCargo'),
+    firmaBeneficiario: firma('firmaBeneficiario', ''),
+    firmaTecnico: firma('firmaTecnico', ''),
+    firmaInterventoria: firma('firmaInterventoria', null),
+  };
+  // Un acta generada con "Generar PDF" no lleva pendientes; una "completada"
+  // con pendientes se recalcula (la firma que faltaba ya no lo está).
+  datos.faltantes = Array.isArray(base.faltantes) && base.faltantes.length ? calcularFaltantesActa(datos) : base.faltantes ?? [];
+  return datos;
+};
+
+const CAMPOS_COMPARABLES_ACTA = [
+  'nombre', 'cedula', 'tipoDocumento', 'corregimiento', 'vereda', 'predio', 'actividades',
+  'contratistaNombre', 'contratistaCargo', 'interventoriaNombre', 'interventoriaCargo',
+  'firmaBeneficiario', 'firmaTecnico', 'firmaInterventoria',
+];
+
+const huellaActa = (d: Record<string, any>): string =>
+  JSON.stringify(CAMPOS_COMPARABLES_ACTA.map((c) => d?.[c] ?? null));
+
+/**
+ * Si lo que hay en pantalla difiere del acta ya completada, la vuelve a
+ * publicar (guardado local + subida en segundo plano). Si el acta nunca se
+ * completó, no hace nada: sigue siendo un borrador del técnico.
+ * `base` = la versión publicada cuando el acta no está en este teléfono
+ * (se completó en otro). Nunca lanza.
+ */
+export const republicarActaSiCambio = async (params: {
+  cedula: string;
+  instancia: string;
+  actual: Record<string, any>;
+  base?: Record<string, any> | null;
+  user?: Usuario | null;
+}): Promise<'publicada' | 'sin_cambios' | 'no_completada' | 'error'> => {
+  try {
+    const { cedula, instancia, actual, user } = params;
+    if (!cedula || !instancia) return 'no_completada';
+    const id = idOtroFormato(TIPO_ACTA, cedula, instancia);
+    const local = await getOtroFormatoLocalPorId(id);
+    const base = local?.completo ? local.datos : params.base;
+    if (!base) return 'no_completada';
+
+    const datos = construirDatosActa(actual, { ...base, instancia });
+    if (huellaActa(datos) === huellaActa(base)) return 'sin_cambios';
+
+    await saveOtroFormatoLocal({
+      tecnico_id: local?.tecnico_id ?? user?.id ?? null,
+      tecnico_nombre: local?.tecnico_nombre ?? user?.nombre ?? null,
+      tecnico_usuario: local?.tecnico_usuario ?? user?.email ?? null,
+      beneficiario_cedula: cedula,
+      beneficiario_nombre: local?.beneficiario_nombre || datos.nombre || null,
+      tipo: TIPO_ACTA,
+      datos,
+      completo: true,
+    });
+    console.log(`[OtrosFormatos] Acta ${id} republicada con los cambios hechos tras completarla`);
+    void sincronizarOtrosFormatos(15000, [id]);
+    return 'publicada';
+  } catch (e) {
+    console.warn('[OtrosFormatos] No se pudo republicar el acta:', e);
+    return 'error';
+  }
+};
+
+/** ¿El borrador de esta acta completada tiene cambios que aún no se publicaron? */
+export const actaTieneCambiosSinPublicar = async (cedula: string, instancia: string): Promise<boolean> => {
+  try {
+    const local = await getOtroFormatoLocalPorId(idOtroFormato(TIPO_ACTA, cedula, instancia));
+    if (!local?.completo) return false;
+    const borrador = await cargarBorradorOtroFormato<Record<string, any>>(TIPO_ACTA, `${cedula}__${instancia}`);
+    if (!borrador) return false;
+    if (borrador.updated_at && local.updated_at && borrador.updated_at <= local.updated_at) return false;
+    return huellaActa(construirDatosActa(borrador.datos, local.datos)) !== huellaActa(local.datos);
+  } catch {
+    return false;
+  }
+};
+
+/**
+ * Recupera los cambios que quedaron atrapados en borradores de actas ya
+ * completadas (firmas hechas al reabrir el acta, antes de este arreglo) y los
+ * publica. Solo si el borrador es MÁS NUEVO que lo publicado en este
+ * teléfono. No borra ningún borrador. Devuelve cuántas actas republicó.
+ */
+export const publicarBorradoresDeActasCompletadas = async (): Promise<number> => {
+  let publicadas = 0;
+  try {
+    for (const clave of await listarClavesBorradorOtroFormato(TIPO_ACTA)) {
+      const corte = clave.lastIndexOf('__');
+      if (corte <= 0) continue;
+      const cedula = clave.slice(0, corte);
+      const instancia = clave.slice(corte + 2);
+      if (!(await actaTieneCambiosSinPublicar(cedula, instancia))) continue;
+      const borrador = await cargarBorradorOtroFormato<Record<string, any>>(TIPO_ACTA, clave);
+      if (!borrador) continue;
+      if ((await republicarActaSiCambio({ cedula, instancia, actual: borrador.datos })) === 'publicada') publicadas++;
+    }
+  } catch (e) {
+    console.warn('[OtrosFormatos] Error recuperando borradores de actas:', e);
+  }
+  if (publicadas) console.log(`[OtrosFormatos] ${publicadas} acta(s) recuperada(s) desde borradores`);
+  return publicadas;
 };

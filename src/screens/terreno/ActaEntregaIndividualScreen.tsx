@@ -40,7 +40,7 @@ import {
   eliminarDatosOtroFormato,
 } from '../../store/OtrosFormatosDraftStore';
 import BotonGuardarBorrador, { useGuardarBorrador } from '../../components/BotonGuardarBorrador';
-import { registrarOtroFormato, adjuntarPdfOtroFormato, cargarActaExistente } from '../../services/otrosFormatos.service';
+import { registrarOtroFormato, adjuntarPdfOtroFormato, cargarActaExistente, republicarActaSiCambio } from '../../services/otrosFormatos.service';
 import { avisar, confirmar } from '../../utils/dialogos';
 import { abrirVentanaDeCarga, imprimirHtmlEnVentana } from '../../utils/printWeb';
 import { buscarActividad, FILA_INICIAL_ACTA } from '../../data/actividades';
@@ -116,6 +116,10 @@ const ActaEntregaIndividualScreen: React.FC<Props> = ({ route, navigation }) => 
   const [completando, setCompletando] = useState(false);
   const [cargando, setCargando] = useState(true);
   const cargadoRef = useRef(false);
+  /** Versión publicada del acta (al reabrir una completada): base para republicar y respaldo de firmas. */
+  const publicadaRef = useRef<Record<string, any> | null>(null);
+  /** Ya se publicó con "Completar"/"Generar PDF": al salir no hay nada más que hacer. */
+  const cerradaRef = useRef(false);
   const [instancia, setInstancia] = useState('');
   // El borrador se guarda por (beneficiario, instancia): "<cédula>__<instancia>".
   const claveBorrador = beneficiario?.cedula && instancia ? `${beneficiario.cedula}__${instancia}` : undefined;
@@ -140,7 +144,18 @@ const ActaEntregaIndividualScreen: React.FC<Props> = ({ route, navigation }) => 
           ? await cargarDatosOtroFormato<Record<string, any>>('acta_entrega_individual', `${beneficiario?.cedula}__${inst}`)
           : null;
         // Al reabrir un acta completada: lo que se estaba corrigiendo (borrador) o, si no hay, el acta tal como se publicó.
-        if (!g && instanciaExistente && beneficiario?.cedula) g = await cargarActaExistente(beneficiario.cedula, instanciaExistente);
+        if (instanciaExistente && beneficiario?.cedula) {
+          publicadaRef.current = await cargarActaExistente(beneficiario.cedula, instanciaExistente);
+          const pub = publicadaRef.current;
+          if (!g) g = pub;
+          else if (pub) {
+            // Una firma del borrador que no se pudo leer (archivo ausente) no se
+            // pierde: se toma la del acta publicada.
+            for (const campo of ['firmaBeneficiario', 'firmaTecnico', 'firmaInterventoria'] as const) {
+              if (!g[campo] && pub[campo]) g = { ...g, [campo]: pub[campo] };
+            }
+          }
+        }
         if (g) {
           setNombre(g.nombre ?? nombre);
           setCedula(g.cedula ?? cedula);
@@ -180,6 +195,34 @@ const ActaEntregaIndividualScreen: React.FC<Props> = ({ route, navigation }) => 
     contratistaNombre, contratistaCargo, interventoriaNombre, interventoriaCargo,
     firmaBeneficiario, firmaTecnico, firmaInterventoria,
   ]);
+
+  // Lo último en pantalla, para republicar al salir.
+  const actualRef = useRef<Record<string, any>>({});
+  actualRef.current = {
+    nombre, cedula, tipoDocumento, vereda, corregimiento, predio, actividades,
+    contratistaNombre, contratistaCargo, interventoriaNombre, interventoriaCargo,
+    firmaBeneficiario, firmaTecnico, firmaInterventoria,
+  };
+  const instanciaRef = useRef('');
+  instanciaRef.current = instancia;
+
+  // Al salir de un acta YA COMPLETADA con cambios (p. ej. la firma que faltaba),
+  // se republica sola: antes esos cambios quedaban solo en el borrador del
+  // teléfono y el servidor nunca los recibía. Un acta que nunca se completó
+  // sigue siendo borrador (el técnico decide cuándo publicarla).
+  useEffect(() => {
+    return () => {
+      if (cerradaRef.current || !cargadoRef.current || !beneficiario?.cedula || !instanciaRef.current) return;
+      void republicarActaSiCambio({
+        cedula: beneficiario.cedula,
+        instancia: instanciaRef.current,
+        actual: actualRef.current,
+        base: publicadaRef.current,
+        user,
+      });
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const cambiarActividad = useCallback((i: number, campo: keyof ActividadActaEntrega, valor: string) => {
     setActividades((prev) => prev.map((a, idx) => (idx === i ? { ...a, [campo]: valor } : a)));
@@ -251,6 +294,7 @@ const ActaEntregaIndividualScreen: React.FC<Props> = ({ route, navigation }) => 
       });
 
       // Acta terminada: se suelta el borrador y la próxima apertura será una acta nueva.
+      cerradaRef.current = true;
       const cerrarActa = async () => {
         if (claveBorrador) await eliminarDatosOtroFormato('acta_entrega_individual', claveBorrador);
         if (beneficiario?.cedula && !instanciaExistente) await AsyncStorage.removeItem(claveActaEnCurso(beneficiario.cedula, actividadId));
@@ -357,6 +401,7 @@ const ActaEntregaIndividualScreen: React.FC<Props> = ({ route, navigation }) => 
         return;
       }
       // Publicada: se suelta el borrador; la próxima apertura será una acta nueva (o la reabres desde la actividad).
+      cerradaRef.current = true;
       if (claveBorrador) await eliminarDatosOtroFormato('acta_entrega_individual', claveBorrador);
       if (beneficiario?.cedula && !instanciaExistente) await AsyncStorage.removeItem(claveActaEnCurso(beneficiario.cedula, actividadId));
       avisar(

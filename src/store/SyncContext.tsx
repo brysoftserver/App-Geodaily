@@ -54,7 +54,7 @@ import { uploadVideo } from '../services/videos.service';
 import { subirDocumento } from '../services/documentos.service';
 import { subirFirma } from '../services/firmas.service';
 import { registrarSeguimiento, esSeguimientoEliminado } from '../services/seguimientos.service';
-import { sincronizarOtrosFormatos } from '../services/otrosFormatos.service';
+import { sincronizarOtrosFormatos, publicarBorradoresDeActasCompletadas } from '../services/otrosFormatos.service';
 import { getVerificacionesNoSincronizadas, sincronizarVerificacionesEntrega } from '../services/verificacionesEntrega.service';
 import { getEntregasNoSincronizadas, sincronizarEntregasActividad } from '../services/actividadesEntregas.service';
 import { generarPDF } from '../services/pdf.service';
@@ -1298,6 +1298,9 @@ export const SyncProvider: React.FC<{ children: React.ReactNode }> = ({
       // ECA). NO crítico: si falla queda pendiente y se reintenta en el
       // próximo ciclo sin marcar el sync completo como fallido.
       dispatch({ type: 'SET_STAGE', stage: 'Sincronizando otros formatos...' });
+      // Actas completadas cuyos cambios posteriores (p. ej. la firma que
+      // faltaba) quedaron solo en el borrador: se republican antes de subir.
+      await publicarBorradoresDeActasCompletadas();
       const otrosFormatosFallidos = await sincronizarOtrosFormatos();
       warnings.push(...otrosFormatosFallidos.map(id => `formato-${id}`));
 

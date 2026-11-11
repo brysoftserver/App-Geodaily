@@ -45,6 +45,20 @@ const TIPO_MULTIPLE = 'acta_entrega_individual';
 const limpiarInstancia = (tipo, valor) =>
   tipo === TIPO_MULTIPLE ? String(valor || '').replace(/[^A-Za-z0-9_-]/g, '').slice(0, 40) : '';
 
+/** Campos de `datos` que guardan una firma (data URI). */
+const CAMPOS_FIRMA = ['firma', 'firmaBeneficiario', 'firmaTecnico', 'firmaInterventoria'];
+
+const esFirma = (v) => typeof v === 'string' && v.startsWith('data:image');
+
+/** Fecha ISO válida del cliente, o null. Se ignoran las del futuro lejano (reloj del teléfono mal). */
+const fechaValida = (v) => {
+  if (!v) return null;
+  const d = new Date(v);
+  if (Number.isNaN(d.getTime())) return null;
+  if (d.getTime() > Date.now() + 24 * 3600 * 1000) return null;
+  return d;
+};
+
 /** Arma el id estable de un formato: el mismo que usa el cliente en SQLite. */
 const idFormato = (cedula, tipo, instancia = '') =>
   instancia ? `of-${tipo}-${cedula}-${instancia}` : `of-${tipo}-${cedula}`;
@@ -61,6 +75,7 @@ router.post('/sync', authenticateToken, async (req, res) => {
 
     let sincronizados = 0;
     const rechazados = [];
+    const obsoletos = [];
 
     for (const f of formatos) {
       const tipo = String(f.tipo || '').trim();
@@ -90,24 +105,54 @@ router.post('/sync', authenticateToken, async (req, res) => {
         continue;
       }
 
-      // La interventoría firma DESPUÉS de que el técnico genera el acta. Si el
-      // técnico corrige y vuelve a sincronizar, su copia no trae esa firma:
-      // se conserva la que ya está en el servidor para no borrarla.
       const instancia = limpiarInstancia(tipo, f.instancia || datos.instancia);
-      if (tipo === 'acta_entrega_individual') {
-        const previo = await db.queryOne(
-          'SELECT datos FROM otros_formatos WHERE beneficiario_cedula = $1 AND tipo = $2 AND instancia = $3',
-          [cedula, tipo, instancia]
-        );
-        const dp = previo && (typeof previo.datos === 'string' ? JSON.parse(previo.datos) : previo.datos);
-        if (dp?.firmaInterventoria && !datos.firmaInterventoria) {
-          datos = {
-            ...datos,
-            firmaInterventoria: dp.firmaInterventoria,
-            interventoriaNombre: dp.interventoriaNombre || datos.interventoriaNombre || '',
-            interventoriaCargo: dp.interventoriaCargo || datos.interventoriaCargo || '',
-          };
+      const previo = await db.queryOne(
+        'SELECT datos, cliente_updated_at FROM otros_formatos WHERE beneficiario_cedula = $1 AND tipo = $2 AND instancia = $3',
+        [cedula, tipo, instancia]
+      );
+
+      // Subidas en desorden (señal débil, reintentos): si lo que llega es MÁS
+      // VIEJO que lo guardado, no se pisa. Se cuenta como recibido para que el
+      // teléfono no lo reintente para siempre; el servidor ya tiene lo nuevo.
+      const clienteTs = fechaValida(f.updated_at);
+      if (clienteTs && previo?.cliente_updated_at && clienteTs < new Date(previo.cliente_updated_at)) {
+        console.log(`[OtrosFormatos] Versión vieja de ${f.id} ignorada (${clienteTs.toISOString()} < ${new Date(previo.cliente_updated_at).toISOString()})`);
+        obsoletos.push(f.id);
+        sincronizados++;
+        continue;
+      }
+
+      // Una firma ya guardada nunca se reemplaza por vacío: la app no tiene
+      // forma de "borrar" una firma (solo de volver a firmar), así que un
+      // vacío es una copia desactualizada del teléfono (borrador viejo, firma
+      // que no se pudo leer del archivo). La de interventoría además se pone
+      // DESPUÉS desde supervisión y la copia del técnico nunca la trae.
+      const dp = previo && (typeof previo.datos === 'string' ? JSON.parse(previo.datos) : previo.datos);
+      if (dp && typeof dp === 'object') {
+        const conservado = { ...datos };
+        let tocado = false;
+        for (const campo of CAMPOS_FIRMA) {
+          if (esFirma(dp[campo]) && !esFirma(datos[campo])) {
+            conservado[campo] = dp[campo];
+            tocado = true;
+          }
         }
+        if (esFirma(dp.firmaInterventoria) && !esFirma(datos.firmaInterventoria)) {
+          conservado.interventoriaNombre = dp.interventoriaNombre || datos.interventoriaNombre || '';
+          conservado.interventoriaCargo = dp.interventoriaCargo || datos.interventoriaCargo || '';
+        }
+        // Lo que el técnico marcó como pendiente ya no lo está si la firma se conservó.
+        if (tocado && Array.isArray(conservado.faltantes)) {
+          conservado.faltantes = conservado.faltantes.filter(
+            (x) =>
+              !(x === 'Firma del beneficiario' && esFirma(conservado.firmaBeneficiario)) &&
+              !(x === 'Firma del contratista (técnico)' && esFirma(conservado.firmaTecnico))
+          );
+        }
+        if (tocado) {
+          console.log(`[OtrosFormatos] ${f.id}: se conservaron firmas ya guardadas que la copia del teléfono traía vacías`);
+        }
+        datos = conservado;
       }
 
       // El autor SIEMPRE es quien sube (nunca se confía en el tecnico_id que
@@ -116,8 +161,8 @@ router.post('/sync', authenticateToken, async (req, res) => {
         `INSERT INTO otros_formatos (
           id, tecnico_id, tecnico_nombre, tecnico_usuario,
           beneficiario_cedula, beneficiario_nombre, tipo, datos, completo,
-          instancia, created_at, updated_at
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $11, $10, NOW())
+          instancia, created_at, updated_at, cliente_updated_at
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $11, $10, NOW(), $12)
          ON CONFLICT (beneficiario_cedula, tipo, instancia) DO UPDATE SET
            -- El PDF guardado solo sigue siendo válido si los datos no cambiaron.
            pdf_path = CASE WHEN otros_formatos.datos = EXCLUDED.datos THEN otros_formatos.pdf_path ELSE NULL END,
@@ -127,6 +172,7 @@ router.post('/sync', authenticateToken, async (req, res) => {
            beneficiario_nombre = EXCLUDED.beneficiario_nombre,
            datos = EXCLUDED.datos,
            completo = EXCLUDED.completo,
+           cliente_updated_at = COALESCE(EXCLUDED.cliente_updated_at, otros_formatos.cliente_updated_at),
            updated_at = NOW()`,
         [
           idFormato(cedula, tipo, instancia),
@@ -140,6 +186,7 @@ router.post('/sync', authenticateToken, async (req, res) => {
           f.completo === false ? false : true,
           f.created_at || new Date().toISOString(),
           instancia,
+          clienteTs ? clienteTs.toISOString() : null,
         ]
       );
       sincronizados++;
@@ -155,6 +202,7 @@ router.post('/sync', authenticateToken, async (req, res) => {
       mensaje: `${sincronizados} formato(s) sincronizado(s)`,
       sincronizados,
       rechazados,
+      obsoletos,
     });
   } catch (error) {
     console.error('[OtrosFormatos] Error en sync:', error);
