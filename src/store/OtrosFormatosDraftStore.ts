@@ -104,6 +104,25 @@ export const listarClavesBorradorOtroFormato = async (tipo: TipoOtroFormato): Pr
   }
 };
 
+/**
+ * Solo la fecha del último guardado de un borrador (sin leer los archivos de
+ * firma). `null` si no hay borrador o no trae fecha.
+ */
+export const leerFechaBorradorOtroFormato = async (
+  tipo: TipoOtroFormato,
+  cedulaBeneficiario: string | undefined | null
+): Promise<string | null> => {
+  if (!cedulaBeneficiario) return null;
+  try {
+    const str = await AsyncStorage.getItem(claveStorage(tipo, cedulaBeneficiario));
+    if (!str) return null;
+    const parsed = JSON.parse(str);
+    return typeof parsed?.updated_at === 'string' ? parsed.updated_at : null;
+  } catch {
+    return null;
+  }
+};
+
 /** Como `cargarDatosOtroFormato`, pero también devuelve cuándo se guardó el borrador. */
 export const cargarBorradorOtroFormato = async <T = Record<string, any>>(
   tipo: TipoOtroFormato,

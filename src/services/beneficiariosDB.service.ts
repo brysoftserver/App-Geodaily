@@ -2,7 +2,7 @@
 // GEODAILY — Servicio de Base de Datos de Beneficiarios
 // ============================================================
 
-import { getDbSafe } from './database';
+import { getDbSafe, ejecutarTransaccionLarga } from './database';
 import { BeneficiarioDB, BeneficiarioPayload } from '../types';
 import apiClient from './api';
 import { API_CONFIG } from '../theme';
@@ -52,7 +52,9 @@ export const sincronizarBeneficiariosDesdeServidor = async (): Promise<boolean> 
     const database = await ensureDb();
     if (!database) return false;
 
-    await database.withTransactionAsync(async () => {
+    // Candado: los guardados críticos (formatos con firmas) esperan a que
+    // termine, para no quedar dentro de esta transacción.
+    await ejecutarTransaccionLarga(() => database.withTransactionAsync(async () => {
       await database.runAsync('DELETE FROM beneficiarios');
       for (const b of beneficiarios) {
         await database.runAsync(
@@ -80,7 +82,7 @@ export const sincronizarBeneficiariosDesdeServidor = async (): Promise<boolean> 
           ]
         );
       }
-    });
+    }));
 
     console.log(`[BeneficiariosDB] Espejo local sincronizado: ${beneficiarios.length} beneficiarios`);
     return true;

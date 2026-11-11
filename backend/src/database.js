@@ -907,6 +907,51 @@ async function initSchema() {
     console.error('[DB] Error creando otros_formatos:', err.message);
   }
 
+  // Borradores de "Otros formatos" (hoy: Acta de Entrega) respaldados en el
+  // servidor mientras el técnico los diligencia. Antes vivían SOLO en el
+  // teléfono: si "Completar" fallaba, las firmas nunca salían del aparato y
+  // en otro dispositivo el acta se veía vacía. Tabla APARTE de otros_formatos
+  // para que bitácora, revisión y evidencias sigan viendo solo actas
+  // publicadas. Nunca se borra nada de aquí.
+  try {
+    await query(`CREATE TABLE IF NOT EXISTS otros_formatos_borradores (
+      id VARCHAR(160) PRIMARY KEY,
+      tecnico_id VARCHAR(20) NOT NULL,
+      tecnico_usuario VARCHAR(100),
+      beneficiario_cedula VARCHAR(30) NOT NULL,
+      tipo VARCHAR(40) NOT NULL,
+      instancia VARCHAR(40) NOT NULL DEFAULT '',
+      datos JSONB NOT NULL DEFAULT '{}',
+      cliente_updated_at TIMESTAMPTZ,
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      updated_at TIMESTAMPTZ DEFAULT NOW()
+    )`);
+    await query(`CREATE INDEX IF NOT EXISTS idx_of_borradores_tecnico ON otros_formatos_borradores(tecnico_id)`);
+    await query(`CREATE INDEX IF NOT EXISTS idx_of_borradores_cedula ON otros_formatos_borradores(beneficiario_cedula)`);
+  } catch (err) {
+    console.error('[DB] Error creando otros_formatos_borradores:', err.message);
+  }
+
+  // Errores que reporta la app desde el teléfono (p. ej. el guardado local de
+  // un acta que falla). Sin esto el error real solo quedaba en la consola del
+  // aparato y no había forma de diagnosticarlo.
+  try {
+    await query(`CREATE TABLE IF NOT EXISTS diagnosticos_cliente (
+      id SERIAL PRIMARY KEY,
+      usuario_id VARCHAR(20),
+      usuario VARCHAR(100),
+      contexto VARCHAR(120) NOT NULL,
+      mensaje TEXT,
+      detalle JSONB NOT NULL DEFAULT '{}',
+      app_version VARCHAR(60),
+      plataforma VARCHAR(30),
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    )`);
+    await query(`CREATE INDEX IF NOT EXISTS idx_diag_cliente_fecha ON diagnosticos_cliente(created_at DESC)`);
+  } catch (err) {
+    console.error('[DB] Error creando diagnosticos_cliente:', err.message);
+  }
+
   // Tabla: seguimientos de Coordinación/Interventoría — registro de
   // acompañamiento en campo independiente del formulario del técnico (no
   // requiere que el formulario del técnico ya exista ni esté sincronizado,

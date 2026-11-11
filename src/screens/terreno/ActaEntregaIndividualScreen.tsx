@@ -40,7 +40,14 @@ import {
   eliminarDatosOtroFormato,
 } from '../../store/OtrosFormatosDraftStore';
 import BotonGuardarBorrador, { useGuardarBorrador } from '../../components/BotonGuardarBorrador';
-import { registrarOtroFormato, adjuntarPdfOtroFormato, cargarActaExistente, republicarActaSiCambio } from '../../services/otrosFormatos.service';
+import {
+  registrarOtroFormato,
+  adjuntarPdfOtroFormato,
+  cargarActaExistente,
+  republicarActaSiCambio,
+  obtenerBorradorActaServidor,
+  subirBorradorActa,
+} from '../../services/otrosFormatos.service';
 import { avisar, confirmar } from '../../utils/dialogos';
 import { abrirVentanaDeCarga, imprimirHtmlEnVentana } from '../../utils/printWeb';
 import { buscarActividad, FILA_INICIAL_ACTA } from '../../data/actividades';
@@ -156,6 +163,20 @@ const ActaEntregaIndividualScreen: React.FC<Props> = ({ route, navigation }) => 
             }
           }
         }
+        // Abierta en otro dispositivo (p. ej. la tablet con la misma cuenta) o
+        // con firmas que no están aquí: el borrador respaldado en el servidor.
+        const firmasIncompletas = !g || !g.firmaBeneficiario || !g.firmaTecnico;
+        if (instanciaExistente && beneficiario?.cedula && firmasIncompletas) {
+          const srv = await obtenerBorradorActaServidor(beneficiario.cedula, instanciaExistente);
+          if (srv) {
+            if (!g) g = srv;
+            else {
+              for (const campo of ['firmaBeneficiario', 'firmaTecnico', 'firmaInterventoria'] as const) {
+                if (!g[campo] && srv[campo]) g = { ...g, [campo]: srv[campo] };
+              }
+            }
+          }
+        }
         if (g) {
           setNombre(g.nombre ?? nombre);
           setCedula(g.cedula ?? cedula);
@@ -195,6 +216,34 @@ const ActaEntregaIndividualScreen: React.FC<Props> = ({ route, navigation }) => 
     contratistaNombre, contratistaCargo, interventoriaNombre, interventoriaCargo,
     firmaBeneficiario, firmaTecnico, firmaInterventoria,
   ]);
+
+  // Respaldo del borrador en el servidor (con firmas), unos segundos después
+  // del último cambio: así el acta no depende de "Completar" ni de este
+  // teléfono. Sin señal no pasa nada: lo sube la próxima sincronización.
+  const claveBorradorRef = useRef<string | undefined>(undefined);
+  claveBorradorRef.current = claveBorrador;
+  const respaldoPendienteRef = useRef(false);
+  useEffect(() => {
+    if (!cargadoRef.current || !claveBorrador) return;
+    respaldoPendienteRef.current = true;
+    const t = setTimeout(() => {
+      respaldoPendienteRef.current = false;
+      void subirBorradorActa(claveBorrador);
+    }, 4000);
+    return () => clearTimeout(t);
+  }, [
+    claveBorrador, nombre, cedula, tipoDocumento, vereda, corregimiento, predio, actividades,
+    contratistaNombre, contratistaCargo, interventoriaNombre, interventoriaCargo,
+    firmaBeneficiario, firmaTecnico, firmaInterventoria,
+  ]);
+  // Al salir con un respaldo aún pendiente: se sube ya (tras el último autoguardado).
+  useEffect(() => {
+    return () => {
+      const clave = claveBorradorRef.current;
+      if (!respaldoPendienteRef.current || !clave) return;
+      setTimeout(() => void subirBorradorActa(clave), 1500);
+    };
+  }, []);
 
   // Lo último en pantalla, para republicar al salir.
   const actualRef = useRef<Record<string, any>>({});
@@ -285,7 +334,7 @@ const ActaEntregaIndividualScreen: React.FC<Props> = ({ route, navigation }) => 
       };
 
       // Publicar para los roles superiores (offline-first).
-      await registrarOtroFormato({
+      const reg = await registrarOtroFormato({
         tipo: 'acta_entrega_individual',
         beneficiarioCedula: datosPDF.cedula,
         beneficiarioNombre: datosPDF.nombre,
@@ -293,10 +342,20 @@ const ActaEntregaIndividualScreen: React.FC<Props> = ({ route, navigation }) => 
         user,
       });
 
-      // Acta terminada: se suelta el borrador y la próxima apertura será una acta nueva.
+      if (!reg.guardado) {
+        ventanaWeb?.close();
+        avisar(
+          'No se pudo guardar el acta',
+          `El borrador y las firmas siguen guardados en este teléfono y se respaldan en el servidor. No desinstales la app.\n\nDetalle: ${reg.error || 'desconocido'}`
+        );
+        return;
+      }
+      // Acta terminada: la próxima apertura será una acta nueva. El borrador
+      // (con las firmas) solo se suelta si el acta ya llegó al servidor; si
+      // no, se conserva como respaldo hasta entonces.
       cerradaRef.current = true;
       const cerrarActa = async () => {
-        if (claveBorrador) await eliminarDatosOtroFormato('acta_entrega_individual', claveBorrador);
+        if (claveBorrador && reg.sincronizado) await eliminarDatosOtroFormato('acta_entrega_individual', claveBorrador);
         if (beneficiario?.cedula && !instanciaExistente) await AsyncStorage.removeItem(claveActaEnCurso(beneficiario.cedula, actividadId));
       };
 
@@ -397,12 +456,19 @@ const ActaEntregaIndividualScreen: React.FC<Props> = ({ route, navigation }) => 
         user,
       });
       if (!r.guardado) {
-        avisar('No se pudo completar', 'No se pudo guardar el acta en este dispositivo. Revisa el espacio e intenta de nuevo.');
+        // El borrador (con las firmas) NO se toca y se respalda en el servidor.
+        if (claveBorrador) void subirBorradorActa(claveBorrador);
+        avisar(
+          'No se pudo completar',
+          `El acta no se pudo registrar en este teléfono, pero el borrador y las firmas siguen guardados y se respaldan en el servidor. No desinstales la app; intenta de nuevo más tarde.\n\nDetalle: ${r.error || 'desconocido'}`
+        );
         return;
       }
-      // Publicada: se suelta el borrador; la próxima apertura será una acta nueva (o la reabres desde la actividad).
+      // Publicada: la próxima apertura será una acta nueva (o la reabres desde
+      // la actividad). El borrador solo se suelta si el acta ya llegó al
+      // servidor; si no, se conserva como respaldo de las firmas.
       cerradaRef.current = true;
-      if (claveBorrador) await eliminarDatosOtroFormato('acta_entrega_individual', claveBorrador);
+      if (claveBorrador && r.sincronizado) await eliminarDatosOtroFormato('acta_entrega_individual', claveBorrador);
       if (beneficiario?.cedula && !instanciaExistente) await AsyncStorage.removeItem(claveActaEnCurso(beneficiario.cedula, actividadId));
       avisar(
         'Acta completada',

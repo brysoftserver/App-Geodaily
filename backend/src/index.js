@@ -120,6 +120,7 @@ app.use('/api/seguimientos', require('./routes/seguimientos'));
 app.use('/api/archivos', require('./routes/archivos'));
 app.use('/api/notificaciones', require('./routes/notificaciones'));
 app.use('/api/otros-formatos', require('./routes/otrosFormatos'));
+app.use('/api/diagnostico', require('./routes/diagnostico'));
 app.use('/api/ia', require('./routes/ia'));
 app.use('/api/analisis-suelos', require('./routes/analisisSuelos'));
 app.use('/api/actividades-hectareas', require('./routes/actividadesHectareas'));

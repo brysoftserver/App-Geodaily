@@ -46,7 +46,18 @@ import {
   OtroFormatoLocal,
 } from './database';
 import type { Usuario } from '../types';
-import { cargarBorradorOtroFormato, listarClavesBorradorOtroFormato } from '../store/OtrosFormatosDraftStore';
+import {
+  cargarBorradorOtroFormato,
+  listarClavesBorradorOtroFormato,
+  leerFechaBorradorOtroFormato,
+} from '../store/OtrosFormatosDraftStore';
+import { reportarDiagnostico, textoError } from './diagnostico.service';
+import {
+  guardarRespaldo,
+  leerRespaldo,
+  listarRespaldos,
+  marcarRespaldoSubidoSiSinCambios,
+} from './otrosFormatosRespaldo';
 
 export type TipoOtroFormatoSync =
   | 'acta_compromiso'
@@ -95,17 +106,17 @@ export const registrarOtroFormato = async (params: {
   beneficiarioNombre?: string | null;
   datos: Record<string, any>;
   user?: Usuario | null;
-}): Promise<{ guardado: boolean; sincronizado: boolean }> => {
+}): Promise<{ guardado: boolean; sincronizado: boolean; error?: string }> => {
   const { tipo, beneficiarioCedula, beneficiarioNombre, datos, user } = params;
 
   if (!beneficiarioCedula) {
     console.warn('[OtrosFormatos] Sin cédula de beneficiario — no se puede registrar el formato');
-    return { guardado: false, sincronizado: false };
+    return { guardado: false, sincronizado: false, error: 'Falta la cédula del beneficiario' };
   }
 
   let guardado = false;
   try {
-    await saveOtroFormatoLocal({
+    await guardarFormatoLocalSeguro({
       tecnico_id: user?.id || null,
       tecnico_nombre: user?.nombre || null,
       tecnico_usuario: user?.email || null,
@@ -118,6 +129,7 @@ export const registrarOtroFormato = async (params: {
     guardado = true;
   } catch (e) {
     console.warn('[OtrosFormatos] No se pudo guardar localmente:', e);
+    return { guardado: false, sincronizado: false, error: textoError(e) };
   }
 
   // Intento inmediato: si hay red se sube ya; si no, queda pendiente.
@@ -137,6 +149,48 @@ export const registrarOtroFormato = async (params: {
   } catch {
     return { guardado, sincronizado: false };
   }
+};
+
+// ─── Guardado local con respaldo ────────────────────────────
+// SQLite primero; si falla, se reporta el error real al servidor y el formato
+// se escribe en el respaldo en archivo (otrosFormatosRespaldo), que la
+// sincronización sube igual. Solo lanza si fallan los dos.
+
+type FormatoAGuardar = Parameters<typeof saveOtroFormatoLocal>[0];
+
+export const guardarFormatoLocalSeguro = async (f: FormatoAGuardar): Promise<'sqlite' | 'respaldo'> => {
+  const id = idOtroFormato(f.tipo, f.beneficiario_cedula, f.datos?.instancia);
+  try {
+    await saveOtroFormatoLocal(f);
+    return 'sqlite';
+  } catch (e) {
+    console.warn('[OtrosFormatos] SQLite no guardó el formato; se usa el respaldo en archivo:', e);
+    reportarDiagnostico('otros_formatos.guardar_local', e, { id, tipo: f.tipo, ...((e as any)?.diagnostico || {}) });
+    try {
+      await guardarRespaldo(id, f);
+      return 'respaldo';
+    } catch (e2) {
+      reportarDiagnostico('otros_formatos.guardar_respaldo', e2, { id, tipo: f.tipo });
+      throw new Error(`${textoError(e)} · respaldo: ${textoError(e2)}`);
+    }
+  }
+};
+
+const masNuevo = (a: OtroFormatoLocal | null, b: OtroFormatoLocal | null): OtroFormatoLocal | null => {
+  if (!a) return b;
+  if (!b) return a;
+  return String(b.updated_at || '') > String(a.updated_at || '') ? b : a;
+};
+
+/** Un formato guardado en este dispositivo (SQLite o respaldo en archivo, el más nuevo). */
+export const obtenerFormatoLocalPorId = async (id: string): Promise<OtroFormatoLocal | null> => {
+  let sqlite: OtroFormatoLocal | null = null;
+  try {
+    sqlite = await getOtroFormatoLocalPorId(id);
+  } catch {
+    sqlite = null;
+  }
+  return masNuevo(sqlite, await leerRespaldo(id));
 };
 
 // ─── Subida al servidor ─────────────────────────────────────
@@ -178,7 +232,21 @@ const esErrorSinRed = (err: any): boolean =>
 
 const subirOtrosFormatosPendientes = async (timeoutMs: number, soloIds?: string[]): Promise<string[]> => {
   const fallaron: string[] = [];
-  let pendientes: OtroFormatoLocal[] = await getOtrosFormatosNoSincronizados();
+  // Pendientes de SQLite + los del respaldo en archivo (cuando SQLite falló).
+  // Si un id está en los dos, se sube el más nuevo; el otro queda y el
+  // servidor lo ignora por viejo en una próxima vuelta.
+  const deRespaldo = new Set<OtroFormatoLocal>();
+  const porId = new Map<string, OtroFormatoLocal>();
+  for (const f of await getOtrosFormatosNoSincronizados()) porId.set(f.id, f);
+  for (const f of await listarRespaldos()) {
+    if (f.sincronizado || !f.completo) continue;
+    const otro = porId.get(f.id);
+    if (!otro || String(f.updated_at || '') > String(otro.updated_at || '')) {
+      porId.set(f.id, f);
+      deRespaldo.add(f);
+    }
+  }
+  let pendientes: OtroFormatoLocal[] = Array.from(porId.values());
   if (soloIds) pendientes = pendientes.filter((f) => soloIds.includes(f.id));
 
   if (pendientes.length === 0) {
@@ -227,7 +295,10 @@ const subirOtrosFormatosPendientes = async (timeoutMs: number, soloIds?: string[
         console.warn(`[Sync] Formato rechazado por el servidor: ${f.id}`);
         continue;
       }
-      if (!(await marcarOtroFormatoSincronizadoSiSinCambios(f.id, f.updated_at))) {
+      const marcado = deRespaldo.has(f)
+        ? await marcarRespaldoSubidoSiSinCambios(f.id, f.updated_at)
+        : await marcarOtroFormatoSincronizadoSiSinCambios(f.id, f.updated_at);
+      if (!marcado) {
         // Se volvió a guardar mientras subía: queda pendiente con lo nuevo.
         fallaron.push(f.id);
         console.log(`[Sync] ${f.id} cambió mientras subía; queda pendiente para subir la versión nueva`);
@@ -256,7 +327,15 @@ export const obtenerOtrosFormatosBeneficiario = async (
 ): Promise<OtroFormatoLocal[]> => {
   if (!cedula) return [];
 
-  const locales = await getOtrosFormatosLocales(cedula);
+  // Lo de SQLite + lo que quedó en el respaldo en archivo (el más nuevo por id).
+  const localesPorId = new Map<string, OtroFormatoLocal>();
+  for (const l of await getOtrosFormatosLocales(cedula)) localesPorId.set(l.id, l);
+  for (const r of await listarRespaldos()) {
+    if (r.beneficiario_cedula !== cedula) continue;
+    const m = masNuevo(localesPorId.get(r.id) ?? null, r);
+    if (m) localesPorId.set(r.id, m);
+  }
+  const locales = Array.from(localesPorId.values());
   let remotos: OtroFormatoLocal[] = [];
 
   try {
@@ -391,6 +470,8 @@ export const subirPdfsPendientes = async (): Promise<void> => {
 
   const locales = await getOtrosFormatosLocales();
   const sincronizados = new Set(locales.filter((l) => l.sincronizado).map((l) => l.id));
+  // Formatos que subieron desde el respaldo en archivo (SQLite falló).
+  for (const r of await listarRespaldos()) if (r.sincronizado) sincronizados.add(r.id);
   const quedan: string[] = [];
 
   for (const id of ids) {
@@ -541,7 +622,7 @@ export const resumenDocumentoFormato = (f: OtroFormatoLocal): string => {
 export const cargarActaExistente = async (cedula: string, instancia: string): Promise<Record<string, any> | null> => {
   const id = idOtroFormato('acta_entrega_individual', cedula, instancia);
   try {
-    const local = (await getOtrosFormatosLocales(cedula)).find((f) => f.id === id);
+    const local = await obtenerFormatoLocalPorId(id);
     if (local?.datos) return local.datos;
   } catch (e) {
     console.warn('[OtrosFormatos] No se pudo leer el acta local:', e);
@@ -649,14 +730,14 @@ export const republicarActaSiCambio = async (params: {
     const { cedula, instancia, actual, user } = params;
     if (!cedula || !instancia) return 'no_completada';
     const id = idOtroFormato(TIPO_ACTA, cedula, instancia);
-    const local = await getOtroFormatoLocalPorId(id);
+    const local = await obtenerFormatoLocalPorId(id);
     const base = local?.completo ? local.datos : params.base;
     if (!base) return 'no_completada';
 
     const datos = construirDatosActa(actual, { ...base, instancia });
     if (huellaActa(datos) === huellaActa(base)) return 'sin_cambios';
 
-    await saveOtroFormatoLocal({
+    await guardarFormatoLocalSeguro({
       tecnico_id: local?.tecnico_id ?? user?.id ?? null,
       tecnico_nombre: local?.tecnico_nombre ?? user?.nombre ?? null,
       tecnico_usuario: local?.tecnico_usuario ?? user?.email ?? null,
@@ -678,7 +759,7 @@ export const republicarActaSiCambio = async (params: {
 /** ¿El borrador de esta acta completada tiene cambios que aún no se publicaron? */
 export const actaTieneCambiosSinPublicar = async (cedula: string, instancia: string): Promise<boolean> => {
   try {
-    const local = await getOtroFormatoLocalPorId(idOtroFormato(TIPO_ACTA, cedula, instancia));
+    const local = await obtenerFormatoLocalPorId(idOtroFormato(TIPO_ACTA, cedula, instancia));
     if (!local?.completo) return false;
     const borrador = await cargarBorradorOtroFormato<Record<string, any>>(TIPO_ACTA, `${cedula}__${instancia}`);
     if (!borrador) return false;
@@ -713,4 +794,142 @@ export const publicarBorradoresDeActasCompletadas = async (): Promise<number> =>
   }
   if (publicadas) console.log(`[OtrosFormatos] ${publicadas} acta(s) recuperada(s) desde borradores`);
   return publicadas;
+};
+
+// ============================================================
+// Borradores del Acta de Entrega respaldados en el servidor
+// ============================================================
+// Antes el borrador del acta (con sus firmas) vivía SOLO en el teléfono y
+// solo "Completar" lo publicaba. Si ese paso fallaba, en otro dispositivo
+// (p. ej. la tablet con la misma cuenta) el acta se veía sin firmas. Ahora el
+// borrador se sube en segundo plano en cada guardado y en cada
+// sincronización se suben todos los que tengan cambios sin respaldar (esto
+// también recupera los que quedaron atrapados antes de este arreglo).
+// El servidor guarda el más nuevo y nunca cambia una firma por vacío.
+
+const CLAVE_RESPALDADOS = 'geodaily.actas.borradores_respaldados';
+
+const leerRespaldados = async (): Promise<Record<string, string>> => {
+  try {
+    const crudo = await AsyncStorage.getItem(CLAVE_RESPALDADOS);
+    const m = crudo ? JSON.parse(crudo) : {};
+    return m && typeof m === 'object' ? m : {};
+  } catch {
+    return {};
+  }
+};
+
+const anotarRespaldado = async (clave: string, updatedAt: string): Promise<void> => {
+  try {
+    const m = await leerRespaldados();
+    m[clave] = updatedAt;
+    await AsyncStorage.setItem(CLAVE_RESPALDADOS, JSON.stringify(m));
+  } catch {
+    // sin espacio: se volverá a subir en la próxima sincronización (idempotente)
+  }
+};
+
+/** "<cédula>__<instancia>" → partes. Claves viejas sin instancia → instancia ''. */
+const partirClaveActa = (clave: string): { cedula: string; instancia: string } => {
+  const corte = clave.lastIndexOf('__');
+  return corte > 0 ? { cedula: clave.slice(0, corte), instancia: clave.slice(corte + 2) } : { cedula: clave, instancia: '' };
+};
+
+/**
+ * Sube al servidor el borrador de un acta (clave "<cédula>__<instancia>").
+ * Devuelve true si quedó respaldado (o el servidor ya tenía uno más nuevo).
+ * Nunca lanza.
+ */
+export const subirBorradorActa = async (clave: string, timeoutMs = 20000): Promise<boolean> => {
+  try {
+    const borrador = await cargarBorradorOtroFormato<Record<string, any>>(TIPO_ACTA, clave);
+    if (!borrador?.datos) return false;
+    const { cedula, instancia } = partirClaveActa(clave);
+    if (!cedula) return false;
+    const id = idOtroFormato(TIPO_ACTA, cedula, instancia);
+    const updatedAt = borrador.updated_at || new Date().toISOString();
+    const r = await apiClient.put(
+      `${API_CONFIG.ENDPOINTS.OTROS_FORMATOS}/borradores/${encodeURIComponent(id)}`,
+      {
+        tipo: TIPO_ACTA,
+        beneficiario_cedula: cedula,
+        instancia,
+        datos: { ...borrador.datos, instancia },
+        updated_at: updatedAt,
+      },
+      { timeout: timeoutMs }
+    );
+    if (r.data?.estado !== 'ok') return false;
+    await anotarRespaldado(clave, updatedAt);
+    return true;
+  } catch (err: any) {
+    const estado = err?.response?.data?.estado;
+    if (err?.response?.status === 409 && estado === 'ajeno') {
+      // Es de otro técnico (reasignación): no se reintenta para siempre.
+      console.warn('[OtrosFormatos] Borrador de acta de otro técnico, no se sube:', clave);
+      return false;
+    }
+    if (err?.response) reportarDiagnostico('actas.subir_borrador', err, { clave, status: err.response.status });
+    return false;
+  }
+};
+
+/**
+ * Sube todos los borradores de actas con cambios aún no respaldados en el
+ * servidor. Se llama en cada sincronización. Devuelve cuántos subió.
+ */
+export const subirBorradoresDeActasPendientes = async (): Promise<number> => {
+  let subidos = 0;
+  try {
+    const respaldados = await leerRespaldados();
+    for (const clave of await listarClavesBorradorOtroFormato(TIPO_ACTA)) {
+      const fecha = await leerFechaBorradorOtroFormato(TIPO_ACTA, clave);
+      if (fecha && respaldados[clave] && fecha <= respaldados[clave]) continue;
+      if (await subirBorradorActa(clave)) subidos++;
+    }
+  } catch (e) {
+    console.warn('[OtrosFormatos] Error subiendo borradores de actas:', e);
+  }
+  if (subidos) console.log(`[OtrosFormatos] ${subidos} borrador(es) de acta respaldado(s) en el servidor`);
+  return subidos;
+};
+
+/** ¿El borrador local de esta acta ya está respaldado en el servidor? */
+export const borradorActaRespaldado = async (cedula: string, instancia: string): Promise<boolean> => {
+  const clave = `${cedula}__${instancia}`;
+  const fecha = await leerFechaBorradorOtroFormato(TIPO_ACTA, clave);
+  if (!fecha) return false;
+  const m = await leerRespaldados();
+  return !!m[clave] && fecha <= m[clave];
+};
+
+/**
+ * Borrador del acta guardado en el servidor (para abrirla en otro
+ * dispositivo con la misma cuenta). null si no hay o sin red. Nunca lanza.
+ */
+export const obtenerBorradorActaServidor = async (
+  cedula: string,
+  instancia: string
+): Promise<Record<string, any> | null> => {
+  try {
+    const id = idOtroFormato(TIPO_ACTA, cedula, instancia);
+    const r = await apiClient.get(`${API_CONFIG.ENDPOINTS.OTROS_FORMATOS}/borradores/${encodeURIComponent(id)}`, {
+      timeout: 15000,
+    });
+    const d = r.data?.borrador?.datos;
+    return (typeof d === 'string' ? JSON.parse(d) : d) || null;
+  } catch {
+    return null;
+  }
+};
+
+/** ¿El acta ya está publicada en el servidor? (para el estado en otro dispositivo). Nunca lanza. */
+export const actaPublicadaEnServidor = async (cedula: string, instancia: string): Promise<boolean> => {
+  try {
+    const id = idOtroFormato(TIPO_ACTA, cedula, instancia);
+    const r = await apiClient.get(`${API_CONFIG.ENDPOINTS.OTROS_FORMATOS}/${encodeURIComponent(id)}`, { timeout: 15000 });
+    return r.data?.estado === 'ok' && !!r.data?.formato;
+  } catch {
+    return false;
+  }
 };

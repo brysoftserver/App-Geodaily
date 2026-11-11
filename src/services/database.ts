@@ -3,6 +3,7 @@
 // ============================================================
 
 import * as SQLite from 'expo-sqlite';
+import { Platform } from 'react-native';
 import { Formulario, Coordenadas, DocumentoFinca, PosicionTracking } from '../types';
 
 let db: SQLite.SQLiteDatabase | null = null;
@@ -19,8 +20,96 @@ let dbFailedOnce = false; // evita reintentar si ya falló (web)
 const REINTENTO_DB_MS = 3000;
 let ultimoIntentoDb = 0;
 
+// ─── Esquema pendiente ──────────────────────────────────────
+// Antes, si las migraciones fallaban o tardaban más de 5 s (teléfono lento o
+// con muchos datos), se anulaba la conexión (`db = null`) AUNQUE se hubiera
+// abierto bien: la base quedaba "intermitente" (disponible solo durante los
+// reintentos) y guardados como el del Acta de Entrega fallaban al azar.
+// Ahora, si la conexión abrió y responde, se conserva y el esquema se
+// termina de reparar en segundo plano, sin correr dos migraciones a la vez.
+let esquemaListo = false;
+/** Migración real en curso (no la carrera con el timeout): nunca se lanzan dos a la vez. */
+let migracionEnCurso: Promise<void> | null = null;
+let ultimoIntentoEsquema = 0;
+const REINTENTO_ESQUEMA_MS = 30000;
+
+/** Crea el esquema base + migraciones, compartiendo la ejecución si ya hay una en curso. */
+const prepararEsquema = (): Promise<void> => {
+  if (migracionEnCurso) return migracionEnCurso;
+  migracionEnCurso = (async () => {
+    try {
+      await crearEsquemaBase();
+      await runMigrations();
+      esquemaListo = true;
+    } finally {
+      migracionEnCurso = null;
+    }
+  })();
+  return migracionEnCurso;
+};
+
+/** ¿La conexión abierta responde? (para no conservar una conexión muerta, p. ej. en web). */
+const conexionResponde = async (conexion: SQLite.SQLiteDatabase | null): Promise<boolean> => {
+  if (!conexion || Platform.OS === 'web') return false;
+  try {
+    await withTimeout(conexion.getFirstAsync('SELECT 1 AS ok'), 3000, 'probar conexión');
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+/** Termina de reparar el esquema en segundo plano (limitado en frecuencia). */
+const repararEsquemaEnSegundoPlano = (): void => {
+  if (esquemaListo || migracionEnCurso || !db) return;
+  const ahora = Date.now();
+  if (ahora - ultimoIntentoEsquema < REINTENTO_ESQUEMA_MS) return;
+  ultimoIntentoEsquema = ahora;
+  prepararEsquema()
+    .then(() => console.log('[DB] Esquema local reparado en segundo plano'))
+    .catch((e) => console.warn('[DB] El esquema local sigue incompleto:', (e as Error)?.message));
+};
+
+/** Último error del esquema local (para el diagnóstico remoto). */
+let ultimoErrorEsquema: string | null = null;
+export const estadoBaseLocal = (): { abierta: boolean; esquemaListo: boolean; migrando: boolean; ultimoError: string | null } => ({
+  abierta: !!db,
+  esquemaListo,
+  migrando: !!migracionEnCurso,
+  ultimoError: ultimoErrorEsquema,
+});
+
+// ─── Transacción larga (espejo de beneficiarios) ────────────
+// `withTransactionAsync` comparte la conexión: cualquier escritura que corra
+// mientras está abierta queda DENTRO de esa transacción, y si ésta se revierte
+// se pierde en silencio. Los guardados críticos (formatos con firmas) esperan
+// a que termine.
+let transaccionLarga: Promise<unknown> | null = null;
+
+export const ejecutarTransaccionLarga = async <T>(fn: () => Promise<T>): Promise<T> => {
+  while (transaccionLarga) {
+    await transaccionLarga.catch(() => {});
+  }
+  const p = fn();
+  transaccionLarga = p;
+  try {
+    return await p;
+  } finally {
+    if (transaccionLarga === p) transaccionLarga = null;
+  }
+};
+
+/** Espera (máx. `maxMs`) a que termine una transacción larga en curso. */
+const esperarTransaccionLarga = async (maxMs = 20000): Promise<void> => {
+  if (!transaccionLarga) return;
+  await Promise.race([transaccionLarga.catch(() => {}), new Promise((r) => setTimeout(r, maxMs))]);
+};
+
 const ensureDb = async (): Promise<SQLite.SQLiteDatabase | null> => {
-  if (db) return db;
+  if (db) {
+    if (!esquemaListo) repararEsquemaEnSegundoPlano();
+    return db;
+  }
 
   // Antes existía una bandera `dbFailedOnce` que, tras UN solo fallo
   // transitorio (p.ej. el timeout de 3 s en un teléfono lento arrancando en
@@ -32,21 +121,29 @@ const ensureDb = async (): Promise<SQLite.SQLiteDatabase | null> => {
   if (ahora - ultimoIntentoDb < REINTENTO_DB_MS) return null;
   ultimoIntentoDb = ahora;
 
+  let abierta: SQLite.SQLiteDatabase | null = null;
   try {
-    db = await withTimeout(
+    abierta = await withTimeout(
       SQLite.openDatabaseAsync('geodaily.db'),
       5000,
       'ensureDb openDatabaseAsync'
     );
+    db = abierta;
     // Crear tablas base + migraciones. `initDatabase` puede no haber llegado a
     // completarse (o haber fallado), así que aquí se asegura el esquema entero,
     // no solo las migraciones — si no, quedaban tablas como `formularios` sin crear.
-    await withTimeout(crearEsquemaBase(), 8000, 'ensureDb crearEsquemaBase');
-    await withTimeout(runMigrations(), 5000, 'ensureDb runMigrations');
+    await withTimeout(prepararEsquema(), 13000, 'ensureDb esquema');
     dbFailedOnce = false;
     console.log('[DB] Reconexión automática exitosa');
     return db;
   } catch (error) {
+    ultimoErrorEsquema = (error as Error)?.message ?? String(error);
+    // La conexión abrió y responde: se conserva (el esquema se repara después).
+    if (abierta && (await conexionResponde(abierta))) {
+      console.warn('[DB] Esquema local incompleto; se conserva la conexión y se reintenta en segundo plano:', ultimoErrorEsquema);
+      db = abierta;
+      return db;
+    }
     console.error('[DB] Error al reconectar BD:', error);
     dbFailedOnce = true;
     db = null;
@@ -196,6 +293,7 @@ export const initDatabase = async (): Promise<void> => {
 
     // Crear tablas base (idempotente)
     await withTimeout(crearEsquemaBase(), 8000, 'Crear tablas');
+    if (!db) throw new Error('La base local se cerró durante la inicialización');
 
     // Migración: agregar columna usuario_id si no existe
     try {
@@ -255,11 +353,18 @@ export const initDatabase = async (): Promise<void> => {
       console.warn('[DB] No se pudo verificar schema de beneficiarios:', e);
     }
 
-    // Ejecutar migraciones de nuevas tablas
-    await withTimeout(runMigrations(), 5000, 'runMigrations');
+    // Ejecutar migraciones de nuevas tablas (compartidas: nunca dos a la vez)
+    await withTimeout(prepararEsquema(), 8000, 'runMigrations');
 
     console.log('[DB] Base de datos local inicializada');
   } catch (error) {
+    ultimoErrorEsquema = (error as Error)?.message ?? String(error);
+    // Si la conexión abrió y responde, NO se anula: antes un timeout de las
+    // migraciones dejaba la base intermitente. El esquema se repara después.
+    if (db && (await conexionResponde(db))) {
+      console.warn('[DB] Inicialización incompleta; se conserva la conexión y el esquema se repara en segundo plano:', ultimoErrorEsquema);
+      return;
+    }
     console.warn('[DB] SQLite no disponible en este entorno — la app funciona sin persistencia local:', (error as Error)?.message);
     db = null; // asegurar que db quede null
   }
@@ -2895,9 +3000,12 @@ export const saveOtroFormatoLocal = async (
   if (!database) {
     throw new Error('La base de datos local no está disponible — el formato NO se guardó');
   }
+  // No quedar dentro de la transacción del espejo de beneficiarios (si se
+  // revierte, este guardado se perdería en silencio).
+  await esperarTransaccionLarga();
   const ahora = new Date().toISOString();
   const id = idOtroFormato(f.tipo, f.beneficiario_cedula, f.datos?.instancia);
-  await database.runAsync(
+  const insertar = () => database.runAsync(
     `INSERT INTO otros_formatos_locales
        (id, tecnico_id, tecnico_nombre, tecnico_usuario, beneficiario_cedula, beneficiario_nombre,
         tipo, datos, completo, sincronizado, created_at, updated_at)
@@ -2925,6 +3033,100 @@ export const saveOtroFormatoLocal = async (
       ahora,
     ]
   );
+  try {
+    await insertar();
+  } catch (error) {
+    // Se recoge el estado de la tabla para el diagnóstico remoto, se repara
+    // (sin borrar nada) y se reintenta una vez.
+    const diagnostico: Record<string, any> = { id, base: estadoBaseLocal(), tamano_datos: JSON.stringify(f.datos || {}).length };
+    try {
+      diagnostico.antes = await describirTablaOtrosFormatos(database);
+      diagnostico.reparacion = await repararTablaOtrosFormatos(database);
+      await insertar();
+      console.warn('[DB] Formato guardado tras reparar otros_formatos_locales:', diagnostico.reparacion);
+      return;
+    } catch (error2) {
+      diagnostico.error_reintento = (error2 as Error)?.message ?? String(error2);
+    }
+    const e = error instanceof Error ? error : new Error(String(error));
+    (e as any).diagnostico = diagnostico;
+    throw e;
+  }
+};
+
+const COLUMNAS_OTROS_FORMATOS: Array<[string, string]> = [
+  ['tecnico_id', 'TEXT'],
+  ['tecnico_nombre', 'TEXT'],
+  ['tecnico_usuario', 'TEXT'],
+  ['beneficiario_cedula', "TEXT NOT NULL DEFAULT ''"],
+  ['beneficiario_nombre', 'TEXT'],
+  ['tipo', "TEXT NOT NULL DEFAULT ''"],
+  ['datos', "TEXT NOT NULL DEFAULT '{}'"],
+  ['completo', 'INTEGER DEFAULT 1'],
+  ['sincronizado', 'INTEGER DEFAULT 0'],
+  ['created_at', "TEXT NOT NULL DEFAULT ''"],
+  ['updated_at', "TEXT NOT NULL DEFAULT ''"],
+];
+
+/** Definición y columnas actuales de otros_formatos_locales (para diagnóstico). */
+const describirTablaOtrosFormatos = async (database: SQLite.SQLiteDatabase): Promise<Record<string, any>> => {
+  const out: Record<string, any> = {};
+  try {
+    const t = await database.getFirstAsync<{ sql: string }>(
+      "SELECT sql FROM sqlite_master WHERE type='table' AND name='otros_formatos_locales'"
+    );
+    out.sql = t?.sql ?? null;
+    const cols = await database.getAllAsync<{ name: string }>('PRAGMA table_info(otros_formatos_locales)');
+    out.columnas = cols.map((c) => c.name);
+    const idx = await database.getAllAsync<{ name: string; sql: string | null }>(
+      "SELECT name, sql FROM sqlite_master WHERE type='index' AND tbl_name='otros_formatos_locales'"
+    );
+    out.indices = idx;
+    const n = await database.getFirstAsync<{ n: number }>('SELECT COUNT(*) AS n FROM otros_formatos_locales');
+    out.filas = n?.n ?? null;
+  } catch (e) {
+    out.error = (e as Error)?.message ?? String(e);
+  }
+  return out;
+};
+
+/**
+ * Repara otros_formatos_locales SIN borrar nada: la crea si no existe y
+ * agrega las columnas que le falten (tabla creada por una versión vieja de la
+ * app: `CREATE TABLE IF NOT EXISTS` no la actualiza). Devuelve lo que hizo.
+ */
+export const repararTablaOtrosFormatos = async (database: SQLite.SQLiteDatabase): Promise<string[]> => {
+  const hecho: string[] = [];
+  await database.execAsync(`
+    CREATE TABLE IF NOT EXISTS otros_formatos_locales (
+      id TEXT PRIMARY KEY,
+      tecnico_id TEXT,
+      tecnico_nombre TEXT,
+      tecnico_usuario TEXT,
+      beneficiario_cedula TEXT NOT NULL,
+      beneficiario_nombre TEXT,
+      tipo TEXT NOT NULL,
+      datos TEXT NOT NULL DEFAULT '{}',
+      completo INTEGER DEFAULT 1,
+      sincronizado INTEGER DEFAULT 0,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_otros_formatos_locales_cedula ON otros_formatos_locales(beneficiario_cedula);
+  `);
+  const cols = new Set(
+    (await database.getAllAsync<{ name: string }>('PRAGMA table_info(otros_formatos_locales)')).map((c) => c.name)
+  );
+  for (const [nombre, tipo] of COLUMNAS_OTROS_FORMATOS) {
+    if (cols.has(nombre)) continue;
+    try {
+      await database.runAsync(`ALTER TABLE otros_formatos_locales ADD COLUMN ${nombre} ${tipo}`);
+      hecho.push(`+${nombre}`);
+    } catch (e) {
+      hecho.push(`!${nombre}: ${(e as Error)?.message}`);
+    }
+  }
+  return hecho;
 };
 
 /** Formatos guardados en este dispositivo, de un beneficiario (o de todos si no se pasa cédula). */

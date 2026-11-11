@@ -211,6 +211,111 @@ router.post('/sync', authenticateToken, async (req, res) => {
 });
 
 // ------------------------------------------------------------
+// Borradores de formatos (hoy: Acta de Entrega) respaldados en el servidor
+// ------------------------------------------------------------
+// El técnico diligencia el acta (con firmas) y la app sube el borrador en
+// segundo plano en cada guardado. Así el trabajo no depende de que
+// "Completar" funcione en el teléfono y se ve desde otro dispositivo (tablet)
+// con la misma cuenta. Tabla aparte (otros_formatos_borradores): bitácora,
+// revisión y evidencias siguen viendo solo actas publicadas.
+// Reglas: la versión más nueva del cliente gana; una firma guardada nunca se
+// reemplaza por vacío; nunca se borra nada.
+
+const MAX_BORRADOR_BYTES = 8 * 1024 * 1024;
+
+router.put('/borradores/:id', authenticateToken, async (req, res) => {
+  try {
+    const id = String(req.params.id || '').trim().slice(0, 160);
+    const tipo = String(req.body?.tipo || '').trim();
+    const cedula = String(req.body?.beneficiario_cedula || '').trim();
+    let datos = req.body?.datos;
+    if (typeof datos === 'string') {
+      try {
+        datos = JSON.parse(datos);
+      } catch {
+        return res.status(400).json({ estado: 'error', mensaje: 'Los datos del borrador no son JSON válido' });
+      }
+    }
+    if (!TIPOS_VALIDOS.includes(tipo)) return res.status(400).json({ estado: 'error', mensaje: `Tipo no válido: ${tipo}` });
+    if (!cedula) return res.status(400).json({ estado: 'error', mensaje: 'Falta la cédula del beneficiario' });
+    if (!datos || typeof datos !== 'object') return res.status(400).json({ estado: 'error', mensaje: 'El borrador no trae datos' });
+    const instancia = limpiarInstancia(tipo, req.body?.instancia || datos.instancia);
+    if (id !== idFormato(cedula, tipo, instancia)) {
+      return res.status(400).json({ estado: 'error', mensaje: 'El id no corresponde al formato' });
+    }
+    const json = JSON.stringify(datos);
+    if (Buffer.byteLength(json) > MAX_BORRADOR_BYTES) {
+      return res.status(413).json({ estado: 'error', mensaje: 'El borrador es demasiado grande' });
+    }
+
+    const previo = await db.queryOne(
+      'SELECT tecnico_id, datos, cliente_updated_at FROM otros_formatos_borradores WHERE id = $1',
+      [id]
+    );
+    if (previo && previo.tecnico_id !== req.user.id && !esSuperior(req.user)) {
+      return res.status(409).json({ estado: 'ajeno', mensaje: 'El borrador pertenece a otro técnico' });
+    }
+    const clienteTs = fechaValida(req.body?.updated_at);
+    if (clienteTs && previo?.cliente_updated_at && clienteTs <= new Date(previo.cliente_updated_at)) {
+      return res.json({ estado: 'ok', obsoleto: true });
+    }
+    // Firmas ya guardadas: nunca se reemplazan por vacío.
+    const dp = previo && (typeof previo.datos === 'string' ? JSON.parse(previo.datos) : previo.datos);
+    let final = datos;
+    if (dp && typeof dp === 'object') {
+      final = { ...datos };
+      for (const campo of CAMPOS_FIRMA) {
+        if (esFirma(dp[campo]) && !esFirma(datos[campo])) final[campo] = dp[campo];
+      }
+    }
+
+    await db.query(
+      `INSERT INTO otros_formatos_borradores
+         (id, tecnico_id, tecnico_usuario, beneficiario_cedula, tipo, instancia, datos, cliente_updated_at, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, NOW(), NOW())
+       ON CONFLICT (id) DO UPDATE SET
+         datos = EXCLUDED.datos,
+         -- El dueño (tecnico_id/usuario) no cambia aunque guarde un rol superior.
+         cliente_updated_at = COALESCE(EXCLUDED.cliente_updated_at, otros_formatos_borradores.cliente_updated_at),
+         updated_at = NOW()`,
+      [
+        id,
+        previo?.tecnico_id || req.user.id,
+        req.user.usuario || null,
+        cedula,
+        tipo,
+        instancia,
+        JSON.stringify(final),
+        clienteTs ? clienteTs.toISOString() : null,
+      ]
+    );
+    res.json({ estado: 'ok' });
+  } catch (error) {
+    console.error('[OtrosFormatos] Error guardando borrador:', error);
+    res.status(500).json({ estado: 'error', mensaje: 'Error al guardar el borrador' });
+  }
+});
+
+router.get('/borradores/:id', authenticateToken, async (req, res) => {
+  try {
+    const b = await db.queryOne(
+      `SELECT id, tecnico_id, tecnico_usuario, beneficiario_cedula, tipo, instancia, datos,
+              cliente_updated_at, updated_at
+         FROM otros_formatos_borradores WHERE id = $1`,
+      [req.params.id]
+    );
+    if (!b) return res.status(404).json({ estado: 'error', mensaje: 'Borrador no encontrado' });
+    if (!esSuperior(req.user) && b.tecnico_id !== req.user.id) {
+      return res.status(403).json({ estado: 'error', mensaje: 'No autorizado' });
+    }
+    res.json({ estado: 'ok', borrador: b });
+  } catch (error) {
+    console.error('[OtrosFormatos] Error leyendo borrador:', error);
+    res.status(500).json({ estado: 'error', mensaje: 'Error al obtener el borrador' });
+  }
+});
+
+// ------------------------------------------------------------
 // GET /api/otros-formatos — Listar formatos
 //   ?cedula=...   filtrar por beneficiario
 //   ?tecnico=...  (solo superiores) filtrar por técnico

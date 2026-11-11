@@ -54,7 +54,8 @@ import { uploadVideo } from '../services/videos.service';
 import { subirDocumento } from '../services/documentos.service';
 import { subirFirma } from '../services/firmas.service';
 import { registrarSeguimiento, esSeguimientoEliminado } from '../services/seguimientos.service';
-import { sincronizarOtrosFormatos, publicarBorradoresDeActasCompletadas } from '../services/otrosFormatos.service';
+import { sincronizarOtrosFormatos, publicarBorradoresDeActasCompletadas, subirBorradoresDeActasPendientes } from '../services/otrosFormatos.service';
+import { enviarDiagnosticosPendientes } from '../services/diagnostico.service';
 import { getVerificacionesNoSincronizadas, sincronizarVerificacionesEntrega } from '../services/verificacionesEntrega.service';
 import { getEntregasNoSincronizadas, sincronizarEntregasActividad } from '../services/actividadesEntregas.service';
 import { generarPDF } from '../services/pdf.service';
@@ -1303,6 +1304,12 @@ export const SyncProvider: React.FC<{ children: React.ReactNode }> = ({
       await publicarBorradoresDeActasCompletadas();
       const otrosFormatosFallidos = await sincronizarOtrosFormatos();
       warnings.push(...otrosFormatosFallidos.map(id => `formato-${id}`));
+      // Borradores de actas (con sus firmas) respaldados en el servidor, para
+      // que el trabajo no dependa de "Completar" ni de este teléfono. También
+      // recupera los que quedaron atrapados antes. Nunca lanza.
+      await subirBorradoresDeActasPendientes();
+      // Errores del teléfono que no se pudieron reportar sin señal.
+      await enviarDiagnosticosPendientes();
 
       // 3g. Verificaciones de entrega (interventoría). NO crítico, igual que
       // otros formatos: lo que falle se reintenta en el próximo ciclo.

@@ -33,8 +33,15 @@ import { avisar, confirmar } from '../../utils/dialogos';
 import { persistirEvidencia, eliminarArchivoLocal } from '../../services/mediaStorage.service';
 import { getBeneficiariosByTecnico } from '../../services/beneficiariosDB.service';
 import { cargarDatosOtroFormato } from '../../store/OtrosFormatosDraftStore';
-import { getOtroFormatoLocalPorId, idOtroFormato } from '../../services/database';
-import { actaTieneCambiosSinPublicar, republicarActaSiCambio } from '../../services/otrosFormatos.service';
+import { idOtroFormato } from '../../services/database';
+import {
+  actaTieneCambiosSinPublicar,
+  republicarActaSiCambio,
+  obtenerFormatoLocalPorId,
+  borradorActaRespaldado,
+  obtenerBorradorActaServidor,
+  actaPublicadaEnServidor,
+} from '../../services/otrosFormatos.service';
 import { BeneficiarioDB } from '../../types';
 import { tituloActaEntregas } from '../../data/actividades';
 import {
@@ -48,7 +55,14 @@ import {
   sincronizarEntregasActividad,
 } from '../../services/actividadesEntregas.service';
 
-type EstadoActa = 'sin_diligenciar' | 'borrador' | 'completada' | 'pendiente_subir';
+type EstadoActa =
+  | 'sin_diligenciar'
+  | 'borrador'
+  | 'borrador_respaldado'
+  | 'borrador_servidor'
+  | 'completada'
+  | 'completada_servidor'
+  | 'pendiente_subir';
 
 const sinTildes = (t: string) => t.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
 
@@ -100,20 +114,27 @@ const EntregaDetalleScreen: React.FC<any> = ({ navigation, route }) => {
     if (!b?.cedula) return setEstadoActa('sin_diligenciar');
     try {
       const id = idOtroFormato('acta_entrega_individual', b.cedula, e.datos.actaInstancia);
-      let completada = await getOtroFormatoLocalPorId(id);
+      let completada = await obtenerFormatoLocalPorId(id);
       if (completada) {
         // Cambios hechos al reabrir el acta que quedaron solo en el borrador: se publican ya.
         if (await actaTieneCambiosSinPublicar(b.cedula, e.datos.actaInstancia)) {
           const borrador = await cargarDatosOtroFormato<Record<string, any>>('acta_entrega_individual', `${b.cedula}__${e.datos.actaInstancia}`);
           if (borrador) {
             await republicarActaSiCambio({ cedula: b.cedula, instancia: e.datos.actaInstancia, actual: borrador });
-            completada = (await getOtroFormatoLocalPorId(id)) ?? completada;
+            completada = (await obtenerFormatoLocalPorId(id)) ?? completada;
           }
         }
         return setEstadoActa(completada.sincronizado ? 'completada' : 'pendiente_subir');
       }
       const borrador = await cargarDatosOtroFormato('acta_entrega_individual', `${b.cedula}__${e.datos.actaInstancia}`);
-      setEstadoActa(borrador ? 'borrador' : 'sin_diligenciar');
+      if (borrador) {
+        setEstadoActa((await borradorActaRespaldado(b.cedula, e.datos.actaInstancia)) ? 'borrador_respaldado' : 'borrador');
+        return;
+      }
+      // Nada en este dispositivo (p. ej. la tablet con la misma cuenta): lo del servidor.
+      setEstadoActa('sin_diligenciar');
+      if (await actaPublicadaEnServidor(b.cedula, e.datos.actaInstancia)) return setEstadoActa('completada_servidor');
+      if (await obtenerBorradorActaServidor(b.cedula, e.datos.actaInstancia)) setEstadoActa('borrador_servidor');
     } catch {
       setEstadoActa('sin_diligenciar');
     }
@@ -251,7 +272,10 @@ const EntregaDetalleScreen: React.FC<any> = ({ navigation, route }) => {
   const d = entrega.datos;
   const textoActa: Record<EstadoActa, { txt: string; color: string; boton: string }> = {
     sin_diligenciar: { txt: 'Sin diligenciar', color: COLORS.textSecondary, boton: '📝 Diligenciar acta' },
-    borrador: { txt: '⏳ Borrador en este dispositivo', color: COLORS.warning, boton: '📝 Continuar acta' },
+    borrador: { txt: '⏳ Borrador solo en este dispositivo · pendiente de respaldar en el servidor', color: COLORS.warning, boton: '📝 Continuar acta' },
+    borrador_respaldado: { txt: '⏳ Borrador · ✓ respaldado en el servidor', color: COLORS.warning, boton: '📝 Continuar acta' },
+    borrador_servidor: { txt: '⏳ Borrador guardado en el servidor', color: COLORS.warning, boton: '📝 Continuar acta' },
+    completada_servidor: { txt: '✓ Acta completada (en el servidor)', color: COLORS.success, boton: '✏️ Ver / editar acta' },
     completada: { txt: '✓ Acta completada', color: COLORS.success, boton: '✏️ Ver / editar acta' },
     pendiente_subir: { txt: '✓ Acta completada · ⏳ pendiente de subir al servidor', color: COLORS.warning, boton: '✏️ Ver / editar acta' },
   };

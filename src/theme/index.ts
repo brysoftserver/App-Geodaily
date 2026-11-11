@@ -139,6 +139,7 @@ export const API_CONFIG = {
     DOCUMENTOS: '/api/documentos',
     ANEXOS: '/api/anexos',
     OTROS_FORMATOS: '/api/otros-formatos',
+    DIAGNOSTICO: '/api/diagnostico',
     VIDEOS: '/api/videos',
     ARCHIVOS: '/api/archivos',
     IA: '/api/ia',
