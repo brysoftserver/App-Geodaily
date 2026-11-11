@@ -33,6 +33,8 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { COLORS, FONTS, SPACING, BORDER_RADIUS, SHADOWS } from '../../theme';
 import { avisar, confirmar } from '../../utils/dialogos';
 import PdfViewer from '../../components/PdfViewer';
+import { BotonOkInterventoria, ESTILO_CARD_REVISADA, EtiquetaRevisado } from '../../components/actividades/RevisionInterventoria';
+import { useRevisionInterventoria } from '../../hooks/useRevisionInterventoria';
 import {
   COMPONENTES_FORTALECIMIENTO,
   GRUPOS_VEREDAS,
@@ -44,13 +46,16 @@ import {
 import {
   ArchivoFortalecimiento,
   ArchivosGrupoEca,
+  descargarConsolidadoEca,
   descargarPdfFortalecimiento,
   eliminarArchivoFortalecimiento,
+  generarConsolidadoEca,
   fuenteArchivoFortalecimiento,
   obtenerArchivosGrupoEca,
   obtenerResumenEcas,
   subirArchivoEca,
 } from '../../services/fortalecimiento.service';
+import { abrirPdf } from '../../services/informeTecnicoPdf.service';
 
 type Fuente = { uri: string; headers?: Record<string, string> };
 
@@ -75,20 +80,37 @@ const Miniatura: React.FC<{ archivo: ArchivoFortalecimiento; onPress: () => void
   );
 };
 
-/** Tarjeta de menú (componente, ECA o grupo). */
-const Opcion: React.FC<{ icon?: string; etiqueta?: string; titulo: string; detalle?: string; onPress: () => void }> = ({
-  icon, etiqueta, titulo, detalle, onPress,
-}) => (
+/** Tarjeta de menú (componente, ECA o grupo). `accion` va a la derecha, antes de la flecha. */
+const Opcion: React.FC<{
+  icon?: string;
+  etiqueta?: string;
+  titulo: string;
+  subtitulo?: string;
+  detalle?: string;
+  accion?: React.ReactNode;
+  onPress: () => void;
+}> = ({ icon, etiqueta, titulo, subtitulo, detalle, accion, onPress }) => (
   <TouchableOpacity style={styles.card} activeOpacity={0.7} onPress={onPress}>
     {icon ? <Text style={styles.icon}>{icon}</Text> : null}
     <View style={{ flex: 1 }}>
       {etiqueta ? <Text style={styles.etiqueta}>{etiqueta}</Text> : null}
       <Text style={styles.title}>{titulo}</Text>
+      {subtitulo ? <Text style={styles.subtituloCard}>{subtitulo}</Text> : null}
     </View>
     {detalle ? <Text style={styles.detalle}>{detalle}</Text> : null}
+    {accion}
     <Text style={styles.arrow}>›</Text>
   </TouchableOpacity>
 );
+
+/** Abre el PDF del consolidado: visor del teléfono (nativo) o pestaña nueva (web). */
+async function abrirConsolidado(uri: string) {
+  if (Platform.OS === 'web') {
+    window.open(uri, '_blank');
+    return;
+  }
+  await abrirPdf(uri);
+}
 
 const FortalecimientoScreen: React.FC<any> = ({ navigation, route }) => {
   const insets = useSafeAreaInsets();
@@ -116,6 +138,22 @@ const FortalecimientoScreen: React.FC<any> = ({ navigation, route }) => {
     }, [componente, grupo])
   );
   const totalEca = (n: number) => Object.values(conteos?.[n] ?? {}).reduce((s, x) => s + x, 0);
+
+  // ─── Informe consolidado por ECA ────────────────────────
+  const [generando, setGenerando] = useState<{ eca: number; etapa: string } | null>(null);
+  const consolidar = async (n: number) => {
+    if (generando) return;
+    setGenerando({ eca: n, etapa: 'Iniciando…' });
+    try {
+      const c = await generarConsolidadoEca(n, (etapa) => setGenerando({ eca: n, etapa }));
+      setGenerando({ eca: n, etapa: 'Descargando el PDF…' });
+      await abrirConsolidado(await descargarConsolidadoEca(c));
+    } catch (e: any) {
+      avisar('No se pudo generar el informe', mensajeError(e, e?.message || 'Inténtalo de nuevo.'));
+    } finally {
+      setGenerando(null);
+    }
+  };
   const textoConteo = (n: number | undefined) => (conteos === null ? undefined : `${n ?? 0} archivo${n === 1 ? '' : 's'}`);
 
   const contenedor = (hijos: React.ReactNode) => (
@@ -148,9 +186,30 @@ const FortalecimientoScreen: React.FC<any> = ({ navigation, route }) => {
   // 2. ECA 1 … ECA 7
   if (!eca) {
     return contenedor(
-      Array.from({ length: TOTAL_ECAS }, (_, i) => i + 1).map((n) => (
-        <Opcion key={n} icon="🎓" titulo={`ECA ${n}`} detalle={textoConteo(totalEca(n))} onPress={() => ir({ componente, eca: n })} />
-      ))
+      Array.from({ length: TOTAL_ECAS }, (_, i) => i + 1).map((n) => {
+        const esta = generando?.eca === n;
+        const sinArchivos = conteos !== null && totalEca(n) === 0;
+        return (
+          <Opcion
+            key={n}
+            icon="🎓"
+            titulo={`ECA ${n}`}
+            subtitulo={esta ? generando.etapa : undefined}
+            detalle={textoConteo(totalEca(n))}
+            onPress={() => ir({ componente, eca: n })}
+            accion={
+              <TouchableOpacity
+                style={[styles.btnPdf, (sinArchivos || (generando && !esta)) && styles.btnDeshabilitado]}
+                disabled={sinArchivos || !!generando}
+                onPress={() => consolidar(n)}
+                accessibilityLabel={`Generar informe consolidado de la ECA ${n}`}
+              >
+                {esta ? <ActivityIndicator size="small" color="#fff" /> : <Text style={styles.btnPdfTxt}>📄 Consolidado</Text>}
+              </TouchableOpacity>
+            }
+          />
+        );
+      })
     );
   }
 
@@ -170,15 +229,18 @@ const FortalecimientoScreen: React.FC<any> = ({ navigation, route }) => {
   }
 
   // 4. Secciones del grupo
-  return <SeccionesGrupo eca={eca} grupo={grupo} />;
+  return <SeccionesGrupo eca={eca} grupo={grupo} revisar={route?.params?.modo === 'revisar'} />;
 };
 
 // ============================================================
 // Nivel 4: Protocolo · Informes · Listado de Asistencia · Registro Fotográfico
 // ============================================================
 
-const SeccionesGrupo: React.FC<{ eca: number; grupo: number }> = ({ eca, grupo }) => {
+const SeccionesGrupo: React.FC<{ eca: number; grupo: number; revisar: boolean }> = ({ eca, grupo, revisar }) => {
   const insets = useSafeAreaInsets();
+  // OK de la interventoría por sección del grupo (referencia = "ecas:{eca}:{grupo}:{seccion}").
+  const revision = useRevisionInterventoria('fortalecimiento_capacidades');
+  const refSeccion = (seccion: SeccionEca) => `ecas:${eca}:${grupo}:${seccion}`;
   const [data, setData] = useState<ArchivosGrupoEca | null>(null);
   const [cargando, setCargando] = useState(true);
   const [refrescando, setRefrescando] = useState(false);
@@ -321,11 +383,23 @@ const SeccionesGrupo: React.FC<{ eca: number; grupo: number }> = ({ eca, grupo }
             const archivos = data?.secciones?.[s.id] ?? [];
             const abierta = !!abiertas[s.id];
             const esFotos = s.id === 'registro_fotografico';
+            const revisado = archivos.length > 0 && revision.estaRevisado(refSeccion(s.id));
             return (
-              <View key={s.id} style={styles.segmento}>
+              <View key={s.id} style={[styles.segmento, revisado && ESTILO_CARD_REVISADA]}>
                 <View style={styles.segmentoCabecera}>
-                  <Text style={styles.segmentoTitulo}>{`${s.icon} ${s.titulo}`}</Text>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.segmentoTitulo}>{`${s.icon} ${s.titulo}`}</Text>
+                    {archivos.length > 0 && <EtiquetaRevisado revisado={revisado} pendiente={revisar} />}
+                  </View>
                   <Text style={styles.contador}>{archivos.length}</Text>
+                  {revisar && revision.puedeRevisar && archivos.length > 0 && (
+                    <BotonOkInterventoria
+                      style={{ marginLeft: SPACING.sm }}
+                      revisado={revisado}
+                      ocupado={revision.ocupado === refSeccion(s.id)}
+                      onPress={() => revision.alternar(refSeccion(s.id))}
+                    />
+                  )}
                 </View>
 
                 <View style={styles.botones}>
@@ -426,6 +500,18 @@ const styles = StyleSheet.create({
   title: { fontSize: FONTS.sizes.md, fontWeight: FONTS.weights.semibold, color: COLORS.textPrimary },
   detalle: { fontSize: FONTS.sizes.sm, fontWeight: FONTS.weights.semibold, color: COLORS.textSecondary, marginLeft: SPACING.sm },
   arrow: { fontSize: 24, color: COLORS.textLight, marginLeft: SPACING.sm },
+  subtituloCard: { fontSize: FONTS.sizes.xs, color: COLORS.primary, marginTop: 2 },
+  btnPdf: {
+    minWidth: 118,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: COLORS.primary,
+    borderRadius: BORDER_RADIUS.md,
+    paddingVertical: SPACING.xs + 2,
+    paddingHorizontal: SPACING.sm,
+    marginLeft: SPACING.sm,
+  },
+  btnPdfTxt: { color: '#fff', fontWeight: FONTS.weights.semibold, fontSize: FONTS.sizes.xs },
   iconGrande: { fontSize: 56, marginBottom: SPACING.md },
   tituloGrande: { fontSize: FONTS.sizes.xl, fontWeight: FONTS.weights.bold, color: COLORS.textPrimary, textAlign: 'center' },
   subtitulo: { fontSize: FONTS.sizes.md, color: COLORS.textSecondary, marginTop: SPACING.sm, textAlign: 'center' },

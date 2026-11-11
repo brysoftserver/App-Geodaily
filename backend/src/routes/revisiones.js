@@ -16,86 +16,70 @@ const express = require('express');
 const { authenticateToken } = require('../middleware/auth');
 const db = require('../database');
 const { crearNotificacion } = require('./notificaciones');
+const { CTE_CORRECCIONES, listarCorrecciones } = require('../lib/correcciones');
+const { calcularEstadoRevision, estadoPublico } = require('../lib/estadoRevision');
 const router = express.Router();
 
 const ROLES_REVISORES = ['coordinador', 'interventor', 'gerente', 'admin'];
 
-/** ¿El formulario tiene visto bueno de un rol dado? */
+const COLUMNAS_ESTADO = 'id, formulario_id, revisor_id, revisor_rol, tipo, seccion, created_at';
+
+/**
+ * Estado del flujo de UN formulario (ver lib/estadoRevision.js — única
+ * fuente de verdad). Incluye las correcciones del técnico.
+ */
+async function estadoFormulario(formularioId) {
+  const [revisiones, correcciones] = await Promise.all([
+    db.queryAll(
+      `SELECT ${COLUMNAS_ESTADO} FROM revisiones_formulario
+        WHERE formulario_id = $1 AND tipo IN ('novedad', 'visto_bueno')`,
+      [formularioId]
+    ),
+    listarCorrecciones(db, formularioId).catch(() => []),
+  ]);
+  return calcularEstadoRevision(revisiones, correcciones);
+}
+
+/**
+ * ¿El rol ya CERRÓ su revisión (visto bueno final vigente)? Antes bastaba
+ * con cualquier visto bueno, incluso de una sola sección.
+ */
 async function tieneVistoBueno(formularioId, rol) {
-  const row = await db.queryOne(
-    `SELECT id FROM revisiones_formulario
-     WHERE formulario_id = $1 AND revisor_rol = $2 AND tipo = 'visto_bueno'
-     ORDER BY created_at DESC LIMIT 1`,
-    [formularioId, rol]
-  );
-  return !!row;
+  const estado = await estadoFormulario(formularioId);
+  return !!estado._porRol[rol]?.cerrado;
 }
 
 // GET /api/revisiones/resumen — Estado de revisión de TODOS los formularios
 // (para pintar badges en listados sin pedir formulario por formulario).
-// Devuelve: { estados: { [formulario_id]: { coordinador: 'ok'|'novedades'|null, interventor: ..., novedades_total: n } } }
-// novedades_total = novedades PENDIENTES del rol (ver criterio abajo).
+// Devuelve: { estados: { [formulario_id]: estado } } con los campos de
+// lib/estadoRevision.js: coordinador/interventor/gerente/admin ('ok' =
+// revisión CERRADA), novedades_total, por_verificar, ultima_correccion,
+// estado_flujo, rol_flujo, turno, secciones_aprobadas, ultimo_movimiento…
 router.get('/resumen', authenticateToken, async (req, res) => {
   try {
-    // Último movimiento por (formulario, rol) considerando SOLO novedad/visto
-    // bueno (los checklists en línea/campo no afectan el estado). Si el último
-    // movimiento del rol fue un visto bueno, el rol está en 'ok'; si fue una
-    // novedad, está en 'novedades' (tiene observaciones sin cerrar).
-    const ultimoPorRol = await db.queryAll(
-      `SELECT DISTINCT ON (formulario_id, revisor_rol)
-         formulario_id, revisor_rol, tipo
-       FROM revisiones_formulario
-       WHERE tipo IN ('novedad', 'visto_bueno')
-       ORDER BY formulario_id, revisor_rol, created_at DESC, id DESC`
-    );
-    // Conteo de novedades PENDIENTES (sin corregir). Una novedad se considera
-    // resuelta cuando el MISMO rol que la marcó la da por buena:
-    //   1. el rol ya "dio OK" (su último movimiento fue un visto bueno) →
-    //      se resuelven TODAS sus novedades de ese formulario; o
-    //   2. existe un visto bueno posterior que la cubre: global (seccion NULL)
-    //      o de la MISMA sección.
-    // Es el mismo criterio que usa el detalle (src/utils/revisiones.ts →
-    // estaNovedadResuelta), de modo que la tarjeta del listado y el detalle
-    // siempre coinciden.
-    const novedadesTotales = await db.queryAll(
-      `WITH ultimo AS (
-         SELECT DISTINCT ON (formulario_id, revisor_rol)
-           formulario_id, revisor_rol, tipo
-         FROM revisiones_formulario
-         WHERE tipo IN ('novedad', 'visto_bueno')
-         ORDER BY formulario_id, revisor_rol, created_at DESC, id DESC
-       )
-       SELECT n.formulario_id, COUNT(*)::int AS total
-       FROM revisiones_formulario n
-       JOIN ultimo u
-         ON u.formulario_id = n.formulario_id
-        AND u.revisor_rol = n.revisor_rol
-       WHERE n.tipo = 'novedad'
-         AND u.tipo <> 'visto_bueno'
-         AND NOT EXISTS (
-           SELECT 1 FROM revisiones_formulario vb
-           WHERE vb.formulario_id = n.formulario_id
-             AND vb.revisor_rol = n.revisor_rol
-             AND vb.tipo = 'visto_bueno'
-             AND (vb.seccion IS NULL OR vb.seccion = n.seccion)
-             AND vb.created_at >= n.created_at
-         )
-       GROUP BY n.formulario_id`
-    );
+    const [revisiones, correcciones] = await Promise.all([
+      db.queryAll(
+        `SELECT ${COLUMNAS_ESTADO} FROM revisiones_formulario
+          WHERE tipo IN ('novedad', 'visto_bueno')`
+      ),
+      // La última corrección basta: una novedad está "por verificar" si
+      // hay alguna corrección posterior, es decir, si la última lo es.
+      db.queryAll(`WITH ${CTE_CORRECCIONES} SELECT formulario_id, ultima_correccion FROM correcciones`),
+    ]);
+
+    const porFormulario = new Map();
+    for (const r of revisiones) {
+      if (!porFormulario.has(r.formulario_id)) porFormulario.set(r.formulario_id, []);
+      porFormulario.get(r.formulario_id).push(r);
+    }
+    const ultimaCorreccion = new Map(correcciones.map((c) => [c.formulario_id, c.ultima_correccion]));
 
     const estados = {};
-    const getEstado = (id) => {
-      if (!estados[id]) {
-        estados[id] = { coordinador: null, interventor: null, gerente: null, admin: null, novedades_total: 0 };
-      }
-      return estados[id];
-    };
-    for (const f of ultimoPorRol) {
-      const e = getEstado(f.formulario_id);
-      e[f.revisor_rol] = f.tipo === 'visto_bueno' ? 'ok' : 'novedades';
-    }
-    for (const n of novedadesTotales) {
-      getEstado(n.formulario_id).novedades_total = n.total;
+    for (const [formularioId, revs] of porFormulario) {
+      const ult = ultimaCorreccion.get(formularioId);
+      estados[formularioId] = estadoPublico(
+        calcularEstadoRevision(revs, ult ? [{ created_at: ult }] : [])
+      );
     }
 
     res.json({ estado: 'ok', estados });
@@ -115,7 +99,25 @@ router.get('/:formularioId', authenticateToken, async (req, res) => {
        ORDER BY created_at ASC`,
       [req.params.formularioId]
     );
-    res.json({ estado: 'ok', revisiones });
+    // Correcciones explícitas del técnico (para marcar cada novedad
+    // pendiente como "corregida — por verificar"). Best effort: si falla,
+    // el historial de revisiones se entrega igual.
+    let correcciones = [];
+    try {
+      correcciones = await listarCorrecciones(db, req.params.formularioId);
+    } catch (err) {
+      console.warn('[Revisiones] No se pudieron listar correcciones:', err.message);
+    }
+    // Estado del flujo calculado por el servidor (misma función que
+    // /resumen), con las novedades abiertas y secciones aprobadas por rol.
+    const flujo = estadoPublico(
+      calcularEstadoRevision(
+        revisiones.filter((r) => r.tipo === 'novedad' || r.tipo === 'visto_bueno'),
+        correcciones
+      ),
+      { conAbiertas: true }
+    );
+    res.json({ estado: 'ok', revisiones, correcciones, flujo });
   } catch (error) {
     console.error('[Revisiones] Error listando:', error);
     res.status(500).json({ estado: 'error', mensaje: 'Error al listar revisiones' });
@@ -152,23 +154,23 @@ router.post('/:formularioId', authenticateToken, async (req, res) => {
     const formularioId = req.params.formularioId;
     const seccionLimpia = seccion?.trim() || null;
 
-    // Jerarquía: el interventor solo revisa lo que el coordinador ya aprobó
-    // (visto bueno FINAL, seccion=NULL — el que cierra la revisión completa).
-    if (rol === 'interventor') {
-      const okCoordinador = await tieneVistoBueno(formularioId, 'coordinador');
-      if (!okCoordinador) {
-        return res.status(409).json({
-          estado: 'error',
-          mensaje: 'Este formulario aún no tiene el visto bueno del coordinador — no puede ser revisado por interventoría.',
-        });
-      }
+    const estadoActual = await estadoFormulario(formularioId);
+
+    // Jerarquía: el interventor solo revisa lo que el coordinador ya CERRÓ
+    // (visto bueno final vigente — aprobar secciones no basta).
+    if (rol === 'interventor' && !estadoActual._porRol.coordinador.cerrado) {
+      return res.status(409).json({
+        estado: 'error',
+        mensaje: 'Este formulario aún no tiene la revisión del coordinador cerrada — no puede ser revisado por interventoría.',
+      });
     }
 
-    // Evitar vistos buenos FINALES duplicados del mismo rol (seccion=NULL).
-    // Las marcas por sección sí pueden repetirse/actualizarse (el revisor
-    // puede corregir su evaluación de una sección mientras revisa).
-    if (!seccionLimpia && tipo === 'visto_bueno' && (await tieneVistoBueno(formularioId, rol))) {
-      return res.status(409).json({ estado: 'error', mensaje: `Este formulario ya tiene el visto bueno de ${rol}` });
+    // Evitar cierres duplicados: solo si el cierre del rol sigue VIGENTE.
+    // Si el rol marcó una novedad después de su cierre, la revisión se
+    // reabrió y debe poder cerrarse de nuevo (antes quedaba bloqueado).
+    // Las marcas por sección sí pueden repetirse/actualizarse.
+    if (!seccionLimpia && tipo === 'visto_bueno' && estadoActual._porRol[rol]?.cerrado) {
+      return res.status(409).json({ estado: 'error', mensaje: `Este formulario ya tiene la revisión cerrada por ${rol}` });
     }
 
     const fila = await db.queryOne(
@@ -312,3 +314,4 @@ router.get('/:formularioId/evidencia', authenticateToken, async (req, res) => {
 
 module.exports = router;
 module.exports.tieneVistoBueno = tieneVistoBueno;
+module.exports.estadoFormulario = estadoFormulario;

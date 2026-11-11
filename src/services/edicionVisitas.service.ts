@@ -50,6 +50,10 @@ export const CAMPOS_VISITA_2: DefCampoVisita2[] = [
 export interface MedicionDisponible extends MedicionAdjunta {
   /** La medición se tomó para el beneficiario de esta visita. */
   delBeneficiario: boolean;
+  /** Sin cédula de beneficiario, pero queda cerca del punto de la visita. */
+  cercana?: boolean;
+  /** Distancia (m) al punto de la visita, cuando `cercana`. */
+  distancia_m?: number;
 }
 
 let permisoCache: { valor: boolean; hasta: number } | null = null;
@@ -79,24 +83,42 @@ export const corregirCampoVisita2 = async (formularioId: string, campo: CampoVis
 
 export const listarMedicionesVisita2 = async (
   formularioId: string
-): Promise<{ actual: string | null; actual2: string | null; mediciones: MedicionDisponible[] }> => {
+): Promise<{ actuales: string[]; mediciones: MedicionDisponible[] }> => {
   const r = await apiClient.get(`${ENDPOINT}/${encodeURIComponent(formularioId)}/mediciones`, { timeout: 15000 });
-  return { actual: r.data.actual ?? null, actual2: r.data.actual2 ?? null, mediciones: r.data.mediciones || [] };
+  const actuales: string[] = Array.isArray(r.data.actuales)
+    ? r.data.actuales
+    : [r.data.actual, r.data.actual2].filter(Boolean);
+  return { actuales, mediciones: r.data.mediciones || [] };
 };
 
-export type PosicionPoligono = 1 | 2;
-
-/** Carga el polígono 1 o 2 desde una medición del técnico o desde los puntos de un KML/KMZ. */
+/**
+ * Carga un polígono desde una medición del técnico o desde los puntos de un
+ * KML/KMZ. `posicion` (1..N) reemplaza ese polígono; `null` agrega uno nuevo.
+ */
 export const cargarPoligonoVisita2 = async (
   formularioId: string,
-  posicion: PosicionPoligono,
+  posicion: number | null,
   origen: { medicionId: string } | { kml: { nombre: string; puntos: { latitud: number; longitud: number }[] } }
 ): Promise<ActividadRealizada> => {
-  const r = await apiClient.put(`${ENDPOINT}/${encodeURIComponent(formularioId)}/poligono`, { posicion, ...origen }, { timeout: 20000 });
+  const r = await apiClient.put(
+    `${ENDPOINT}/${encodeURIComponent(formularioId)}/poligono`,
+    { ...(posicion != null ? { posicion } : {}), ...origen },
+    { timeout: 20000 }
+  );
   return r.data.actividad;
 };
 
-export const quitarPoligono2Visita2 = async (formularioId: string): Promise<ActividadRealizada> => {
-  const r = await apiClient.delete(`${ENDPOINT}/${encodeURIComponent(formularioId)}/poligono/2`, { timeout: 15000 });
+/**
+ * Selección múltiple: deja como polígonos de la visita las mediciones
+ * marcadas (las desmarcadas de la lista se quitan; los KML se conservan).
+ */
+export const guardarSeleccionPoligonosVisita2 = async (formularioId: string, medicionIds: string[]): Promise<ActividadRealizada> => {
+  const r = await apiClient.put(`${ENDPOINT}/${encodeURIComponent(formularioId)}/poligonos`, { medicionIds }, { timeout: 20000 });
+  return r.data.actividad;
+};
+
+/** Quita el polígono N (1..N) de la visita. */
+export const quitarPoligonoVisita2 = async (formularioId: string, posicion: number): Promise<ActividadRealizada> => {
+  const r = await apiClient.delete(`${ENDPOINT}/${encodeURIComponent(formularioId)}/poligono/${posicion}`, { timeout: 15000 });
   return r.data.actividad;
 };

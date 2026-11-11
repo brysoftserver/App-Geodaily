@@ -16,6 +16,8 @@ const express = require('express');
 const { authenticateToken, authenticateTokenOrQuery } = require('../middleware/auth');
 const db = require('../database');
 const storage = require('../storage');
+const { crearNotificacion } = require('./notificaciones');
+const { notificarCorreccion, ROLES_CORRECTORES } = require('../lib/correcciones');
 
 const router = express.Router();
 
@@ -404,6 +406,13 @@ router.delete('/:id', authenticateToken, async (req, res) => {
   const borradoFisico = await storage.deleteFile(archivo.minio_path);
 
   console.log(`[Archivos] 🗑️ Evidencia ${archivo.id} (${archivo.tipo}) eliminada por ${req.user.rol}`);
+
+  // Si el técnico borra evidencias de un formulario con novedades
+  // pendientes (p. ej. «eliminar fotos duplicadas»), avisar al revisor
+  // que hay una corrección por verificar. Nunca lanza.
+  if (formularioId && ROLES_CORRECTORES.includes(req.user.rol)) {
+    await notificarCorreccion(db, crearNotificacion, { formularioId, autor: req.user });
+  }
 
   res.json({
     estado: 'ok',

@@ -5,8 +5,9 @@
 // (2,5 ha fijas por beneficiario; ver backend/src/routes/actividadesHectareas.js).
 // Misma navegación que el análisis de suelos:
 //   · técnico (modo 'ejecutar')  → 2 tortas del proyecto + SUS beneficiarios.
-//   · superior (modo 'revisar')  → 2 tortas + lista de técnicos; al elegir uno,
-//     sus beneficiarios.
+//   · superior (modo 'revisar')  → torta de realizadas vs. faltantes, buscador y
+//     SOLO los beneficiarios con la Visita 2 completada (sin técnicos): primero
+//     los que ya tienen el análisis de suelos, debajo los demás. Admin / interventor dan "OK".
 // Al tocar un beneficiario se abre su panel de la actividad (acta de entrega y
 // evidencia fotográfica antes / durante / después): ActividadBeneficiarioScreen.
 // ============================================================
@@ -15,8 +16,10 @@ import React, { useCallback, useLayoutEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   FlatList,
+  Platform,
   RefreshControl,
   StyleSheet,
+  TextInput,
   Text,
   TouchableOpacity,
   View,
@@ -27,12 +30,14 @@ import { COLORS, FONTS, SPACING, BORDER_RADIUS, SHADOWS } from '../../theme';
 import { buscarActividad, verboActividad } from '../../data/actividades';
 import { avisar } from '../../utils/dialogos';
 import TortaResumen, { COLOR_FALTA, COLOR_HECHO, PALETA_TECNICOS } from '../../components/actividades/TortaResumen';
+import { BotonOkInterventoria, ESTILO_CARD_REVISADA, EtiquetaRevisado } from '../../components/actividades/RevisionInterventoria';
+import { useRevisionInterventoria } from '../../hooks/useRevisionInterventoria';
 import {
   BeneficiarioHectareas,
   ResumenHectareas,
   formatearHectareas,
-  listarBeneficiariosHectareasDeTecnico,
   listarMisBeneficiariosHectareas,
+  listarTodosBeneficiariosHectareas,
   obtenerResumenHectareas,
 } from '../../services/actividadesHectareas.service';
 
@@ -44,9 +49,11 @@ const HectareasActividadScreen: React.FC<any> = ({ navigation, route }) => {
   const actividadId: string = route?.params?.actividadId;
   const actividad = buscarActividad(actividadId);
   const modo: 'ejecutar' | 'revisar' = route?.params?.modo === 'revisar' ? 'revisar' : 'ejecutar';
-  const tecnico: { usuario: string; nombre: string } | undefined = route?.params?.tecnico;
-  const vistaTecnicos = modo === 'revisar' && !tecnico;
+  const revisar = modo === 'revisar';
   const nombreActividad = actividad?.nombre ?? 'Actividad';
+  // OK de la interventoría por beneficiario (referencia = item).
+  const revision = useRevisionInterventoria(actividadId);
+  const [filtro, setFiltro] = useState('');
 
   const [resumen, setResumen] = useState<ResumenHectareas | null>(null);
   const [beneficiarios, setBeneficiarios] = useState<BeneficiarioHectareas[]>([]);
@@ -55,24 +62,28 @@ const HectareasActividadScreen: React.FC<any> = ({ navigation, route }) => {
 
   useLayoutEffect(() => {
     navigation.setOptions({
-      title: tecnico ? tecnico.nombre : `${verboActividad(modo)} ${nombreActividad}`,
+      title: `${verboActividad(modo)} ${nombreActividad}`,
     });
-  }, [navigation, tecnico, modo, nombreActividad]);
+  }, [navigation, modo, nombreActividad]);
 
   const cargar = useCallback(async (esRefresh = false) => {
     try {
       if (esRefresh) setRefrescando(true);
-      // Las tortas se ven en la lista de técnicos y en la del técnico (no dentro de un técnico).
-      if (!tecnico) setResumen(await obtenerResumenHectareas(actividadId));
-      if (tecnico) setBeneficiarios(await listarBeneficiariosHectareasDeTecnico(actividadId, tecnico.usuario));
-      else if (modo === 'ejecutar') setBeneficiarios(await listarMisBeneficiariosHectareas(actividadId));
+      const [r, lista] = await Promise.all([
+        obtenerResumenHectareas(actividadId),
+        revisar ? listarTodosBeneficiariosHectareas(actividadId) : listarMisBeneficiariosHectareas(actividadId),
+      ]);
+      setResumen(r);
+      setBeneficiarios(lista);
+      if (esRefresh) revision.recargar();
     } catch (e) {
       avisar('No se pudo cargar', mensajeError(e, 'Inténtalo de nuevo.'));
     } finally {
       setCargando(false);
       setRefrescando(false);
     }
-  }, [actividadId, tecnico, modo]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [actividadId, revisar]);
 
   useFocusEffect(useCallback(() => { cargar(); }, [cargar]));
 
@@ -87,6 +98,20 @@ const HectareasActividadScreen: React.FC<any> = ({ navigation, route }) => {
 
   const totalTecnico = useMemo(() => beneficiarios.reduce((s, b) => s + b.hectareas, 0), [beneficiarios]);
 
+  // Búsqueda rápida por nombre o cédula (sin tildes ni mayúsculas), igual que en Análisis de Suelos.
+  const normalizar = (t: string) => String(t || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+  const filtrados = useMemo(() => {
+    const q = normalizar(filtro.trim());
+    if (!q) return beneficiarios;
+    const qDigitos = q.replace(/\D/g, '');
+    return beneficiarios.filter((b) =>
+      normalizar(b.nombre).includes(q) ||
+      (qDigitos.length > 0 && String(b.cedula || '').replace(/\D/g, '').includes(qDigitos)),
+    );
+  }, [beneficiarios, filtro]);
+  const conSuelo = useMemo(() => beneficiarios.filter((b) => b.tieneSuelo).length, [beneficiarios]);
+
+  /** La torta por técnico solo en la vista del técnico; la revisión ve únicamente totales. */
   const tortas = () => {
     const meta = resumen?.meta ?? 750;
     const total = resumen?.total ?? 0;
@@ -97,11 +122,13 @@ const HectareasActividadScreen: React.FC<any> = ({ navigation, route }) => {
     }));
     return (
       <View>
-        <TortaResumen
-          titulo={`Hectáreas por técnico (máximo ${meta})`}
-          datos={porTecnico}
-          formatear={(v) => `${formatearHectareas(v)} ha`}
-        />
+        {!revisar && (
+          <TortaResumen
+            titulo={`Hectáreas por técnico (máximo ${meta})`}
+            datos={porTecnico}
+            formatear={(v) => `${formatearHectareas(v)} ha`}
+          />
+        )}
         <TortaResumen
           titulo={`Realizadas vs. faltantes (meta ${meta} ha)`}
           datos={[
@@ -125,59 +152,60 @@ const HectareasActividadScreen: React.FC<any> = ({ navigation, route }) => {
   const refresco = <RefreshControl refreshing={refrescando} onRefresh={() => cargar(true)} colors={[COLORS.primary]} />;
   const relleno = { paddingBottom: insets.bottom + SPACING.xl };
 
-  // ─── Superior: tortas + lista de técnicos ─────────────────
-  if (vistaTecnicos) {
-    const tecnicos = resumen?.tecnicos ?? [];
-    return (
-      <View style={styles.container}>
-        <FlatList
-          data={tecnicos}
-          keyExtractor={(t) => t.usuario}
-          contentContainerStyle={[styles.lista, relleno]}
-          refreshControl={refresco}
-          ListHeaderComponent={<View>{tortas()}<Text style={styles.seccion}>Técnicos</Text></View>}
-          ListEmptyComponent={<Text style={styles.vacio}>No hay técnicos activos.</Text>}
-          renderItem={({ item: t, index }) => (
-            <TouchableOpacity
-              style={[styles.card, { borderLeftColor: PALETA_TECNICOS[index % PALETA_TECNICOS.length] }]}
-              activeOpacity={0.7}
-              onPress={() => navigation.push('ActividadDetalle', { actividadId, modo: 'revisar', tecnico: { usuario: t.usuario, nombre: t.nombre } })}
-            >
-              <View style={{ flex: 1 }}>
-                <Text style={styles.nombre}>{t.nombre}</Text>
-                <Text style={styles.dato}>{t.asignados} beneficiarios</Text>
-              </View>
-              <Text style={styles.hectareas}>{formatearHectareas(t.hectareas)} ha</Text>
-              <Text style={styles.flecha}>›</Text>
-            </TouchableOpacity>
-          )}
-        />
-      </View>
-    );
-  }
-
-  // ─── Beneficiarios (técnico, o superior dentro de un técnico) ──
+  // ─── Beneficiarios (técnico: los suyos · revisión: todos, suelos primero) ──
+  const lista = revisar ? filtrados : beneficiarios;
   return (
     <View style={styles.container}>
       <FlatList
-        data={beneficiarios}
+        data={lista}
         keyExtractor={(b) => String(b.item)}
         contentContainerStyle={[styles.lista, relleno]}
         refreshControl={refresco}
+        keyboardShouldPersistTaps="handled"
         ListHeaderComponent={
-          <View>
-            {!tecnico && tortas()}
-            <Text style={styles.seccion}>
-              {tecnico ? 'Beneficiarios' : 'Mis beneficiarios'} · {formatearHectareas(totalTecnico)} ha
-            </Text>
-          </View>
+          revisar ? (
+            <View>
+              {tortas()}
+              <View style={styles.filaSeccion}>
+                <Text style={[styles.seccion, { flexShrink: 1 }]}>
+                  Beneficiarios con Visita 2 · {beneficiarios.length} · revisados{' '}
+                  {beneficiarios.filter((b) => revision.estaRevisado(b.item)).length}
+                </Text>
+                <TextInput
+                  style={styles.busqueda}
+                  value={filtro}
+                  onChangeText={setFiltro}
+                  placeholder="🔍 Buscar por nombre o cédula"
+                  placeholderTextColor={COLORS.textSecondary}
+                  autoCorrect={false}
+                  autoCapitalize="none"
+                  clearButtonMode="while-editing"
+                />
+              </View>
+            </View>
+          ) : (
+            <View>
+              {tortas()}
+              <Text style={styles.seccion}>Mis beneficiarios · {formatearHectareas(totalTecnico)} ha</Text>
+            </View>
+          )
         }
-        ListEmptyComponent={<Text style={styles.vacio}>No hay beneficiarios asignados.</Text>}
-        renderItem={({ item: b }) => {
+        ListEmptyComponent={<Text style={styles.vacio}>{filtro ? 'Sin resultados.' : revisar ? 'Aún no hay beneficiarios con la Visita 2 completada.' : 'No hay beneficiarios asignados.'}</Text>}
+        renderItem={({ item: b, index }) => {
           const completada = !!b.formularioId;
+          const revisado = completada && revision.estaRevisado(b.item);
+          // Revisión: título al iniciar cada grupo (con análisis de suelos / sin él).
+          const titulo =
+            revisar && (index === 0 || !!lista[index - 1].tieneSuelo !== !!b.tieneSuelo)
+              ? b.tieneSuelo
+                ? `🧪 Con análisis de suelos (${conSuelo})`
+                : `Sin análisis de suelos (${beneficiarios.length - conSuelo})`
+              : null;
           return (
+            <>
+            {titulo && <Text style={[styles.grupo, !b.tieneSuelo && { color: COLORS.textSecondary }]}>{titulo}</Text>}
             <TouchableOpacity
-              style={[styles.card, { borderLeftColor: completada ? COLOR_HECHO : COLOR_FALTA }]}
+              style={[styles.card, { borderLeftColor: completada ? COLOR_HECHO : COLOR_FALTA }, revisado && ESTILO_CARD_REVISADA]}
               activeOpacity={0.7}
               onPress={() => abrirBeneficiario(b)}
             >
@@ -188,12 +216,22 @@ const HectareasActividadScreen: React.FC<any> = ({ navigation, route }) => {
                 <Text style={[styles.estadoVisita, { color: completada ? COLOR_HECHO : COLOR_FALTA }]}>
                   {completada ? '✓ Visita Técnica 2 completada' : 'Visita Técnica 2 pendiente'}
                 </Text>
+                {completada && <EtiquetaRevisado revisado={revisado} pendiente={modo === 'revisar'} />}
               </View>
               <Text style={[styles.hectareas, !completada && { color: COLORS.textLight }]}>
                 {formatearHectareas(b.hectareas)} ha
               </Text>
+              {modo === 'revisar' && revision.puedeRevisar && completada && (
+                <BotonOkInterventoria
+                  style={{ marginLeft: SPACING.sm }}
+                  revisado={revisado}
+                  ocupado={revision.ocupado === String(b.item)}
+                  onPress={() => revision.alternar(b.item)}
+                />
+              )}
               <Text style={styles.flecha}>›</Text>
             </TouchableOpacity>
+            </>
           );
         }}
       />
@@ -212,6 +250,9 @@ const styles = StyleSheet.create({
   dato: { fontSize: FONTS.sizes.sm, color: COLORS.textSecondary, marginTop: 1 },
   hectareas: { fontSize: FONTS.sizes.md, fontWeight: FONTS.weights.bold, color: COLORS.primary, marginLeft: SPACING.sm },
   flecha: { fontSize: 24, color: COLORS.textLight, marginLeft: SPACING.sm },
+  filaSeccion: { flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: SPACING.sm },
+  busqueda: { flexGrow: 1, flexBasis: 220, marginLeft: 'auto', maxWidth: 420, borderWidth: 1, borderColor: COLORS.border, borderRadius: BORDER_RADIUS.md, backgroundColor: COLORS.surface, paddingHorizontal: SPACING.md, paddingVertical: Platform.OS === 'web' ? SPACING.sm : 6, fontSize: FONTS.sizes.sm, color: COLORS.textPrimary, marginTop: SPACING.xs, marginBottom: SPACING.sm },
+  grupo: { fontSize: FONTS.sizes.sm, fontWeight: FONTS.weights.bold, color: COLORS.primary, marginTop: SPACING.sm, marginBottom: SPACING.xs },
   estadoVisita: { fontSize: FONTS.sizes.xs, fontWeight: FONTS.weights.semibold, marginTop: 3 },
 });
 

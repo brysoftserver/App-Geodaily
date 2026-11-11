@@ -28,6 +28,8 @@ import { avisar } from '../../utils/dialogos';
 import { useAuth } from '../../store/AuthContext';
 import { abrirDetalleFormulario } from '../../utils/abrirDetalleFormulario';
 import { PALETA_TECNICOS } from '../../components/actividades/TortaResumen';
+import { BotonOkInterventoria, ESTILO_CARD_REVISADA, EtiquetaRevisado } from '../../components/actividades/RevisionInterventoria';
+import { useRevisionInterventoria } from '../../hooks/useRevisionInterventoria';
 import {
   TecnicoAsistencia,
   VisitaAsistencia,
@@ -55,6 +57,8 @@ const AsistenciaTecnicaScreen: React.FC<any> = ({ navigation, route }) => {
   const tecnico: { usuario: string; nombre: string } | undefined = route?.params?.tecnico;
   const vistaTecnicos = modo === 'revisar' && !tecnico;
   const nombreActividad = buscarActividad(ACTIVIDAD_ID)?.nombre ?? 'Asistencia Técnica';
+  // OK de la interventoría por visita (referencia = id del formulario).
+  const revision = useRevisionInterventoria(ACTIVIDAD_ID, !vistaTecnicos);
 
   const [tecnicos, setTecnicos] = useState<TecnicoAsistencia[]>([]);
   const [totalVisitas, setTotalVisitas] = useState(0);
@@ -182,8 +186,14 @@ const AsistenciaTecnicaScreen: React.FC<any> = ({ navigation, route }) => {
           </View>
         }
         ListEmptyComponent={<Text style={styles.vacio}>{filtro ? 'Sin resultados.' : 'Aún no hay visitas registradas.'}</Text>}
-        renderItem={({ item: v }) => (
-          <TouchableOpacity style={[styles.card, { borderLeftColor: colorVisita(v.numero) }]} activeOpacity={0.7} onPress={() => abrirVisita(v)}>
+        renderItem={({ item: v }) => {
+          const revisado = revision.estaRevisado(v.id);
+          return (
+          <TouchableOpacity
+            style={[styles.card, { borderLeftColor: colorVisita(v.numero) }, revisado && ESTILO_CARD_REVISADA]}
+            activeOpacity={0.7}
+            onPress={() => abrirVisita(v)}
+          >
             <View style={{ flex: 1 }}>
               <View style={[styles.insignia, { backgroundColor: colorVisita(v.numero) }]}>
                 <Text style={styles.insigniaTxt}>{etiquetaVisita(v)}</Text>
@@ -191,11 +201,21 @@ const AsistenciaTecnicaScreen: React.FC<any> = ({ navigation, route }) => {
               <Text style={styles.nombre}>{v.nombre}</Text>
               <Text style={styles.dato}>C.C. {v.cedula}</Text>
               <Text style={styles.dato}>{[v.corregimiento, v.vereda].filter(Boolean).join(' · ')}</Text>
+              <EtiquetaRevisado revisado={revisado} pendiente={modo === 'revisar'} />
             </View>
             <Text style={styles.fecha}>{formatearFecha(v.fecha)}</Text>
+            {modo === 'revisar' && revision.puedeRevisar && (
+              <BotonOkInterventoria
+                style={{ marginLeft: SPACING.sm }}
+                revisado={revisado}
+                ocupado={revision.ocupado === v.id}
+                onPress={() => revision.alternar(v.id)}
+              />
+            )}
             {abriendo === v.id ? <ActivityIndicator style={styles.flecha} color={COLORS.primary} /> : <Text style={styles.flecha}>›</Text>}
           </TouchableOpacity>
-        )}
+          );
+        }}
       />
     </View>
   );

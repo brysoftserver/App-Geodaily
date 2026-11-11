@@ -54,6 +54,7 @@ import { ActividadRealizada, DatosBeneficiario, MedicionAdjunta, PuntoPoligono }
 import DropdownPicker from '../../components/DropdownPicker';
 import CapturaGPSPrecisa from '../../components/CapturaGPSPrecisa';
 import MedicionCaptura from '../../components/MedicionCaptura';
+import SelectorBeneficiarioModal from '../../components/SelectorBeneficiarioModal';
 import {
   guardarBorrador,
   getBorrador,
@@ -79,6 +80,14 @@ import {
   tieneDatosBeneficiario,
 } from '../../utils/visitaTecnica';
 import { construirLlave, llaveCorrespondeACedula } from '../../utils/llaveVisita';
+import { formatFechaHoraColombia } from '../../utils/formatters';
+import {
+  filtrarParaBeneficiario,
+  MAX_POLIGONOS_VISITA,
+  medicionesDeObjeto,
+  medicionesDeVisita,
+  sumaHectareas,
+} from '../../utils/medicionesVisita';
 import {
   avisarSinCedula,
   avisarVisitaYaRegistrada,
@@ -112,8 +121,11 @@ interface VisitaFormState {
   altitud: string;
   precision: string;
   area_intervencion: string;
-  /** Medición del historial elegida para esta visita (ítem 4). */
-  medicion_historial: MedicionAdjunta | null;
+  /**
+   * Mediciones del historial elegidas para esta visita (ítem 4). Pueden ser
+   * varias: un predio con dos o más lotes separados.
+   */
+  mediciones_historial: MedicionAdjunta[];
   // Ítems 5–7
   seguimiento_compromisos: string;
   valoracion_cumplimiento: string;
@@ -150,6 +162,33 @@ const sanearArea = (raw: string): string => {
 };
 
 /**
+ * Al cambiar la lista de mediciones del ítem 4:
+ *  · el área del cultivo pasa a ser la SUMA de las áreas, salvo que el técnico
+ *    haya escrito otra cifra (si el campo está vacío o coincide con la suma
+ *    anterior, se considera automático y se actualiza);
+ *  · lat/lon se completan con el centro de la primera medición si faltan.
+ */
+const camposDerivadosDeMediciones = (
+  prev: VisitaFormState,
+  lista: MedicionAdjunta[]
+): Pick<VisitaFormState, 'mediciones_historial' | 'area_intervencion' | 'latitud' | 'longitud'> => {
+  const areaPrev = prev.area_intervencion.trim();
+  const sumaPrev = sumaHectareas(prev.mediciones_historial);
+  const esAutomatica = !areaPrev || Math.abs(Number(areaPrev) - sumaPrev) < 0.005;
+  const suma = sumaHectareas(lista);
+  const area = esAutomatica ? (suma > 0 ? sanearArea(suma.toFixed(2)) : '') : prev.area_intervencion;
+
+  let { latitud, longitud } = prev;
+  const primera = lista[0];
+  if ((!latitud || !longitud) && primera && primera.puntos.length > 0) {
+    const n = primera.puntos.length;
+    latitud = latitud || (primera.puntos.reduce((a, p) => a + p.latitud, 0) / n).toFixed(6);
+    longitud = longitud || (primera.puntos.reduce((a, p) => a + p.longitud, 0) / n).toFixed(6);
+  }
+  return { mediciones_historial: lista, area_intervencion: area, latitud, longitud };
+};
+
+/**
  * Sanea el texto de la valoración del cumplimiento (%).
  * - Solo dígitos, máximo 3.
  * - Rechaza valores > 100.
@@ -175,7 +214,7 @@ const crearEstadoInicial = (): VisitaFormState => ({
   altitud: '',
   precision: '',
   area_intervencion: '',
-  medicion_historial: null,
+  mediciones_historial: [],
   seguimiento_compromisos: '',
   valoracion_cumplimiento: '',
   recomendaciones: '',
@@ -200,9 +239,15 @@ const hidratarEstado = (actividad: ActividadRealizada | undefined, numeroVisita:
           .filter((c) => c && typeof c.texto === 'string')
           .map((c) => nuevoCompromiso(c.texto, !!c.activo))
       : base.compromisos;
+    // Formatos anteriores guardaban una sola medición (`medicion_historial`)
+    // y el admin podía cargar una segunda: se unifican en la lista.
+    const { medicion_historial: _m1, medicion_historial_2: _m2, ...resto } =
+      guardado as Partial<VisitaFormState> & { medicion_historial?: unknown; medicion_historial_2?: unknown };
+    const deGuardado = medicionesDeObjeto(guardado as unknown as Record<string, unknown>);
     return {
       ...base,
-      ...guardado,
+      ...resto,
+      mediciones_historial: deGuardado.length > 0 ? deGuardado : medicionesDeVisita(actividad),
       compromisos,
     };
   }
@@ -232,7 +277,7 @@ const hidratarEstado = (actividad: ActividadRealizada | undefined, numeroVisita:
     recomendaciones: actividad.recomendaciones || '',
     observaciones: actividad.observaciones || '',
     area_intervencion: actividad.area_intervencion || '',
-    medicion_historial: actividad.medicion_historial || null,
+    mediciones_historial: medicionesDeVisita(actividad),
     latitud: actividad.poligono?.[0]?.latitud != null ? String(actividad.poligono[0].latitud) : '',
     longitud: actividad.poligono?.[0]?.longitud != null ? String(actividad.poligono[0].longitud) : '',
     compromisos: [
@@ -327,12 +372,27 @@ const VisitaTecnicaFormScreen: React.FC<Props> = ({ navigation, route }) => {
     undefined
   );
 
+  /**
+   * «Cambiar beneficiario» (caso excepcional): las fotos/videos/respuestas se
+   * tomaron dentro de un beneficiario que YA tiene esta visita. El técnico
+   * elige otro y este manda sobre todos los demás. `requiereCambioBenef`
+   * queda en true mientras el formulario siga con el beneficiario bloqueado.
+   */
+  const [beneficiarioElegido, setBeneficiarioElegido] = useState<DatosBeneficiario | undefined>(undefined);
+  const [mostrarSelectorBenef, setMostrarSelectorBenef] = useState(false);
+  const [requiereCambioBenef, setRequiereCambioBenef] = useState(false);
+  const cambioBenefPorGuardarRef = useRef(false);
+  /** Número de visita real (el del borrador si se retoma uno). */
+  const numeroVisitaRef = useRef(visitaNumero);
+
   // El beneficiario puede venir del detalle (params), de lo ya precargado en
   // el contexto por `SeleccionarVisitaTecnica`, o del borrador que se retoma
   // (que `aplicarBorrador` deja en el contexto). Se resuelve por prioridad y
   // descartando objetos vacíos: antes bastaba con que llegara un objeto sin
   // nombre ni cédula para que el ítem 1 se diera por no diligenciado.
-  const beneficiario = draftId
+  const beneficiario = beneficiarioElegido
+    ? beneficiarioElegido
+    : draftId
     ? resolverBeneficiarioVisita(
         beneficiarioBorrador,
         beneficiarioParam,
@@ -385,57 +445,71 @@ const VisitaTecnicaFormScreen: React.FC<Props> = ({ navigation, route }) => {
       const todas = await getMediciones();
       const propias = user?.id ? todas.filter((m) => !m.usuario_id || m.usuario_id === user.id) : todas;
       // Sin coordenadas no se puede dibujar la captura ni abrir en Earth.
-      setMedicionesHistorial(
-        propias.filter((m) => Array.isArray(m.puntos) && (m.puntos as unknown[]).length > 0)
-      );
+      const conPuntos = propias.filter((m) => Array.isArray(m.puntos) && (m.puntos as unknown[]).length > 0);
+      // Solo las de ESTE beneficiario: con su cédula o, si la medición no
+      // tiene cédula (antiguas), las que quedan cerca del punto de la visita.
+      const lat = Number(data.latitud);
+      const lon = Number(data.longitud);
+      const primera = data.mediciones_historial[0]?.puntos || [];
+      const punto =
+        data.latitud && data.longitud && Number.isFinite(lat) && Number.isFinite(lon)
+          ? { latitud: lat, longitud: lon }
+          : primera.length > 0
+          ? {
+              latitud: primera.reduce((a, p) => a + p.latitud, 0) / primera.length,
+              longitud: primera.reduce((a, p) => a + p.longitud, 0) / primera.length,
+            }
+          : null;
+      setMedicionesHistorial(filtrarParaBeneficiario(conPuntos, { cedula: beneficiario?.cedula, punto }));
     } catch (error) {
       console.warn('[VisitaTecnica] No se pudo leer el historial de mediciones:', error);
       setMedicionesHistorial([]);
     } finally {
       setCargandoMediciones(false);
     }
-  }, [user?.id]);
+  }, [user?.id, beneficiario?.cedula, data.latitud, data.longitud, data.mediciones_historial]);
 
-  const aplicarMedicionHistorial = useCallback((cruda: Record<string, unknown>) => {
-    const puntos = ((cruda.puntos || []) as { latitud: number; longitud: number }[])
-      .map((p) => ({ latitud: Number(p.latitud), longitud: Number(p.longitud) }))
-      .filter((p) => Number.isFinite(p.latitud) && Number.isFinite(p.longitud));
-    if (puntos.length === 0) return;
-
-    const centro = puntos.reduce(
-      (acc, p) => ({ latitud: acc.latitud + p.latitud / puntos.length, longitud: acc.longitud + p.longitud / puntos.length }),
-      { latitud: 0, longitud: 0 }
-    );
-
-    const adjunta: MedicionAdjunta = {
-      id: String(cruda.id ?? ''),
-      nombre: String(cruda.nombre || 'Medición de terreno'),
-      area_hectareas: Number(cruda.area_hectareas) || 0,
-      area_metros2: Number(cruda.area_metros2) || 0,
-      perimetro_metros: Number(cruda.perimetro_metros) || 0,
-      puntos,
-      created_at: typeof cruda.created_at === 'string' ? cruda.created_at : undefined,
-    };
-
-    setData((prev) => ({
-      ...prev,
-      medicion_historial: adjunta,
-      // Las coordenadas del ítem 4 se completan con el centro del área medida
-      // solo si el técnico no las había capturado ya.
-      latitud: prev.latitud || centro.latitud.toFixed(6),
-      longitud: prev.longitud || centro.longitud.toFixed(6),
-      // El área del cultivo se toma de la medición si aún está vacía.
-      area_intervencion:
-        prev.area_intervencion.trim() || adjunta.area_hectareas <= 0
-          ? prev.area_intervencion
-          : sanearArea(adjunta.area_hectareas.toFixed(2)),
-    }));
-    setMostrarSelectorMediciones(false);
+  /**
+   * Marca o desmarca una medición del historial. Se pueden adjuntar varias
+   * (lotes separados del mismo predio); el área del cultivo se prellena con
+   * la SUMA mientras el técnico no la haya escrito a mano.
+   */
+  const alternarMedicionHistorial = useCallback((cruda: Record<string, unknown>) => {
+    const id = String(cruda.id ?? '');
+    setData((prev) => {
+      const yaEsta = prev.mediciones_historial.some((m) => m.id === id);
+      let lista: MedicionAdjunta[];
+      if (yaEsta) {
+        lista = prev.mediciones_historial.filter((m) => m.id !== id);
+      } else {
+        if (prev.mediciones_historial.length >= MAX_POLIGONOS_VISITA) return prev;
+        const puntos = ((cruda.puntos || []) as { latitud: number; longitud: number }[])
+          .map((p) => ({ latitud: Number(p.latitud), longitud: Number(p.longitud) }))
+          .filter((p) => Number.isFinite(p.latitud) && Number.isFinite(p.longitud));
+        if (puntos.length === 0) return prev;
+        lista = [
+          ...prev.mediciones_historial,
+          {
+            id,
+            nombre: String(cruda.nombre || 'Medición de terreno'),
+            area_hectareas: Number(cruda.area_hectareas) || 0,
+            area_metros2: Number(cruda.area_metros2) || 0,
+            perimetro_metros: Number(cruda.perimetro_metros) || 0,
+            puntos,
+            created_at: typeof cruda.created_at === 'string' ? cruda.created_at : undefined,
+          },
+        ];
+      }
+      return { ...prev, ...camposDerivadosDeMediciones(prev, lista) };
+    });
   }, []);
 
-  const quitarMedicionHistorial = useCallback(() => {
-    set('medicion_historial', null);
-  }, [set]);
+  const quitarMedicionHistorial = useCallback((id: string) => {
+    setData((prev) => ({
+      ...prev,
+      ...camposDerivadosDeMediciones(prev, prev.mediciones_historial.filter((m) => m.id !== id)),
+    }));
+  }, []);
 
   // ─── Restaurar / iniciar ──────────────────────────────────
   useEffect(() => {
@@ -499,9 +573,18 @@ const VisitaTecnicaFormScreen: React.FC<Props> = ({ navigation, route }) => {
         const draft = await getBorrador(draftId).catch(() => null);
         if (draft) {
           const numeroDraft = draft.actividad?.visita_numero ?? visitaNumero;
+          numeroVisitaRef.current = numeroDraft;
           const yaExiste = await buscarVisitaYaCompletada(draft.beneficiario?.cedula, numeroDraft);
           if (yaExiste) {
-            avisarVisitaYaRegistrada(navigation, yaExiste, `La Visita Técnica ${numeroDraft}`);
+            avisarVisitaYaRegistrada(navigation, yaExiste, `La Visita Técnica ${numeroDraft}`, () => {
+              // Se carga el borrador (fotos, videos, respuestas) para no perder
+              // nada, pero sin autoguardado hasta que el técnico elija el
+              // beneficiario correcto (la llave sigue siendo la del borrador).
+              llaveRef.current = draft.llave || construirLlave(user?.id, draft.beneficiario?.cedula, numeroDraft);
+              aplicarBorrador(draft);
+              setRequiereCambioBenef(true);
+              setMostrarSelectorBenef(true);
+            });
             return;
           }
           llaveRef.current = draft.llave || construirLlave(user?.id, draft.beneficiario?.cedula, numeroDraft);
@@ -523,7 +606,10 @@ const VisitaTecnicaFormScreen: React.FC<Props> = ({ navigation, route }) => {
           return;
         }
         if (decision.estado === 'bloqueada') {
-          avisarVisitaYaRegistrada(navigation, decision.formulario, `La Visita Técnica ${visitaNumero}`);
+          avisarVisitaYaRegistrada(navigation, decision.formulario, `La Visita Técnica ${visitaNumero}`, () => {
+            setRequiereCambioBenef(true);
+            setMostrarSelectorBenef(true);
+          });
           return;
         }
         llaveRef.current = decision.llave;
@@ -589,9 +675,14 @@ const VisitaTecnicaFormScreen: React.FC<Props> = ({ navigation, route }) => {
       valoracion_cumplimiento: data.valoracion_cumplimiento,
       compromisos_siguiente_visita: compromisosActivos,
       area_intervencion: sanearArea(data.area_intervencion) || undefined,
-      medicion_historial: data.medicion_historial || undefined,
+      mediciones_historial: data.mediciones_historial.length > 0 ? data.mediciones_historial : undefined,
+      // Compatibilidad: las versiones anteriores de la app leen un solo polígono.
+      medicion_historial: data.mediciones_historial[0] || undefined,
       poligono,
-      visita_datos: data as unknown as Record<string, unknown>,
+      visita_datos: {
+        ...data,
+        medicion_historial: data.mediciones_historial[0] || undefined,
+      } as unknown as Record<string, unknown>,
     };
   }, [data, visitaNumero]);
 
@@ -674,7 +765,7 @@ const VisitaTecnicaFormScreen: React.FC<Props> = ({ navigation, route }) => {
       // `no_identificacion` se autoselecciona al abrir: no cuenta como contenido del técnico
       // (si contara, abrir y salir ya crearía un borrador).
       data.area_intervencion.trim() ||
-      data.medicion_historial ||
+      data.mediciones_historial.length > 0 ||
       data.sin_compromisos ||
       data.compromisos.some((c) => c.activo && c.texto.trim()) ||
       (currentForm?.fotos?.length || 0) > 0
@@ -808,6 +899,54 @@ const VisitaTecnicaFormScreen: React.FC<Props> = ({ navigation, route }) => {
     }
   }, [armarBorrador, encolarEvidencias, formularioActual?.id, beneficiario?.cedula]);
 
+  // ─── Cambiar beneficiario (caso excepcional) ───────────────
+  const abrirSelectorBenef = useCallback(() => setMostrarSelectorBenef(true), []);
+
+  const elegirNuevoBeneficiario = useCallback(
+    async (nuevo: DatosBeneficiario) => {
+      const numero = numeroVisitaRef.current;
+      setMostrarSelectorBenef(false);
+      // El mismo beneficiario, u otro que ya tenga esta visita: mismo aviso de siempre.
+      const yaExiste = await buscarVisitaYaCompletada(nuevo.cedula, numero);
+      if (yaExiste) {
+        setTimeout(
+          () => avisarVisitaYaRegistrada(navigation, yaExiste, `La Visita Técnica ${numero}`, abrirSelectorBenef),
+          350
+        );
+        return;
+      }
+      const llave = construirLlave(user?.id, nuevo.cedula, numero);
+      if (!llave) {
+        Alert.alert('No se pudo cambiar', 'El beneficiario elegido no tiene cédula registrada o la sesión del técnico no está disponible.');
+        return;
+      }
+      llaveRef.current = llave;
+      cambioBenefPorGuardarRef.current = true;
+      setBeneficiarioElegido(nuevo);
+      setBeneficiario(nuevo);
+      // Se vacía para que se autoseleccione la identificación del nuevo beneficiario.
+      set('no_identificacion', '');
+      setRequiereCambioBenef(false);
+      borradorListoRef.current = true;
+    },
+    [navigation, abrirSelectorBenef, user?.id, setBeneficiario, set]
+  );
+
+  // Tras el cambio: guardar el borrador con el nuevo beneficiario y reasignar
+  // las fotos/videos de la cola local a su cédula.
+  useEffect(() => {
+    if (!cambioBenefPorGuardarRef.current || !beneficiarioElegido) return;
+    cambioBenefPorGuardarRef.current = false;
+    autoguardarRef.current?.();
+    const id = formIdRef.current || formularioActual?.id;
+    if (id) {
+      encolarEvidencias(id).catch((e) =>
+        console.warn('[VisitaTecnica] No se pudieron reasignar evidencias al nuevo beneficiario:', e)
+      );
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [beneficiarioElegido]);
+
   // ─── Validación ───────────────────────────────────────────
   const faltantes = React.useMemo(() => {
     const f: string[] = [];
@@ -831,6 +970,15 @@ const VisitaTecnicaFormScreen: React.FC<Props> = ({ navigation, route }) => {
   // ─── Completar ────────────────────────────────────────────
   const handleCompletar = useCallback(async () => {
     if (isSubmitting) return;
+
+    // Una sola visita por beneficiario: si el beneficiario en pantalla ya la
+    // tiene (p. ej. el técnico no lo cambió), se bloquea con el mismo aviso.
+    const yaExiste = await buscarVisitaYaCompletada(beneficiario?.cedula, numeroVisitaRef.current);
+    if (yaExiste) {
+      avisarVisitaYaRegistrada(navigation, yaExiste, `La Visita Técnica ${numeroVisitaRef.current}`, abrirSelectorBenef);
+      return;
+    }
+
     setIsSubmitting(true);
 
     try {
@@ -952,6 +1100,8 @@ const VisitaTecnicaFormScreen: React.FC<Props> = ({ navigation, route }) => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     isSubmitting,
+    beneficiario?.cedula,
+    abrirSelectorBenef,
     construirActividad,
     construirBeneficiario,
     construirCoordenadas,
@@ -1042,6 +1192,17 @@ const VisitaTecnicaFormScreen: React.FC<Props> = ({ navigation, route }) => {
           ayuda={DESCRIPCION_ITEM.no_identificacion}
           completo={!!data.no_identificacion}
         >
+          {requiereCambioBenef && (
+            <View style={styles.cambioBenefBox}>
+              <Text style={styles.cambioBenefTexto}>
+                ⚠️ Este beneficiario ya tiene registrada esta visita. Elige el beneficiario al que
+                corresponde lo diligenciado para poder completar.
+              </Text>
+              <TouchableOpacity style={styles.cambioBenefBtn} onPress={abrirSelectorBenef} activeOpacity={0.7}>
+                <Text style={styles.cambioBenefBtnTexto}>👤 Cambiar beneficiario</Text>
+              </TouchableOpacity>
+            </View>
+          )}
           {beneficiario && (
             <View style={styles.datosBox}>
               <Text style={styles.datosLinea}>👤 {beneficiario.nombre || '—'}</Text>
@@ -1181,43 +1342,52 @@ const VisitaTecnicaFormScreen: React.FC<Props> = ({ navigation, route }) => {
             onPress={abrirSelectorMediciones}
             activeOpacity={0.7}
           >
-            <Text style={styles.mapBtnSecundarioText}>📌 Elegir una medición del historial</Text>
+            <Text style={styles.mapBtnSecundarioText}>
+              📌 {data.mediciones_historial.length > 0 ? 'Agregar o quitar mediciones del historial' : 'Elegir mediciones del historial'}
+            </Text>
           </TouchableOpacity>
 
-          {data.medicion_historial ? (
-            <View style={styles.medicionCard}>
-              <View style={styles.medicionCardHeader}>
-                <View style={styles.medicionCardHeaderText}>
-                  <Text style={styles.medicionCardTitulo}>Medición adjunta</Text>
-                  <Text style={styles.medicionCardNombre} numberOfLines={2}>
-                    {data.medicion_historial.nombre}
-                  </Text>
+          {data.mediciones_historial.length > 0 ? (
+            <>
+              {data.mediciones_historial.length > 1 && (
+                <Text style={styles.medicionResumen}>
+                  {data.mediciones_historial.length} polígonos · total{' '}
+                  {sumaHectareas(data.mediciones_historial).toLocaleString('es-CO', { maximumFractionDigits: 2 })} ha
+                </Text>
+              )}
+              {data.mediciones_historial.map((m, idx) => (
+                <View key={m.id || String(idx)} style={styles.medicionCard}>
+                  <View style={styles.medicionCardHeader}>
+                    <View style={styles.medicionCardHeaderText}>
+                      <Text style={styles.medicionCardTitulo}>
+                        {data.mediciones_historial.length > 1 ? `Polígono ${idx + 1}` : 'Medición adjunta'}
+                      </Text>
+                      <Text style={styles.medicionCardNombre} numberOfLines={2}>
+                        {m.nombre}
+                      </Text>
+                    </View>
+                    <TouchableOpacity
+                      onPress={() => quitarMedicionHistorial(m.id)}
+                      style={styles.medicionQuitarBtn}
+                      accessibilityLabel={`Quitar la medición ${m.nombre}`}
+                      activeOpacity={0.7}
+                    >
+                      <Text style={styles.medicionQuitarTexto}>✕</Text>
+                    </TouchableOpacity>
+                  </View>
+
+                  <MedicionCaptura medicion={m} altura={170} mostrarAcciones={false} />
                 </View>
-                <TouchableOpacity
-                  onPress={quitarMedicionHistorial}
-                  style={styles.medicionQuitarBtn}
-                  accessibilityLabel="Quitar la medición adjunta"
-                  activeOpacity={0.7}
-                >
-                  <Text style={styles.medicionQuitarTexto}>✕</Text>
-                </TouchableOpacity>
-              </View>
-
-              <MedicionCaptura
-                medicion={data.medicion_historial}
-                altura={170}
-                mostrarAcciones={false}
-              />
-
+              ))}
               <Text style={styles.medicionCardAyuda}>
-                El coordinador y el interventor verán esta captura en el detalle del formulario y podrán
-                abrir el área en Google Earth.
+                El coordinador y el interventor verán estas capturas en el detalle del formulario y podrán
+                abrir cada área en Google Earth. Si el predio tiene varios lotes, adjunta todos.
               </Text>
-            </View>
+            </>
           ) : (
             <Text style={styles.medicionVacio}>
-              Opcional: adjunta una medición ya guardada en el mapa para que el área quede con su nombre y su
-              captura de imagen.
+              Opcional: adjunta una o varias mediciones ya guardadas en el mapa (por ejemplo, si el predio tiene
+              varios lotes) para que el área quede con su nombre y su captura de imagen.
             </Text>
           )}
 
@@ -1525,7 +1695,9 @@ const VisitaTecnicaFormScreen: React.FC<Props> = ({ navigation, route }) => {
               </TouchableOpacity>
             </View>
             <Text style={styles.selectorAyuda}>
-              Elige el área medida en el mapa. Se adjuntará con su nombre y su captura de imagen.
+              Marca todas las áreas medidas que correspondan a esta visita (puedes elegir varias, por ejemplo
+              un lote de 1 ha y otro de 1,5 ha). Solo se muestran tus mediciones de este beneficiario y las
+              antiguas sin beneficiario que quedan cerca de la visita.
             </Text>
 
             {cargandoMediciones ? (
@@ -1535,8 +1707,8 @@ const VisitaTecnicaFormScreen: React.FC<Props> = ({ navigation, route }) => {
             ) : medicionesHistorial.length === 0 ? (
               <View style={styles.selectorVacioBox}>
                 <Text style={styles.selectorVacioTexto}>
-                  No hay mediciones guardadas. Traza el área desde el mapa y guárdala con un nombre para
-                  poder reutilizarla aquí.
+                  No hay mediciones guardadas para este beneficiario. Traza el área desde el mapa (botón de
+                  arriba) y guárdala para poder adjuntarla aquí.
                 </Text>
               </View>
             ) : (
@@ -1544,32 +1716,70 @@ const VisitaTecnicaFormScreen: React.FC<Props> = ({ navigation, route }) => {
                 {medicionesHistorial.map((m) => {
                   const puntos = (m.puntos as unknown[]) || [];
                   const esArea = puntos.length >= 3;
-                  const fecha = m.created_at ? String(m.created_at).slice(0, 10) : '';
+                  const fecha = formatFechaHoraColombia(m.created_at as string | undefined);
+                  const marcada = data.mediciones_historial.some((x) => x.id === String(m.id ?? ''));
+                  const lleno = !marcada && data.mediciones_historial.length >= MAX_POLIGONOS_VISITA;
                   return (
                     <TouchableOpacity
-                      key={String(m.id)}
-                      style={styles.selectorItem}
-                      onPress={() => aplicarMedicionHistorial(m)}
+                      key={String(m.id ?? '')}
+                      style={[styles.selectorItem, marcada && styles.selectorItemMarcado, lleno && { opacity: 0.5 }]}
+                      onPress={() => alternarMedicionHistorial(m)}
+                      disabled={lleno}
                       activeOpacity={0.7}
+                      accessibilityRole="checkbox"
+                      accessibilityState={{ checked: marcada }}
                     >
-                      <Text style={styles.selectorItemNombre} numberOfLines={2}>
-                        {String(m.nombre || 'Medición sin nombre')}
-                      </Text>
-                      <Text style={styles.selectorItemMeta}>
-                        {fecha ? `${fecha} · ` : ''}
-                        {esArea
-                          ? `◈ ${Number(m.area_hectareas || 0).toFixed(2)} ha`
-                          : `📏 ${Number(m.perimetro_metros || 0).toFixed(0)} m`}
-                        {` · ${puntos.length} pts`}
-                      </Text>
+                      <View style={styles.selectorItemFila}>
+                        <Text style={[styles.selectorCheck, marcada && styles.selectorCheckMarcado]}>
+                          {marcada ? '☑' : '☐'}
+                        </Text>
+                        <View style={{ flex: 1 }}>
+                          <Text style={styles.selectorItemNombre} numberOfLines={2}>
+                            {String(m.nombre || 'Medición sin nombre')}
+                          </Text>
+                          <Text style={styles.selectorItemMeta}>
+                            {fecha ? `${fecha} · ` : ''}
+                            {esArea
+                              ? `◈ ${Number(m.area_hectareas || 0).toFixed(2)} ha`
+                              : `📏 ${Number(m.perimetro_metros || 0).toFixed(0)} m`}
+                            {` · ${puntos.length} pts`}
+                          </Text>
+                          {m.cercana ? (
+                            <Text style={styles.selectorItemCercana}>
+                              Sin beneficiario asignado · a {Number(m.distancia_m) || 0} m de la visita
+                            </Text>
+                          ) : null}
+                        </View>
+                      </View>
                     </TouchableOpacity>
                   );
                 })}
               </ScrollView>
             )}
+
+            <TouchableOpacity
+              style={styles.selectorListo}
+              onPress={() => setMostrarSelectorMediciones(false)}
+              activeOpacity={0.8}
+            >
+              <Text style={styles.selectorListoTexto}>
+                {data.mediciones_historial.length === 0
+                  ? 'Cerrar'
+                  : `Listo · ${data.mediciones_historial.length} ${data.mediciones_historial.length === 1 ? 'medición' : 'mediciones'} · ${sumaHectareas(data.mediciones_historial).toLocaleString('es-CO', { maximumFractionDigits: 2 })} ha`}
+              </Text>
+            </TouchableOpacity>
           </View>
         </View>
       </Modal>
+
+      <SelectorBeneficiarioModal
+        visible={mostrarSelectorBenef}
+        tecnicoId={user?.id}
+        numeroVisita={numeroVisitaRef.current}
+        cedulaActual={beneficiario?.cedula}
+        onSeleccionar={elegirNuevoBeneficiario}
+        onCerrar={() => setMostrarSelectorBenef(false)}
+      />
     </KeyboardAvoidingView>
   );
 };
@@ -1643,6 +1853,22 @@ const styles = StyleSheet.create({
     marginBottom: SPACING.sm,
   },
   datosLinea: { fontSize: FONTS.sizes.sm, color: COLORS.textPrimary, marginBottom: 3 },
+  cambioBenefBox: {
+    backgroundColor: COLORS.warning + '15',
+    borderRadius: BORDER_RADIUS.md,
+    borderWidth: 1,
+    borderColor: COLORS.warning + '60',
+    padding: SPACING.sm,
+    marginBottom: SPACING.sm,
+  },
+  cambioBenefTexto: { fontSize: FONTS.sizes.sm, color: COLORS.textPrimary, marginBottom: SPACING.sm },
+  cambioBenefBtn: {
+    backgroundColor: COLORS.primary,
+    borderRadius: BORDER_RADIUS.md,
+    paddingVertical: SPACING.sm,
+    alignItems: 'center',
+  },
+  cambioBenefBtnTexto: { color: COLORS.textOnPrimary, fontSize: FONTS.sizes.md, fontWeight: FONTS.weights.bold },
 
   input: {
     borderWidth: 1,
@@ -1729,6 +1955,25 @@ const styles = StyleSheet.create({
     marginLeft: SPACING.sm,
   },
   medicionQuitarTexto: { fontSize: 16, color: COLORS.error, fontWeight: FONTS.weights.bold },
+  medicionResumen: {
+    marginTop: SPACING.sm,
+    fontSize: FONTS.sizes.sm,
+    color: COLORS.primary,
+    fontWeight: FONTS.weights.bold,
+  },
+  selectorItemCercana: { fontSize: FONTS.sizes.xs, color: COLORS.warning, marginTop: 2 },
+  selectorItemMarcado: { borderColor: COLORS.primary, borderWidth: 1.5 },
+  selectorItemFila: { flexDirection: 'row', alignItems: 'center' },
+  selectorCheck: { fontSize: 22, color: COLORS.textLight, marginRight: SPACING.sm },
+  selectorCheckMarcado: { color: COLORS.primary },
+  selectorListo: {
+    marginTop: SPACING.sm,
+    backgroundColor: COLORS.primary,
+    borderRadius: BORDER_RADIUS.md,
+    paddingVertical: SPACING.sm + 2,
+    alignItems: 'center',
+  },
+  selectorListoTexto: { color: '#fff', fontWeight: FONTS.weights.bold, fontSize: FONTS.sizes.sm },
 
   selectorOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.45)', justifyContent: 'flex-end' },
   selectorHoja: {

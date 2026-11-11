@@ -18,6 +18,7 @@ import {
 } from '../utils/encuestaSchema';
 import { membreteAperturaHtml, membreteCierreHtml, membreteCss, MembreteVariante } from '../utils/membrete';
 import { esVisitaTecnicaV2, esVisitaTecnicaV3 } from '../utils/visitaTecnica';
+import { medicionesDeVisita, sumaHectareas } from '../utils/medicionesVisita';
 import {
   COMPROMISOS_V3,
   PREGUNTAS_V3,
@@ -2755,12 +2756,12 @@ async function construirHTMLVisitaV2(
 ): Promise<string> {
   const act = form.actividad;
   const coordenadas = form.coordenadas;
-  const medicion = act.medicion_historial;
+  // Puede haber varios polígonos (lotes separados del mismo predio).
+  const mediciones = medicionesDeVisita(act);
 
   const esPuntoValido = (p?: { latitud: number; longitud: number }) =>
     p != null && Number.isFinite(p.latitud) && Number.isFinite(p.longitud);
   const puntosPoligono = (act.poligono || []).filter(esPuntoValido);
-  const puntosMedicion = (medicion?.puntos || []).filter(esPuntoValido);
 
   // Punto de la visita: la coordenada del formulario (ítem 4) o, si no
   // viajó, el primer vértice del polígono.
@@ -2768,9 +2769,17 @@ async function construirHTMLVisitaV2(
   const latVisita = coordenadas?.latitud != null ? coordenadas.latitud : primerPunto?.latitud;
   const lonVisita = coordenadas?.longitud != null ? coordenadas.longitud : primerPunto?.longitud;
 
-  // Área: la medición del historial manda (es la que el técnico eligió);
-  // si no adjuntó ninguna, se dibuja el polígono del ítem 4.
-  const puntosArea = puntosMedicion.length > 0 ? puntosMedicion : puntosPoligono;
+  // Área: las mediciones del historial mandan (son las que el técnico
+  // eligió, una imagen por polígono); si no adjuntó ninguna, se dibuja el
+  // polígono del ítem 4.
+  const areasADibujar: { titulo: string; puntos: { latitud: number; longitud: number }[] }[] =
+    mediciones.length > 0
+      ? mediciones.map((m, i) => ({
+          titulo: mediciones.length > 1 ? `Polígono ${i + 1} — ${m.nombre}` : 'Área medida / a intervenir',
+          puntos: m.puntos.filter(esPuntoValido),
+        }))
+      : [{ titulo: 'Área medida / a intervenir', puntos: puntosPoligono }];
+  const puntosArea = areasADibujar.flatMap((a) => a.puntos);
 
   const ubicacionTexto =
     [form.beneficiario?.municipio, form.beneficiario?.vereda || form.beneficiario?.corregimiento]
@@ -2779,10 +2788,11 @@ async function construirHTMLVisitaV2(
 
   // Las dos descargas van en paralelo y ninguna puede romper el PDF: si no
   // hay señal, cada helper devuelve '' y esa imagen simplemente no sale.
-  const [mapaUbicacionHtml, mapaAreaHtml] = await Promise.all([
+  const [mapaUbicacionHtml, ...mapasArea] = await Promise.all([
     construirMapaEstaticoHtml(latVisita, lonVisita, ubicacionTexto),
-    construirMapaPoligonoHtml(puntosArea),
+    ...areasADibujar.map((a) => construirMapaPoligonoHtml(a.puntos)),
   ]);
+  const mapaAreaHtml = mapasArea.some(Boolean);
 
   // --- Ítem 6: valoración del cumplimiento (barra 0–100) ---
   const valoracionNumero = (() => {
@@ -2833,9 +2843,19 @@ async function construirHTMLVisitaV2(
 
   const areaRows = card('📐 Área registrada', [
     r('Área a intervenir', act.area_intervencion ? `${escapeHtml(act.area_intervencion)} ha` : null),
-    medicion?.nombre ? r('Medición', medicion.nombre) : '',
-    medicion?.area_hectareas != null ? r('Área medida', `${Number(medicion.area_hectareas).toFixed(2)} ha`) : '',
-    medicion?.perimetro_metros != null ? r('Perímetro', `${Math.round(Number(medicion.perimetro_metros))} m`) : '',
+    ...(mediciones.length === 1
+      ? [
+          r('Medición', mediciones[0].nombre),
+          r('Área medida', `${Number(mediciones[0].area_hectareas).toFixed(2)} ha`),
+          r('Perímetro', `${Math.round(Number(mediciones[0].perimetro_metros))} m`),
+        ]
+      : mediciones.map((m, i) =>
+          r(
+            `Polígono ${i + 1}`,
+            `${m.nombre} — ${Number(m.area_hectareas).toFixed(2)} ha · ${Math.round(Number(m.perimetro_metros))} m`
+          )
+        )),
+    mediciones.length > 1 ? r('Área medida total', `${sumaHectareas(mediciones).toFixed(2)} ha`) : '',
     r('Vértices del área', puntosArea.length > 0 ? `${puntosArea.length}` : null),
   ].join(''));
 
@@ -2843,12 +2863,16 @@ async function construirHTMLVisitaV2(
     ? `<div class="v2-mapa"><div class="v2-mapa-wrap">${mapaUbicacionHtml}</div></div>`
     : '';
 
-  const mapaAreaBloque = mapaAreaHtml
-    ? `<div class="v2-mapa">
-         <p class="v2-mapa-titulo">Área medida / a intervenir</p>
-         <div class="v2-mapa-wrap">${mapaAreaHtml}</div>
+  const mapaAreaBloque = areasADibujar
+    .map((a, i) =>
+      mapasArea[i]
+        ? `<div class="v2-mapa">
+         <p class="v2-mapa-titulo">${escapeHtml(a.titulo)}</p>
+         <div class="v2-mapa-wrap">${mapasArea[i]}</div>
        </div>`
-    : '';
+        : ''
+    )
+    .join('');
 
   return `<!DOCTYPE html>
 <html lang="es">

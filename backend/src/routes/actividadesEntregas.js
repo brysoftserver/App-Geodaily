@@ -21,7 +21,7 @@ const storage = require('../storage');
 
 const router = express.Router();
 
-const ACTIVIDADES = new Set(['siembra_platano']);
+const ACTIVIDADES = new Set(['siembra_platano', 'siembra_forestales']);
 const ROLES_SUPERIORES = ['coordinador', 'interventor', 'gerente', 'admin'];
 const esSuperior = (u) => ROLES_SUPERIORES.includes(u?.rol);
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 15 * 1024 * 1024 } });
@@ -133,8 +133,11 @@ router.get('/', authenticateToken, async (req, res) => {
       return res.status(403).json({ estado: 'error', mensaje: 'No autorizado' });
     }
     const filas = await db.queryAll(
-      `SELECT id, actividad, numero, tecnico_id, beneficiario_item, datos, created_at, updated_at
-       FROM actividad_entregas WHERE actividad = $1 ${filtro} ORDER BY numero ASC`,
+      `SELECT e.id, e.actividad, e.numero, e.tecnico_id, e.beneficiario_item, e.datos, e.created_at, e.updated_at,
+              u.nombre AS tecnico_nombre
+       FROM actividad_entregas e
+       LEFT JOIN usuarios u ON u.id = e.tecnico_id
+       WHERE e.actividad = $1 ${filtro.replace('tecnico_id', 'e.tecnico_id')} ORDER BY e.numero ASC`,
       vals
     );
     res.json({ estado: 'ok', entregas: filas });

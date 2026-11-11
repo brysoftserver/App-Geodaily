@@ -72,17 +72,27 @@ function actividadValida(req, res) {
   return true;
 }
 
+/**
+ * Beneficiarios con su avance en la actividad. `tecnicoId` null = TODOS los
+ * de técnicos activos (vista de la interventoría, sin filtro por técnico).
+ * `tiene_suelo`: ya tiene el análisis de suelos subido (la interventoría los
+ * ve primero).
+ */
 async function beneficiariosDeTecnico(tecnicoId, actividad) {
   const derivada = DERIVADAS_DE_VISITA[actividad];
   if (derivada) {
+    const filtro = tecnicoId
+      ? 'WHERE b.tecnico_asignado_id = $1'
+      : `JOIN usuarios u ON u.id = b.tecnico_asignado_id AND u.rol = 'tecnico' AND u.activo = TRUE AND ${sqlNoEsPrueba('u.usuario')}`;
     const filas = await db.queryAll(
       `${cteVisita(derivada.visita)}
-       SELECT b.item, b.nombre_completo, b.cedula, b.corregimiento, b.vereda, v.id AS formulario_id
+       SELECT b.item, b.nombre_completo, b.cedula, b.corregimiento, b.vereda, v.id AS formulario_id,
+              EXISTS (SELECT 1 FROM analisis_suelos a WHERE a.beneficiario_item = b.item) AS tiene_suelo
        FROM beneficiarios b
        ${joinVisita}
-       WHERE b.tecnico_asignado_id = $1
+       ${filtro}
        ORDER BY b.nombre_completo ASC`,
-      [tecnicoId]
+      tecnicoId ? [tecnicoId] : []
     );
     return filas.map((f) => ({ ...f, hectareas: f.formulario_id ? derivada.hectareas : 0 }));
   }
@@ -106,6 +116,7 @@ const aDto = (r) => ({
   hectareas: r.hectareas ?? 0,
   /** Visita que respalda las hectáreas (solo actividades derivadas de una visita). */
   formularioId: r.formulario_id ?? null,
+  tieneSuelo: !!r.tiene_suelo,
 });
 
 // GET /api/actividades-hectareas/avance — cualquier rol: total por actividad
@@ -190,6 +201,28 @@ router.get('/:actividad/mis-beneficiarios', authenticateToken, async (req, res) 
     res.json({ estado: 'ok', beneficiarios: filas.map(aDto) });
   } catch (error) {
     console.error('[Hectareas] Error listando:', error);
+    res.status(500).json({ estado: 'error', mensaje: 'Error al listar beneficiarios' });
+  }
+});
+
+// GET /api/actividades-hectareas/:actividad/todos — superiores: TODOS los
+// beneficiarios con la actividad hecha (sin filtro por técnico), primero los
+// que tienen análisis de suelos.
+router.get('/:actividad/todos', authenticateToken, async (req, res) => {
+  try {
+    if (!actividadValida(req, res)) return;
+    if (!esSuperior(req.user)) {
+      return res.status(403).json({ estado: 'error', mensaje: 'No autorizado' });
+    }
+    if (!DERIVADAS_DE_VISITA[req.params.actividad]) {
+      return res.status(404).json({ estado: 'error', mensaje: 'Actividad sin vista consolidada' });
+    }
+    // Solo los que ya tienen la actividad hecha (visita completada); los demás no se muestran.
+    const filas = (await beneficiariosDeTecnico(null, req.params.actividad)).filter((f) => f.formulario_id);
+    filas.sort((a, b) => Number(!!b.tiene_suelo) - Number(!!a.tiene_suelo)); // estable: conserva el orden alfabético
+    res.json({ estado: 'ok', beneficiarios: filas.map(aDto) });
+  } catch (error) {
+    console.error('[Hectareas] Error listando todos:', error);
     res.status(500).json({ estado: 'error', mensaje: 'Error al listar beneficiarios' });
   }
 });

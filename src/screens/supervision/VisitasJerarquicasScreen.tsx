@@ -41,6 +41,7 @@ import {
   fechaDMAaISO,
 } from '../../services/formularios.service';
 import { fetchBeneficiariosDelServidor } from '../../services/beneficiariosDB.service';
+import { fetchResumenRevisiones, EstadoRevision } from '../../services/revisiones.service';
 import LoadingSpinner from '../../components/LoadingSpinner';
 import BotonPdfDashboard from '../../components/dashboard/BotonPdfDashboard';
 import BotonPdfTecnico from '../../components/dashboard/BotonPdfTecnico';
@@ -81,6 +82,43 @@ type VisitasJerarquicasScreenProps = {
 };
 
 // --- Tipos auxiliares ---
+/** Categorías de la bandeja de revisión (ver estado_flujo en lib/estadoRevision.js). */
+type CategoriaBandeja = 'por_verificar' | 'por_cerrar' | 'en_interventoria' | 'por_corregir';
+const CATEGORIAS_BANDEJA: Record<CategoriaBandeja, { icono: string; corto: string; ayuda: string; enTarjeta: string }> = {
+  por_verificar: {
+    icono: '🔄',
+    corto: 'por verificar',
+    ayuda: 'El técnico corrigió después de las novedades. Verifica y aprueba la sección o cierra la revisión.',
+    enTarjeta: 'El técnico corrigió después de las novedades — usa «Revisión en línea» para verificar',
+  },
+  por_cerrar: {
+    icono: '🔍',
+    corto: 'sin cerrar',
+    ayuda: 'Revisados sin novedades abiertas pero sin cierre. Abre, completa las secciones y cierra la revisión.',
+    enTarjeta: 'Revisión sin cerrar — usa «Revisión en línea» para terminar y cerrar',
+  },
+  en_interventoria: {
+    icono: '🏛️',
+    corto: 'nuevos en interventoría',
+    ayuda: 'Coordinación ya cerró su revisión: listos para interventoría.',
+    enTarjeta: 'Listo para interventoría',
+  },
+  por_corregir: {
+    icono: '⚠️',
+    corto: 'esperando al técnico',
+    ayuda: 'Tienen novedades que el técnico aún no corrige (solo seguimiento).',
+    enTarjeta: 'Novedades pendientes de corrección del técnico',
+  },
+};
+/** Días sin avance a partir de los cuales se resalta en rojo. */
+const DIAS_ALERTA = 5;
+const diasDesde = (fecha?: string | null): number | null => {
+  if (!fecha) return null;
+  const t = new Date(fecha).getTime();
+  if (!Number.isFinite(t)) return null;
+  return Math.max(0, Math.floor((Date.now() - t) / 86400000));
+};
+
 interface TecnicoAgrupado {
   id: string;
   nombre: string;
@@ -150,6 +188,9 @@ const VisitasJerarquicasScreen: React.FC<VisitasJerarquicasScreenProps> = ({ nav
   const [loadError, setLoadError] = useState<string | null>(null);
   const [eliminandoId, setEliminandoId] = useState<string | null>(null);
   const [descargandoMediaId, setDescargandoMediaId] = useState<string | null>(null);
+  /** Estado de revisión por formulario (GET /api/revisiones/resumen). */
+  const [estadosRevision, setEstadosRevision] = useState<Record<string, EstadoRevision>>({});
+  const [verPorVerificar, setVerPorVerificar] = useState(false);
 
   // Estado de navegación jerárquica
   const [nivel, setNivel] = useState<Nivel>('tecnicos');
@@ -469,6 +510,9 @@ const VisitasJerarquicasScreen: React.FC<VisitasJerarquicasScreenProps> = ({ nav
   // --- Cargar datos (servidor + local) ---
   const loadData = useCallback(async () => {
     setLoadError(null);
+    // Estado de revisión (novedades corregidas por verificar) — best effort,
+    // aparte del Promise.all: si falla, la pantalla carga igual sin badges.
+    fetchResumenRevisiones().then(setEstadosRevision).catch(() => {});
     let localesCount = 0;
     let servidorCount = 0;
     try {
@@ -696,6 +740,61 @@ const VisitasJerarquicasScreen: React.FC<VisitasJerarquicasScreenProps> = ({ nav
     navigation.navigate(detailScreen, { formulario: form, modo });
   };
 
+  /**
+   * Bandeja de revisión: en qué estado está cada formulario PARA QUIEN MIRA.
+   * El coordinador ve la fase del coordinador; el interventor, la suya
+   * (incluidos los recién cerrados por coordinación); admin/gerente ven
+   * todas las fases (seguimiento). El estado lo calcula el servidor
+   * (backend/src/lib/estadoRevision.js). Antes esta pantalla no mostraba
+   * ningún estado de revisión.
+   */
+  const miRolRevisor: 'coordinador' | 'interventor' | null = isCoordinador
+    ? 'coordinador'
+    : isInterventor
+      ? 'interventor'
+      : null;
+  const categoriaDe = useCallback(
+    (f: Formulario): CategoriaBandeja | null => {
+      const e = estadosRevision[f.id];
+      if (!e?.estado_flujo) return null;
+      if (miRolRevisor && e.rol_flujo !== miRolRevisor) return null;
+      switch (e.estado_flujo) {
+        case 'por_verificar':
+        case 'por_cerrar':
+        case 'por_corregir':
+          return e.estado_flujo;
+        case 'en_interventoria':
+          return miRolRevisor === 'coordinador' ? null : 'en_interventoria';
+        default:
+          return null;
+      }
+    },
+    [estadosRevision, miRolRevisor]
+  );
+  const estaPorVerificar = useCallback((f: Formulario) => categoriaDe(f) === 'por_verificar', [categoriaDe]);
+
+  /** Formularios de la bandeja agrupados por categoría (más antiguos primero: llevan más tiempo esperando). */
+  const bandeja = useMemo(() => {
+    const grupos: Record<CategoriaBandeja, Formulario[]> = {
+      por_verificar: [],
+      por_cerrar: [],
+      en_interventoria: [],
+      por_corregir: [],
+    };
+    for (const f of formularios) {
+      const c = categoriaDe(f);
+      if (c) grupos[c].push(f);
+    }
+    const antiguedad = (f: Formulario) => new Date(estadosRevision[f.id]?.ultimo_movimiento || 0).getTime();
+    for (const k of Object.keys(grupos) as CategoriaBandeja[]) grupos[k].sort((a, b) => antiguedad(a) - antiguedad(b));
+    return grupos;
+  }, [formularios, categoriaDe, estadosRevision]);
+  const totalBandeja = bandeja.por_verificar.length + bandeja.por_cerrar.length + bandeja.en_interventoria.length;
+  const [categoriaAbierta, setCategoriaAbierta] = useState<CategoriaBandeja>('por_verificar');
+
+  const contarPorVerificar = (visitas: Formulario[]) => visitas.filter(estaPorVerificar).length;
+  const contarSinCerrar = (visitas: Formulario[]) => visitas.filter((f) => categoriaDe(f) === 'por_cerrar').length;
+
   const descargarMedia = async (form: Formulario) => {
     if (descargandoMediaId) return; // evita doble toque mientras arma otro paquete
     setDescargandoMediaId(form.id);
@@ -781,6 +880,21 @@ const VisitasJerarquicasScreen: React.FC<VisitasJerarquicasScreenProps> = ({ nav
         </View>
       </View>
 
+      {(() => {
+        const visitas = item.beneficiarios.flatMap((b) => b.visitas);
+        const n = contarPorVerificar(visitas);
+        const m = contarSinCerrar(visitas);
+        return n + m > 0 ? (
+          <View style={styles.porVerificarBadge}>
+            <Text style={styles.porVerificarBadgeText}>
+              {[n > 0 ? `🔄 ${n} corregido(s) por verificar` : '', m > 0 ? `🔍 ${m} sin cerrar` : '']
+                .filter(Boolean)
+                .join(' · ')}
+            </Text>
+          </View>
+        ) : null;
+      })()}
+
       <View style={styles.visitasGrid}>
         {item.visitasStats.map((stat) => (
           <TouchableOpacity
@@ -817,6 +931,11 @@ const VisitasJerarquicasScreen: React.FC<VisitasJerarquicasScreenProps> = ({ nav
           <Text style={styles.cardSubtitle}>
             📍 {item.vereda}, {item.municipio} {item.finca ? `· ${item.finca}` : ''}
           </Text>
+          {contarPorVerificar(item.visitas) > 0 ? (
+            <Text style={styles.porVerificarInline}>🔄 Corregido por el técnico — por verificar</Text>
+          ) : contarSinCerrar(item.visitas) > 0 ? (
+            <Text style={styles.porVerificarInline}>🔍 Revisión sin cerrar</Text>
+          ) : null}
         </View>
         <View style={styles.badgeContainer}>
           <View style={styles.badge}>
@@ -864,6 +983,14 @@ const VisitasJerarquicasScreen: React.FC<VisitasJerarquicasScreenProps> = ({ nav
           })}
         </Text>
       </View>
+
+      {categoriaDe(item) && (
+        <View style={styles.porVerificarBadge}>
+          <Text style={styles.porVerificarBadgeText}>
+            {CATEGORIAS_BANDEJA[categoriaDe(item)!].icono} {CATEGORIAS_BANDEJA[categoriaDe(item)!].enTarjeta}
+          </Text>
+        </View>
+      )}
 
       <View style={styles.visitaBody}>
         <View style={styles.visitaTag}>
@@ -1299,6 +1426,85 @@ const VisitasJerarquicasScreen: React.FC<VisitasJerarquicasScreenProps> = ({ nav
         )}
       </View>
 
+      {/* Bandeja de revisión: lo que le toca a quien mira */}
+      {nivel === 'tecnicos' && totalBandeja + bandeja.por_corregir.length > 0 && (
+        <TouchableOpacity
+          style={styles.porVerificarBanner}
+          onPress={() => {
+            const primera = (Object.keys(CATEGORIAS_BANDEJA) as CategoriaBandeja[]).find((k) => bandeja[k].length > 0);
+            if (primera) setCategoriaAbierta(primera);
+            setVerPorVerificar(true);
+          }}
+          activeOpacity={0.8}
+        >
+          <Text style={styles.porVerificarBannerTitulo}>
+            📥 Bandeja de revisión{totalBandeja > 0 ? `: ${totalBandeja} pendiente(s) tuyo(s)` : ''}
+          </Text>
+          <Text style={styles.porVerificarBannerSub}>
+            {(Object.keys(CATEGORIAS_BANDEJA) as CategoriaBandeja[])
+              .filter((k) => bandeja[k].length > 0)
+              .map((k) => `${CATEGORIAS_BANDEJA[k].icono} ${bandeja[k].length} ${CATEGORIAS_BANDEJA[k].corto}`)
+              .join(' · ')}
+          </Text>
+        </TouchableOpacity>
+      )}
+      <Modal visible={verPorVerificar} animationType="slide" transparent onRequestClose={() => setVerPorVerificar(false)}>
+        <View style={styles.porVerificarOverlay}>
+          <View style={[styles.porVerificarPanel, { paddingBottom: insets.bottom + SPACING.md }]}>
+            <Text style={styles.porVerificarPanelTitulo}>📥 Bandeja de revisión</Text>
+            <View style={styles.bandejaTabs}>
+              {(Object.keys(CATEGORIAS_BANDEJA) as CategoriaBandeja[])
+                .filter((k) => bandeja[k].length > 0)
+                .map((k) => (
+                  <TouchableOpacity
+                    key={k}
+                    style={[styles.bandejaTab, categoriaAbierta === k && styles.bandejaTabActiva]}
+                    onPress={() => setCategoriaAbierta(k)}
+                  >
+                    <Text style={[styles.bandejaTabTexto, categoriaAbierta === k && styles.bandejaTabTextoActivo]}>
+                      {CATEGORIAS_BANDEJA[k].icono} {CATEGORIAS_BANDEJA[k].corto} ({bandeja[k].length})
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+            </View>
+            <Text style={styles.porVerificarItemSub}>{CATEGORIAS_BANDEJA[categoriaAbierta].ayuda}</Text>
+            <FlatList
+              data={bandeja[categoriaAbierta]}
+              keyExtractor={(f) => f.id}
+              renderItem={({ item: f }) => {
+                const e = estadosRevision[f.id];
+                const dias = diasDesde(e?.ultimo_movimiento);
+                return (
+                  <TouchableOpacity
+                    style={styles.porVerificarItem}
+                    onPress={() => {
+                      setVerPorVerificar(false);
+                      abrirDetalleFormulario(f, categoriaAbierta === 'por_corregir' ? undefined : 'online');
+                    }}
+                  >
+                    <Text style={styles.porVerificarItemTitulo}>{f.beneficiario?.nombre || 'Sin nombre'}</Text>
+                    <Text style={styles.porVerificarItemSub}>
+                      {etiquetaVisitaFormulario(f)} · {f.tecnico?.nombre || 'Técnico'}
+                      {e?.secciones_aprobadas ? ` · ${e.secciones_aprobadas} sección(es) aprobada(s)` : ''}
+                      {e?.novedades_fase ? ` · ${e.novedades_fase} novedad(es)` : ''}
+                    </Text>
+                    {dias !== null && (
+                      <Text style={[styles.porVerificarItemSub, dias >= DIAS_ALERTA && styles.bandejaAtrasado]}>
+                        {dias === 0 ? 'Último movimiento: hoy' : `Sin avance hace ${dias} día(s)`}
+                        {!miRolRevisor && e?.rol_flujo ? ` · fase: ${e.rol_flujo === 'coordinador' ? 'Coordinador/a' : 'interventoría'}` : ''}
+                      </Text>
+                    )}
+                  </TouchableOpacity>
+                );
+              }}
+            />
+            <TouchableOpacity style={styles.porVerificarCerrar} onPress={() => setVerPorVerificar(false)}>
+              <Text style={styles.porVerificarCerrarTexto}>Cerrar</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
       {/* Lista según nivel */}
       {nivel === 'tecnicos' && (
         <FlatList
@@ -1421,6 +1627,48 @@ const VisitasJerarquicasScreen: React.FC<VisitasJerarquicasScreenProps> = ({ nav
 // ESTILOS
 // ============================================================
 const styles = StyleSheet.create({
+  // ── Corregidos por verificar ──
+  porVerificarBadge: {
+    backgroundColor: COLORS.info + '18',
+    borderRadius: BORDER_RADIUS.sm,
+    paddingHorizontal: SPACING.sm,
+    paddingVertical: 4,
+    marginTop: SPACING.xs,
+    marginBottom: SPACING.xs,
+  },
+  porVerificarBadgeText: { fontSize: FONTS.sizes.xs, color: COLORS.info, fontWeight: FONTS.weights.semibold },
+  porVerificarInline: { fontSize: FONTS.sizes.xs, color: COLORS.info, fontWeight: FONTS.weights.semibold, marginTop: 2 },
+  porVerificarBanner: {
+    backgroundColor: COLORS.info + '18',
+    borderLeftWidth: 4,
+    borderLeftColor: COLORS.info,
+    borderRadius: BORDER_RADIUS.md,
+    padding: SPACING.sm,
+    marginHorizontal: SPACING.md,
+    marginBottom: SPACING.sm,
+  },
+  porVerificarBannerTitulo: { fontSize: FONTS.sizes.md, color: COLORS.info, fontWeight: FONTS.weights.bold },
+  porVerificarBannerSub: { fontSize: FONTS.sizes.xs, color: COLORS.textSecondary, marginTop: 2 },
+  porVerificarOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.45)', justifyContent: 'flex-end' },
+  porVerificarPanel: {
+    backgroundColor: COLORS.surface,
+    borderTopLeftRadius: BORDER_RADIUS.lg,
+    borderTopRightRadius: BORDER_RADIUS.lg,
+    padding: SPACING.md,
+    maxHeight: '80%',
+  },
+  porVerificarPanelTitulo: { fontSize: FONTS.sizes.lg, fontWeight: FONTS.weights.bold, color: COLORS.textPrimary, marginBottom: SPACING.sm },
+  porVerificarItem: { paddingVertical: SPACING.sm, borderBottomWidth: 1, borderBottomColor: COLORS.divider },
+  porVerificarItemTitulo: { fontSize: FONTS.sizes.md, color: COLORS.textPrimary, fontWeight: FONTS.weights.semibold },
+  porVerificarItemSub: { fontSize: FONTS.sizes.xs, color: COLORS.textSecondary, marginTop: 2 },
+  porVerificarCerrar: { marginTop: SPACING.sm, alignItems: 'center', paddingVertical: SPACING.sm, backgroundColor: COLORS.divider, borderRadius: BORDER_RADIUS.md },
+  bandejaTabs: { flexDirection: 'row', flexWrap: 'wrap', gap: SPACING.xs, marginBottom: SPACING.xs },
+  bandejaTab: { paddingHorizontal: SPACING.sm, paddingVertical: 4, borderRadius: BORDER_RADIUS.full, backgroundColor: COLORS.divider },
+  bandejaTabActiva: { backgroundColor: COLORS.info },
+  bandejaTabTexto: { fontSize: FONTS.sizes.xs, color: COLORS.textPrimary },
+  bandejaTabTextoActivo: { color: '#FFFFFF', fontWeight: FONTS.weights.semibold },
+  bandejaAtrasado: { color: COLORS.error, fontWeight: FONTS.weights.semibold },
+  porVerificarCerrarTexto: { fontSize: FONTS.sizes.md, color: COLORS.textPrimary, fontWeight: FONTS.weights.semibold },
   container: {
     flex: 1,
     backgroundColor: COLORS.background,

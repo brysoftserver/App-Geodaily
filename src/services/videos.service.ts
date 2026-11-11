@@ -3,6 +3,7 @@
 // Sube videos georreferenciados al backend → MinIO (carpeta videos/)
 // ============================================================
 
+import { Platform } from 'react-native';
 import apiClient, { isOfflineError } from './api';
 import { API_CONFIG } from '../theme';
 import { recordSyncFailure } from './syncDiagnostics';
@@ -45,12 +46,21 @@ export const uploadVideo = async (
       webm: 'video/webm',
     };
 
-    // @ts-expect-error — React Native FormData
-    formData.append('archivo', {
-      uri: videoUri,
-      type: mimeTypes[extension] || 'application/octet-stream',
-      name: `video_${Date.now()}.${extension}`,
-    });
+    if (Platform.OS === 'web') {
+      // En el navegador la uri es blob:/data: (sin extensión): se usa el
+      // tipo real del archivo para nombrarlo. FormData solo acepta Blob/File.
+      const blob = await (await fetch(videoUri)).blob();
+      const extWeb =
+        Object.keys(mimeTypes).find((k) => mimeTypes[k] === blob.type) || 'mp4';
+      formData.append('archivo', blob, `video_${Date.now()}.${extWeb}`);
+    } else {
+      // @ts-expect-error — React Native FormData
+      formData.append('archivo', {
+        uri: videoUri,
+        type: mimeTypes[extension] || 'application/octet-stream',
+        name: `video_${Date.now()}.${extension}`,
+      });
+    }
 
     if (desdeAlmacenamiento) {
       formData.append('origen', 'almacenamiento');

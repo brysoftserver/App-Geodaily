@@ -16,6 +16,14 @@
 const express = require('express');
 const { authenticateToken } = require('../middleware/auth');
 const db = require('../database');
+const {
+  MAX_POLIGONOS,
+  aplicarSeleccion,
+  leerPoligonos,
+  escribirPoligonos,
+  puntoDeVisita,
+  filtrarParaBeneficiario,
+} = require('../lib/poligonosVisita');
 
 const router = express.Router();
 
@@ -79,7 +87,7 @@ function normalizar(tipo, crudo) {
 /** Carga la visita y verifica que sea una Visita 2 del formato nuevo. Responde y devuelve null si no. */
 async function cargarVisita2(req, res) {
   const f = await db.queryOne(
-    'SELECT id, tipo, usuario_id, tecnico_json, beneficiario_json, actividad_json FROM formularios WHERE id = $1',
+    'SELECT id, tipo, usuario_id, tecnico_json, beneficiario_json, actividad_json, coordenadas_json FROM formularios WHERE id = $1',
     [String(req.params.id)]
   );
   if (!f) {
@@ -157,9 +165,6 @@ router.patch('/:id/campo', authenticateToken, soloAutorizados, async (req, res) 
   }
 });
 
-/** Polígono 1 = el de siempre; polígono 2 = segundo polígono opcional. */
-const CLAVE_POLIGONO = { 1: 'medicion_historial', 2: 'medicion_historial_2' };
-
 /**
  * Área y perímetro con la MISMA aproximación plana que usa la app al medir
  * (src/services/kml.service.ts → calcularArea), para que un KML subido y una
@@ -205,34 +210,38 @@ function aMedicionAdjunta(m) {
     area_metros2: Number(meta.area_metros2) || 0,
     perimetro_metros: Number(meta.perimetro_metros) || 0,
     puntos,
-    created_at: m.created_at,
+    // Hora en que se TOMÓ la medición (no la de llegada al servidor).
+    created_at: m.timestamp || m.created_at,
     beneficiario_cedula: meta.beneficiario_cedula || null,
   };
 }
 
 const duenoDe = (f) => aObjeto(f.tecnico_json).usuario_id || f.usuario_id;
-const soloDigitos = (t) => String(t || '').replace(/[^0-9A-Za-z]/g, '').toUpperCase();
 
-// GET /api/edicion-visitas/:id/mediciones — mediciones del técnico de la visita (las del beneficiario primero)
+/**
+ * Historial del técnico PARA ESTE beneficiario: con su cédula o, si la
+ * medición no tiene cédula (antiguas/restauradas), cerca de la visita.
+ */
+async function medicionesOfrecidas(v) {
+  const filas = await db.queryAll(
+    'SELECT id, metadata_json, created_at, "timestamp" FROM mediciones WHERE usuario_id = $1 ORDER BY created_at DESC',
+    [duenoDe(v.f)]
+  );
+  return filtrarParaBeneficiario(
+    filas.map(aMedicionAdjunta).filter((m) => m.puntos.length >= 3),
+    { cedula: aObjeto(v.f.beneficiario_json).cedula, punto: puntoDeVisita(v.actividad, v.f.coordenadas_json) }
+  );
+}
+
+// GET /api/edicion-visitas/:id/mediciones — mediciones del técnico para el beneficiario de la visita
 router.get('/:id/mediciones', authenticateToken, soloAutorizados, async (req, res) => {
   try {
     const v = await cargarVisita2(req, res);
     if (!v) return;
-    const filas = await db.queryAll(
-      'SELECT id, metadata_json, created_at FROM mediciones WHERE usuario_id = $1 ORDER BY created_at DESC',
-      [duenoDe(v.f)]
-    );
-    const cedula = soloDigitos(aObjeto(v.f.beneficiario_json).cedula);
-    const mediciones = filas
-      .map(aMedicionAdjunta)
-      .filter((m) => m.puntos.length >= 3)
-      .map((m) => ({ ...m, delBeneficiario: !!cedula && soloDigitos(m.beneficiario_cedula) === cedula }))
-      .sort((a, b) => Number(b.delBeneficiario) - Number(a.delBeneficiario));
     res.json({
       estado: 'ok',
-      actual: v.actividad.medicion_historial?.id || null,
-      actual2: v.actividad.medicion_historial_2?.id || null,
-      mediciones,
+      actuales: leerPoligonos(v.actividad).map((m) => m.id),
+      mediciones: await medicionesOfrecidas(v),
     });
   } catch (error) {
     console.error('[EdicionVisitas] Error al listar mediciones:', error);
@@ -240,16 +249,64 @@ router.get('/:id/mediciones', authenticateToken, soloAutorizados, async (req, re
   }
 });
 
-// PUT /api/edicion-visitas/:id/poligono
-//   { posicion: 1|2, medicionId }                       → desde una medición del técnico
-//   { posicion: 1|2, kml: { nombre, puntos: [...] } }   → desde un archivo KML/KMZ
-router.put('/:id/poligono', authenticateToken, soloAutorizados, async (req, res) => {
+// PUT /api/edicion-visitas/:id/poligonos — { medicionIds: [...] }
+// Selección múltiple: las marcadas quedan (las nuevas se agregan al final),
+// las desmarcadas de la lista se quitan, y los polígonos KML o los que la
+// lista no ofrecía se conservan.
+router.put('/:id/poligonos', authenticateToken, soloAutorizados, async (req, res) => {
   try {
-    const posicion = Number(req.body?.posicion ?? 1);
-    const clave = CLAVE_POLIGONO[posicion];
-    if (!clave) return res.status(400).json({ estado: 'error', mensaje: 'Posición de polígono inválida (1 o 2)' });
+    const ids = req.body?.medicionIds;
+    if (!Array.isArray(ids) || ids.some((x) => typeof x !== 'string')) {
+      return res.status(400).json({ estado: 'error', mensaje: 'Se requiere medicionIds (lista de ids)' });
+    }
     const v = await cargarVisita2(req, res);
     if (!v) return;
+    const ofrecidas = await medicionesOfrecidas(v);
+    const porId = new Map(ofrecidas.map((m) => [m.id, m]));
+    const unicos = [...new Set(ids)];
+    const fuera = unicos.filter((id) => !porId.has(id));
+    if (fuera.length > 0) {
+      return res.status(400).json({ estado: 'error', mensaje: 'Alguna medición no pertenece al técnico y beneficiario de esta visita' });
+    }
+    const elegidas = unicos.map((id) => {
+      const { beneficiario_cedula, delBeneficiario, cercana, distancia_m, ...adjunta } = porId.get(id);
+      return adjunta;
+    });
+    const antes = leerPoligonos(v.actividad);
+    const nueva = aplicarSeleccion(antes, ofrecidas.map((m) => m.id), elegidas);
+    if (nueva.length > MAX_POLIGONOS) {
+      return res.status(400).json({ estado: 'error', mensaje: `Máximo ${MAX_POLIGONOS} polígonos por visita` });
+    }
+    escribirPoligonos(v.actividad, nueva);
+    await guardarActividad(v.f.id, v.actividad);
+    await auditar(req, 'seleccionar_poligonos_visita2', {
+      formulario_id: v.f.id,
+      anteriores: antes.map((m) => m.id),
+      nuevos: nueva.map((m) => m.id),
+    });
+    res.json({ estado: 'ok', actividad: v.actividad });
+  } catch (error) {
+    console.error('[EdicionVisitas] Error al guardar la selección de polígonos:', error);
+    res.status(500).json({ estado: 'error', mensaje: 'Error al guardar los polígonos' });
+  }
+});
+
+// PUT /api/edicion-visitas/:id/poligono
+//   { posicion?, medicionId }                       → desde una medición del técnico
+//   { posicion?, kml: { nombre, puntos: [...] } }   → desde un archivo KML/KMZ
+// `posicion` (1..N) reemplaza ese polígono; sin posición (o N+1) se AGREGA uno nuevo.
+router.put('/:id/poligono', authenticateToken, soloAutorizados, async (req, res) => {
+  try {
+    const v = await cargarVisita2(req, res);
+    if (!v) return;
+    const lista = leerPoligonos(v.actividad);
+    const posicion = req.body?.posicion == null ? lista.length + 1 : Number(req.body.posicion);
+    if (!Number.isInteger(posicion) || posicion < 1 || posicion > lista.length + 1) {
+      return res.status(400).json({ estado: 'error', mensaje: 'Posición de polígono inválida' });
+    }
+    if (posicion > lista.length && lista.length >= MAX_POLIGONOS) {
+      return res.status(400).json({ estado: 'error', mensaje: `Máximo ${MAX_POLIGONOS} polígonos por visita` });
+    }
 
     let adjunta;
     let origen;
@@ -271,7 +328,7 @@ router.put('/:id/poligono', authenticateToken, soloAutorizados, async (req, res)
       origen = 'kml';
     } else {
       const m = await db.queryOne(
-        'SELECT id, metadata_json, created_at FROM mediciones WHERE id = $1 AND usuario_id = $2',
+        'SELECT id, metadata_json, created_at, "timestamp" FROM mediciones WHERE id = $1 AND usuario_id = $2',
         [String(req.body?.medicionId || ''), duenoDe(v.f)]
       );
       if (!m) return res.status(404).json({ estado: 'error', mensaje: 'Medición no encontrada para el técnico de esta visita' });
@@ -282,15 +339,14 @@ router.put('/:id/poligono', authenticateToken, soloAutorizados, async (req, res)
     }
 
     const { actividad } = v;
-    const otra = actividad[CLAVE_POLIGONO[posicion === 1 ? 2 : 1]];
-    if (origen === 'medicion' && otra?.id === adjunta.id) {
-      return res.status(409).json({ estado: 'error', mensaje: 'Esa medición ya está cargada en el otro polígono' });
+    const repetida = lista.findIndex((m, i) => i !== posicion - 1 && m.id === adjunta.id);
+    if (origen === 'medicion' && repetida >= 0) {
+      return res.status(409).json({ estado: 'error', mensaje: `Esa medición ya está cargada como polígono ${repetida + 1}` });
     }
-    const anterior = actividad[clave]?.id || null;
-    actividad[clave] = adjunta;
-    const datos = actividad.visita_datos && typeof actividad.visita_datos === 'object' ? actividad.visita_datos : {};
-    datos[clave] = adjunta;
-    actividad.visita_datos = datos;
+    const anterior = lista[posicion - 1]?.id || null;
+    const nueva = [...lista];
+    nueva[posicion - 1] = adjunta;
+    escribirPoligonos(actividad, nueva);
 
     await guardarActividad(v.f.id, actividad);
     await auditar(req, 'cargar_poligono_visita2', { formulario_id: v.f.id, posicion, origen, anterior, nuevo: adjunta.id, area_hectareas: adjunta.area_hectareas });
@@ -301,19 +357,21 @@ router.put('/:id/poligono', authenticateToken, soloAutorizados, async (req, res)
   }
 });
 
-// DELETE /api/edicion-visitas/:id/poligono/2 — quitar el segundo polígono (el 1 no se quita)
+// DELETE /api/edicion-visitas/:id/poligono/:posicion — quitar el polígono N (1..N)
 router.delete('/:id/poligono/:posicion', authenticateToken, soloAutorizados, async (req, res) => {
   try {
-    if (Number(req.params.posicion) !== 2) return res.status(400).json({ estado: 'error', mensaje: 'Solo se puede quitar el polígono 2' });
     const v = await cargarVisita2(req, res);
     if (!v) return;
     const { actividad } = v;
-    const anterior = actividad.medicion_historial_2?.id || null;
-    if (!anterior) return res.status(404).json({ estado: 'error', mensaje: 'La visita no tiene polígono 2' });
-    delete actividad.medicion_historial_2;
-    if (actividad.visita_datos && typeof actividad.visita_datos === 'object') delete actividad.visita_datos.medicion_historial_2;
+    const lista = leerPoligonos(actividad);
+    const posicion = Number(req.params.posicion);
+    if (!Number.isInteger(posicion) || posicion < 1 || posicion > lista.length) {
+      return res.status(404).json({ estado: 'error', mensaje: `La visita no tiene polígono ${req.params.posicion}` });
+    }
+    const anterior = lista[posicion - 1].id || null;
+    escribirPoligonos(actividad, lista.filter((_, i) => i !== posicion - 1));
     await guardarActividad(v.f.id, actividad);
-    await auditar(req, 'quitar_poligono_visita2', { formulario_id: v.f.id, posicion: 2, anterior });
+    await auditar(req, 'quitar_poligono_visita2', { formulario_id: v.f.id, posicion, anterior });
     res.json({ estado: 'ok', actividad });
   } catch (error) {
     console.error('[EdicionVisitas] Error al quitar polígono:', error);

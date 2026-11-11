@@ -73,7 +73,15 @@ const NotificacionBell: React.FC<NotificacionBellProps> = ({ formularioDetailScr
       setCargandoDetalle(null);
       if (formulario) {
         setVisible(false);
-        navigation.navigate(formularioDetailScreen, { formulario });
+        // Aviso de «corrección por verificar» a un revisor: se abre directo
+        // en modo revisión en línea, con los controles de Aprobado/Novedad,
+        // para que pueda verificar y dar el visto bueno sin buscarlo.
+        const abrirEnRevision =
+          n.tipo === 'correccion_formulario' && formularioDetailScreen !== 'FormularioDetail';
+        navigation.navigate(
+          formularioDetailScreen,
+          abrirEnRevision ? { formulario, modo: 'online' } : { formulario }
+        );
       }
     }
   }, [formularioDetailScreen, navigation]);

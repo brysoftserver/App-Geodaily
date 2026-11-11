@@ -46,6 +46,7 @@ import { ActividadRealizada, Coordenadas, DatosBeneficiario, ResumenClimatico } 
 import { resolverClimaYUbicacion } from '../../services/climate.service';
 import DropdownPicker from '../../components/DropdownPicker';
 import CapturaGPSPrecisa from '../../components/CapturaGPSPrecisa';
+import SelectorBeneficiarioModal from '../../components/SelectorBeneficiarioModal';
 import {
   guardarBorrador,
   getBorrador,
@@ -212,7 +213,18 @@ const VisitaTecnica3FormScreen: React.FC<Props> = ({ navigation, route }) => {
   /** Beneficiario del borrador que se retoma: manda sobre parámetros y contexto. */
   const [beneficiarioBorrador, setBeneficiarioBorrador] = useState<DatosBeneficiario | undefined>(undefined);
 
-  const beneficiario = draftId
+  /**
+   * «Cambiar beneficiario» (caso excepcional): lo diligenciado se tomó dentro
+   * de un beneficiario que YA tiene esta visita. El elegido manda sobre todos.
+   */
+  const [beneficiarioElegido, setBeneficiarioElegido] = useState<DatosBeneficiario | undefined>(undefined);
+  const [mostrarSelectorBenef, setMostrarSelectorBenef] = useState(false);
+  const [requiereCambioBenef, setRequiereCambioBenef] = useState(false);
+  const cambioBenefPorGuardarRef = useRef(false);
+
+  const beneficiario = beneficiarioElegido
+    ? beneficiarioElegido
+    : draftId
     ? resolverBeneficiarioVisita(beneficiarioBorrador, beneficiarioParam, formularioActual?.beneficiario)
     // Formulario NUEVO: solo el beneficiario elegido en la navegación. El del
     // contexto global puede ser el de un formulario anterior (otro beneficiario).
@@ -352,7 +364,14 @@ const VisitaTecnica3FormScreen: React.FC<Props> = ({ navigation, route }) => {
         if (draft) {
           const yaExiste = await buscarVisitaYaCompletada(draft.beneficiario?.cedula, VISITA3_NUMERO);
           if (yaExiste) {
-            avisarVisitaYaRegistrada(navigation, yaExiste, 'La Visita Técnica 3');
+            avisarVisitaYaRegistrada(navigation, yaExiste, 'La Visita Técnica 3', () => {
+              // Se carga el borrador para no perder nada, pero sin autoguardado
+              // hasta que el técnico elija el beneficiario correcto.
+              llaveRef.current = draft.llave || construirLlave(user?.id, draft.beneficiario?.cedula, VISITA3_NUMERO);
+              aplicarBorrador(draft);
+              setRequiereCambioBenef(true);
+              setMostrarSelectorBenef(true);
+            });
             return;
           }
           llaveRef.current = draft.llave || construirLlave(user?.id, draft.beneficiario?.cedula, VISITA3_NUMERO);
@@ -373,7 +392,10 @@ const VisitaTecnica3FormScreen: React.FC<Props> = ({ navigation, route }) => {
           return;
         }
         if (decision.estado === 'bloqueada') {
-          avisarVisitaYaRegistrada(navigation, decision.formulario, 'La Visita Técnica 3');
+          avisarVisitaYaRegistrada(navigation, decision.formulario, 'La Visita Técnica 3', () => {
+            setRequiereCambioBenef(true);
+            setMostrarSelectorBenef(true);
+          });
           return;
         }
         llaveRef.current = decision.llave;
@@ -597,6 +619,51 @@ const VisitaTecnica3FormScreen: React.FC<Props> = ({ navigation, route }) => {
     }
   }, [armarBorrador, encolarEvidencias, formularioActual?.id, beneficiario?.cedula]);
 
+  // ─── Cambiar beneficiario (caso excepcional) ───────────────
+  const abrirSelectorBenef = useCallback(() => setMostrarSelectorBenef(true), []);
+
+  const elegirNuevoBeneficiario = useCallback(
+    async (nuevo: DatosBeneficiario) => {
+      setMostrarSelectorBenef(false);
+      // El mismo beneficiario, u otro que ya tenga esta visita: mismo aviso de siempre.
+      const yaExiste = await buscarVisitaYaCompletada(nuevo.cedula, VISITA3_NUMERO);
+      if (yaExiste) {
+        setTimeout(
+          () => avisarVisitaYaRegistrada(navigation, yaExiste, 'La Visita Técnica 3', abrirSelectorBenef),
+          350
+        );
+        return;
+      }
+      const llave = construirLlave(user?.id, nuevo.cedula, VISITA3_NUMERO);
+      if (!llave) {
+        Alert.alert('No se pudo cambiar', 'El beneficiario elegido no tiene cédula registrada o la sesión del técnico no está disponible.');
+        return;
+      }
+      llaveRef.current = llave;
+      cambioBenefPorGuardarRef.current = true;
+      setBeneficiarioElegido(nuevo);
+      setBeneficiario(nuevo);
+      setRequiereCambioBenef(false);
+      borradorListoRef.current = true;
+    },
+    [navigation, abrirSelectorBenef, user?.id, setBeneficiario]
+  );
+
+  // Tras el cambio: guardar el borrador con el nuevo beneficiario y reasignar
+  // las fotos/videos de la cola local a su cédula.
+  useEffect(() => {
+    if (!cambioBenefPorGuardarRef.current || !beneficiarioElegido) return;
+    cambioBenefPorGuardarRef.current = false;
+    autoguardarRef.current?.();
+    const id = formIdRef.current || formularioActual?.id;
+    if (id) {
+      encolarEvidencias(id).catch((e) =>
+        console.warn('[Visita3] No se pudieron reasignar evidencias al nuevo beneficiario:', e)
+      );
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [beneficiarioElegido]);
+
   // ─── Validación ───────────────────────────────────────────
   const faltantes = React.useMemo(() => {
     const f: string[] = [];
@@ -615,6 +682,15 @@ const VisitaTecnica3FormScreen: React.FC<Props> = ({ navigation, route }) => {
   // ─── Completar ────────────────────────────────────────────
   const handleCompletar = useCallback(async () => {
     if (isSubmitting) return;
+
+    // Una sola visita por beneficiario: si el beneficiario en pantalla ya la
+    // tiene (p. ej. el técnico no lo cambió), se bloquea con el mismo aviso.
+    const yaExiste = await buscarVisitaYaCompletada(beneficiario?.cedula, VISITA3_NUMERO);
+    if (yaExiste) {
+      avisarVisitaYaRegistrada(navigation, yaExiste, 'La Visita Técnica 3', abrirSelectorBenef);
+      return;
+    }
+
     setIsSubmitting(true);
 
     try {
@@ -741,6 +817,8 @@ const VisitaTecnica3FormScreen: React.FC<Props> = ({ navigation, route }) => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     isSubmitting,
+    beneficiario?.cedula,
+    abrirSelectorBenef,
     coords,
     climaResuelto,
     construirActividad,
@@ -851,6 +929,17 @@ const VisitaTecnica3FormScreen: React.FC<Props> = ({ navigation, route }) => {
 
         {/* ─── 2. Datos del beneficiario ─────────────────── */}
         <ItemCard numero={2} titulo="Datos del beneficiario" completo={!!beneficiario?.nombre}>
+          {requiereCambioBenef && (
+            <View style={styles.cambioBenefBox}>
+              <Text style={styles.cambioBenefTexto}>
+                ⚠️ Este beneficiario ya tiene registrada esta visita. Elige el beneficiario al que
+                corresponde lo diligenciado para poder completar.
+              </Text>
+              <TouchableOpacity style={styles.cambioBenefBtn} onPress={abrirSelectorBenef} activeOpacity={0.7}>
+                <Text style={styles.cambioBenefBtnTexto}>👤 Cambiar beneficiario</Text>
+              </TouchableOpacity>
+            </View>
+          )}
           {beneficiario ? (
             <View style={styles.datosBox}>
               <Text style={styles.datosLinea}>👤 {beneficiario.nombre || '—'}</Text>
@@ -1292,6 +1381,15 @@ const VisitaTecnica3FormScreen: React.FC<Props> = ({ navigation, route }) => {
           )}
         </TouchableOpacity>
       </View>
+
+      <SelectorBeneficiarioModal
+        visible={mostrarSelectorBenef}
+        tecnicoId={user?.id}
+        numeroVisita={VISITA3_NUMERO}
+        cedulaActual={beneficiario?.cedula}
+        onSeleccionar={elegirNuevoBeneficiario}
+        onCerrar={() => setMostrarSelectorBenef(false)}
+      />
     </KeyboardAvoidingView>
   );
 };
@@ -1367,6 +1465,22 @@ const styles = StyleSheet.create({
     marginBottom: SPACING.sm,
   },
   datosLinea: { fontSize: FONTS.sizes.sm, color: COLORS.textPrimary, marginBottom: 3 },
+  cambioBenefBox: {
+    backgroundColor: COLORS.warning + '15',
+    borderRadius: BORDER_RADIUS.md,
+    borderWidth: 1,
+    borderColor: COLORS.warning + '60',
+    padding: SPACING.sm,
+    marginBottom: SPACING.sm,
+  },
+  cambioBenefTexto: { fontSize: FONTS.sizes.sm, color: COLORS.textPrimary, marginBottom: SPACING.sm },
+  cambioBenefBtn: {
+    backgroundColor: COLORS.primary,
+    borderRadius: BORDER_RADIUS.md,
+    paddingVertical: SPACING.sm,
+    alignItems: 'center',
+  },
+  cambioBenefBtnTexto: { color: COLORS.textOnPrimary, fontSize: FONTS.sizes.md, fontWeight: FONTS.weights.bold },
 
   input: {
     borderWidth: 1,

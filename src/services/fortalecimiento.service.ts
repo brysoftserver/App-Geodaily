@@ -93,3 +93,63 @@ export const descargarPdfFortalecimiento = async (id: number): Promise<string> =
   if (status !== 200) throw new Error(`Descarga fallida (${status})`);
   return uri;
 };
+
+// ─── Informe consolidado de una ECA ─────────────────────────
+// El servidor lo arma con los informes de los 7 grupos (formato PM. 2 FO. 12)
+// y todas las fotos; tarda hasta un par de minutos, así que se pide y se
+// consulta el avance. Si ningún archivo cambió, devuelve el último al instante.
+
+export interface ConsolidadoEca {
+  id: number;
+  eca: number;
+  estado: 'generando' | 'listo' | 'error';
+  etapa: string | null;
+  error: string | null;
+  paginas: number | null;
+}
+
+const esperar = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/** Pide el consolidado y espera a que esté listo. `onEtapa` recibe el avance. */
+export const generarConsolidadoEca = async (
+  eca: number,
+  onEtapa?: (etapa: string) => void
+): Promise<ConsolidadoEca> => {
+  const r = await apiClient.post(`${ENDPOINT}/ecas/${eca}/consolidado`, {});
+  let c: ConsolidadoEca = r.data.consolidado;
+  const limite = Date.now() + 8 * 60 * 1000;
+  while (c.estado === 'generando') {
+    if (c.etapa) onEtapa?.(c.etapa);
+    if (Date.now() > limite) throw new Error('El informe está tardando demasiado. Inténtalo de nuevo en unos minutos.');
+    await esperar(3000);
+    try {
+      c = (await apiClient.get(`${ENDPOINT}/consolidado/${c.id}`)).data.consolidado;
+    } catch (e: any) {
+      // Un corte de red momentáneo no cancela la espera.
+      if (e?.response) throw e;
+    }
+  }
+  if (c.estado === 'error') throw new Error(c.error || 'No se pudo generar el informe consolidado.');
+  return c;
+};
+
+/**
+ * PDF del consolidado listo para el visor: en nativo se descarga a caché; en
+ * web se devuelve la URL con el token.
+ */
+export const descargarConsolidadoEca = async (c: ConsolidadoEca): Promise<string> => {
+  const url = `${API_CONFIG.BASE_URL}${ENDPOINT}/consolidado/${c.id}/pdf`;
+  const token = await getApiAuthToken();
+  if (Platform.OS === 'web') return token ? `${url}?token=${encodeURIComponent(token)}` : url;
+  const destino = `${FileSystem.cacheDirectory}Consolidado_ECA_${c.eca}_${c.id}.pdf`;
+  const info = await FileSystem.getInfoAsync(destino);
+  if (info.exists && (info.size ?? 0) > 0) return destino;
+  const { uri, status } = await FileSystem.downloadAsync(url, destino, {
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+  });
+  if (status !== 200) {
+    await FileSystem.deleteAsync(destino, { idempotent: true });
+    throw new Error(`Descarga fallida (${status})`);
+  }
+  return uri;
+};

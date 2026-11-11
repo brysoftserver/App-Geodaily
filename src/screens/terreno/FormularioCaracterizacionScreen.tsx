@@ -98,6 +98,7 @@ import {
 } from '../../types';
 import DropdownPicker from '../../components/DropdownPicker';
 import CapturaGPSPrecisa from '../../components/CapturaGPSPrecisa';
+import SelectorBeneficiarioModal from '../../components/SelectorBeneficiarioModal';
 
 type Props = {
   navigation: NativeStackNavigationProp<Record<string, any>>;
@@ -316,6 +317,13 @@ const EncuestaSocialAgroambientalScreen: React.FC<Props> = ({ navigation, route 
   const inicializadoRef = useRef(false);
   /** La cédula del beneficiario es su identidad: no se edita cuando el formulario viene de su ficha. */
   const [cedulaBloqueada, setCedulaBloqueada] = useState(false);
+  /**
+   * «Cambiar beneficiario» (caso excepcional): lo diligenciado se tomó dentro
+   * de un beneficiario que YA tiene la encuesta registrada.
+   */
+  const [mostrarSelectorBenef, setMostrarSelectorBenef] = useState(false);
+  const [requiereCambioBenef, setRequiereCambioBenef] = useState(false);
+  const [cambiosBenef, setCambiosBenef] = useState(0);
 
   // ─── Estado del formulario ────────────────────────────────
   const [data, setData] = useState<EncuestaSocialAgroAmbiental>({ ...EMPTY_ENCUESTA });
@@ -455,7 +463,15 @@ const EncuestaSocialAgroambientalScreen: React.FC<Props> = ({ navigation, route 
           // Una sola encuesta por beneficiario: si ya se completó, se bloquea.
           const yaExiste = await buscarVisitaYaCompletada(draft.beneficiario?.cedula, 1);
           if (yaExiste) {
-            avisarVisitaYaRegistrada(navigation, yaExiste, 'La Encuesta Social AgroAmbiental (Visita 1)');
+            avisarVisitaYaRegistrada(navigation, yaExiste, 'La Encuesta Social AgroAmbiental (Visita 1)', () => {
+              // Se carga el borrador para no perder nada, pero sin autoguardado
+              // hasta que el técnico elija el beneficiario correcto.
+              llaveRef.current = draft.llave || construirLlave(user?.id, draft.beneficiario?.cedula, 1);
+              if (llaveRef.current) setCedulaBloqueada(true);
+              aplicarBorrador(draft);
+              setRequiereCambioBenef(true);
+              setMostrarSelectorBenef(true);
+            });
             return;
           }
           llaveRef.current = draft.llave || construirLlave(user?.id, draft.beneficiario?.cedula, 1);
@@ -481,7 +497,10 @@ const EncuestaSocialAgroambientalScreen: React.FC<Props> = ({ navigation, route 
           return;
         }
         if (decision.estado === 'bloqueada') {
-          avisarVisitaYaRegistrada(navigation, decision.formulario, 'La Encuesta Social AgroAmbiental (Visita 1)');
+          avisarVisitaYaRegistrada(navigation, decision.formulario, 'La Encuesta Social AgroAmbiental (Visita 1)', () => {
+            setRequiereCambioBenef(true);
+            setMostrarSelectorBenef(true);
+          });
           return;
         }
         llaveRef.current = decision.llave;
@@ -1109,6 +1128,47 @@ const EncuestaSocialAgroambientalScreen: React.FC<Props> = ({ navigation, route 
     [navigation]
   );
 
+  // ─── Cambiar beneficiario (caso excepcional) ───────────────
+  const abrirSelectorBenef = useCallback(() => setMostrarSelectorBenef(true), []);
+
+  const elegirNuevoBeneficiario = useCallback(
+    async (nuevo: DatosBeneficiario) => {
+      setMostrarSelectorBenef(false);
+      // El mismo beneficiario, u otro que ya tenga la encuesta: mismo aviso de siempre.
+      const yaExiste = await buscarVisitaYaCompletada(nuevo.cedula, 1);
+      if (yaExiste) {
+        setTimeout(() => avisarVisitaYaRegistrada(navigation, yaExiste, 'La Encuesta Social AgroAmbiental (Visita 1)', abrirSelectorBenef), 350);
+        return;
+      }
+      const llave = construirLlave(user?.id, nuevo.cedula, 1);
+      if (!llave) {
+        Alert.alert('No se pudo cambiar', 'El beneficiario elegido no tiene cédula registrada o la sesión del técnico no está disponible.');
+        return;
+      }
+      llaveRef.current = llave;
+      setCedulaBloqueada(true);
+      setBeneficiario(nuevo);
+      setData((prev) => ({
+        ...prev,
+        productor_nombre: nuevo.nombre || '',
+        documento: nuevo.cedula || '',
+        telefono: nuevo.telefono || prev.telefono,
+        vereda: nuevo.vereda || prev.vereda,
+        corregimiento: nuevo.corregimiento || prev.corregimiento,
+      }));
+      if (nuevo.vereda || nuevo.corregimiento) setDatosBloqueados(true);
+      setRequiereCambioBenef(false);
+      borradorListoRef.current = true;
+      setCambiosBenef((n) => n + 1);
+    },
+    [navigation, abrirSelectorBenef, user?.id, setBeneficiario]
+  );
+
+  // Tras el cambio: guardar el borrador con el nuevo beneficiario (ya en `data`).
+  useEffect(() => {
+    if (cambiosBenef > 0) autoguardarRef.current?.();
+  }, [cambiosBenef]);
+
   // ─── Completar formulario ────────────────────────────────
   const handleCompletar = useCallback(async () => {
     if (isSubmitting) return;
@@ -1119,6 +1179,13 @@ const EncuestaSocialAgroambientalScreen: React.FC<Props> = ({ navigation, route 
     }
     if (!data.documento.trim()) {
       Alert.alert('Campo requerido', 'El número de documento es obligatorio');
+      return;
+    }
+    // Una sola encuesta por beneficiario: si el documento en pantalla ya la
+    // tiene (p. ej. el técnico no cambió el beneficiario), mismo aviso.
+    const yaExisteEncuesta = await buscarVisitaYaCompletada(data.documento, 1);
+    if (yaExisteEncuesta) {
+      avisarVisitaYaRegistrada(navigation, yaExisteEncuesta, 'La Encuesta Social AgroAmbiental (Visita 1)', abrirSelectorBenef);
       return;
     }
     // La coordenada de la finca (P20) es opcional: si el GPS no dio fix, el
@@ -1381,6 +1448,7 @@ const EncuestaSocialAgroambientalScreen: React.FC<Props> = ({ navigation, route 
     data,
     coordenadas,
     isSubmitting,
+    abrirSelectorBenef,
     formularioActual,
     draftId,
     user,
@@ -1590,6 +1658,18 @@ const EncuestaSocialAgroambientalScreen: React.FC<Props> = ({ navigation, route 
                 <TouchableOpacity onPress={() => setDatosBloqueados(false)} style={styles.editarManualBtn}>
                   <Text style={styles.editarManualBtnText}>✏️ Editar vereda / corregimiento manualmente</Text>
                 </TouchableOpacity>
+              )}
+
+              {requiereCambioBenef && (
+                <View style={styles.cambioBenefBox}>
+                  <Text style={styles.cambioBenefTexto}>
+                    ⚠️ Este beneficiario ya tiene registrada la encuesta. Elige el beneficiario al que
+                    corresponde lo diligenciado para poder completar.
+                  </Text>
+                  <TouchableOpacity style={styles.cambioBenefBtn} onPress={abrirSelectorBenef} activeOpacity={0.7}>
+                    <Text style={styles.cambioBenefBtnTexto}>👤 Cambiar beneficiario</Text>
+                  </TouchableOpacity>
+                </View>
               )}
 
               {renderField('Nombre del productor', data.productor_nombre, (t) => updateData({ productor_nombre: t }), {
@@ -2548,6 +2628,15 @@ const EncuestaSocialAgroambientalScreen: React.FC<Props> = ({ navigation, route 
         )}
       </View>
       </AppBackground>
+
+      <SelectorBeneficiarioModal
+        visible={mostrarSelectorBenef}
+        tecnicoId={user?.id}
+        numeroVisita={1}
+        cedulaActual={data.documento}
+        onSeleccionar={elegirNuevoBeneficiario}
+        onCerrar={() => setMostrarSelectorBenef(false)}
+      />
     </SafeAreaView>
   );
 };
@@ -2662,6 +2751,22 @@ const styles = StyleSheet.create({
     alignSelf: 'flex-start',
     marginBottom: SPACING.sm,
   },
+  cambioBenefBox: {
+    backgroundColor: COLORS.warning + '15',
+    borderRadius: BORDER_RADIUS.md,
+    borderWidth: 1,
+    borderColor: COLORS.warning + '60',
+    padding: SPACING.sm,
+    marginBottom: SPACING.sm,
+  },
+  cambioBenefTexto: { fontSize: FONTS.sizes.sm, color: COLORS.textPrimary, marginBottom: SPACING.sm },
+  cambioBenefBtn: {
+    backgroundColor: COLORS.primary,
+    borderRadius: BORDER_RADIUS.md,
+    paddingVertical: SPACING.sm,
+    alignItems: 'center',
+  },
+  cambioBenefBtnTexto: { color: COLORS.textOnPrimary, fontSize: FONTS.sizes.md, fontWeight: FONTS.weights.bold },
   editarManualBtnText: {
     fontSize: FONTS.sizes.sm,
     color: COLORS.primary,

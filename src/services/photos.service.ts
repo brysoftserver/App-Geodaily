@@ -2,6 +2,7 @@
 // GEODAILY — Servicio de Fotos / Cámara
 // ============================================================
 
+import { Platform } from 'react-native';
 import apiClient, { isOfflineError } from './api';
 import { API_CONFIG } from '../theme';
 import { recordSyncFailure } from './syncDiagnostics';
@@ -53,12 +54,19 @@ export const uploadPhoto = async (
     const formData = new FormData();
     const desdeAlmacenamiento = origen === 'almacenamiento';
 
-    // @ts-expect-error — React Native FormData
-    formData.append('archivo', {
-      uri: photoUri,
-      type: 'image/jpeg',
-      name: `foto_${Date.now()}.jpg`,
-    });
+    if (Platform.OS === 'web') {
+      // En el navegador FormData solo acepta Blob/File: el objeto {uri,…}
+      // de React Native se enviaría como el texto "[object Object]".
+      const blob = await (await fetch(photoUri)).blob();
+      formData.append('archivo', blob, `foto_${Date.now()}.jpg`);
+    } else {
+      // @ts-expect-error — React Native FormData
+      formData.append('archivo', {
+        uri: photoUri,
+        type: 'image/jpeg',
+        name: `foto_${Date.now()}.jpg`,
+      });
+    }
 
     if (desdeAlmacenamiento) {
       formData.append('origen', 'almacenamiento');

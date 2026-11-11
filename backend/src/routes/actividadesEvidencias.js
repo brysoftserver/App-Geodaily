@@ -9,13 +9,15 @@
 //      desde el almacenamiento del dispositivo.
 // Las fotos quedan en MinIO dentro de la carpeta del beneficiario:
 //   tecnicos/{usuario}/{item}_{nombre}/{actividad}/{momento}/{archivo}
-// El técnico dueño del beneficiario escribe; los roles superiores solo leen.
+// El técnico dueño del beneficiario escribe; el admin también puede subir,
+// quitar y reemplazar fotos y actas. Los demás roles superiores solo leen.
 // ============================================================
 
 const express = require('express');
 const multer = require('multer');
 const { authenticateToken, authenticateTokenOrQuery } = require('../middleware/auth');
 const db = require('../database');
+const { quitarRevision } = require('../lib/revisionInterventoria');
 const storage = require('../storage');
 
 const router = express.Router();
@@ -71,6 +73,10 @@ async function resolverBeneficiario(req, res) {
 }
 
 const esDuenoTecnico = (user, b) => user?.rol === 'tecnico' && b.tecnico_asignado_id === user.id;
+const esAdmin = (user) => user?.rol === 'admin';
+
+const TIPO_ACTA = 'acta_entrega_individual';
+const esPdf = (buf) => buf && buf.length > 4 && buf.subarray(0, 4).toString('latin1') === '%PDF';
 
 // Las rutas /foto/:id van ANTES de /:actividad/:item: si no, GET /foto/5 se leería
 // como actividad='foto', item=5 y respondería 404.
@@ -82,7 +88,7 @@ async function fotoConPermiso(req, res, { soloEscritura }) {
     return null;
   }
   const foto = await db.queryOne(
-    `SELECT e.id, e.storage_key, e.nombre_archivo, b.tecnico_asignado_id
+    `SELECT e.id, e.storage_key, e.nombre_archivo, e.actividad, e.beneficiario_item, b.tecnico_asignado_id
      FROM actividad_evidencias e
      LEFT JOIN beneficiarios b ON b.item = e.beneficiario_item
      WHERE e.id = $1`,
@@ -129,6 +135,8 @@ router.delete('/foto/:id', authenticateToken, async (req, res) => {
     if (!foto) return;
     await storage.deleteFile(foto.storage_key);
     await db.query('DELETE FROM actividad_evidencias WHERE id = $1', [foto.id]);
+    // El registro cambió: vuelve a quedar pendiente de la interventoría.
+    await quitarRevision(foto.actividad, foto.beneficiario_item);
     res.json({ estado: 'ok', mensaje: 'Foto eliminada' });
   } catch (error) {
     console.error('[ActividadEvidencias] Error al eliminar:', error);
@@ -218,13 +226,117 @@ router.get('/:actividad/:item', authenticateToken, async (req, res) => {
   }
 });
 
-// POST /api/actividades-evidencias/:actividad/:item/:momento — técnico dueño (multipart: archivo)
+// ─── Actas (solo admin) ─────────────────────────────────────
+// POST /api/actividades-evidencias/:actividad/:item/acta — admin (multipart: archivo PDF)
+//   body.actaId (opcional): reemplaza el PDF de esa acta; sin él crea un acta nueva
+//   de esta actividad, atribuida al técnico dueño del beneficiario.
+// Va ANTES de /:actividad/:item/:momento para que 'acta' no se lea como momento.
+router.post('/:actividad/:item/acta', authenticateToken, upload.single('archivo'), async (req, res) => {
+  try {
+    if (!esAdmin(req.user)) {
+      return res.status(403).json({ estado: 'error', mensaje: 'Solo un administrador puede subir o reemplazar actas' });
+    }
+    const b = await resolverBeneficiario(req, res);
+    if (!b) return;
+    if (!req.file) return res.status(400).json({ estado: 'error', mensaje: 'Archivo requerido' });
+    if (!esPdf(req.file.buffer)) return res.status(400).json({ estado: 'error', mensaje: 'El archivo debe ser un PDF' });
+
+    let acta;
+    const actaId = String(req.body?.actaId || '').trim();
+    if (actaId) {
+      acta = await db.queryOne(
+        `SELECT id, instancia, tecnico_usuario FROM otros_formatos
+          WHERE id = $1 AND tipo = $2 AND beneficiario_cedula = $3 AND datos->>'actividadId' = $4`,
+        [actaId, TIPO_ACTA, b.cedula, req.params.actividad]
+      );
+      if (!acta) return res.status(404).json({ estado: 'error', mensaje: 'Acta no encontrada' });
+    } else {
+      const tecnico = b.tecnico_asignado_id
+        ? await db.queryOne('SELECT id, nombre, usuario FROM usuarios WHERE id = $1', [b.tecnico_asignado_id])
+        : null;
+      const instancia = `adm${Date.now().toString(36)}`;
+      const id = `of-${TIPO_ACTA}-${b.cedula}-${instancia}`;
+      const datos = {
+        actividadId: req.params.actividad,
+        instancia,
+        fecha: new Date().toISOString(),
+        nombre: b.nombre_completo,
+        cedula: b.cedula,
+        actividades: [],
+        faltantes: [],
+        cargadaPorAdmin: req.user.usuario,
+      };
+      await db.query(
+        `INSERT INTO otros_formatos (id, tecnico_id, tecnico_nombre, tecnico_usuario, beneficiario_cedula,
+           beneficiario_nombre, tipo, datos, completo, instancia, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, TRUE, $9, NOW(), NOW())`,
+        [
+          id,
+          tecnico?.id || req.user.id,
+          tecnico?.nombre || req.user.nombre || req.user.usuario,
+          tecnico?.usuario || req.user.usuario,
+          b.cedula,
+          b.nombre_completo,
+          TIPO_ACTA,
+          JSON.stringify(datos),
+          instancia,
+        ]
+      );
+      acta = { id, instancia, tecnico_usuario: tecnico?.usuario || req.user.usuario };
+    }
+
+    const filename = `${TIPO_ACTA}_${b.cedula}${acta.instancia ? `_${acta.instancia}` : ''}.pdf`;
+    const objeto = await storage.uploadFile('tecnico', acta.tecnico_usuario || b.tecnico_usuario || req.user.usuario, 'otros_formatos', filename, req.file.buffer, {
+      contentType: 'application/pdf',
+      beneficiarioItem: b.item,
+      beneficiarioNombre: b.nombre_completo,
+    });
+    await db.query(
+      'UPDATE otros_formatos SET pdf_path = $2, pdf_size = $3, pdf_actualizado = NOW(), updated_at = NOW() WHERE id = $1',
+      [acta.id, objeto.path, req.file.size]
+    );
+    await quitarRevision(req.params.actividad, b.item);
+    console.log(`[ActividadEvidencias] Acta ${acta.id} ${actaId ? 'reemplazada' : 'cargada'} por admin ${req.user.usuario}`);
+    res.json({ estado: 'ok', id: acta.id });
+  } catch (error) {
+    console.error('[ActividadEvidencias] Error al subir acta:', error);
+    res.status(500).json({ estado: 'error', mensaje: 'Error al subir el acta' });
+  }
+});
+
+// DELETE /api/actividades-evidencias/:actividad/:item/acta/:id — solo admin
+router.delete('/:actividad/:item/acta/:id', authenticateToken, async (req, res) => {
+  try {
+    if (!esAdmin(req.user)) {
+      return res.status(403).json({ estado: 'error', mensaje: 'Solo un administrador puede eliminar actas' });
+    }
+    const b = await resolverBeneficiario(req, res);
+    if (!b) return;
+    const acta = await db.queryOne(
+      `SELECT id, pdf_path FROM otros_formatos
+        WHERE id = $1 AND tipo = $2 AND beneficiario_cedula = $3 AND datos->>'actividadId' = $4`,
+      [req.params.id, TIPO_ACTA, b.cedula, req.params.actividad]
+    );
+    if (!acta) return res.status(404).json({ estado: 'error', mensaje: 'Acta no encontrada' });
+    if (acta.pdf_path) await storage.deleteFile(acta.pdf_path).catch(() => {});
+    await db.query('DELETE FROM otros_formatos_observaciones WHERE formato_id = $1', [acta.id]);
+    await db.query('DELETE FROM otros_formatos WHERE id = $1', [acta.id]);
+    await quitarRevision(req.params.actividad, b.item);
+    console.log(`[ActividadEvidencias] Acta ${acta.id} eliminada por admin ${req.user.usuario}`);
+    res.json({ estado: 'ok', mensaje: 'Acta eliminada' });
+  } catch (error) {
+    console.error('[ActividadEvidencias] Error al eliminar acta:', error);
+    res.status(500).json({ estado: 'error', mensaje: 'Error al eliminar el acta' });
+  }
+});
+
+// POST /api/actividades-evidencias/:actividad/:item/:momento — técnico dueño o admin (multipart: archivo)
 router.post('/:actividad/:item/:momento', authenticateToken, upload.single('archivo'), async (req, res) => {
   try {
     const b = await resolverBeneficiario(req, res);
     if (!b) return;
-    if (!esDuenoTecnico(req.user, b)) {
-      return res.status(403).json({ estado: 'error', mensaje: 'Solo el técnico asignado puede subir fotos' });
+    if (!esDuenoTecnico(req.user, b) && !esAdmin(req.user)) {
+      return res.status(403).json({ estado: 'error', mensaje: 'Solo el técnico asignado o un administrador puede subir fotos' });
     }
     const momento = req.params.momento;
     if (!MOMENTOS.includes(momento)) {
@@ -249,9 +361,10 @@ router.post('/:actividad/:item/:momento', authenticateToken, upload.single('arch
 
     const filename = `foto_${Date.now()}_${Math.random().toString(36).slice(2, 6)}${imagen.ext}`;
     // tipo = "{actividad}/{momento}" → .../{item}_{nombre}/{actividad}/{momento}/{archivo}
+    // Si sube el admin, la foto queda igual en la carpeta del técnico dueño.
     const objeto = await storage.uploadFile(
       'tecnico',
-      req.user.usuario,
+      b.tecnico_usuario || req.user.usuario,
       `${req.params.actividad}/${momento}`,
       filename,
       req.file.buffer,
@@ -268,9 +381,10 @@ router.post('/:actividad/:item/:momento', authenticateToken, upload.single('arch
         objeto.path,
         String(req.file.originalname || filename).slice(0, 255),
         req.file.size,
-        req.user.id,
+        b.tecnico_asignado_id || req.user.id,
       ]
     );
+    if (esAdmin(req.user)) await quitarRevision(req.params.actividad, b.item);
     res.json({ estado: 'ok', id: fila.id });
   } catch (error) {
     console.error('[ActividadEvidencias] Error al subir:', error);

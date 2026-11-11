@@ -38,7 +38,7 @@ export const ACTIVIDADES_EN_HECTAREAS = ['preparacion_terreno'];
  * Actividades ya conectadas a datos reales. Las demás se muestran como
  * "Pendiente" hasta que existan los formularios/visitas que las alimenten.
  */
-export const ACTIVIDADES_CONECTADAS = ['analisis_suelos', 'preparacion_terreno', 'asistencia_tecnica', 'siembra_platano'];
+export const ACTIVIDADES_CONECTADAS = ['analisis_suelos', 'preparacion_terreno', 'asistencia_tecnica', 'siembra_platano', 'siembra_forestales'];
 
 export type ModoActividades = 'ejecutar' | 'revisar';
 
@@ -55,6 +55,8 @@ export interface Subactividad {
   icon: string;
   /** Pantalla que abre; sin pantalla = aún pendiente de definir. */
   pantalla?: 'EntregasActividad';
+  /** Título del acta dentro de cada entrega (solo subactividades de entregas). */
+  tituloActa?: string;
 }
 
 /**
@@ -63,15 +65,28 @@ export interface Subactividad {
  */
 export const SUBACTIVIDADES: Record<string, Subactividad[]> = {
   siembra_platano: [
-    { id: 'entrega_colinos', nombre: 'Entrega de Colinos de Plátano', icon: '🚚', pantalla: 'EntregasActividad' },
+    { id: 'entrega_colinos', nombre: 'Entrega de Colinos de Plátano', icon: '🚚', pantalla: 'EntregasActividad', tituloActa: 'Acta de Entrega y Recepción de Colinos de Plátano' },
     { id: 'trazado_ahoyado_encalado', nombre: 'Trazado, Ahoyado y Encalado', icon: '📐' },
     { id: 'siembra_colinos', nombre: 'Siembra de los Colinos de Plátano', icon: '🌱' },
     { id: 'fertilizacion', nombre: 'Fertilización', icon: '🧴' },
   ],
+  // Mismo diseño que Siembra de Plátano.
+  siembra_forestales: [
+    { id: 'entrega_plantulas', nombre: 'Entrega de Plántulas Forestales', icon: '🚚', pantalla: 'EntregasActividad', tituloActa: 'Acta de Entrega y Recepción de Plántulas Forestales' },
+    { id: 'trazado_ahoyado_encalado', nombre: 'Trazado, Ahoyado y Encalado', icon: '📐' },
+    { id: 'siembra_plantulas', nombre: 'Siembra de las Plántulas Forestales', icon: '🌳' },
+    { id: 'fertilizacion', nombre: 'Fertilización', icon: '🧴' },
+  ],
 };
+
+/** Título del acta de las entregas de una actividad (con un respaldo genérico). */
+export const tituloActaEntregas = (actividadId?: string): string =>
+  SUBACTIVIDADES[actividadId ?? '']?.find((s) => s.pantalla === 'EntregasActividad')?.tituloActa ??
+  'Acta de Entrega y Recepción';
 
 /** Primera fila de la tabla del Acta de Entrega y Recibo según la actividad. */
 export const FILA_INICIAL_ACTA: Record<string, { descripcion: string; actividad: string; cantidad: string; unidad: string }> = {
   preparacion_terreno: { descripcion: 'Preparación del terreno', actividad: '2', cantidad: '2,5', unidad: 'Hectárea' },
   siembra_platano: { descripcion: 'Realizar siembra de plátano.', actividad: '4', cantidad: '', unidad: 'Semilla de plátano (Colino)' },
+  siembra_forestales: { descripcion: 'Realizar siembra de forestales.', actividad: '5', cantidad: '', unidad: 'Plántula forestal' },
 };

@@ -128,8 +128,10 @@ app.use('/api/bitacora', require('./routes/bitacora'));
 app.use('/api/verificaciones-entrega', require('./routes/verificacionesEntrega'));
 app.use('/api/actividades-entregas', require('./routes/actividadesEntregas'));
 app.use('/api/edicion-visitas', require('./routes/edicionVisitas'));
+app.use('/api/novedades-corregidas', require('./routes/novedadesCorregidas'));
 app.use('/api/asistencia-tecnica', require('./routes/asistenciaTecnica'));
 app.use('/api/fortalecimiento', require('./routes/fortalecimiento'));
+app.use('/api/revision-interventoria', require('./routes/revisionInterventoria'));
 
 // --- 404 handler ---
 app.use((_req, res) => {

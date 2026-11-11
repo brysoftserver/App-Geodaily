@@ -136,6 +136,26 @@ export const importarEntregasDelServidor = async (actividad: string, tecnicoId: 
   }
 };
 
+export interface EntregaServidor {
+  id: string;
+  actividad: string;
+  numero: number;
+  tecnico_id: string;
+  tecnico_nombre: string | null;
+  datos: DatosEntrega;
+  created_at: string;
+  updated_at: string;
+}
+
+/** Roles superiores: todas las entregas de la actividad ya subidas por los técnicos. */
+export const listarEntregasServidor = async (actividad: string): Promise<EntregaServidor[]> => {
+  const r = await apiClient.get(ENDPOINT, { params: { actividad } });
+  return (r.data.entregas || []).map((s: any) => {
+    const datos = typeof s.datos === 'string' ? JSON.parse(s.datos) : s.datos;
+    return { ...s, datos: { lugar: '', beneficiario: null, actaInstancia: '', actaIniciada: false, fotos: [], ...datos } };
+  });
+};
+
 /** Crea la siguiente entrega (número consecutivo del técnico en esa actividad). */
 export const crearEntrega = async (actividad: string, tecnicoId: string): Promise<EntregaLocal | null> => {
   const existentes = await listarEntregasLocales(actividad, tecnicoId);

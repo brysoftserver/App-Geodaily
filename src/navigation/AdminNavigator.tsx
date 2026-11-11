@@ -31,6 +31,7 @@ import SupervisionFormularioListScreen from '../screens/supervision/FormularioLi
 import FormularioDetailScreen from '../screens/terreno/FormularioDetailScreen';
 import BaseDatosBeneficiariosScreen from '../screens/supervision/BaseDatosBeneficiariosScreen';
 import RevisarAnexosScreen from '../screens/supervision/RevisarAnexosScreen';
+import FormulariosIncompletosAdminScreen from '../screens/admin/FormulariosIncompletosAdminScreen';
 
 export type AdminStackParamList = {
   AdminMenu: undefined;
@@ -44,6 +45,7 @@ export type AdminStackParamList = {
   AdminSeguimientoDetail: { seguimientoId: string };
   AdminCalendario: undefined;
   AdminFormularioList: undefined;
+  AdminFormulariosIncompletos: undefined;
   MapaGeneral: undefined;
   SupervisionFormularioDetail: { formulario: import('../types').Formulario; modo?: 'online' | 'campo' };
   BaseDatosBeneficiarios: undefined;
@@ -138,6 +140,11 @@ const AdminNavigator: React.FC = () => {
         name="AdminFormularioList"
         component={SupervisionFormularioListScreen}
         options={{ title: 'Formularios' }}
+      />
+      <Stack.Screen
+        name="AdminFormulariosIncompletos"
+        component={FormulariosIncompletosAdminScreen}
+        options={{ title: 'Formularios incompletos' }}
       />
       <Stack.Screen
         name="MapaGeneral"

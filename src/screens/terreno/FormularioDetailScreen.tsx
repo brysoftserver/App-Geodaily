@@ -5,7 +5,7 @@
 // con miniaturas de evidencias y opciones de PDF.
 // ============================================================
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useContext, useMemo, useRef } from 'react';
 import {
   View,
   Text,
@@ -47,6 +47,10 @@ import { useCamera } from '../../hooks/useCamera';
 import * as ImagePicker from 'expo-image-picker';
 import * as DocumentPicker from 'expo-document-picker';
 import { generarId } from '../../utils/formatters';
+import { avisar, confirmar } from '../../utils/dialogos';
+import { marcarNovedadesCorregidas } from '../../services/novedadCorregida.service';
+import { uploadPhoto } from '../../services/photos.service';
+import { uploadVideo } from '../../services/videos.service';
 import { formatFecha } from '../../utils/formatters';
 import {
   puedeEditarRespuestasFormulario,
@@ -68,6 +72,7 @@ import {
 import MedicionCaptura from '../../components/MedicionCaptura';
 import EdicionVisita2Panel from '../../components/EdicionVisita2Panel';
 import type { MedicionCapturaDatos } from '../../components/MedicionCaptura';
+import { medicionesDeVisita, sumaHectareas } from '../../utils/medicionesVisita';
 import {
   RECONOCIMIENTO_OPTS,
   NIVEL_EDUCATIVO_ENV_OPTS,
@@ -110,9 +115,10 @@ import { useAuth } from '../../store/AuthContext';
 import {
   registrarRevision,
   Revision,
+  Correccion,
 } from '../../services/revisiones.service';
 import { useRevisiones } from '../../hooks/useRevisiones';
-import { estaNovedadResuelta, rolEstaOk } from '../../utils/revisiones';
+import { estaNovedadResuelta, rolEstaOk, correccionPosterior, seccionesAprobadasPorRol } from '../../utils/revisiones';
 import { descargarPaqueteMedia } from '../../services/mediaPackage.service';
 import SeguimientoCoordinacionSection from '../../components/SeguimientoCoordinacionSection';
 import { actualizarRespuestaFormulario, cambiarFechaFormulario, fechaDMAaISO } from '../../services/formularios.service';
@@ -374,7 +380,54 @@ const ROL_LABEL: Record<string, string> = {
   admin: 'Administrador',
 };
 
-const SeccionRevision: React.FC<{ formulario: Formulario; revisiones: Revision[]; cargando: boolean; recargar: () => Promise<void> }> = ({ formulario, revisiones, recargar }) => {
+/**
+ * Registro de las secciones revisables que REALMENTE se muestran en
+ * pantalla (cada SeccionMiniRevision se anota al montarse). Así el
+ * progreso «X de N secciones» y el cierre guiado cuentan exactamente lo
+ * que el revisor ve, sin duplicar aquí las condiciones de cada sección.
+ */
+type RegistroSecciones = {
+  registrar: (titulo: string) => () => void;
+  /** La sección quedó aprobada y las revisiones ya se recargaron. */
+  avisarAprobacion: () => void;
+};
+const RegistroSeccionesContext = React.createContext<RegistroSecciones | null>(null);
+
+/**
+ * Marca de "corregida — por verificar" bajo una novedad pendiente: el
+ * técnico hizo una corrección DESPUÉS de que se marcara la novedad. La
+ * novedad sigue abierta hasta el visto bueno del revisor; esto solo le
+ * avisa al revisor que tiene algo para verificar (y al técnico, que su
+ * corrección quedó registrada). Ver src/utils/revisiones.ts.
+ */
+const EtiquetaCorregida: React.FC<{ novedad: Revision; correcciones?: Correccion[]; paraTecnico?: boolean }> = ({
+  novedad,
+  correcciones,
+  paraTecnico,
+}) => {
+  const c = correccionPosterior(novedad, correcciones);
+  if (!c) return null;
+  return (
+    <Text style={rev.etiquetaCorregida}>
+      {paraTecnico
+        ? `🔄 Corregiste después de esta novedad (${formatFecha(c.created_at)}) — falta que ${ROL_LABEL[novedad.revisor_rol] || 'el revisor'} lo verifique`
+        : `🔄 Corregida por ${c.usuario_nombre || 'el técnico'} el ${formatFecha(c.created_at)} — por verificar`}
+      {c.comentario ? ` · «${c.comentario}»` : ''}
+    </Text>
+  );
+};
+
+const SeccionRevision: React.FC<{
+  formulario: Formulario;
+  revisiones: Revision[];
+  correcciones?: Correccion[];
+  cargando: boolean;
+  recargar: () => Promise<void>;
+  /** Secciones revisables visibles (ver RegistroSeccionesContext). */
+  secciones: string[];
+  /** Contador que sube cada vez que el revisor aprueba una sección. */
+  aprobacionesSeccion: number;
+}> = ({ formulario, revisiones, correcciones, recargar, secciones, aprobacionesSeccion }) => {
   const formularioId = formulario.id;
   const { user } = useAuth();
   const rol = user?.rol || 'tecnico';
@@ -395,14 +448,21 @@ const SeccionRevision: React.FC<{ formulario: Formulario; revisiones: Revision[]
    * bastaba con que existiera un visto bueno histórico para pintar 'ok',
    * aunque después el rol hubiera marcado una novedad nueva.
    */
-  const estadoDe = (r: string): 'ok' | 'novedades' | null => {
+  const estadoDe = (r: string): 'ok' | 'novedades' | 'en_revision' | null => {
     const propias = revisiones.filter(
       (x) => x.revisor_rol === r && (x.tipo === 'novedad' || x.tipo === 'visto_bueno')
     );
     if (propias.length === 0) return null;
-    return rolEstaOk(r, revisiones) ? 'ok' : 'novedades';
+    if (rolEstaOk(r, revisiones)) return 'ok';
+    const abiertas = propias.filter((x) => x.tipo === 'novedad' && !estaNovedadResuelta(x, revisiones));
+    return abiertas.length > 0 ? 'novedades' : 'en_revision';
   };
-  const yaAprobePorMiRol = estadoDe(rol) === 'ok';
+  // «Ya cerré» solo con el visto bueno FINAL vigente. Antes bastaba con que
+  // el último clic fuera la aprobación de UNA sección: el botón quedaba
+  // deshabilitado («✔ Ya aprobado por ti») y la revisión nunca se cerraba.
+  const yaAprobePorMiRol = rolEstaOk(rol, revisiones);
+  const coordinadorCerro = rolEstaOk('coordinador', revisiones);
+  const bloqueadoPorJerarquia = rol === 'interventor' && !coordinadorCerro;
   // Solo las novedades SIN resolver se muestran en rojo: una novedad queda
   // resuelta cuando el mismo rol que la marcó la da por buena después
   // (mismo criterio que el badge del listado y el backend).
@@ -412,6 +472,19 @@ const SeccionRevision: React.FC<{ formulario: Formulario; revisiones: Revision[]
   const novedadesResueltas = revisiones.filter(
     (r) => r.tipo === 'novedad' && estaNovedadResuelta(r, revisiones)
   );
+  const novedadesPorVerificar = novedadesPendientes.filter((n) => !!correccionPosterior(n, correcciones));
+
+  // Progreso de MI revisión sobre las secciones visibles.
+  const misAprobadas = seccionesAprobadasPorRol(rol, revisiones);
+  const seccionesFaltantes = secciones.filter((t) => !misAprobadas.includes(t));
+  const seccionesListas = secciones.length - seccionesFaltantes.length;
+  const misAbiertas = novedadesPendientes.filter((n) => n.revisor_rol === rol);
+  const textoCierre =
+    rol === 'coordinador'
+      ? 'Cerrar revisión y enviar a interventoría'
+      : rol === 'interventor'
+        ? 'Aprobación final de interventoría'
+        : 'Todo OK (cierre)';
 
   const enviarNovedad = async () => {
     if (!novedadTexto.trim()) {
@@ -437,7 +510,12 @@ const SeccionRevision: React.FC<{ formulario: Formulario; revisiones: Revision[]
     try {
       await registrarRevision(formularioId, 'visto_bueno');
       await cargar();
-      Alert.alert('✅ Todo OK', 'Visto bueno registrado correctamente.');
+      avisar(
+        '✅ Revisión cerrada',
+        rol === 'coordinador'
+          ? 'El formulario pasó a interventoría.'
+          : 'Visto bueno final registrado correctamente.'
+      );
     } catch (error) {
       Alert.alert('No se pudo aprobar', error instanceof Error ? error.message : String(error));
     } finally {
@@ -445,19 +523,64 @@ const SeccionRevision: React.FC<{ formulario: Formulario; revisiones: Revision[]
     }
   };
 
-  const handleTodoOK = () => {
-    Alert.alert('Dar visto bueno', '¿Confirmas que este formulario está correcto (Todo OK)?', [
-      { text: 'Cancelar', style: 'cancel' },
-      { text: 'Todo OK', onPress: () => enviarVistoBueno() },
-    ]);
+  // `confirmar` (no Alert.alert): en el navegador Alert con botones no
+  // dibuja nada y el botón «Todo OK» parecía muerto.
+  const handleTodoOK = async () => {
+    const avisos: string[] = [];
+    if (misAbiertas.length > 0) {
+      avisos.push(`• Tienes ${misAbiertas.length} novedad(es) abierta(s): al cerrar quedarán resueltas.`);
+    }
+    if (seccionesFaltantes.length > 0) {
+      avisos.push(
+        `• Faltan ${seccionesFaltantes.length} sección(es) por aprobar: ${seccionesFaltantes.slice(0, 6).join(', ')}${seccionesFaltantes.length > 6 ? '…' : ''}.`
+      );
+    }
+    const ok = await confirmar(
+      textoCierre,
+      (avisos.length > 0 ? `${avisos.join('\n')}\n\n` : '') +
+        (rol === 'coordinador'
+          ? '¿Confirmas que el formulario está correcto? Pasará a interventoría.'
+          : '¿Confirmas que el formulario está correcto?'),
+      'Cerrar revisión'
+    );
+    if (ok) await enviarVistoBueno();
   };
+
+  // Cierre guiado: al aprobar la ÚLTIMA sección pendiente (sin novedades
+  // abiertas propias) se ofrece cerrar de una vez. Solo reacciona a
+  // aprobaciones hechas en esta pantalla, no al abrir el formulario.
+  const aprobacionAtendida = useRef(aprobacionesSeccion);
+  useEffect(() => {
+    if (aprobacionesSeccion === aprobacionAtendida.current) return;
+    aprobacionAtendida.current = aprobacionesSeccion;
+    if (!esRevisor || yaAprobePorMiRol || bloqueadoPorJerarquia) return;
+    if (secciones.length === 0 || seccionesFaltantes.length > 0 || misAbiertas.length > 0) return;
+    (async () => {
+      const ok = await confirmar(
+        '✅ Todas las secciones aprobadas',
+        rol === 'coordinador'
+          ? '¿Cerrar la revisión y enviar el formulario a interventoría?'
+          : '¿Dar la aprobación final a este formulario?',
+        'Cerrar revisión'
+      );
+      if (ok) await enviarVistoBueno();
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [aprobacionesSeccion, revisiones]);
 
   const Chip = ({ rolChip }: { rolChip: 'coordinador' | 'interventor' }) => {
     const est = estadoDe(rolChip);
     return (
-      <View style={[rev.chip, est === 'ok' ? rev.chipOk : est === 'novedades' ? rev.chipNov : rev.chipPend]}>
+      <View style={[rev.chip, est === 'ok' ? rev.chipOk : est === 'novedades' ? rev.chipNov : est === 'en_revision' ? rev.chipRev : rev.chipPend]}>
         <Text style={rev.chipText}>
-          {ROL_LABEL[rolChip]}: {est === 'ok' ? '✔ Todo OK' : est === 'novedades' ? '⚠ Novedades' : '— Pendiente'}
+          {ROL_LABEL[rolChip]}:{' '}
+          {est === 'ok'
+            ? '✔ Revisión cerrada'
+            : est === 'novedades'
+              ? '⚠ Novedades abiertas'
+              : est === 'en_revision'
+                ? '🔍 En revisión (sin cerrar)'
+                : '— Pendiente'}
         </Text>
       </View>
     );
@@ -473,19 +596,57 @@ const SeccionRevision: React.FC<{ formulario: Formulario; revisiones: Revision[]
         <Chip rolChip="interventor" />
       </View>
 
+      {/* Progreso de MI revisión y cierre — arriba y visible: antes el
+          cierre estaba al fondo y deshabilitado por error. */}
+      {esRevisor && bloqueadoPorJerarquia && (
+        <Text style={rev.avisoJerarquia}>
+          🔒 La revisión del Coordinador/a aún no está cerrada: interventoría podrá revisar cuando la cierre.
+        </Text>
+      )}
+      {esRevisor && !bloqueadoPorJerarquia && secciones.length > 0 && !yaAprobePorMiRol && (
+        <View style={rev.progresoBox}>
+          <Text style={rev.progresoTexto}>
+            Secciones aprobadas por ti: {seccionesListas} de {secciones.length}
+          </Text>
+          <View style={rev.progresoBarra}>
+            <View style={[rev.progresoRelleno, { width: `${Math.round((seccionesListas / secciones.length) * 100)}%` }]} />
+          </View>
+          {seccionesFaltantes.length > 0 ? (
+            <Text style={rev.progresoFaltan} numberOfLines={2}>
+              Faltan: {seccionesFaltantes.join(', ')}
+            </Text>
+          ) : misAbiertas.length === 0 ? (
+            <Text style={rev.progresoListo}>✅ Todo aprobado — solo falta cerrar la revisión.</Text>
+          ) : null}
+        </View>
+      )}
+      {esRevisor && !bloqueadoPorJerarquia && (
+        <TouchableOpacity
+          style={[rev.botonCierre, yaAprobePorMiRol && rev.botonDeshabilitado]}
+          onPress={handleTodoOK}
+          disabled={enviando || yaAprobePorMiRol}
+        >
+          <Text style={rev.botonTexto}>
+            {yaAprobePorMiRol ? '✔ Revisión cerrada por ti' : `✅ ${textoCierre}`}
+          </Text>
+        </TouchableOpacity>
+      )}
+
       {/* Novedades PENDIENTES (las resueltas van al historial plegable) */}
       {novedadesPendientes.length > 0 && (
         <View style={rev.novedadesBox}>
           <Text style={rev.novedadesTitle}>
             ⚠ Novedades pendientes ({novedadesPendientes.length})
+            {novedadesPorVerificar.length > 0 ? ` · 🔄 ${novedadesPorVerificar.length} corregida(s) por verificar` : ''}
           </Text>
           {novedadesPendientes.map((n) => (
-            <View key={n.id} style={rev.novedadItem}>
+            <View key={n.id} style={[rev.novedadItem, !!correccionPosterior(n, correcciones) && rev.novedadItemCorregida]}>
               <Text style={rev.novedadMeta}>
                 {ROL_LABEL[n.revisor_rol] || n.revisor_rol} · {n.revisor_nombre || ''} · {formatFecha(n.created_at)}
                 {n.seccion ? ` · Sección: ${n.seccion}` : ''}
               </Text>
               <Text style={rev.novedadTexto}>{n.comentario}</Text>
+              <EtiquetaCorregida novedad={n} correcciones={correcciones} />
             </View>
           ))}
         </View>
@@ -522,19 +683,10 @@ const SeccionRevision: React.FC<{ formulario: Formulario; revisiones: Revision[]
           quedan como aprobación/novedad GLOBAL del formulario, útiles
           también para formularios que no tienen secciones clonadas
           (ej. visita técnica). */}
-      {esRevisor && (
+      {esRevisor && !bloqueadoPorJerarquia && (
         <View style={rev.botonesRow}>
           <TouchableOpacity style={[rev.boton, rev.botonNovedad]} onPress={() => setModalNovedad(true)} disabled={enviando}>
             <Text style={rev.botonTexto}>📝 Novedad general</Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={[rev.boton, yaAprobePorMiRol ? rev.botonDeshabilitado : rev.botonOk]}
-            onPress={handleTodoOK}
-            disabled={enviando || yaAprobePorMiRol}
-          >
-            <Text style={rev.botonTexto}>
-              {yaAprobePorMiRol ? '✔ Ya aprobado por ti' : '✅ Todo OK'}
-            </Text>
           </TouchableOpacity>
         </View>
       )}
@@ -579,10 +731,18 @@ const SeccionMiniRevision: React.FC<{
   formularioId: string;
   seccionTitulo: string;
   revisiones: Revision[];
+  correcciones?: Correccion[];
   rol: string;
   esRevisor: boolean;
   recargar: () => Promise<void>;
-}> = ({ formularioId, seccionTitulo, revisiones, rol, esRevisor, recargar }) => {
+}> = ({ formularioId, seccionTitulo, revisiones, correcciones, rol, esRevisor, recargar }) => {
+  const registro = useContext(RegistroSeccionesContext);
+  // Anotarse como sección revisable visible (progreso y cierre guiado).
+  useEffect(() => registro?.registrar(seccionTitulo), [registro, seccionTitulo]);
+  // Interventoría sin cierre del coordinador: el servidor rechazaría la
+  // marca (409), así que no se ofrecen los botones (el panel superior ya
+  // muestra el candado explicando por qué).
+  const puedeMarcar = esRevisor && !(rol === 'interventor' && !rolEstaOk('coordinador', revisiones));
   const [enviando, setEnviando] = useState(false);
   const [mostrarInput, setMostrarInput] = useState(false);
   const [texto, setTexto] = useState('');
@@ -612,6 +772,7 @@ const SeccionMiniRevision: React.FC<{
     try {
       await registrarRevision(formularioId, 'visto_bueno', undefined, undefined, seccionTitulo);
       await recargar();
+      registro?.avisarAprobacion();
     } catch (error) {
       Alert.alert('No se pudo aprobar', error instanceof Error ? error.message : String(error));
     } finally {
@@ -652,9 +813,12 @@ const SeccionMiniRevision: React.FC<{
       })}
 
       {novedadesPendientesSeccion.map((n) => (
-        <Text key={n.id} style={mini.novedadTexto}>
-          ⚠ {ROL_LABEL[n.revisor_rol] || n.revisor_rol}: {n.comentario}
-        </Text>
+        <View key={n.id}>
+          <Text style={mini.novedadTexto}>
+            ⚠ {ROL_LABEL[n.revisor_rol] || n.revisor_rol}: {n.comentario}
+          </Text>
+          <EtiquetaCorregida novedad={n} correcciones={correcciones} />
+        </View>
       ))}
       {novedadesResueltasSeccion.map((n) => (
         <Text key={n.id} style={mini.novedadResuelta}>
@@ -662,7 +826,7 @@ const SeccionMiniRevision: React.FC<{
         </Text>
       ))}
 
-      {esRevisor && (
+      {puedeMarcar && (
         <View style={mini.accionesRow}>
           <TouchableOpacity
             style={[mini.btn, mini.btnNovedad]}
@@ -739,7 +903,16 @@ const rev = StyleSheet.create({
   chipOk: { backgroundColor: COLORS.success + '22' },
   chipNov: { backgroundColor: COLORS.warning + '22' },
   chipPend: { backgroundColor: COLORS.divider },
+  chipRev: { backgroundColor: COLORS.info + '22' },
   chipText: { fontSize: FONTS.sizes.sm, color: COLORS.textPrimary },
+  avisoJerarquia: { fontSize: FONTS.sizes.sm, color: COLORS.textSecondary, marginBottom: SPACING.sm },
+  progresoBox: { marginBottom: SPACING.sm },
+  progresoTexto: { fontSize: FONTS.sizes.sm, color: COLORS.textPrimary, fontWeight: FONTS.weights.semibold, marginBottom: 4 },
+  progresoBarra: { height: 8, borderRadius: 4, backgroundColor: COLORS.divider, overflow: 'hidden' },
+  progresoRelleno: { height: 8, backgroundColor: COLORS.success },
+  progresoFaltan: { fontSize: FONTS.sizes.xs, color: COLORS.textSecondary, marginTop: 4 },
+  progresoListo: { fontSize: FONTS.sizes.xs, color: COLORS.success, fontWeight: FONTS.weights.semibold, marginTop: 4 },
+  botonCierre: { backgroundColor: COLORS.success, paddingVertical: SPACING.sm + 2, borderRadius: BORDER_RADIUS.md, alignItems: 'center', marginBottom: SPACING.sm },
   novedadesBox: { marginBottom: SPACING.sm },
   novedadesTitle: { fontSize: FONTS.sizes.md, fontWeight: FONTS.weights.semibold, color: COLORS.error, marginBottom: 4 },
   novedadItem: { borderLeftWidth: 3, borderLeftColor: COLORS.error, paddingLeft: SPACING.sm, marginBottom: SPACING.xs },
@@ -801,6 +974,38 @@ const rev = StyleSheet.create({
     fontStyle: 'italic',
     marginTop: 2,
   },
+  // Novedad pendiente que el técnico ya corrigió (por verificar).
+  novedadItemCorregida: { borderLeftColor: COLORS.info },
+  etiquetaCorregida: {
+    fontSize: FONTS.sizes.xs,
+    color: COLORS.info,
+    fontWeight: FONTS.weights.semibold,
+    marginTop: 2,
+  },
+  // Botón "Ya corregí" del técnico y su cuadro de comentario.
+  btnYaCorregi: {
+    backgroundColor: COLORS.success,
+    borderRadius: BORDER_RADIUS.md,
+    paddingVertical: SPACING.sm + 2,
+    paddingHorizontal: SPACING.md,
+    alignItems: 'center',
+    marginTop: SPACING.sm,
+  },
+  btnYaCorregiTxt: { color: '#fff', fontWeight: FONTS.weights.bold, fontSize: FONTS.sizes.sm },
+  ycModalFondo: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', padding: SPACING.lg },
+  ycModalCaja: { backgroundColor: COLORS.surface, borderRadius: BORDER_RADIUS.lg, padding: SPACING.md, gap: SPACING.sm },
+  ycModalInput: {
+    minHeight: 80,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    borderRadius: BORDER_RADIUS.md,
+    padding: SPACING.sm,
+    textAlignVertical: 'top',
+    color: COLORS.textPrimary,
+  },
+  ycModalBotones: { flexDirection: 'row', gap: SPACING.sm },
+  ycBtnSec: { flex: 1, borderWidth: 1, borderColor: COLORS.border, borderRadius: BORDER_RADIUS.md, paddingVertical: SPACING.sm, alignItems: 'center' },
+  ycBtnSecTxt: { color: COLORS.textSecondary, fontWeight: FONTS.weights.semibold },
 });
 
 // ============================================================
@@ -811,7 +1016,17 @@ const rev = StyleSheet.create({
 // no usa este banner.
 // ============================================================
 
-const BannerNovedades: React.FC<{ revisiones: Revision[] }> = ({ revisiones }) => {
+const BannerNovedades: React.FC<{
+  revisiones: Revision[];
+  correcciones?: Correccion[];
+  /** Con estos dos el técnico puede avisar "Ya corregí" (correcciones sin respuesta: polígono, fotos...). */
+  formularioId?: string;
+  recargar?: () => void;
+}> = ({ revisiones, correcciones, formularioId, recargar }) => {
+  const [avisando, setAvisando] = useState(false);
+  const [comentarioCorreccion, setComentarioCorreccion] = useState('');
+  const [enviandoCorreccion, setEnviandoCorreccion] = useState(false);
+
   // Solo se avisan las novedades SIN resolver, con el mismo criterio que el
   // badge del listado (GET /api/revisiones/resumen): una novedad queda
   // resuelta cuando el mismo rol que la marcó da su visto bueno después, sea
@@ -836,11 +1051,71 @@ const BannerNovedades: React.FC<{ revisiones: Revision[] }> = ({ revisiones }) =
             {n.seccion ? ` · Sección: ${n.seccion}` : ''}
           </Text>
           <Text style={rev.avisoTexto}>{n.comentario}</Text>
+          <EtiquetaCorregida novedad={n} correcciones={correcciones} paraTecnico />
         </View>
       ))}
       <Text style={rev.avisoPie}>
         Corrige lo señalado. Si falta responder alguna pregunta, usa el botón «✎ Completar».
       </Text>
+      {/* "Ya corregí": para lo que no queda registrado como respuesta
+          (ajustar el polígono, agregar fotos...). Solo si queda alguna
+          novedad sin corrección registrada. */}
+      {!!formularioId && novedades.some((n) => !correccionPosterior(n, correcciones)) && (
+        <TouchableOpacity
+          style={rev.btnYaCorregi}
+          onPress={() => { setComentarioCorreccion(''); setAvisando(true); }}
+          activeOpacity={0.8}
+        >
+          <Text style={rev.btnYaCorregiTxt}>✅ Ya corregí — avisar a mis superiores</Text>
+        </TouchableOpacity>
+      )}
+      <Modal visible={avisando} transparent animationType="fade" onRequestClose={() => setAvisando(false)}>
+        <View style={rev.ycModalFondo}>
+          <View style={rev.ycModalCaja}>
+            <Text style={rev.avisoTitulo}>Avisar que ya corregiste</Text>
+            <Text style={rev.avisoSub}>
+              Las novedades quedarán como «corregida — por verificar» y tus superiores recibirán el aviso.
+            </Text>
+            <TextInput
+              style={rev.ycModalInput}
+              value={comentarioCorreccion}
+              onChangeText={setComentarioCorreccion}
+              placeholder="Comentario opcional (ej.: ajusté el polígono a 2,5 ha)"
+              placeholderTextColor={COLORS.textLight}
+              multiline
+              maxLength={1000}
+            />
+            <View style={rev.ycModalBotones}>
+              <TouchableOpacity style={rev.ycBtnSec} onPress={() => setAvisando(false)} disabled={enviandoCorreccion}>
+                <Text style={rev.ycBtnSecTxt}>Cancelar</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[rev.btnYaCorregi, { flex: 1, marginTop: 0 }, enviandoCorreccion && { opacity: 0.6 }]}
+                disabled={enviandoCorreccion}
+                onPress={async () => {
+                  if (!formularioId) return;
+                  setEnviandoCorreccion(true);
+                  try {
+                    await marcarNovedadesCorregidas(formularioId, comentarioCorreccion.trim());
+                    setAvisando(false);
+                    avisar('Aviso enviado', 'Tus superiores verán las novedades como corregidas, por verificar.');
+                    recargar?.();
+                  } catch (e: any) {
+                    avisar(
+                      'No se pudo enviar',
+                      e?.response?.data?.mensaje || (e?.message?.includes('Network') ? 'Sin conexión. Inténtalo cuando tengas señal.' : 'Inténtalo de nuevo.')
+                    );
+                  } finally {
+                    setEnviandoCorreccion(false);
+                  }
+                }}
+              >
+                {enviandoCorreccion ? <ActivityIndicator size="small" color="#fff" /> : <Text style={rev.btnYaCorregiTxt}>Enviar aviso</Text>}
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 };
@@ -942,7 +1217,7 @@ const puntoDeVisitaTecnica = (formulario: Formulario): PuntoVisita | null => {
 const puntosDeAreaVisita = (
   formulario: Formulario
 ): { latitud: number; longitud: number }[] => {
-  const deMedicion = puntosValidos(formulario.actividad?.medicion_historial?.puntos);
+  const deMedicion = medicionesDeVisita(formulario.actividad)[0]?.puntos || [];
   if (deMedicion.length > 0) return deMedicion;
   return puntosValidos(formulario.actividad?.poligono);
 };
@@ -984,7 +1259,20 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
    */
   const mostrarRevision = modo === 'online' || modo === 'campo';
   const mostrarSeguimientoCampo = modo === 'campo' && (rolActual === 'coordinador' || rolActual === 'interventor');
-  const { revisiones, cargando: cargandoRevisiones, recargar: recargarRevisiones } = useRevisiones(formulario.id);
+  const { revisiones, correcciones, cargando: cargandoRevisiones, recargar: recargarRevisiones } = useRevisiones(formulario.id);
+  // Secciones revisables visibles + aprobaciones (ver RegistroSeccionesContext).
+  const [seccionesRevision, setSeccionesRevision] = useState<string[]>([]);
+  const [aprobacionesSeccion, setAprobacionesSeccion] = useState(0);
+  const registroSecciones = useMemo<RegistroSecciones>(
+    () => ({
+      registrar: (titulo: string) => {
+        setSeccionesRevision((prev) => (prev.includes(titulo) ? prev : [...prev, titulo]));
+        return () => setSeccionesRevision((prev) => prev.filter((t) => t !== titulo));
+      },
+      avisarAprobacion: () => setAprobacionesSeccion((n) => n + 1),
+    }),
+    []
+  );
   /**
    * Sincronización: al volver de la cámara tras agregar evidencia, la foto
    * queda en la cola local (`fotos_locales`) con formulario_id = este
@@ -1729,8 +2017,80 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
     );
   };
 
+  /**
+   * Navegador (app web): `Alert.alert` con botones es un no-op en
+   * react-native-web, así que el menú Foto/Video → Cámara/Almacenamiento
+   * nunca aparecía y «＋ Agregar» parecía muerto. Tampoco hay cola local
+   * (SQLite no carga en web) ni cámara con GPS. Por eso en web se abre
+   * directamente el selector de archivos (fotos y videos a la vez) y el
+   * archivo se sube al servidor de una vez, como evidencia de
+   * almacenamiento: sin ubicación ni fecha de captura.
+   */
+  const agregarEvidenciaWeb = async () => {
+    if (agregandoDesdeGaleria) return;
+    if (!puedeElegirAlmacenamiento) {
+      avisar(
+        'Usa la app del teléfono',
+        'Desde el navegador solo el administrador puede adjuntar fotos o videos. ' +
+          'Toma la evidencia con la cámara en la app del teléfono para que quede registrada su ubicación.'
+      );
+      return;
+    }
+    try {
+      const resultado = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ['images', 'videos'],
+        quality: 0.8,
+        allowsMultipleSelection: false,
+      });
+      if (resultado.canceled || !resultado.assets?.length) return;
+
+      const asset = resultado.assets[0];
+      const esVideo =
+        asset.type === 'video' || (asset.mimeType || '').startsWith('video/');
+      setAgregandoDesdeGaleria(true);
+
+      const cedula = formulario.beneficiario?.cedula || undefined;
+      const nombre = formulario.beneficiario?.nombre || undefined;
+      const subida = esVideo
+        ? await uploadVideo(
+            asset.uri, undefined, undefined, `Formulario ${formulario.id}`,
+            cedula, nombre, formulario.tipo, formulario.id, generarId(), 'almacenamiento'
+          )
+        : await uploadPhoto(
+            asset.uri, undefined, undefined, undefined, `Formulario ${formulario.id}`,
+            `Foto de ${nombre || ''}`.trim(), cedula, nombre, undefined,
+            formulario.tipo, formulario.id, generarId(), 'almacenamiento'
+          );
+      if (!subida || subida.estado === 'eliminado') {
+        avisar(
+          'Error',
+          esVideo
+            ? 'No se pudo subir el video. Verifica la conexión e inténtalo de nuevo.'
+            : 'No se pudo subir la foto. Verifica la conexión e inténtalo de nuevo.'
+        );
+        return;
+      }
+
+      await cargarEvidenciasYDocumentos();
+      avisar(
+        esVideo ? '✅ Video agregado' : '✅ Foto agregada',
+        'El archivo quedó guardado en esta visita y se asoció al beneficiario y al técnico responsable. ' +
+          'No se le agregaron datos de ubicación ni de fecha porque no fue tomado con la cámara en esta visita.'
+      );
+    } catch (e) {
+      console.warn('[Detalle] Error agregando evidencia desde el navegador:', e);
+      avisar('Error', 'No se pudo agregar el archivo.');
+    } finally {
+      setAgregandoDesdeGaleria(false);
+    }
+  };
+
   /** Menú para elegir foto o video; el origen depende del rol. */
   const elegirTipoEvidencia = () => {
+    if (Platform.OS === 'web') {
+      void agregarEvidenciaWeb();
+      return;
+    }
     Alert.alert(
       'Agregar evidencia',
       '¿Qué deseas agregar a esta visita?',
@@ -2507,6 +2867,7 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
         formularioId={formulario.id}
         seccionTitulo={seccionTitulo}
         revisiones={revisiones}
+        correcciones={correcciones}
         rol={rolActual}
         esRevisor={esRevisorActual}
         recargar={recargarRevisiones}
@@ -2524,30 +2885,30 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
    * ítem 4 dibujado en el mapa. Con un solo punto no hay área que mostrar
    * como polígono, así que en ese caso solo se pinta la imagen de ubicación.
    */
-  const medicionVisita: MedicionCapturaDatos | null = (() => {
-    const medicion = formulario.actividad?.medicion_historial;
-    const puntosMedicion = puntosValidos(medicion?.puntos);
-    if (medicion && puntosMedicion.length > 0) {
-      return {
-        nombre: medicion.nombre,
-        area_hectareas: medicion.area_hectareas,
-        area_metros2: medicion.area_metros2,
-        perimetro_metros: medicion.perimetro_metros,
-        puntos: puntosMedicion,
-        created_at: medicion.created_at,
-      };
+  const medicionesVisita: MedicionCapturaDatos[] = (() => {
+    const lista = medicionesDeVisita(formulario.actividad);
+    if (lista.length > 0) {
+      return lista.map((m) => ({
+        nombre: m.nombre,
+        area_hectareas: m.area_hectareas,
+        area_metros2: m.area_metros2,
+        perimetro_metros: m.perimetro_metros,
+        puntos: m.puntos,
+        created_at: m.created_at,
+      }));
     }
     if (puntosAreaVisita.length >= 3) {
       const areaTexto = Number(String(formulario.actividad?.area_intervencion || '').replace(',', '.'));
-      return {
+      return [{
         nombre: 'Área a intervenir (ítem 4)',
         area_hectareas: Number.isFinite(areaTexto) ? areaTexto : 0,
         perimetro_metros: 0,
         puntos: puntosAreaVisita,
-      };
+      }];
     }
-    return null;
+    return [];
   })();
+  const totalHaVisita = sumaHectareas(medicionesDeVisita(formulario.actividad));
 
   /** Municipio · vereda/corregimiento, para titular la imagen de ubicación. */
   const textoUbicacionVisita =
@@ -2556,13 +2917,21 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
       .join(' · ') || 'Ubicación de la visita';
 
   return (
+    <RegistroSeccionesContext.Provider value={registroSecciones}>
     <View style={styles.container}>
       <ScrollView contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + SPACING.xxl }]}>
         {/* Novedades de los superiores — ARRIBA, para que el técnico sepa
             de inmediato qué debe corregir. Solo en la vista normal (sin
             controles de revisión) y solo para quien NO es revisor: en modo
             "Revisión en línea/campo" ya lo muestra SeccionRevision. */}
-        {!mostrarRevision && !esRevisorActual && <BannerNovedades revisiones={revisiones} />}
+        {!mostrarRevision && !esRevisorActual && (
+          <BannerNovedades
+            revisiones={revisiones}
+            correcciones={correcciones}
+            formularioId={formulario.id}
+            recargar={recargarRevisiones}
+          />
+        )}
 
         {/* Estado del formulario */}
         <View style={styles.statusBar}>
@@ -2596,8 +2965,11 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
           <SeccionRevision
             formulario={formulario}
             revisiones={revisiones}
+            correcciones={correcciones}
             cargando={cargandoRevisiones}
             recargar={recargarRevisiones}
+            secciones={seccionesRevision}
+            aprobacionesSeccion={aprobacionesSeccion}
           />
         )}
 
@@ -2671,6 +3043,7 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
                   formularioId={formulario.id}
                   seccionTitulo={seccion.titulo}
                   revisiones={revisiones}
+                  correcciones={correcciones}
                   rol={rolActual}
                   esRevisor={esRevisorActual}
                   recargar={recargarRevisiones}
@@ -2803,30 +3176,20 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
                     />
                   </View>
                 )}
-                {!!medicionVisita && (
-                  <View style={styles.bloqueTexto}>
-                    <Text style={styles.bloqueTextoLabel}>Captura de la medición</Text>
-                    <MedicionCaptura medicion={medicionVisita} altura={200} mostrarAcciones />
-                  </View>
+                {medicionesVisita.length > 1 && (
+                  <Text style={styles.bloqueTextoLabel}>
+                    Captura de la medición — {medicionesVisita.length} polígonos · total{' '}
+                    {totalHaVisita.toLocaleString('es-CO', { maximumFractionDigits: 2 })} ha
+                  </Text>
                 )}
-                {/* Polígono 2 (opcional): lo carga un admin autorizado. */}
-                {puntosValidos(formulario.actividad.medicion_historial_2?.puntos).length >= 3 && (
-                  <View style={styles.bloqueTexto}>
-                    <Text style={styles.bloqueTextoLabel}>Captura de la medición — polígono 2</Text>
-                    <MedicionCaptura
-                      medicion={{
-                        nombre: formulario.actividad.medicion_historial_2!.nombre,
-                        area_hectareas: formulario.actividad.medicion_historial_2!.area_hectareas,
-                        area_metros2: formulario.actividad.medicion_historial_2!.area_metros2,
-                        perimetro_metros: formulario.actividad.medicion_historial_2!.perimetro_metros,
-                        puntos: puntosValidos(formulario.actividad.medicion_historial_2!.puntos),
-                        created_at: formulario.actividad.medicion_historial_2!.created_at,
-                      }}
-                      altura={200}
-                      mostrarAcciones
-                    />
+                {medicionesVisita.map((m, idx) => (
+                  <View key={`medicion-${idx}`} style={styles.bloqueTexto}>
+                    <Text style={styles.bloqueTextoLabel}>
+                      {medicionesVisita.length > 1 ? `Polígono ${idx + 1}` : 'Captura de la medición'}
+                    </Text>
+                    <MedicionCaptura medicion={m} altura={200} mostrarAcciones />
                   </View>
-                )}
+                ))}
                 {(formulario.actividad.compromisos_siguiente_visita || []).length > 0 && (
                   <View style={styles.bloqueTexto}>
                     <Text style={styles.bloqueTextoLabel}>Compromisos próxima visita</Text>
@@ -3557,6 +3920,7 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
         )}
       </View>
     </View>
+    </RegistroSeccionesContext.Provider>
   );
 };
 

@@ -19,7 +19,54 @@ export interface EstadoRevisionCard {
   coordinador: 'ok' | 'novedades' | null;
   interventor: 'ok' | 'novedades' | null;
   novedades_total: number;
+  /** De novedades_total, cuántas ya corrigió el técnico (por verificar). */
+  por_verificar?: number;
+  /** Estado del flujo calculado por el servidor (lib/estadoRevision.js). */
+  estado_flujo?: string;
+  rol_flujo?: 'coordinador' | 'interventor' | null;
+  novedades_fase?: number;
+  por_verificar_fase?: number;
+  secciones_aprobadas?: number;
 }
+
+const ROL_FASE: Record<string, string> = { coordinador: 'Coordinador/a', interventor: 'interventoría' };
+
+/**
+ * Texto y color del estado del flujo. Devuelve null si el servidor no envió
+ * `estado_flujo` (backend anterior): entonces se usa la lógica de respaldo.
+ */
+const estadoFlujoVisual = (
+  e: EstadoRevisionCard
+): { texto: string; estilo: 'ok' | 'novedades' | 'verificar' | 'pendiente' } | null => {
+  if (!e.estado_flujo) return null;
+  const quien = ROL_FASE[e.rol_flujo || ''] || 'revisor';
+  const nov = e.novedades_fase ?? e.novedades_total;
+  const ver = e.por_verificar_fase ?? e.por_verificar ?? 0;
+  switch (e.estado_flujo) {
+    case 'aprobado':
+      return { texto: '✅ Aprobado por Coordinador/a e interventoría', estilo: 'ok' };
+    case 'en_interventoria':
+      return { texto: '🏛️ Revisión del Coordinador/a cerrada — en interventoría', estilo: 'ok' };
+    case 'por_verificar':
+      return { texto: `🔄 Corregido — por verificar (${quien})`, estilo: 'verificar' };
+    case 'por_corregir':
+      return {
+        texto: `⚠️ ${nov - ver} novedad(es) de ${quien} por corregir` + (ver > 0 ? ` · 🔄 ${ver} por verificar` : ''),
+        estilo: 'novedades',
+      };
+    case 'por_cerrar':
+      return {
+        texto:
+          `🔍 En revisión de ${quien}` +
+          (e.secciones_aprobadas ? ` · ${e.secciones_aprobadas} sección(es) aprobada(s)` : '') +
+          ' — falta cerrar',
+        estilo: 'pendiente',
+      };
+    case 'sin_revisar':
+    default:
+      return { texto: '🕓 Sin revisar', estilo: 'pendiente' };
+  }
+};
 
 interface FormCardProps {
   formulario: Formulario;
@@ -36,6 +83,10 @@ interface FormCardProps {
   /** true mientras se arma el paquete de este formulario (deshabilita el botón) */
   downloadingMedia?: boolean;
 }
+
+/** ¿Las novedades abiertas son de interventoría (con el OK del coordinador ya dado)? */
+const novedadesDeInterventoriaRol = (e?: EstadoRevisionCard): boolean =>
+  e?.interventor === 'novedades' && e?.coordinador === 'ok';
 
 const FormCard: React.FC<FormCardProps> = ({
   formulario,
@@ -58,6 +109,14 @@ const FormCard: React.FC<FormCardProps> = ({
     !!estadoRevision &&
     estadoRevision.novedades_total > 0 &&
     (estadoRevision.coordinador === 'novedades' || estadoRevision.interventor === 'novedades');
+  // Novedades que el técnico YA corrigió y esperan la verificación del
+  // revisor. Si las corrigió todas, la tarjeta deja de estar en rojo: ya no
+  // es trabajo del técnico sino del revisor (antes seguía "por corregir" y
+  // nadie sabía que la pelota estaba del lado del coordinador).
+  const porVerificar = hayNovedadesPendientes ? Math.min(estadoRevision?.por_verificar || 0, estadoRevision!.novedades_total) : 0;
+  const porCorregir = hayNovedadesPendientes ? estadoRevision!.novedades_total - porVerificar : 0;
+  const todoCorregido = hayNovedadesPendientes && porVerificar > 0 && porCorregir === 0;
+  const revisorPendiente = novedadesDeInterventoriaRol(estadoRevision) ? 'interventoría' : 'Coordinador/a';
   const aprobadoPorAmbos =
     estadoRevision?.coordinador === 'ok' && estadoRevision?.interventor === 'ok';
   // Después del OK del coordinador, el turno es de interventoría: si es ella
@@ -113,13 +172,35 @@ const FormCard: React.FC<FormCardProps> = ({
         </View>
 
         {/* Estado de revisión jerárquica (visible para el técnico) */}
-        {estadoRevision && (
+        {estadoRevision && estadoFlujoVisual(estadoRevision) && (() => {
+          const v = estadoFlujoVisual(estadoRevision)!;
+          return (
+            <View
+              style={[
+                styles.revisionBadge,
+                v.estilo === 'ok'
+                  ? styles.revisionAprobada
+                  : v.estilo === 'novedades'
+                    ? styles.revisionNovedades
+                    : v.estilo === 'verificar'
+                      ? styles.revisionPorVerificar
+                      : styles.revisionPendiente,
+              ]}
+            >
+              <Text style={styles.revisionText}>{v.texto}</Text>
+            </View>
+          );
+        })()}
+        {/* Respaldo: backend anterior sin estado_flujo */}
+        {estadoRevision && !estadoFlujoVisual(estadoRevision) && (
           <View
             style={[
               styles.revisionBadge,
               aprobadoPorAmbos
                 ? styles.revisionAprobada
-                : hayNovedadesPendientes
+                : todoCorregido
+                  ? styles.revisionPorVerificar
+                  : hayNovedadesPendientes
                   ? styles.revisionNovedades
                   : estadoRevision.coordinador === 'ok'
                     ? styles.revisionAprobada
@@ -129,10 +210,13 @@ const FormCard: React.FC<FormCardProps> = ({
             <Text style={styles.revisionText}>
               {aprobadoPorAmbos
                 ? '✅ Aprobado por Coordinador/a e interventoría'
-                : hayNovedadesPendientes
-                  ? novedadesDeInterventoria
-                    ? `⚠️ ${estadoRevision.novedades_total} novedad(es) de interventoría por corregir`
-                    : `⚠️ ${estadoRevision.novedades_total} novedad(es) por corregir`
+                : todoCorregido
+                  ? `🔄 Corregido — por verificar (${revisorPendiente})`
+                  : hayNovedadesPendientes
+                  ? (novedadesDeInterventoria
+                      ? `⚠️ ${porCorregir} novedad(es) de interventoría por corregir`
+                      : `⚠️ ${porCorregir} novedad(es) por corregir`) +
+                    (porVerificar > 0 ? ` · 🔄 ${porVerificar} por verificar` : '')
                   : estadoRevision.coordinador === 'ok'
                     ? '✅ Todo OK del Coordinador/a — en interventoría'
                     : '🕓 En revisión'}
@@ -280,6 +364,7 @@ const styles = StyleSheet.create({
   },
   revisionAprobada: { backgroundColor: COLORS.success + '20' },
   revisionNovedades: { backgroundColor: COLORS.error + '20' },
+  revisionPorVerificar: { backgroundColor: COLORS.info + '20' },
   revisionPendiente: { backgroundColor: COLORS.divider },
   revisionText: {
     fontSize: FONTS.sizes.xs,

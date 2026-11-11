@@ -242,6 +242,29 @@ async function initSchema() {
       updated_at TIMESTAMPTZ DEFAULT NOW()
     )`,
     `CREATE INDEX IF NOT EXISTS idx_analisis_suelos_tecnico ON analisis_suelos(tecnico_id)`,
+    // Datos leídos del PDF sin IA (valores, interpretación, encalado, insumos,
+    // observaciones): ver lib/suelosPdf.js.
+    `ALTER TABLE analisis_suelos ADD COLUMN IF NOT EXISTS datos JSONB`,
+    // Historial de informes PDF del análisis de suelos: cada informe generado
+    // queda guardado tal cual (datos + texto de la IA) y se puede reabrir
+    // idéntico, aunque la IA respondería distinto si se generara otra vez.
+    `CREATE TABLE IF NOT EXISTS analisis_suelos_informes (
+      id SERIAL PRIMARY KEY,
+      alcance VARCHAR(20) NOT NULL,
+      tecnico_usuario VARCHAR(100),
+      tecnico_nombre VARCHAR(200),
+      generado_por VARCHAR(20),
+      generado_por_nombre VARCHAR(200),
+      generado_por_rol VARCHAR(20),
+      beneficiarios_con_analisis INTEGER,
+      datos JSONB NOT NULL,
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_analisis_suelos_informes_tecnico ON analisis_suelos_informes(tecnico_usuario, created_at DESC)`,
+    // El PDF del informe se genera en el servidor (Chromium) y se guarda en
+    // MinIO: el historial devuelve exactamente el mismo archivo.
+    `ALTER TABLE analisis_suelos_informes ADD COLUMN IF NOT EXISTS pdf_key TEXT`,
+    `ALTER TABLE analisis_suelos_informes ADD COLUMN IF NOT EXISTS pdf_size INTEGER`,
 
     // Hectáreas reportadas por el técnico por beneficiario y actividad
     // (preparación del terreno, siembras, fertilización, control sanitario…).
@@ -286,6 +309,37 @@ async function initSchema() {
       created_at TIMESTAMPTZ DEFAULT NOW()
     )`,
     `CREATE INDEX IF NOT EXISTS idx_fortalecimiento_archivos ON fortalecimiento_archivos(componente, eca, grupo, seccion)`,
+    // Informe consolidado de una ECA (PM. 2 FO. 12) armado con los informes de
+    // sus grupos. `huella` = archivos que lo alimentaron: si no cambian, se
+    // reutiliza el PDF. Ver lib/informeEcaPdf.js.
+    `CREATE TABLE IF NOT EXISTS fortalecimiento_consolidados (
+      id SERIAL PRIMARY KEY,
+      eca SMALLINT NOT NULL,
+      huella VARCHAR(64) NOT NULL,
+      estado VARCHAR(15) NOT NULL DEFAULT 'generando',
+      etapa VARCHAR(150),
+      error TEXT,
+      pdf_key TEXT,
+      pdf_size INTEGER,
+      paginas INTEGER,
+      resumen JSONB,
+      generado_por VARCHAR(20),
+      generado_por_nombre VARCHAR(200),
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      terminado_en TIMESTAMPTZ
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_fortalecimiento_consolidados ON fortalecimiento_consolidados(eca, created_at DESC)`,
+
+    // "OK" de la interventoría sobre un registro de una actividad (ver
+    // backend/src/lib/revisionInterventoria.js). Sin fila = pendiente.
+    `CREATE TABLE IF NOT EXISTS revision_interventoria (
+      actividad VARCHAR(50) NOT NULL,
+      referencia VARCHAR(150) NOT NULL,
+      revisado_por VARCHAR(20) NOT NULL,
+      revisado_por_nombre VARCHAR(200),
+      revisado_en TIMESTAMPTZ DEFAULT NOW(),
+      PRIMARY KEY (actividad, referencia)
+    )`,
 
     `CREATE TABLE IF NOT EXISTS revisiones_formulario (
       id SERIAL PRIMARY KEY,
@@ -323,6 +377,8 @@ async function initSchema() {
     `CREATE INDEX IF NOT EXISTS idx_plantaciones_usuario ON plantaciones(usuario_id)`,
     `CREATE INDEX IF NOT EXISTS idx_actividad_usuario ON actividad_log(usuario_id)`,
     `CREATE INDEX IF NOT EXISTS idx_actividad_created ON actividad_log(created_at)`,
+    // Correcciones del técnico sobre novedades (ver lib/correcciones.js)
+    require('./lib/correcciones').SQL_INDICE_CORRECCIONES,
 
     // Configuración global clave-valor (ej. la API key de DeepSeek para el
     // análisis con IA de las gráficas del PDF del Dashboard). Solo el admin

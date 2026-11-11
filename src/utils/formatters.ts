@@ -112,3 +112,19 @@ export const truncarTexto = (texto: string, maxLen: number = 50): string => {
 export const capitalizar = (texto: string): string => {
   return texto.charAt(0).toUpperCase() + texto.slice(1).toLowerCase();
 };
+
+/**
+ * Fecha y hora en hora de Colombia (UTC−5, sin horario de verano), sin
+ * depender del soporte de zonas horarias de Intl en el dispositivo.
+ * Ej.: "16/10/2026 · 8:05 p. m.". Devuelve '' si la fecha no es válida.
+ */
+export const formatFechaHoraColombia = (fecha?: string | Date | null): string => {
+  if (!fecha) return '';
+  const d = typeof fecha === 'string' ? new Date(fecha) : fecha;
+  if (!d || Number.isNaN(d.getTime())) return '';
+  const co = new Date(d.getTime() - 5 * 3600 * 1000);
+  const dos = (n: number) => String(n).padStart(2, '0');
+  const h24 = co.getUTCHours();
+  const h12 = h24 % 12 === 0 ? 12 : h24 % 12;
+  return `${dos(co.getUTCDate())}/${dos(co.getUTCMonth() + 1)}/${co.getUTCFullYear()} · ${h12}:${dos(co.getUTCMinutes())} ${h24 < 12 ? 'a. m.' : 'p. m.'}`;
+};

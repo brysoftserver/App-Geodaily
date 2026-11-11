@@ -19,7 +19,7 @@ import {
   obtenerEntregaLocal,
   sincronizarEntregasActividad,
 } from '../actividadesEntregas.service';
-import { FILA_INICIAL_ACTA, SUBACTIVIDADES } from '../../data/actividades';
+import { ACTIVIDADES_CONECTADAS, FILA_INICIAL_ACTA, SUBACTIVIDADES, tituloActaEntregas } from '../../data/actividades';
 
 describe('Entregas de actividad', () => {
   beforeEach(async () => {
@@ -100,5 +100,36 @@ describe('Catálogo de Siembra de Plátano', () => {
     expect(FILA_INICIAL_ACTA.siembra_platano).toEqual({ descripcion: 'Realizar siembra de plátano.', actividad: '4', cantidad: '', unidad: 'Semilla de plátano (Colino)' });
     // Preparación del terreno conserva su fila de siempre.
     expect(FILA_INICIAL_ACTA.preparacion_terreno).toEqual({ descripcion: 'Preparación del terreno', actividad: '2', cantidad: '2,5', unidad: 'Hectárea' });
+  });
+});
+
+describe('Catálogo de Siembra de Forestales (mismo diseño que plátano)', () => {
+  it('tiene las 4 subactividades; solo la entrega abre pantalla', () => {
+    const subs = SUBACTIVIDADES.siembra_forestales;
+    expect(subs.map((s) => s.nombre)).toEqual([
+      'Entrega de Plántulas Forestales',
+      'Trazado, Ahoyado y Encalado',
+      'Siembra de las Plántulas Forestales',
+      'Fertilización',
+    ]);
+    expect(subs.filter((s) => s.pantalla).map((s) => s.id)).toEqual(['entrega_plantulas']);
+    expect(ACTIVIDADES_CONECTADAS).toContain('siembra_forestales');
+  });
+
+  it('el acta arranca con la fila de forestales y cada actividad tiene su título', () => {
+    expect(FILA_INICIAL_ACTA.siembra_forestales).toEqual({ descripcion: 'Realizar siembra de forestales.', actividad: '5', cantidad: '', unidad: 'Plántula forestal' });
+    expect(tituloActaEntregas('siembra_forestales')).toBe('Acta de Entrega y Recepción de Plántulas Forestales');
+    expect(tituloActaEntregas('siembra_platano')).toBe('Acta de Entrega y Recepción de Colinos de Plátano');
+    expect(tituloActaEntregas('otra')).toBe('Acta de Entrega y Recepción');
+  });
+
+  it('las entregas de forestales llevan su propio consecutivo, aparte de las de plátano', async () => {
+    await AsyncStorage.clear();
+    await crearEntrega('siembra_platano', 'tec-1');
+    await crearEntrega('siembra_platano', 'tec-1');
+    const f1 = await crearEntrega('siembra_forestales', 'tec-1');
+    expect(f1!.numero).toBe(1);
+    expect((await listarEntregasLocales('siembra_forestales', 'tec-1')).map((e) => e.actividad)).toEqual(['siembra_forestales']);
+    expect((await listarEntregasLocales('siembra_platano', 'tec-1'))).toHaveLength(2);
   });
 });

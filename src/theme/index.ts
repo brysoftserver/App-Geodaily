@@ -151,5 +151,6 @@ export const API_CONFIG = {
     EDICION_VISITAS: '/api/edicion-visitas',
     ASISTENCIA_TECNICA: '/api/asistencia-tecnica',
     FORTALECIMIENTO: '/api/fortalecimiento',
+    REVISION_INTERVENTORIA: '/api/revision-interventoria',
   },
 };

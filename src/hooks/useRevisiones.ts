@@ -3,15 +3,22 @@
 // ============================================================
 
 import { useCallback, useEffect, useState } from 'react';
-import { fetchRevisiones, Revision } from '../services/revisiones.service';
+import { fetchRevisionesYCorrecciones, Revision, Correccion, FlujoRevision } from '../services/revisiones.service';
 
 export function useRevisiones(formularioId: string) {
   const [revisiones, setRevisiones] = useState<Revision[]>([]);
+  /** Correcciones del técnico (para marcar novedades "por verificar"). */
+  const [correcciones, setCorrecciones] = useState<Correccion[]>([]);
+  /** Estado del flujo calculado por el servidor (null offline / backend viejo). */
+  const [flujo, setFlujo] = useState<FlujoRevision | null>(null);
   const [cargando, setCargando] = useState(true);
 
   const recargar = useCallback(async () => {
     setCargando(true);
-    setRevisiones(await fetchRevisiones(formularioId));
+    const datos = await fetchRevisionesYCorrecciones(formularioId);
+    setRevisiones(datos.revisiones);
+    setCorrecciones(datos.correcciones);
+    setFlujo(datos.flujo);
     setCargando(false);
   }, [formularioId]);
 
@@ -19,5 +26,5 @@ export function useRevisiones(formularioId: string) {
     recargar();
   }, [recargar]);
 
-  return { revisiones, cargando, recargar };
+  return { revisiones, correcciones, flujo, cargando, recargar };
 }

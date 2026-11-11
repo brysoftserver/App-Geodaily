@@ -6,8 +6,9 @@
 //   2. Evidencia Fotográfica del Antes de la Actividad       (máx. 3 fotos)
 //   3. Evidencia Fotográfica del Durante la Actividad        (máx. 3 fotos)
 //   4. Evidencia Fotográfica del Después de la Actividad     (máx. 3 fotos)
-// El técnico (modo 'ejecutar') diligencia y sube; los demás roles ('revisar')
-// ven los segmentos vacíos o con lo que subió el técnico, en solo lectura.
+// El técnico (modo 'ejecutar') diligencia y sube. En modo 'revisar' solo el
+// admin puede subir, quitar o reemplazar fotos y actas (PDF); los demás roles
+// ven lo que subió el técnico en solo lectura.
 // ============================================================
 
 import React, { useCallback, useLayoutEffect, useState } from 'react';
@@ -25,6 +26,7 @@ import {
   View,
 } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
+import * as DocumentPicker from 'expo-document-picker';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
 import { useFocusEffect } from '@react-navigation/native';
@@ -44,11 +46,13 @@ import {
   MOMENTOS_EVIDENCIA,
   MomentoEvidencia,
   crearObservacionActa,
+  eliminarActaAdmin,
   eliminarFotoEvidencia,
   fuenteFotoEvidencia,
   obtenerDatosActaServidor,
   obtenerEvidenciaBeneficiario,
   resolverObservacionActa,
+  subirActaPdfAdmin,
   subirFotoEvidencia,
 } from '../../services/actividadesEvidencias.service';
 
@@ -86,7 +90,10 @@ const ActividadBeneficiarioScreen: React.FC<any> = ({ navigation, route }) => {
   const beneficiario: BeneficiarioParam = route?.params?.beneficiario;
   const modo: 'ejecutar' | 'revisar' = route?.params?.modo === 'revisar' ? 'revisar' : 'ejecutar';
   const { user } = useAuth();
+  // El admin, desde la revisión, puede subir / quitar / reemplazar fotos y actas.
+  const esAdminRevision = modo === 'revisar' && user?.rol === 'admin';
   const puedeEscribir = modo === 'ejecutar';
+  const puedeGestionarFotos = puedeEscribir || esAdminRevision;
   const puedeObservar = modo === 'revisar' && ['coordinador', 'interventor', 'gerente', 'admin'].includes(user?.rol || '');
   const actividad = buscarActividad(actividadId);
 
@@ -95,6 +102,8 @@ const ActividadBeneficiarioScreen: React.FC<any> = ({ navigation, route }) => {
   const [refrescando, setRefrescando] = useState(false);
   const [subiendo, setSubiendo] = useState<MomentoEvidencia | null>(null);
   const [abriendoActa, setAbriendoActa] = useState<string | null>(null);
+  // Id del acta en proceso por el admin ('nueva' = subiendo una nueva).
+  const [gestionandoActa, setGestionandoActa] = useState<string | null>(null);
   const [visorFoto, setVisorFoto] = useState<{ foto: FotoEvidencia; fuente: { uri: string; headers?: Record<string, string> } } | null>(null);
   // Observación que un rol superior está redactando sobre un acta.
   const [observando, setObservando] = useState<ActaDeActividad | null>(null);
@@ -216,6 +225,38 @@ const ActividadBeneficiarioScreen: React.FC<any> = ({ navigation, route }) => {
     }
   };
 
+  // ─── Actas (solo admin) ─────────────────────────────────
+  const subirActaAdmin = async (a?: ActaDeActividad) => {
+    if (gestionandoActa) return;
+    const r = await DocumentPicker.getDocumentAsync({ type: 'application/pdf', copyToCacheDirectory: true });
+    if (r.canceled || !r.assets?.[0]) return;
+    const doc = r.assets[0];
+    setGestionandoActa(a?.id ?? 'nueva');
+    try {
+      await subirActaPdfAdmin(actividadId, beneficiario.item, { uri: doc.uri, nombre: doc.name || 'acta.pdf', mimeType: doc.mimeType }, a?.id);
+      await cargar();
+      avisar(a ? 'Acta reemplazada' : 'Acta subida', 'El PDF quedó guardado en la carpeta del beneficiario.');
+    } catch (e) {
+      avisar('No se pudo subir el acta', mensajeError(e, 'Inténtalo de nuevo.'));
+    } finally {
+      setGestionandoActa(null);
+    }
+  };
+
+  const eliminarActa = async (a: ActaDeActividad) => {
+    if (gestionandoActa) return;
+    if (!(await confirmar('Eliminar acta', '¿Eliminar esta acta y su PDF? Esta acción no se puede deshacer.', 'Eliminar', true))) return;
+    setGestionandoActa(a.id);
+    try {
+      await eliminarActaAdmin(actividadId, beneficiario.item, a.id);
+      await cargar();
+    } catch (e) {
+      avisar('No se pudo eliminar', mensajeError(e, 'Inténtalo de nuevo.'));
+    } finally {
+      setGestionandoActa(null);
+    }
+  };
+
   // ─── Fotos ──────────────────────────────────────────────
   const agregarFotos = async (momento: MomentoEvidencia) => {
     const actuales = data?.fotos[momento].length ?? 0;
@@ -330,6 +371,20 @@ const ActividadBeneficiarioScreen: React.FC<any> = ({ navigation, route }) => {
                   <Text style={styles.btnSecTxt}>⚠ Avisar dato errado o faltante</Text>
                 </TouchableOpacity>
               )}
+              {esAdminRevision && (
+                gestionandoActa === a.id ? (
+                  <ActivityIndicator color={COLORS.primary} />
+                ) : (
+                  <>
+                    <TouchableOpacity style={styles.btnSec} onPress={() => subirActaAdmin(a)} disabled={gestionandoActa !== null}>
+                      <Text style={styles.btnSecTxt}>📄 Reemplazar PDF</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity style={[styles.btnSec, styles.btnPeligro]} onPress={() => eliminarActa(a)} disabled={gestionandoActa !== null}>
+                      <Text style={[styles.btnSecTxt, { color: COLORS.error }]}>🗑 Eliminar acta</Text>
+                    </TouchableOpacity>
+                  </>
+                )
+              )}
             </View>
           </View>
         );
@@ -337,6 +392,20 @@ const ActividadBeneficiarioScreen: React.FC<any> = ({ navigation, route }) => {
       {puedeEscribir && (
         <TouchableOpacity style={styles.btnPrimario} onPress={diligenciarActa} activeOpacity={0.8}>
           <Text style={styles.btnPrimarioTxt}>{(data?.actas ?? []).length ? '＋ Diligenciar otra acta' : '📝 Diligenciar acta'}</Text>
+        </TouchableOpacity>
+      )}
+      {esAdminRevision && (
+        <TouchableOpacity
+          style={[styles.btnPrimario, gestionandoActa !== null && styles.btnDeshabilitado]}
+          onPress={() => subirActaAdmin()}
+          disabled={gestionandoActa !== null}
+          activeOpacity={0.8}
+        >
+          {gestionandoActa === 'nueva' ? (
+            <><ActivityIndicator size="small" color="#fff" /><Text style={styles.btnPrimarioTxt}>  Subiendo…</Text></>
+          ) : (
+            <Text style={styles.btnPrimarioTxt}>📄 Subir acta (PDF) desde el dispositivo</Text>
+          )}
         </TouchableOpacity>
       )}
     </View>
@@ -355,7 +424,7 @@ const ActividadBeneficiarioScreen: React.FC<any> = ({ navigation, route }) => {
             {fotos.map((f) => <Miniatura key={f.id} foto={f} onPress={() => abrirFoto(f)} />)}
           </View>
         )}
-        {puedeEscribir && (
+        {puedeGestionarFotos && (
           <TouchableOpacity
             style={[styles.btnPrimario, (lleno || subiendo !== null) && styles.btnDeshabilitado]}
             onPress={() => agregarFotos(momento)}
@@ -398,7 +467,7 @@ const ActividadBeneficiarioScreen: React.FC<any> = ({ navigation, route }) => {
           <View style={styles.visorFondo}>
             <Image source={visorFoto.fuente} style={styles.visorImg} resizeMode="contain" />
             <View style={[styles.visorBarra, { paddingBottom: insets.bottom + SPACING.md }]}>
-              {puedeEscribir && (
+              {puedeGestionarFotos && (
                 <TouchableOpacity style={[styles.visorBtn, styles.visorBtnPeligro]} onPress={() => quitarFoto(visorFoto.foto)}>
                   <Text style={styles.visorBtnTxt}>Quitar</Text>
                 </TouchableOpacity>
@@ -484,6 +553,7 @@ const styles = StyleSheet.create({
   observacionTexto: { fontSize: FONTS.sizes.sm, color: COLORS.textPrimary, marginTop: 2 },
   observacionAccion: { fontSize: FONTS.sizes.sm, fontWeight: FONTS.weights.semibold, color: COLORS.primary, marginTop: 4 },
   btnSec: { borderWidth: 1, borderColor: COLORS.primary, borderRadius: BORDER_RADIUS.md, paddingVertical: 6, paddingHorizontal: SPACING.sm, alignItems: 'center', backgroundColor: COLORS.surface },
+  btnPeligro: { borderColor: COLORS.error },
   btnSecResalta: { backgroundColor: '#FFF4E5', borderColor: COLORS.warning },
   btnSecTxt: { color: COLORS.primary, fontWeight: FONTS.weights.semibold, fontSize: FONTS.sizes.sm },
   modalFondo: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', padding: SPACING.lg },

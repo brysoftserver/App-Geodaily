@@ -101,6 +101,14 @@ const MENU_ITEMS = [
     screen: 'AdminFormularioList',
   },
   {
+    id: 'incompletos',
+    title: 'Listado de formularios incompletos',
+    subtitle: 'Borradores por técnico; forzar como completo para agregarles lo que falta',
+    icon: '📝',
+    color: COLORS.warning,
+    screen: 'AdminFormulariosIncompletos',
+  },
+  {
     id: 'actividades',
     title: 'Revisión de Actividades',
     subtitle: 'Consolidado de lo que llenan todos los técnicos',

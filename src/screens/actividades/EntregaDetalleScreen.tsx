@@ -1,5 +1,5 @@
 // ============================================================
-// GEODAILY — Detalle de una entrega (ej. Entrega 1 de Colinos de Plátano)
+// GEODAILY — Detalle de una entrega (ej. Entrega 1 de Colinos de Plátano o de Plántulas Forestales)
 // ============================================================
 //   1. Lugar de Entrega (texto libre)
 //   2. Acta de Entrega y Recepción — se elige el beneficiario y se diligencia
@@ -35,6 +35,7 @@ import { getBeneficiariosByTecnico } from '../../services/beneficiariosDB.servic
 import { cargarDatosOtroFormato } from '../../store/OtrosFormatosDraftStore';
 import { getOtrosFormatosLocales, idOtroFormato } from '../../services/database';
 import { BeneficiarioDB } from '../../types';
+import { tituloActaEntregas } from '../../data/actividades';
 import {
   BeneficiarioEntrega,
   EntregaLocal,
@@ -260,7 +261,7 @@ const EntregaDetalleScreen: React.FC<any> = ({ navigation, route }) => {
 
         {/* 2. Acta */}
         <View style={styles.seccion}>
-          <Text style={styles.seccionTitulo}>Acta de Entrega y Recepción de Colinos de Plátano</Text>
+          <Text style={styles.seccionTitulo}>{tituloActaEntregas(actividadId)}</Text>
           <Text style={styles.etiqueta}>Beneficiario</Text>
           {d.beneficiario ? (
             <View style={styles.benef}>

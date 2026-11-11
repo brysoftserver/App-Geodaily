@@ -12,6 +12,7 @@ import AsistenciaTecnicaScreen from './actividades/AsistenciaTecnicaScreen';
 import FortalecimientoScreen from './actividades/FortalecimientoScreen';
 import { ACTIVIDADES_EN_HECTAREAS, SUBACTIVIDADES } from '../data/actividades';
 import SubactividadesScreen from './actividades/SubactividadesScreen';
+import RevisarSubactividadesScreen from './actividades/RevisarSubactividadesScreen';
 
 const ActividadDetalleScreen: React.FC<any> = (props) => {
   const { route } = props;
@@ -21,6 +22,8 @@ const ActividadDetalleScreen: React.FC<any> = (props) => {
   if (ACTIVIDADES_EN_HECTAREAS.includes(route?.params?.actividadId)) return <HectareasActividadScreen {...props} />;
   // Técnico: actividades divididas en subactividades (ej. Siembra de Plátano).
   if (route?.params?.modo !== 'revisar' && SUBACTIVIDADES[route?.params?.actividadId]) return <SubactividadesScreen {...props} />;
+  // Roles superiores: revisión por subactividad con el OK de la interventoría.
+  if (route?.params?.modo === 'revisar' && SUBACTIVIDADES[route?.params?.actividadId]) return <RevisarSubactividadesScreen {...props} />;
 
   const modo: ModoActividades = route?.params?.modo === 'revisar' ? 'revisar' : 'ejecutar';
   const actividad = buscarActividad(route?.params?.actividadId);

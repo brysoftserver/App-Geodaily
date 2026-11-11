@@ -16,6 +16,8 @@ export interface BeneficiarioHectareas {
   hectareas: number;
   /** Visita que respalda las hectáreas (null = aún no la tiene). */
   formularioId: string | null;
+  /** Ya tiene el análisis de suelos subido. */
+  tieneSuelo?: boolean;
 }
 
 export interface TecnicoHectareas {
@@ -42,6 +44,12 @@ export const obtenerResumenHectareas = async (actividad: string): Promise<Resume
 
 export const listarMisBeneficiariosHectareas = async (actividad: string): Promise<BeneficiarioHectareas[]> => {
   const r = await apiClient.get(`${ENDPOINT}/${actividad}/mis-beneficiarios`);
+  return r.data.beneficiarios;
+};
+
+/** Superiores: TODOS los beneficiarios (sin filtro por técnico), primero los que tienen análisis de suelos. */
+export const listarTodosBeneficiariosHectareas = async (actividad: string): Promise<BeneficiarioHectareas[]> => {
+  const r = await apiClient.get(`${ENDPOINT}/${actividad}/todos`);
   return r.data.beneficiarios;
 };
 

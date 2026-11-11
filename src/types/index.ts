@@ -207,7 +207,13 @@ export interface ActividadRealizada {
    * la captura del polígono y pueda abrirla en Google Earth.
    */
   medicion_historial?: MedicionAdjunta;
-  /** Ítem 4 — Segundo polígono opcional (lo carga un admin autorizado). */
+  /**
+   * Ítem 4 — TODOS los polígonos de la visita (puede haber varios lotes).
+   * Es el campo canónico; `medicion_historial` queda = el primero, por
+   * compatibilidad. Leer siempre con `medicionesDeVisita()`.
+   */
+  mediciones_historial?: MedicionAdjunta[];
+  /** @deprecated Segundo polígono del formato anterior (ahora va en `mediciones_historial`). */
   medicion_historial_2?: MedicionAdjunta;
   /**
    * Estado completo del formulario de visita técnica (formato v2).

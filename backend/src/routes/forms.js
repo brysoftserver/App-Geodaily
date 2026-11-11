@@ -6,7 +6,11 @@ const express = require('express');
 const { authenticateToken } = require('../middleware/auth');
 const db = require('../database');
 const storage = require('../storage');
+const { crearNotificacion } = require('./notificaciones');
+const { notificarCorreccion, ROLES_CORRECTORES } = require('../lib/correcciones');
 const { normalizarCedula, numeroVisitaFormulario, sqlCedulaNormalizada } = require('../lib/visitas');
+const { quitarRevision } = require('../lib/revisionInterventoria');
+const { conservarPoligonos } = require('../lib/poligonosVisita');
 const {
   esTecnicoVigenteDelFormulario,
   resolverAtribucionFormulario,
@@ -154,7 +158,10 @@ async function subirBase64AMinIO(req, data, tipo, prefijo, tipoFormulario, benef
 }
 
 // POST /api/formularios/guardar
-router.post('/guardar', authenticateToken, async (req, res) => {
+// El manejador se expone (ver final del archivo) para que el admin pueda
+// "forzar como completo" un borrador desde /api/borradores/admin con la MISMA
+// lógica de guardado (atribución, firmas, evidencias, visita planificada).
+async function guardarFormularioHandler(req, res) {
   try {
     const formulario = req.body;
 
@@ -264,9 +271,9 @@ router.post('/guardar', authenticateToken, async (req, res) => {
       // "a nombre de" un técnico tienen la columna = creador y el snapshot =
       // técnico responsable). Comparar contra la sola columna haría que un
       // segundo supervisor reescribiera el responsable con sus propios datos.
-      `SELECT id, usuario_id,
+      `SELECT id, usuario_id, tipo,
               COALESCE(NULLIF(tecnico_json->>'usuario_id', ''), usuario_id) AS dueno_efectivo,
-              tecnico_json
+              tecnico_json, actividad_json
          FROM formularios WHERE id = $1`,
       [formulario.id]
     );
@@ -328,6 +335,13 @@ router.post('/guardar', authenticateToken, async (req, res) => {
     const firmaTecnico = await subirBase64AMinIO(req, formulario.firma_tecnico, 'tecnico', `firma_tecnico_${formulario.id}`, tipoFormulario, benefItem, benefNombre, formulario.id);
 
     if (existente) {
+      // Visita técnica YA completada: sus polígonos solo los cambia un admin
+      // (/api/edicion-visitas). Una resincronización del teléfono traería la
+      // copia local y borraría los que el admin agregó; se conservan los del
+      // servidor.
+      if (existente.tipo === 'visita_tecnica' && formulario.tipo === 'visita_tecnica') {
+        conservarPoligonos(actividad, existente.actividad_json);
+      }
       await db.query(
         `UPDATE formularios SET
           tipo = $1, usuario_id = $2,
@@ -486,7 +500,9 @@ router.post('/guardar', authenticateToken, async (req, res) => {
     console.error('[Forms] Error:', error);
     res.status(500).json({ estado: 'error', mensaje: 'Error al guardar formulario' });
   }
-});
+}
+
+router.post('/guardar', authenticateToken, guardarFormularioHandler);
 
 // GET /api/formularios — listar todos (con filtros opcionales)
 router.get('/', authenticateToken, async (req, res) => {
@@ -820,6 +836,11 @@ router.patch('/:id/respuesta', authenticateToken, async (req, res) => {
       ]
     );
 
+    // Avisar a los revisores con novedades pendientes que el técnico
+    // corrigió (antes el coordinador nunca se enteraba y la novedad
+    // seguía "pendiente" indefinidamente). Nunca lanza.
+    await notificarCorreccion(db, crearNotificacion, { formularioId: req.params.id, autor: req.user });
+
     res.json({
       estado: 'ok',
       mensaje: esCorreccion ? 'Respuesta corregida' : 'Respuesta completada',
@@ -928,6 +949,24 @@ router.delete('/:id', authenticateToken, async (req, res) => {
       [formularioId]
     );
 
+    // OK de la interventoría que dependía de esta visita: vuelve a pendiente.
+    //  · Asistencia Técnica → la propia visita.
+    //  · Preparación del Terreno → el beneficiario, si era su Visita Técnica 2.
+    await quitarRevision('asistencia_tecnica', formularioId, client);
+    const formBorrado = (await client.query(
+      `SELECT tipo, actividad_json->>'visita_numero' AS visita, beneficiario_json->>'cedula' AS cedula
+         FROM formularios WHERE id = $1`,
+      [formularioId]
+    )).rows[0];
+    if (formBorrado?.tipo === 'visita_tecnica' && String(formBorrado.visita) === '2' && normalizarCedula(formBorrado.cedula)) {
+      await client.query(
+        `DELETE FROM revision_interventoria
+          WHERE actividad = 'preparacion_terreno'
+            AND referencia IN (SELECT item::text FROM beneficiarios WHERE ${sqlCedulaNormalizada('cedula')} = $1)`,
+        [normalizarCedula(formBorrado.cedula)]
+      );
+    }
+
     const result = await client.query('DELETE FROM formularios WHERE id = $1 RETURNING id', [formularioId]);
     deleted = result.rowCount > 0;
 
@@ -983,3 +1022,4 @@ router.delete('/:id', authenticateToken, async (req, res) => {
 });
 
 module.exports = router;
+module.exports.guardarFormularioHandler = guardarFormularioHandler;

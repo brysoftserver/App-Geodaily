@@ -47,24 +47,41 @@ export const buscarVisitaYaCompletada = async (
   return buscarVisitaCompletada(formularios, cedula, numeroVisita);
 };
 
-/** Aviso de bloqueo: al aceptar se abre el detalle de la visita ya registrada. */
+/**
+ * Aviso de bloqueo: al aceptar se abre el detalle de la visita ya registrada.
+ *
+ * Si se pasa `onCambiarBeneficiario`, aparece además el botón «Cambiar
+ * beneficiario» (a la izquierda de Aceptar): es para el caso en que las fotos,
+ * videos o respuestas se tomaron por error dentro del beneficiario equivocado.
+ * El técnico se queda en el formulario con todo lo diligenciado y elige otro
+ * beneficiario para poder completarlo.
+ */
 export const avisarVisitaYaRegistrada = (
   navigation: Navegacion,
   formulario: Formulario,
-  titulo: string
+  titulo: string,
+  onCambiarBeneficiario?: () => void
 ): void => {
   const fecha = formulario.created_at
     ? new Date(formulario.created_at).toLocaleDateString('es-CO')
     : 'una fecha anterior';
+  const botones: { text: string; style?: 'cancel'; onPress: () => void }[] = [];
+  if (onCambiarBeneficiario) {
+    botones.push({ text: 'Cambiar beneficiario', onPress: onCambiarBeneficiario });
+  }
+  // `replace`: al volver atrás no se regresa al formulario bloqueado.
+  botones.push({ text: 'Aceptar', onPress: () => navigation.replace('FormularioDetail', { formulario }) });
   Alert.alert(
     'Visita ya registrada',
     `${titulo} de ${formulario.beneficiario?.nombre || 'este beneficiario'}` +
       `${formulario.beneficiario?.cedula ? ` (C.C. ${formulario.beneficiario.cedula})` : ''}` +
       ` ya fue diligenciada el ${fecha}.\n\n` +
       'Solo se permite una visita de cada formulario por beneficiario. ' +
-      'Pulsa Aceptar para ver la visita registrada.',
-    // `replace`: al volver atrás no se regresa al formulario bloqueado.
-    [{ text: 'Aceptar', onPress: () => navigation.replace('FormularioDetail', { formulario }) }],
+      'Pulsa Aceptar para ver la visita registrada.' +
+      (onCambiarBeneficiario
+        ? '\n\nSi lo registrado corresponde a otro beneficiario, pulsa Cambiar beneficiario.'
+        : ''),
+    botones,
     { cancelable: false }
   );
 };

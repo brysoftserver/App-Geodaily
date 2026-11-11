@@ -81,6 +81,33 @@ export const subirFotoEvidencia = async (
   });
 };
 
+/** Solo admin: sube un acta en PDF. Con `actaId` reemplaza el PDF de esa acta; sin él crea una nueva. */
+export const subirActaPdfAdmin = async (
+  actividad: string,
+  item: number,
+  archivo: { uri: string; nombre: string; mimeType?: string },
+  actaId?: string
+): Promise<void> => {
+  const formData = new FormData();
+  if (actaId) formData.append('actaId', actaId);
+  if (Platform.OS === 'web') {
+    const blob = await (await fetch(archivo.uri)).blob();
+    formData.append('archivo', blob, archivo.nombre);
+  } else {
+    // @ts-expect-error — React Native FormData
+    formData.append('archivo', { uri: archivo.uri, type: archivo.mimeType || 'application/pdf', name: archivo.nombre });
+  }
+  await apiClient.post(`${ENDPOINT}/${actividad}/${item}/acta`, formData, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+    timeout: 120000,
+  });
+};
+
+/** Solo admin: elimina un acta de la actividad (con su PDF y observaciones). */
+export const eliminarActaAdmin = async (actividad: string, item: number, actaId: string): Promise<void> => {
+  await apiClient.delete(`${ENDPOINT}/${actividad}/${item}/acta/${encodeURIComponent(actaId)}`);
+};
+
 export const eliminarFotoEvidencia = async (id: number): Promise<void> => {
   await apiClient.delete(`${ENDPOINT}/foto/${id}`);
 };
