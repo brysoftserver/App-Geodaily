@@ -55,14 +55,13 @@ import {
   sincronizarEntregasActividad,
 } from '../../services/actividadesEntregas.service';
 
-type EstadoActa =
-  | 'sin_diligenciar'
-  | 'borrador'
-  | 'borrador_respaldado'
-  | 'borrador_servidor'
-  | 'completada'
-  | 'completada_servidor'
-  | 'pendiente_subir';
+import { EstadoActa, limpiarFaltantes, presentacionActa, TonoActa } from '../../utils/estadoActa';
+
+const COLOR_TONO: Record<TonoActa, string> = {
+  gris: COLORS.textSecondary,
+  amarillo: COLORS.warning,
+  verde: COLORS.success,
+};
 
 const sinTildes = (t: string) => t.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
 
@@ -95,6 +94,8 @@ const EntregaDetalleScreen: React.FC<any> = ({ navigation, route }) => {
   const [entrega, setEntrega] = useState<EntregaLocal | null>(null);
   const [cargando, setCargando] = useState(true);
   const [estadoActa, setEstadoActa] = useState<EstadoActa>('sin_diligenciar');
+  // Pendientes con los que se completó el acta (firmas o datos faltantes).
+  const [faltantesActa, setFaltantesActa] = useState<string[]>([]);
   const [selector, setSelector] = useState(false);
   const [beneficiarios, setBeneficiarios] = useState<BeneficiarioDB[]>([]);
   const [busqueda, setBusqueda] = useState('');
@@ -111,6 +112,7 @@ const EntregaDetalleScreen: React.FC<any> = ({ navigation, route }) => {
   /** Estado del acta de esta entrega: completada (registrada) > borrador > sin diligenciar. */
   const revisarActa = useCallback(async (e: EntregaLocal) => {
     const b = e.datos.beneficiario;
+    setFaltantesActa([]);
     if (!b?.cedula) return setEstadoActa('sin_diligenciar');
     try {
       const id = idOtroFormato('acta_entrega_individual', b.cedula, e.datos.actaInstancia);
@@ -124,6 +126,7 @@ const EntregaDetalleScreen: React.FC<any> = ({ navigation, route }) => {
             completada = (await obtenerFormatoLocalPorId(id)) ?? completada;
           }
         }
+        setFaltantesActa(limpiarFaltantes(completada.datos?.faltantes));
         return setEstadoActa(completada.sincronizado ? 'completada' : 'pendiente_subir');
       }
       const borrador = await cargarDatosOtroFormato('acta_entrega_individual', `${b.cedula}__${e.datos.actaInstancia}`);
@@ -270,15 +273,8 @@ const EntregaDetalleScreen: React.FC<any> = ({ navigation, route }) => {
   if (!entrega) return <View style={styles.centro}><Text style={styles.dato}>No se encontró esta entrega en el dispositivo.</Text></View>;
 
   const d = entrega.datos;
-  const textoActa: Record<EstadoActa, { txt: string; color: string; boton: string }> = {
-    sin_diligenciar: { txt: 'Sin diligenciar', color: COLORS.textSecondary, boton: '📝 Diligenciar acta' },
-    borrador: { txt: '⏳ Borrador solo en este dispositivo · pendiente de respaldar en el servidor', color: COLORS.warning, boton: '📝 Continuar acta' },
-    borrador_respaldado: { txt: '⏳ Borrador · ✓ respaldado en el servidor', color: COLORS.warning, boton: '📝 Continuar acta' },
-    borrador_servidor: { txt: '⏳ Borrador guardado en el servidor', color: COLORS.warning, boton: '📝 Continuar acta' },
-    completada_servidor: { txt: '✓ Acta completada (en el servidor)', color: COLORS.success, boton: '✏️ Ver / editar acta' },
-    completada: { txt: '✓ Acta completada', color: COLORS.success, boton: '✏️ Ver / editar acta' },
-    pendiente_subir: { txt: '✓ Acta completada · ⏳ pendiente de subir al servidor', color: COLORS.warning, boton: '✏️ Ver / editar acta' },
-  };
+  const acta = presentacionActa(estadoActa, faltantesActa);
+
   const filtrados = beneficiarios.filter((b) => sinTildes(`${b.nombre_completo} ${b.cedula} ${b.vereda}`).includes(sinTildes(busqueda.trim())));
 
   return (
@@ -317,9 +313,10 @@ const EntregaDetalleScreen: React.FC<any> = ({ navigation, route }) => {
               <Text style={styles.btnSecTxt}>👤 Elegir beneficiario</Text>
             </TouchableOpacity>
           )}
-          {d.beneficiario && <Text style={[styles.estado, { color: textoActa[estadoActa].color }]}>{textoActa[estadoActa].txt}</Text>}
+          {d.beneficiario && <Text style={[styles.estado, { color: COLOR_TONO[acta.tono] }]}>{acta.txt}</Text>}
+          {d.beneficiario && acta.sub ? <Text style={styles.estadoSub}>{acta.sub}</Text> : null}
           <TouchableOpacity style={[styles.btnPrimario, !d.beneficiario && styles.deshabilitado]} onPress={abrirActa}>
-            <Text style={styles.btnPrimarioTxt}>{d.beneficiario ? textoActa[estadoActa].boton : 'Elige el beneficiario para diligenciar el acta'}</Text>
+            <Text style={styles.btnPrimarioTxt}>{d.beneficiario ? acta.boton : 'Elige el beneficiario para diligenciar el acta'}</Text>
           </TouchableOpacity>
         </View>
 
@@ -400,6 +397,7 @@ const styles = StyleSheet.create({
   input: { borderWidth: 1, borderColor: COLORS.border, borderRadius: BORDER_RADIUS.md, paddingHorizontal: SPACING.sm, paddingVertical: SPACING.sm, color: COLORS.textPrimary, backgroundColor: COLORS.surface, fontSize: FONTS.sizes.sm },
   dato: { fontSize: FONTS.sizes.sm, color: COLORS.textSecondary },
   estado: { fontSize: FONTS.sizes.xs, fontWeight: FONTS.weights.semibold, marginTop: SPACING.sm },
+  estadoSub: { fontSize: FONTS.sizes.xs, color: COLORS.textSecondary, marginTop: 2 },
   benef: { flexDirection: 'row', alignItems: 'center', backgroundColor: COLORS.background, borderRadius: BORDER_RADIUS.md, padding: SPACING.sm },
   benefNombre: { fontSize: FONTS.sizes.md, fontWeight: FONTS.weights.semibold, color: COLORS.textPrimary },
   benefFila: { backgroundColor: COLORS.surface, borderRadius: BORDER_RADIUS.md, padding: SPACING.md, marginBottom: SPACING.sm, ...SHADOWS.sm },

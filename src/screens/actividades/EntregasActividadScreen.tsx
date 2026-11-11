@@ -20,6 +20,24 @@ import {
   importarEntregasDelServidor,
   listarEntregasLocales,
 } from '../../services/actividadesEntregas.service';
+import { leerEstadoActaLocal, EstadoActaLocal } from '../../services/estadoActaLocal';
+import { presentacionActa, TonoActa } from '../../utils/estadoActa';
+
+/** Borde de la tarjeta según el acta: verde completada, amarillo borrador/pendientes, gris sin diligenciar. */
+const COLOR_TONO: Record<TonoActa, string> = {
+  gris: COLORS.textLight,
+  amarillo: COLORS.warning,
+  verde: COLORS.success,
+};
+const TEXTO_TONO: Record<TonoActa, string> = { ...COLOR_TONO, gris: COLORS.textSecondary };
+
+/** Estado del acta de cada entrega (por id), leído del teléfono. */
+const leerActas = async (lista: EntregaLocal[]): Promise<Record<string, EstadoActaLocal>> => {
+  const pares = await Promise.all(
+    lista.map(async (e) => [e.id, await leerEstadoActaLocal(e.datos.beneficiario?.cedula, e.datos.actaInstancia)] as const)
+  );
+  return Object.fromEntries(pares);
+};
 
 const EntregasActividadScreen: React.FC<any> = ({ navigation, route }) => {
   const insets = useSafeAreaInsets();
@@ -30,6 +48,7 @@ const EntregasActividadScreen: React.FC<any> = ({ navigation, route }) => {
   const [cargando, setCargando] = useState(true);
   const [refrescando, setRefrescando] = useState(false);
   const [creando, setCreando] = useState(false);
+  const [actas, setActas] = useState<Record<string, EstadoActaLocal>>({});
 
   useLayoutEffect(() => {
     navigation.setOptions({ title: sub?.nombre ?? 'Entregas' });
@@ -38,11 +57,15 @@ const EntregasActividadScreen: React.FC<any> = ({ navigation, route }) => {
   const cargar = useCallback(async (esRefresh = false) => {
     if (!user?.id) return;
     if (esRefresh) setRefrescando(true);
-    setEntregas(await listarEntregasLocales(actividadId, user.id));
+    const locales = await listarEntregasLocales(actividadId, user.id);
+    setEntregas(locales);
     setCargando(false);
+    setActas(await leerActas(locales));
     // Con red: trae las hechas en otro teléfono y vuelve a listar.
     if (await importarEntregasDelServidor(actividadId, user.id)) {
-      setEntregas(await listarEntregasLocales(actividadId, user.id));
+      const todas = await listarEntregasLocales(actividadId, user.id);
+      setEntregas(todas);
+      setActas(await leerActas(todas));
     }
     setRefrescando(false);
   }, [actividadId, user?.id]);
@@ -86,20 +109,27 @@ const EntregasActividadScreen: React.FC<any> = ({ navigation, route }) => {
             {creando ? <ActivityIndicator color={COLORS.primary} /> : <Text style={styles.arrow}>›</Text>}
           </TouchableOpacity>
         }
-        renderItem={({ item: e }) => (
-          <TouchableOpacity style={styles.card} activeOpacity={0.7} onPress={() => abrir(e)}>
+        renderItem={({ item: e }) => {
+          const ea = actas[e.id];
+          const acta = presentacionActa(ea?.estado ?? 'sin_diligenciar', ea?.faltantes);
+          return (
+          <TouchableOpacity style={[styles.card, { borderLeftColor: COLOR_TONO[acta.tono] }]} activeOpacity={0.7} onPress={() => abrir(e)}>
             <Text style={styles.icon}>📦</Text>
             <View style={{ flex: 1 }}>
               <Text style={styles.titulo}>Entrega {e.numero}</Text>
               <Text style={styles.dato} numberOfLines={1}>{resumen(e)}</Text>
               <Text style={styles.dato}>📷 {e.datos.fotos.length} foto(s)</Text>
+              <Text style={[styles.estado, { color: TEXTO_TONO[acta.tono] }]} numberOfLines={2}>
+                {acta.txt}
+              </Text>
               <Text style={[styles.estado, { color: e.sincronizado ? COLORS.success : COLORS.warning }]}>
                 {e.sincronizado ? '☁️ En el servidor' : '📱 Pendiente de subir · se subirá con señal'}
               </Text>
             </View>
             <Text style={styles.arrow}>›</Text>
           </TouchableOpacity>
-        )}
+          );
+        }}
         ListFooterComponent={
           entregas.length > 0 ? (
             <TouchableOpacity style={[styles.btnAgregar, creando && { opacity: 0.6 }]} onPress={agregar} disabled={creando}>

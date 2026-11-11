@@ -55,6 +55,22 @@ import {
   subirActaPdfAdmin,
   subirFotoEvidencia,
 } from '../../services/actividadesEvidencias.service';
+import { actasLocalesDeActividad } from '../../services/estadoActaLocal';
+import { presentacionActa, TonoActa } from '../../utils/estadoActa';
+
+const COLOR_TONO: Record<TonoActa, string> = {
+  gris: COLORS.textSecondary,
+  amarillo: COLORS.warning,
+  verde: COLORS.success,
+};
+
+/** Acta tal como se muestra: la del servidor, o una completada en el teléfono que aún no sube. */
+type ActaVista = ActaDeActividad & {
+  /** Hay una versión en el teléfono pendiente de subir. */
+  pendienteSubir?: boolean;
+  /** Solo en el teléfono (aún no está en el servidor): datos para armar el PDF. */
+  datosLocales?: Record<string, any>;
+};
 
 const MAX_FOTOS = 3;
 
@@ -98,6 +114,11 @@ const ActividadBeneficiarioScreen: React.FC<any> = ({ navigation, route }) => {
   const actividad = buscarActividad(actividadId);
 
   const [data, setData] = useState<EvidenciaBeneficiario | null>(null);
+  // Actas completadas en este teléfono (el técnico las ve al instante, aunque no hayan subido).
+  const [actasLocales, setActasLocales] = useState<{ soloLocales: ActaVista[]; pendientes: Set<string> }>({
+    soloLocales: [],
+    pendientes: new Set(),
+  });
   const [cargando, setCargando] = useState(true);
   const [refrescando, setRefrescando] = useState(false);
   const [subiendo, setSubiendo] = useState<MomentoEvidencia | null>(null);
@@ -118,14 +139,39 @@ const ActividadBeneficiarioScreen: React.FC<any> = ({ navigation, route }) => {
   const cargar = useCallback(async (esRefresh = false) => {
     try {
       if (esRefresh) setRefrescando(true);
-      setData(await obtenerEvidenciaBeneficiario(actividadId, beneficiario.item));
+      const evidencia = await obtenerEvidenciaBeneficiario(actividadId, beneficiario.item);
+      setData(evidencia);
+      if (puedeEscribir && beneficiario?.cedula) {
+        const enServidor = new Set((evidencia.actas ?? []).map((a) => a.id));
+        const locales = await actasLocalesDeActividad(beneficiario.cedula, actividadId);
+        setActasLocales({
+          pendientes: new Set(locales.filter((f) => !f.sincronizado).map((f) => f.id)),
+          soloLocales: locales
+            .filter((f) => !enServidor.has(f.id))
+            .map((f) => ({
+              id: f.id,
+              instancia: String(f.datos?.instancia ?? ''),
+              fecha: String(f.datos?.fecha || f.updated_at),
+              tienePdf: false,
+              firmadaInterventoria: !!f.datos?.firmaInterventoria,
+              resumen: (Array.isArray(f.datos?.actividades) ? f.datos.actividades : [])
+                .map((x: any) => x?.descripcion)
+                .filter(Boolean)
+                .join(', '),
+              faltantes: Array.isArray(f.datos?.faltantes) ? f.datos.faltantes : [],
+              observaciones: [],
+              pendienteSubir: !f.sincronizado,
+              datosLocales: f.datos,
+            })),
+        });
+      }
     } catch (e) {
       avisar('No se pudo cargar', mensajeError(e, 'Inténtalo de nuevo.'));
     } finally {
       setCargando(false);
       setRefrescando(false);
     }
-  }, [actividadId, beneficiario?.item]);
+  }, [actividadId, beneficiario?.item, beneficiario?.cedula, puedeEscribir]);
 
   // Recarga al volver del acta recién diligenciada.
   useFocusEffect(useCallback(() => { cargar(); }, [cargar]));
@@ -157,8 +203,26 @@ const ActividadBeneficiarioScreen: React.FC<any> = ({ navigation, route }) => {
     });
   };
 
-  const abrirActa = async (a: ActaDeActividad) => {
+  const abrirActa = async (a: ActaVista) => {
     if (abriendoActa) return;
+    // Acta que aún no llega al servidor: el PDF se arma con los datos del teléfono.
+    if (a.datosLocales) {
+      setAbriendoActa(a.id);
+      try {
+        if (Platform.OS === 'web') {
+          imprimirHtmlEnVentana(abrirVentanaDeCarga(), construirHtmlActaEntregaIndividual(a.datosLocales as any));
+          return;
+        }
+        const uri = await generarPDFActaEntregaIndividual(a.datosLocales as any);
+        if (!uri) throw new Error('No se pudo generar el PDF');
+        setVisorPdf({ uri, titulo: 'Acta de Entrega y Recibo', key: `acta_${a.id}_${Date.now()}` });
+      } catch (e) {
+        avisar('No se pudo abrir el acta', mensajeError(e, 'Inténtalo de nuevo.'));
+      } finally {
+        setAbriendoActa(null);
+      }
+      return;
+    }
     // En web la pestaña se abre ANTES de cualquier await para que no la bloquee el navegador.
     const esWeb = Platform.OS === 'web';
     const ventana = esWeb ? (a.tienePdf ? window.open('', '_blank') : abrirVentanaDeCarga()) : null;
@@ -320,14 +384,21 @@ const ActividadBeneficiarioScreen: React.FC<any> = ({ navigation, route }) => {
     </View>
   );
 
+  // Las del teléfono que aún no suben, primero; luego las del servidor.
+  const listaActas: ActaVista[] = [
+    ...actasLocales.soloLocales,
+    ...(data?.actas ?? []).map((a) => ({ ...a, pendienteSubir: actasLocales.pendientes.has(a.id) })),
+  ];
+
   const segmentoActa = seccion(
     'Acta Individual de Entrega y Recibo',
     <View>
-      {(data?.actas ?? []).length === 0 && (
+      {listaActas.length === 0 && (
         <Text style={styles.vacio}>{puedeEscribir ? 'Aún no has diligenciado el acta de esta actividad.' : 'El técnico aún no ha diligenciado el acta.'}</Text>
       )}
-      {(data?.actas ?? []).map((a) => {
+      {listaActas.map((a) => {
         const pendientes = a.observaciones.filter((o) => !o.resuelta);
+        const estado = presentacionActa(a.pendienteSubir ? 'pendiente_subir' : 'completada', a.faltantes);
         return (
           <View key={a.id} style={styles.acta}>
             <TouchableOpacity style={styles.actaCabecera} onPress={() => abrirActa(a)} activeOpacity={0.7}>
@@ -336,10 +407,9 @@ const ActividadBeneficiarioScreen: React.FC<any> = ({ navigation, route }) => {
                   {new Date(a.fecha).toLocaleDateString('es-CO', { day: 'numeric', month: 'short', year: 'numeric' })}
                 </Text>
                 {a.resumen ? <Text style={styles.dato} numberOfLines={2}>{a.resumen}</Text> : null}
-                {a.faltantes.length > 0 && (
-                  <Text style={[styles.estado, { color: COLORS.warning }]}>Pendiente de completar: {a.faltantes.join(', ')}</Text>
-                )}
-                <Text style={[styles.estado, { color: a.firmadaInterventoria ? COLORS.success : COLORS.warning }]}>
+                <Text style={[styles.estado, { color: COLOR_TONO[estado.tono] }]}>{estado.txt}</Text>
+                {estado.sub ? <Text style={styles.estadoSub}>{estado.sub}</Text> : null}
+                <Text style={[styles.estado, { color: a.firmadaInterventoria ? COLORS.success : COLORS.textSecondary }]}>
                   {a.firmadaInterventoria ? '✓ Firmada por interventoría' : '⏳ Pendiente de firma de interventoría'}
                 </Text>
               </View>
@@ -391,7 +461,7 @@ const ActividadBeneficiarioScreen: React.FC<any> = ({ navigation, route }) => {
       })}
       {puedeEscribir && (
         <TouchableOpacity style={styles.btnPrimario} onPress={diligenciarActa} activeOpacity={0.8}>
-          <Text style={styles.btnPrimarioTxt}>{(data?.actas ?? []).length ? '＋ Diligenciar otra acta' : '📝 Diligenciar acta'}</Text>
+          <Text style={styles.btnPrimarioTxt}>{listaActas.length ? '＋ Diligenciar otra acta' : '📝 Diligenciar acta'}</Text>
         </TouchableOpacity>
       )}
       {esAdminRevision && (
@@ -562,6 +632,7 @@ const styles = StyleSheet.create({
   modalBotones: { flexDirection: 'row', gap: SPACING.sm, marginTop: SPACING.xs },
   actaTitulo: { fontSize: FONTS.sizes.md, fontWeight: FONTS.weights.semibold, color: COLORS.textPrimary },
   estado: { fontSize: FONTS.sizes.xs, fontWeight: FONTS.weights.semibold, marginTop: 2 },
+  estadoSub: { fontSize: FONTS.sizes.xs, color: COLORS.textSecondary, marginTop: 1 },
   flecha: { fontSize: 24, color: COLORS.textLight, marginLeft: SPACING.sm },
   btnPrimario: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', backgroundColor: COLORS.primary, borderRadius: BORDER_RADIUS.md, paddingVertical: SPACING.sm + 2, marginTop: SPACING.xs },
   btnDeshabilitado: { opacity: 0.5 },
