@@ -13,9 +13,14 @@ export function useRevisiones(formularioId: string) {
   const [flujo, setFlujo] = useState<FlujoRevision | null>(null);
   const [cargando, setCargando] = useState(true);
 
-  const recargar = useCallback(async () => {
-    setCargando(true);
+  /**
+   * `silencioso` (recarga automática): sin indicador de carga y, si el
+   * servidor no respondió, se conserva lo que ya se ve en vez de vaciarlo.
+   */
+  const recargar = useCallback(async (silencioso = false) => {
+    if (!silencioso) setCargando(true);
     const datos = await fetchRevisionesYCorrecciones(formularioId);
+    if (silencioso && !datos.ok) return;
     setRevisiones(datos.revisiones);
     setCorrecciones(datos.correcciones);
     setFlujo(datos.flujo);

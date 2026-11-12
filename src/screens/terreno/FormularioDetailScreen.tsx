@@ -38,7 +38,7 @@ import {
   FirmaResuelta,
   eliminarEvidenciaRemota,
 } from '../../services/archivos.service';
-import { deleteEvidenciaLocal, saveFormularioLocal, actualizarRespuestasLocal, getUnsyncedPhotos, getUnsyncedVideos, saveFotoLocal, saveVideoLocal, saveDocumentoLocal, marcarDocumentoSincronizado } from '../../services/database';
+import { deleteEvidenciaLocal, getFormularioById, saveFormularioLocal, actualizarRespuestasLocal, getUnsyncedPhotos, getUnsyncedVideos, saveFotoLocal, saveVideoLocal, saveDocumentoLocal, marcarDocumentoSincronizado } from '../../services/database';
 import { eliminarArchivoLocal, persistirEvidencia } from '../../services/mediaStorage.service';
 import { useSync } from '../../store/SyncContext';
 import { useAbrirDocumentoFinca } from '../../hooks/useAbrirDocumentoFinca';
@@ -121,7 +121,9 @@ import { useRevisiones } from '../../hooks/useRevisiones';
 import { estaNovedadResuelta, rolEstaOk, correccionPosterior, seccionesAprobadasPorRol, correccionesSinVerificar } from '../../utils/revisiones';
 import { descargarPaqueteMedia } from '../../services/mediaPackage.service';
 import SeguimientoCoordinacionSection from '../../components/SeguimientoCoordinacionSection';
-import { actualizarRespuestaFormulario, cambiarFechaFormulario, fechaDMAaISO } from '../../services/formularios.service';
+import { actualizarRespuestaFormulario, cambiarFechaFormulario, fechaDMAaISO, fetchFormularioDelServidor } from '../../services/formularios.service';
+import { useAutoRefresh } from '../../hooks/useAutoRefresh';
+import AvisoDatosGuardados from '../../components/AvisoDatosGuardados';
 import { guardarFirmaEnFormulario, FirmaNoPermitidaError } from '../../services/firmas.service';
 
 type FormularioDetailScreenProps = {
@@ -2377,6 +2379,80 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
   );
 
   /**
+   * Trae la versión del servidor de ESTE formulario y la muestra si es más
+   * nueva. Antes el detalle mostraba siempre la copia que le pasó la lista al
+   * abrirlo: si el técnico completaba o corregía respuestas mientras el
+   * coordinador tenía la visita abierta, no se veía hasta salir y volver.
+   *
+   * Protecciones (trabajo en campo):
+   *   • Si en ESTE teléfono hay cambios del formulario pendientes de subir,
+   *     no se toca: manda lo local.
+   *   • Solo se reemplaza si la versión del servidor es estrictamente más
+   *     nueva (`updated_at`); se conservan los campos que solo tenga la copia
+   *     de la pantalla.
+   *   • Sin respuesta del servidor no cambia nada.
+   *   • En pausa mientras se edita, guarda o captura algo (ver abajo).
+   */
+  const refrescarFormularioDelServidor = useCallback(async () => {
+    const id = formulario.id;
+    const [remoto, local] = await Promise.all([fetchFormularioDelServidor(id), getFormularioById(id)]);
+    if (!remoto) return;
+    if (local && !local.sincronizado) return;
+    setFormulario((prev) => {
+      if (prev.id !== remoto.id) return prev;
+      const tPrevio = Date.parse(prev.updated_at || '');
+      const tRemoto = Date.parse(remoto.updated_at || '');
+      if (!Number.isFinite(tRemoto)) return prev;
+      if (Number.isFinite(tPrevio) && tRemoto <= tPrevio) return prev;
+      return { ...prev, ...remoto } as typeof prev;
+    });
+  }, [formulario.id]);
+
+  /** Algo en curso en la pantalla: la recarga automática espera. */
+  const detalleOcupado =
+    !!respuestaEditando ||
+    editandoFecha ||
+    guardandoFecha ||
+    guardandoRespuesta ||
+    !!firmaEditando ||
+    guardandoFirma ||
+    subiendoDocumento ||
+    agregandoDesdeGaleria ||
+    !!eliminandoEvidenciaId ||
+    !!gpsCaptura ||
+    generatingPdf ||
+    descargandoMedia;
+  const detalleOcupadoRef = useRef(detalleOcupado);
+  detalleOcupadoRef.current = detalleOcupado;
+
+  const refrescarDetalleSilencioso = useCallback(async () => {
+    await Promise.all([
+      refrescarFormularioDelServidor(),
+      recargarRevisiones(true),
+      cargarEvidenciasYDocumentos(),
+    ]);
+  }, [refrescarFormularioDelServidor, recargarRevisiones, cargarEvidenciasYDocumentos]);
+
+  // Al VOLVER a esta pantalla (no al abrirla: el formulario acaba de llegar
+  // de la lista) se trae la versión del servidor y las revisiones.
+  const primerFocoDetalleRef = useRef(true);
+  useFocusEffect(
+    useCallback(() => {
+      if (primerFocoDetalleRef.current) {
+        primerFocoDetalleRef.current = false;
+        return;
+      }
+      if (detalleOcupadoRef.current) return;
+      void refrescarFormularioDelServidor();
+      void recargarRevisiones(true);
+    }, [refrescarFormularioDelServidor, recargarRevisiones])
+  );
+
+  // Recarga automática: al volver a la app/pestaña, al recuperar la red y
+  // periódicamente mientras la visita está abierta.
+  useAutoRefresh(refrescarDetalleSilencioso, { pausado: detalleOcupado });
+
+  /**
    * Subir un documento de la finca desde el detalle de la visita.
    *
    * Caso real: el admin/coordinador corrige una visita en oficina y necesita
@@ -3040,6 +3116,7 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
   return (
     <RegistroSeccionesContext.Provider value={registroSecciones}>
     <View style={styles.container}>
+      <AvisoDatosGuardados />
       <ScrollView contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + SPACING.xxl }]}>
         {/* Novedades de los superiores — ARRIBA, para que el técnico sepa
             de inmediato qué debe corregir. Solo en la vista normal (sin

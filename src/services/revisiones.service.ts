@@ -135,17 +135,19 @@ export const fetchRevisiones = async (formularioId: string): Promise<Revision[]>
  */
 export const fetchRevisionesYCorrecciones = async (
   formularioId: string
-): Promise<{ revisiones: Revision[]; correcciones: Correccion[]; flujo: FlujoRevision | null }> => {
+): Promise<{ revisiones: Revision[]; correcciones: Correccion[]; flujo: FlujoRevision | null; ok: boolean }> => {
   try {
     const response = await apiClient.get(`/api/revisiones/${encodeURIComponent(formularioId)}`);
     return {
       revisiones: response.data?.revisiones || [],
       correcciones: response.data?.correcciones || [],
       flujo: response.data?.flujo || null,
+      ok: true,
     };
   } catch (error) {
     if (!isOfflineError(error)) console.warn('[Revisiones] Error consultando:', error);
-    return { revisiones: [], correcciones: [], flujo: null };
+    // `ok: false` permite a la recarga automática conservar lo que ya se ve.
+    return { revisiones: [], correcciones: [], flujo: null, ok: false };
   }
 };
 
