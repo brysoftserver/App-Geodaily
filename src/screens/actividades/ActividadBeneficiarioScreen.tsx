@@ -591,11 +591,7 @@ const ActividadBeneficiarioScreen: React.FC<any> = ({ navigation, route }) => {
         'Captura de la medición',
         <View style={{ gap: SPACING.sm }}>
           {poligonosV2.length === 0 ? (
-            <Text style={styles.vacio}>
-              {visita2.formularioId
-                ? 'La Visita 2 de este beneficiario no tiene polígonos registrados.'
-                : 'Este beneficiario aún no tiene la Visita 2 completada.'}
-            </Text>
+            <Text style={styles.vacio}>La Visita 2 de este beneficiario no tiene polígonos registrados.</Text>
           ) : (
             poligonosV2.map((m, idx) => (
               <View key={`poligono-v2-${idx}`}>
