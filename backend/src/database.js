@@ -451,6 +451,16 @@ async function initSchema() {
     )`,
     `CREATE INDEX IF NOT EXISTS idx_evidencias_eliminadas_formulario ON evidencias_eliminadas(formulario_id)`,
     `CREATE INDEX IF NOT EXISTS idx_evidencias_eliminadas_local ON evidencias_eliminadas(evidencia_local_id)`,
+
+    // Lápida de visitas planificadas eliminadas. Sin ella, el celular que aún
+    // tiene una copia local sin sincronizar (o que la edita) la reenvía por
+    // /sync y el upsert la resucita. Con la lápida el servidor rechaza ese id
+    // y el celular descarta su copia (ver routes/visitas-programadas.js).
+    `CREATE TABLE IF NOT EXISTS visitas_programadas_eliminadas (
+      id TEXT PRIMARY KEY,
+      eliminado_por TEXT,
+      eliminado_at TIMESTAMPTZ DEFAULT NOW()
+    )`,
   ];
 
   for (const sql of tables) {

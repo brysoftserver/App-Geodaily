@@ -23,6 +23,15 @@ router.post('/sync', authenticateToken, async (req, res) => {
     for (const v of visitas) {
       const id = v.id || `visita-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
       try {
+        // Visita eliminada por un admin/dueño: no se resucita. Se responde
+        // 'conflicto' a propósito: es el estado por el que TODAS las versiones
+        // de la app (también las que aún no tienen esta lápida) descartan su
+        // copia local en vez de reintentarla para siempre.
+        const lapida = await db.queryOne('SELECT 1 FROM visitas_programadas_eliminadas WHERE id = $1', [id]);
+        if (lapida) {
+          resultados.push({ id, estado: 'conflicto', eliminada: true, mensaje: 'Esta visita fue eliminada y no se vuelve a crear' });
+          continue;
+        }
         const numero = Number(v.actividad_numero);
         const cedula = (v.beneficiario_cedula || '').trim();
         const cedulaNorm = normalizarCedula(cedula);
@@ -146,11 +155,15 @@ router.get('/', authenticateToken, async (req, res) => {
     `;
 
     const lista = await db.queryAll(sql, []);
+    // Ids eliminados: el celular borra su copia local de estas visitas (si no,
+    // el calendario, que une servidor + copia local, las seguiría mostrando).
+    const eliminadas = (await db.queryAll('SELECT id FROM visitas_programadas_eliminadas', [])).map((r) => r.id);
 
     res.json({
       estado: 'ok',
       total: lista.length,
       visitas: lista,
+      eliminadas,
     });
   } catch (error) {
     console.error('[VisitasProgramadas] Error al listar:', error);
@@ -169,6 +182,11 @@ router.delete('/:id', authenticateToken, async (req, res) => {
       return res.status(403).json({ estado: 'error', mensaje: 'No autorizado' });
     }
 
+    // Lápida primero: si el borrado falla a medias, la visita no puede volver.
+    await db.query(
+      `INSERT INTO visitas_programadas_eliminadas (id, eliminado_por) VALUES ($1, $2) ON CONFLICT (id) DO NOTHING`,
+      [req.params.id, String(req.user.id)]
+    );
     await db.remove('visitas_programadas', 'id', req.params.id);
 
     console.log(`[VisitasProgramadas] Eliminada: ${req.params.id} por ${req.user.usuario}`);

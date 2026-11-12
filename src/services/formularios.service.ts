@@ -5,7 +5,7 @@
 import { Formulario, VisitaProgramada } from '../types';
 import apiClient from './api';
 import { API_CONFIG } from '../theme';
-import { deleteFormularioLocal } from './database';
+import { deleteFormularioLocal, deleteVisitaProgramadaLocal } from './database';
 
 /**
  * Mapea los nombres de columnas JSONB del backend (tecnico_json, beneficiario_json, ...)
@@ -87,6 +87,18 @@ export const fetchVisitasProgramadasDelServidor = async (): Promise<VisitaProgra
     });
 
     if (response.data?.estado === 'ok' && Array.isArray(response.data?.visitas)) {
+      // Visitas eliminadas en el servidor (por un admin): se borra la copia
+      // local de ESTE dispositivo; el calendario une servidor + local y, sin
+      // esto, las seguiría mostrando. Best-effort: un fallo no rompe la carga.
+      const eliminadas: unknown = response.data?.eliminadas;
+      if (Array.isArray(eliminadas)) {
+        for (const id of eliminadas) {
+          if (typeof id !== 'string') continue;
+          try {
+            await deleteVisitaProgramadaLocal(id);
+          } catch { /* se reintenta en la próxima carga */ }
+        }
+      }
       return response.data.visitas as VisitaProgramada[];
     }
 
