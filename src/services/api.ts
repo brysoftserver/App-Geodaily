@@ -6,6 +6,7 @@ import axios, { AxiosInstance, AxiosError, InternalAxiosRequestConfig } from 'ax
 import * as SecureStore from './secureStorage';
 import { API_CONFIG } from '../theme';
 import { STORAGE_KEYS } from '../utils/constants';
+import { reportarFalloServidor, reportarRespuestaServidor } from './estadoServidor';
 
 // --- Token en memoria como fallback cuando SecureStore no está disponible ---
 let _inMemoryToken: string | null = null;
@@ -91,8 +92,20 @@ apiClient.interceptors.request.use(
 
 // Interceptor de respuestas — manejo de errores centralizado
 apiClient.interceptors.response.use(
-  (response) => response,
+  (response) => {
+    reportarRespuestaServidor();
+    return response;
+  },
   async (error: AxiosError) => {
+    // Estado de conexión (aviso "mostrando datos guardados"): con respuesta
+    // HTTP el servidor sí se alcanzó; sin respuesta es red caída o timeout.
+    // Una petición cancelada a propósito no dice nada de la conexión.
+    if (error.response) {
+      reportarRespuestaServidor();
+    } else if (!axios.isCancel(error)) {
+      reportarFalloServidor();
+    }
+
     // 401 No autorizado.
     //
     // CLAVE para el trabajo en campo: NO sacar al técnico de la app por un 401

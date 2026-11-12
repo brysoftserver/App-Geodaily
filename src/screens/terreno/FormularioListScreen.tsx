@@ -36,6 +36,8 @@ import { Formulario } from '../../types';
 import FormCard from '../../components/FormCard';
 import LoadingSpinner from '../../components/LoadingSpinner';
 import { TerrenoStackParamList } from '../../navigation/TerrenoNavigator';
+import { useAutoRefresh } from '../../hooks/useAutoRefresh';
+import AvisoDatosGuardados from '../../components/AvisoDatosGuardados';
 
 type FormularioListScreenProps = {
   navigation: NativeStackNavigationProp<TerrenoStackParamList, 'TerrenoFormularioList'>;
@@ -209,6 +211,12 @@ const FormularioListScreen: React.FC<FormularioListScreenProps> = ({ navigation,
     return unsubscribe;
   }, [navigation, loadForms]);
 
+  // Al volver a la app o recuperar la red: ver las novedades/aprobaciones de
+  // coordinación sin salir de la pantalla. Sin recarga periódica en el
+  // teléfono de campo (ahorra datos y batería). `loadForms` ya trae su
+  // propio candado contra cargas en paralelo.
+  useAutoRefresh(loadForms, { intervaloMs: null });
+
   const onRefresh = () => {
     setRefreshing(true);
     loadForms();
@@ -283,6 +291,7 @@ const FormularioListScreen: React.FC<FormularioListScreenProps> = ({ navigation,
     >
     <SafeAreaView style={styles.safeContainer} edges={['top']}>
     <View style={styles.container}>
+      <AvisoDatosGuardados />
       <View style={[styles.header, { paddingTop: Math.max(insets.top, SPACING.md) }]}>
         <Text style={styles.title}>
           {beneficiarioNombre

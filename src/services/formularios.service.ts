@@ -39,9 +39,9 @@ function mapearFormularioServidor(raw: Record<string, any>): Formulario {
  *   las mismas visitas realizadas a todos los roles. Sin este flag, el
  *   comportamiento es el de siempre (cada rol ve lo que le corresponde).
  */
-export const fetchFormulariosDelServidor = async (
+export const fetchFormulariosDelServidorConEstado = async (
   opts?: { vista?: 'calendario' }
-): Promise<Formulario[]> => {
+): Promise<{ formularios: Formulario[]; ok: boolean }> => {
   try {
     const response = await apiClient.get(API_CONFIG.ENDPOINTS.FORMS, {
       timeout: 15000,
@@ -51,11 +51,11 @@ export const fetchFormulariosDelServidor = async (
     if (response.data?.estado === 'ok' && Array.isArray(response.data?.formularios)) {
       const forms = response.data.formularios.map(mapearFormularioServidor);
       console.log(`[API Forms] ${forms.length} formularios obtenidos del servidor`);
-      return forms;
+      return { formularios: forms, ok: true };
     }
 
     console.warn('[API Forms] Respuesta inesperada:', response.data);
-    return [];
+    return { formularios: [], ok: false };
   } catch (error) {
     const err = error as any;
     if (err?.isOffline) {
@@ -63,9 +63,18 @@ export const fetchFormulariosDelServidor = async (
     } else {
       console.error('[API Forms] Error:', err?.message || error);
     }
-    return [];
+    return { formularios: [], ok: false };
   }
 };
+
+/**
+ * Igual que `fetchFormulariosDelServidorConEstado`, pero solo la lista
+ * (vacía si el servidor no respondió). Se conserva para no cambiar a quienes
+ * ya la usan.
+ */
+export const fetchFormulariosDelServidor = async (
+  opts?: { vista?: 'calendario' }
+): Promise<Formulario[]> => (await fetchFormulariosDelServidorConEstado(opts)).formularios;
 
 /**
  * Obtener las visitas programadas del servidor (compartidas entre el equipo —

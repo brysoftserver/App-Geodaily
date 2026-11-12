@@ -19,7 +19,7 @@ import { COLORS, FONTS, SPACING, BORDER_RADIUS, SHADOWS, API_CONFIG } from '../.
 import { useForm } from '../../store/FormContext';
 import { useAuth } from '../../store/AuthContext';
 import { getFormulariosLocales } from '../../services/database';
-import { fetchFormulariosDelServidor } from '../../services/formularios.service';
+import { fetchFormulariosDelServidorConEstado } from '../../services/formularios.service';
 import { useSyncMapData } from '../../hooks/useSyncMapData';
 import MetricCard from '../../components/MetricCard';
 import LoadingSpinner from '../../components/LoadingSpinner';
@@ -27,6 +27,7 @@ import BotonPdfDashboard from '../../components/dashboard/BotonPdfDashboard';
 import EncuestaSocialResultados from '../../components/dashboard/EncuestaSocialResultados';
 import { getLocalDateString } from '../../utils/formatters';
 import { tituloVisitaTecnica } from '../../utils/visitaTecnica';
+import { useAutoRefresh } from '../../hooks/useAutoRefresh';
 
 type DashboardGerencialProps = {
   navigation: NativeStackNavigationProp<Record<string, any>>;
@@ -46,13 +47,16 @@ const DashboardGerencialScreen: React.FC<DashboardGerencialProps> = ({ navigatio
   const { mediciones, plantaciones, loadAll: loadTerreno } = useSyncMapData();
 
   // Cargar datos del servidor + local
-  const loadGerencialData = useCallback(async () => {
-    setGerencialError(null);
+  const loadGerencialData = useCallback(async (silencioso = false) => {
+    if (!silencioso) setGerencialError(null);
     try {
-      const [locales, servidor] = await Promise.all([
+      const [locales, respuesta] = await Promise.all([
         getFormulariosLocales(),
-        fetchFormulariosDelServidor(),
+        fetchFormulariosDelServidorConEstado(),
       ]);
+      const servidor = respuesta.formularios;
+      // Recarga automática sin respuesta del servidor: se conserva lo que ya se ve.
+      if (silencioso && !respuesta.ok) return;
       const mapa = new Map<string, any>();
       for (const f of locales) mapa.set(f.id, f);
       for (const f of servidor) mapa.set(f.id, { ...f, sincronizado: true });
@@ -80,6 +84,11 @@ const DashboardGerencialScreen: React.FC<DashboardGerencialProps> = ({ navigatio
 
   // Cargar datos de terreno al enfocar la pantalla
   useFocusEffect(useCallback(() => { loadTerreno(); }, [loadTerreno]));
+
+  // Recarga automática silenciosa (volver a la app/pestaña, red recuperada, periódica).
+  useAutoRefresh(async () => {
+    await Promise.all([loadGerencialData(true), loadTerreno()]);
+  });
 
   const metrics = useMemo(() => {
     const total = formularios.length;

@@ -22,6 +22,7 @@ import { COLORS, FONTS, SPACING, BORDER_RADIUS, SHADOWS, API_CONFIG } from '../.
 import { getUltimasPosicionesTecnicos } from '../../services/database';
 import apiClient from '../../services/api';
 import MapViewOffline from '../../components/MapViewOffline';
+import { useAutoRefresh } from '../../hooks/useAutoRefresh';
 
 type MapaTecnicosProps = {
   navigation: Record<string, any>;
@@ -45,10 +46,12 @@ const MapaTecnicosScreen: React.FC<MapaTecnicosProps> = ({ navigation: _navigati
   const [lastUpdate, setLastUpdate] = useState<string>('');
   const lastLoadRef = useRef(0);
 
-  const cargarPosiciones = useCallback(async () => {
+  const cargarPosiciones = useCallback(async (silencioso = false) => {
     lastLoadRef.current = Date.now();
     try {
-      setLoading(true);
+      // En la recarga automática no se muestra el spinner: reemplazaría el
+      // mapa y lo volvería a montar en cada actualización.
+      if (!silencioso) setLoading(true);
 
       // Fuente principal: el SERVIDOR (las posiciones las reportan los
       // teléfonos de los técnicos vía /api/tracking/sync; la BD local del
@@ -62,6 +65,8 @@ const MapaTecnicosScreen: React.FC<MapaTecnicosProps> = ({ navigation: _navigati
           tecnico_nombre: p.usuario_nombre || p.usuario_login,
         }));
       } catch (error) {
+        // Recarga automática sin servidor: se conservan las posiciones en pantalla.
+        if (silencioso) return;
         console.warn('[MapaTecnicos] Sin conexión al servidor, usando datos locales:', error);
         posiciones = await getUltimasPosicionesTecnicos();
       }
@@ -94,6 +99,10 @@ const MapaTecnicosScreen: React.FC<MapaTecnicosProps> = ({ navigation: _navigati
       cargarPosiciones();
     }, [cargarPosiciones])
   );
+
+  // Posiciones en vivo: cada minuto mientras el mapa está visible, al volver
+  // a la app/pestaña y al recuperar la red.
+  useAutoRefresh(() => cargarPosiciones(true), { intervaloMs: 60_000 });
 
   // Preparar marcadores para el mapa
   const markers = tecnicos.map((t, i) => ({
@@ -153,7 +162,7 @@ const MapaTecnicosScreen: React.FC<MapaTecnicosProps> = ({ navigation: _navigati
               showUserLocation={false}
               interactive={true}
             />
-            <TouchableOpacity style={styles.refreshBtn} onPress={cargarPosiciones}>
+            <TouchableOpacity style={styles.refreshBtn} onPress={() => cargarPosiciones()}>
               <Text style={styles.refreshBtnText}>🔄 Actualizar</Text>
             </TouchableOpacity>
           </View>

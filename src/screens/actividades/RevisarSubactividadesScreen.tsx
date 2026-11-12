@@ -38,6 +38,7 @@ import { idOtroFormato } from '../../services/database';
 import ActaEntregaRevision, { ActaARevisar } from '../../components/actividades/ActaEntregaRevision';
 import { useAuth } from '../../store/AuthContext';
 import EvidenciaActividadScreen from './EvidenciaActividadScreen';
+import { useAutoRefresh } from '../../hooks/useAutoRefresh';
 
 type Fuente = { uri: string; headers?: Record<string, string> };
 
@@ -141,7 +142,7 @@ const EntregasRevision: React.FC<{ actividadId: string; subId: string }> = ({ ac
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const cargar = useCallback(async (esRefresh = false) => {
+  const cargar = useCallback(async (esRefresh = false, silencioso = false) => {
     try {
       if (esRefresh) {
         setRefrescando(true);
@@ -151,7 +152,7 @@ const EntregasRevision: React.FC<{ actividadId: string; subId: string }> = ({ ac
       setEntregas(lista);
       void cargarActas(lista);
     } catch (e) {
-      avisar('No se pudo cargar', mensajeError(e, 'Inténtalo de nuevo.'));
+      if (!silencioso) avisar('No se pudo cargar', mensajeError(e, 'Inténtalo de nuevo.'));
     } finally {
       setCargando(false);
       setRefrescando(false);
@@ -160,6 +161,8 @@ const EntregasRevision: React.FC<{ actividadId: string; subId: string }> = ({ ac
   }, [actividadId]);
 
   useFocusEffect(useCallback(() => { cargar(); }, [cargar]));
+  // Recarga automática silenciosa (volver a la app/pestaña, red recuperada, periódica).
+  useAutoRefresh(() => cargar(false, true));
 
   const ref = (e: EntregaServidor) => `${subId}:${e.id}`;
 

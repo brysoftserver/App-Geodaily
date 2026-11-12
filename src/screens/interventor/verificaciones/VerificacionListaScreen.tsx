@@ -19,6 +19,7 @@ import {
   listarVerificacionesServidor,
   VerificacionServidor,
 } from '../../../services/verificacionesEntrega.service';
+import { useAutoRefresh } from '../../../hooks/useAutoRefresh';
 
 interface Fila {
   id: string;
@@ -45,7 +46,7 @@ const VerificacionListaScreen: React.FC<any> = ({ navigation, route }) => {
     navigation.setOptions({ title: tipo === 'borradores' ? 'Borradores' : 'Verificaciones Completas' });
   }, [navigation, tipo]);
 
-  const cargar = useCallback(async (esRefresh = false) => {
+  const cargar = useCallback(async (esRefresh = false, silencioso = false) => {
     if (!material) return;
     if (esRefresh) setRefrescando(true);
     const locales = await listarVerificacionesLocales({ material: material.id, autorId: user?.id, completado: tipo === 'completas' });
@@ -67,6 +68,8 @@ const VerificacionListaScreen: React.FC<any> = ({ navigation, route }) => {
         setSinConexion(false);
       } catch {
         setSinConexion(true);
+        // Recarga automática sin servidor: se conserva la lista que ya se ve.
+        if (silencioso) return;
       }
       lista.sort((a, b) => (b.fecha || '').localeCompare(a.fecha || ''));
     }
@@ -76,6 +79,8 @@ const VerificacionListaScreen: React.FC<any> = ({ navigation, route }) => {
   }, [material, tipo, user?.id]);
 
   useFocusEffect(useCallback(() => { cargar(); }, [cargar]));
+  // Recarga automática silenciosa (volver a la app/pestaña, red recuperada, periódica).
+  useAutoRefresh(() => cargar(false, true));
 
   const abrir = (f: Fila) => {
     if (!material) return;

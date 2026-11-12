@@ -38,6 +38,7 @@ import {
   formatearTamano,
   iconoDeAnexo,
 } from '../../services/anexos.service';
+import { useAutoRefresh } from '../../hooks/useAutoRefresh';
 
 type RevisarAnexosScreenProps = {
   navigation: NativeStackNavigationProp<Record<string, any>>;
@@ -103,6 +104,30 @@ const RevisarAnexosScreen: React.FC<RevisarAnexosScreenProps> = () => {
   useEffect(() => {
     if (tecnico) cargarAnexos(path, tecnico.usuario);
   }, [tecnico, path, cargarAnexos]);
+
+  // Recarga automática silenciosa (volver a la app/pestaña, red recuperada,
+  // periódica): sin spinner ni alertas, y si la consulta falla o llega
+  // vacía se conserva lo que ya se ve. En pausa con un visor abierto.
+  const ubicacionRef = React.useRef('');
+  ubicacionRef.current = `${tecnico?.usuario ?? ''}|${path}`;
+  useAutoRefresh(
+    async () => {
+      const ubicacion = ubicacionRef.current;
+      try {
+        if (tecnico) {
+          const datos = await listarAnexos(path, tecnico.usuario);
+          // Si el usuario cambió de carpeta mientras cargaba, se descarta.
+          if (datos.length > 0 && ubicacionRef.current === ubicacion) setItems(datos);
+        } else {
+          const datos = await listarTecnicosAnexos();
+          if (datos.length > 0 && ubicacionRef.current === ubicacion) setTecnicos(datos);
+        }
+      } catch {
+        // sin conexión: se deja lo que hay
+      }
+    },
+    { pausado: !!imagenVisor || !!videoVisor }
+  );
 
   // ─── Navegación ─────────────────────────────────────────────
   const entrarCarpeta = (item: AnexoItem) =>

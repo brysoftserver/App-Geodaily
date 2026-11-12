@@ -9,6 +9,8 @@
 import React, { useState, useCallback } from 'react';
 import { View, Text, FlatList, StyleSheet, RefreshControl, Alert, ActivityIndicator, TouchableOpacity, Platform } from 'react-native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
+import { useFocusEffect } from '@react-navigation/native';
+import { useAutoRefresh } from '../../hooks/useAutoRefresh';
 import { COLORS, FONTS, SPACING, BORDER_RADIUS, SHADOWS } from '../../theme';
 import { useAuth } from '../../store/AuthContext';
 import { fetchSeguimientosConEstado, actualizarPdfSeguimiento, eliminarSeguimiento } from '../../services/seguimientos.service';
@@ -95,9 +97,16 @@ const SeguimientoListScreen: React.FC<SeguimientoListScreenProps> = ({ navigatio
     }
   }, [publicarLocales]);
 
-  React.useEffect(() => {
-    cargar();
-  }, [cargar]);
+  // Al entrar a la pantalla (y al volver de un detalle). Antes solo al
+  // montar: los seguimientos nuevos no aparecían hasta reabrir la lista.
+  useFocusEffect(
+    useCallback(() => {
+      cargar();
+    }, [cargar])
+  );
+
+  // Recarga automática (volver a la app/pestaña, red recuperada, periódica).
+  useAutoRefresh(cargar, { pausado: !!generandoId || !!eliminandoId });
 
   const onRefresh = () => {
     setRefreshing(true);

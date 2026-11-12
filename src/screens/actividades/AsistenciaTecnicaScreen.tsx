@@ -38,6 +38,7 @@ import {
   listarVisitasDeTecnico,
   obtenerResumenAsistencia,
 } from '../../services/asistenciaTecnica.service';
+import { useAutoRefresh } from '../../hooks/useAutoRefresh';
 
 const ACTIVIDAD_ID = 'asistencia_tecnica';
 
@@ -72,7 +73,7 @@ const AsistenciaTecnicaScreen: React.FC<any> = ({ navigation, route }) => {
     navigation.setOptions({ title: tecnico ? tecnico.nombre : `${verboActividad(modo)} Asistencia Técnica` });
   }, [navigation, tecnico, modo]);
 
-  const cargar = useCallback(async (esRefresh = false) => {
+  const cargar = useCallback(async (esRefresh = false, silencioso = false) => {
     try {
       if (esRefresh) setRefrescando(true);
       if (vistaTecnicos) {
@@ -83,7 +84,7 @@ const AsistenciaTecnicaScreen: React.FC<any> = ({ navigation, route }) => {
         setVisitas(tecnico ? await listarVisitasDeTecnico(tecnico.usuario) : await listarMisVisitas());
       }
     } catch (e) {
-      avisar('No se pudo cargar', mensajeError(e, 'Inténtalo de nuevo.'));
+      if (!silencioso) avisar('No se pudo cargar', mensajeError(e, 'Inténtalo de nuevo.'));
     } finally {
       setCargando(false);
       setRefrescando(false);
@@ -91,6 +92,8 @@ const AsistenciaTecnicaScreen: React.FC<any> = ({ navigation, route }) => {
   }, [vistaTecnicos, tecnico]);
 
   useFocusEffect(useCallback(() => { cargar(); }, [cargar]));
+  // Recarga automática silenciosa (volver a la app/pestaña, red recuperada, periódica).
+  useAutoRefresh(() => cargar(false, true));
 
   const abrirVisita = async (v: VisitaAsistencia) => {
     if (abriendo !== null) return;

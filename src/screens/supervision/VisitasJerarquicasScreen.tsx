@@ -35,7 +35,7 @@ import { Formulario, BeneficiarioDB } from '../../types';
 import { useAuth } from '../../store/AuthContext';
 import { getFormulariosLocales, mergeFormulariosDelServidor, OtroFormatoLocal } from '../../services/database';
 import {
-  fetchFormulariosDelServidor,
+  fetchFormulariosDelServidorConEstado,
   eliminarFormularioDelServidor,
   cambiarFechaOtroFormato,
   fechaDMAaISO,
@@ -43,6 +43,8 @@ import {
 import { fetchBeneficiariosDelServidor } from '../../services/beneficiariosDB.service';
 import { fetchResumenRevisiones, EstadoRevision } from '../../services/revisiones.service';
 import LoadingSpinner from '../../components/LoadingSpinner';
+import AvisoDatosGuardados from '../../components/AvisoDatosGuardados';
+import { useAutoRefresh } from '../../hooks/useAutoRefresh';
 import BotonPdfDashboard from '../../components/dashboard/BotonPdfDashboard';
 import BotonPdfTecnico from '../../components/dashboard/BotonPdfTecnico';
 import { descargarPaqueteMedia } from '../../services/mediaPackage.service';
@@ -182,6 +184,9 @@ const VisitasJerarquicasScreen: React.FC<VisitasJerarquicasScreenProps> = ({ nav
   const { user, puedeEliminarFormulario, isCoordinador, isInterventor, isAdmin } = useAuth();
   const insets = useSafeAreaInsets();
   const [formularios, setFormularios] = useState<Formulario[]>([]);
+  /** Copia en ref para que la carga sepa si ya hay datos en pantalla. */
+  const formulariosRef = useRef<Formulario[]>([]);
+  formulariosRef.current = formularios;
   const [beneficiariosAsignados, setBeneficiariosAsignados] = useState<BeneficiarioDB[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -237,20 +242,22 @@ const VisitasJerarquicasScreen: React.FC<VisitasJerarquicasScreenProps> = ({ nav
     }
   };
 
-  const cargarOtrosFormatos = useCallback(async (cedula: string) => {
+  const cargarOtrosFormatos = useCallback(async (cedula: string, silencioso = false) => {
     if (!cedula) {
       setOtrosFormatos([]);
       return;
     }
-    setCargandoOtrosFormatos(true);
+    // En la recarga automática (silenciosa) no se muestra el spinner ni se
+    // vacía la lista si falla: se conserva lo que ya se ve.
+    if (!silencioso) setCargandoOtrosFormatos(true);
     try {
       const formatos = await obtenerOtrosFormatosBeneficiario(cedula);
       setOtrosFormatos(formatos);
     } catch (e) {
       console.warn('[VisitasJerarquicas] No se pudieron cargar los otros formatos:', e);
-      setOtrosFormatos([]);
+      if (!silencioso) setOtrosFormatos([]);
     } finally {
-      setCargandoOtrosFormatos(false);
+      if (!silencioso) setCargandoOtrosFormatos(false);
     }
   }, []);
 
@@ -512,21 +519,39 @@ const VisitasJerarquicasScreen: React.FC<VisitasJerarquicasScreenProps> = ({ nav
     setLoadError(null);
     // Estado de revisión (novedades corregidas por verificar) — best effort,
     // aparte del Promise.all: si falla, la pantalla carga igual sin badges.
-    fetchResumenRevisiones().then(setEstadosRevision).catch(() => {});
+    // Si la consulta falla devuelve {}: no se borran los badges que ya hay.
+    fetchResumenRevisiones()
+      .then((estados) => {
+        if (Object.keys(estados).length > 0 || formulariosRef.current.length === 0) setEstadosRevision(estados);
+      })
+      .catch(() => {});
     let localesCount = 0;
     let servidorCount = 0;
     try {
       // Cargar en paralelo: local + servidor + padrón de asignación vigente
       // (beneficiarios.tecnico_asignado_id) — este último no depende de
       // SQLite, así que funciona igual en la app y en el navegador (web).
-      const [locales, servidor, padron] = await Promise.all([
+      const [locales, respuestaServidor, padron] = await Promise.all([
         getFormulariosLocales(),
-        fetchFormulariosDelServidor(),
+        fetchFormulariosDelServidorConEstado(),
         fetchBeneficiariosDelServidor(),
       ]);
+      const servidor = respuestaServidor.formularios;
       localesCount = locales.length;
       servidorCount = servidor.length;
-      setBeneficiariosAsignados(padron);
+      // El padrón solo se reemplaza si llegó algo: si el servidor no
+      // respondió no se borra el que ya se tenía (las tarjetas quedarían en 0).
+      if (padron.length > 0 || formulariosRef.current.length === 0) {
+        setBeneficiariosAsignados(padron);
+      }
+
+      // Servidor caído o sin red y ya hay datos en pantalla: se conservan
+      // tal cual (antes se reemplazaban por la copia local, que en el
+      // navegador está vacía). El aviso "datos guardados" informa del fallo.
+      if (!respuestaServidor.ok && formulariosRef.current.length > 0) {
+        console.log('[VisitasJerarquicas] Servidor sin respuesta — se conservan los datos en pantalla');
+        return;
+      }
 
       // Persistir lo del servidor en el SQLite local y purgar de paso
       // cualquier formulario que ya no exista ahí (p. ej. borrado por un
@@ -568,6 +593,8 @@ const VisitasJerarquicasScreen: React.FC<VisitasJerarquicasScreenProps> = ({ nav
       setFormularios(fusionados);
     } catch (error: any) {
       console.warn('[VisitasJerarquicas] Error cargando:', error?.message || error);
+      // Ya hay datos en pantalla: se conservan (el aviso informa del fallo).
+      if (formulariosRef.current.length > 0) return;
       setLoadError(`Error de conexión: ${error?.message || 'No se pudo conectar con el servidor'}`);
       // Fallback: solo locales
       try {
@@ -591,6 +618,41 @@ const VisitasJerarquicasScreen: React.FC<VisitasJerarquicasScreenProps> = ({ nav
       loadData();
     }, [loadData])
   );
+
+  // Recarga automática: al volver a la app/pestaña, al recuperar la red y
+  // periódicamente mientras la pantalla está visible. En pausa mientras hay
+  // una acción en curso o el modal de fecha abierto.
+  const nivelActualRef = useRef(nivel);
+  nivelActualRef.current = nivel;
+  const cedulaSeleccionadaRef = useRef<string | undefined>(undefined);
+  cedulaSeleccionadaRef.current = beneficiarioSeleccionado?.cedula;
+  useAutoRefresh(
+    async () => {
+      await loadData();
+      const cedula = cedulaSeleccionadaRef.current;
+      if (nivelActualRef.current === 'visitas' && cedula) await cargarOtrosFormatos(cedula, true);
+    },
+    { pausado: !!fechaFormato || !!eliminandoId || !!descargandoMediaId || !!imprimiendoFormatoId }
+  );
+
+  // Los niveles internos (técnico → beneficiarios → visitas) guardan el
+  // objeto que se tocó. Sin esto, aunque los datos se recargaran, esos
+  // niveles seguían mostrando la copia vieja hasta salir y volver a entrar.
+  // Si el técnico/beneficiario ya no aparece (respuesta parcial) se deja el
+  // que estaba: nunca se cierra el nivel por una recarga.
+  useEffect(() => {
+    if (!tecnicoSeleccionado) return;
+    const fresco = tecnicosConStats.find((t) => t.id === tecnicoSeleccionado.id);
+    if (!fresco || fresco === tecnicoSeleccionado) return;
+    setTecnicoSeleccionado(fresco);
+    if (beneficiarioSeleccionado) {
+      const clave = beneficiarioSeleccionado.cedula || beneficiarioSeleccionado.nombre;
+      const benef = fresco.beneficiarios.find((b) => (b.cedula || b.nombre) === clave);
+      if (benef) setBeneficiarioSeleccionado(benef);
+    }
+    // Solo debe correr cuando llegan datos nuevos, no al navegar entre niveles.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tecnicosConStats]);
 
   // Interceptar botón físico/gesto de atrás para navegación jerárquica interna
   useEffect(() => {
@@ -1386,6 +1448,7 @@ const VisitasJerarquicasScreen: React.FC<VisitasJerarquicasScreenProps> = ({ nav
 
   return (
     <View style={styles.container}>
+      <AvisoDatosGuardados />
       {/* Header resumen */}
       <View style={styles.summaryBar}>
         <View style={styles.summaryItem}>

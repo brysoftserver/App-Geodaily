@@ -12,6 +12,7 @@ import { obtenerAvanceSuelos } from '../services/analisisSuelos.service';
 import { formatearHectareas, obtenerAvanceHectareas } from '../services/actividadesHectareas.service';
 import { ACTIVIDADES, ACTIVIDADES_CONECTADAS, ModoActividades, verboActividad } from '../data/actividades';
 import { COLORS, FONTS, SPACING, BORDER_RADIUS, SHADOWS } from '../theme';
+import { useAutoRefresh } from '../hooks/useAutoRefresh';
 
 const ActividadesListScreen: React.FC<any> = ({ navigation, route }) => {
   const insets = useSafeAreaInsets();
@@ -23,14 +24,21 @@ const ActividadesListScreen: React.FC<any> = ({ navigation, route }) => {
   const [avance, setAvance] = useState<Record<string, number>>({});
   // Mientras llega el avance se muestra "…" en vez de un 0 que parecería real.
   const [cargado, setCargado] = useState(false);
-  useFocusEffect(
-    useCallback(() => {
+  const cargarAvance = useCallback(
+    () =>
       Promise.allSettled([
         obtenerAvanceSuelos().then((total) => setAvance((a) => ({ ...a, analisis_suelos: total }))),
         obtenerAvanceHectareas().then((porActividad) => setAvance((a) => ({ ...a, ...porActividad }))),
-      ]).then(() => setCargado(true));
-    }, [])
+      ]).then(() => setCargado(true)),
+    []
   );
+  useFocusEffect(
+    useCallback(() => {
+      cargarAvance();
+    }, [cargarAvance])
+  );
+  // Recarga automática del avance (volver a la app/pestaña, red, periódica).
+  useAutoRefresh(cargarAvance);
 
   return (
     <ScrollView

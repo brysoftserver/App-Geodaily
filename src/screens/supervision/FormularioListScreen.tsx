@@ -21,6 +21,8 @@ import { Formulario, FiltrosFormulario } from '../../types';
 import FormCard from '../../components/FormCard';
 import FilterBar from '../../components/FilterBar';
 import LoadingSpinner from '../../components/LoadingSpinner';
+import { useAutoRefresh } from '../../hooks/useAutoRefresh';
+import AvisoDatosGuardados from '../../components/AvisoDatosGuardados';
 
 type FormularioListScreenProps = {
   navigation: NativeStackNavigationProp<Record<string, any>>;
@@ -87,6 +89,9 @@ const FormularioListScreen: React.FC<FormularioListScreenProps> = ({ navigation 
     return unsubscribe;
   }, [navigation, loadForms]);
 
+  // Recarga automática (volver a la app/pestaña, red recuperada, periódica).
+  useAutoRefresh(loadForms);
+
   const onRefresh = () => {
     setRefreshing(true);
     loadForms();
@@ -143,6 +148,7 @@ const FormularioListScreen: React.FC<FormularioListScreenProps> = ({ navigation 
       resizeMode="cover"
     >
     <View style={styles.container}>
+      <AvisoDatosGuardados />
       <View style={styles.header}>
         <Text style={styles.title}>Formularios</Text>
         <Text style={styles.count}>{filteredForms.length} resultado(s)</Text>

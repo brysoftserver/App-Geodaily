@@ -22,6 +22,7 @@ import { COLORS, FONTS, SPACING, BORDER_RADIUS, SHADOWS } from '../../theme';
 import { BeneficiarioDB } from '../../types';
 import * as BeneficiariosDB from '../../services/beneficiariosDB.service';
 import { getTecnicos, UsuarioBackend } from '../../services/admin.service';
+import { useAutoRefresh } from '../../hooks/useAutoRefresh';
 
 type Props = {
   navigation: NativeStackNavigationProp<Record<string, any>>;
@@ -63,8 +64,8 @@ const BaseDatosBeneficiariosScreen: React.FC<Props> = ({ navigation }) => {
   // Búsqueda
   const [search, setSearch] = useState('');
 
-  const loadData = useCallback(async () => {
-    setLoading(true);
+  const loadData = useCallback(async (silencioso = false) => {
+    if (!silencioso) setLoading(true);
     try {
       await BeneficiariosDB.initBeneficiariosDB();
       // Refrescar el espejo local desde el servidor (fuente de verdad
@@ -78,9 +79,9 @@ const BaseDatosBeneficiariosScreen: React.FC<Props> = ({ navigation }) => {
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
       console.error('[BaseDatosBeneficiarios] Error cargando datos:', msg);
-      Alert.alert('Error', `No se pudieron cargar los beneficiarios: ${msg}`);
+      if (!silencioso) Alert.alert('Error', `No se pudieron cargar los beneficiarios: ${msg}`);
     } finally {
-      setLoading(false);
+      if (!silencioso) setLoading(false);
     }
   }, []);
 
@@ -107,6 +108,16 @@ const BaseDatosBeneficiariosScreen: React.FC<Props> = ({ navigation }) => {
     });
     return unsubscribe;
   }, [navigation, loadData, loadTecnicos]);
+
+  // Recarga automática al volver a la app/pestaña o al recuperar la red.
+  // Sin recarga periódica: refrescar el padrón reescribe la tabla local
+  // completa. En pausa mientras hay un modal de edición abierto.
+  useAutoRefresh(
+    async () => {
+      await Promise.all([loadData(true), loadTecnicos()]);
+    },
+    { intervaloMs: null, pausado: assignModalVisible || editModalVisible || createModalVisible }
+  );
 
   // --- ASIGNAR TÉCNICO ---
   const handleAssign = (beneficiario: BeneficiarioDB) => {
@@ -323,7 +334,7 @@ const BaseDatosBeneficiariosScreen: React.FC<Props> = ({ navigation }) => {
           <Text style={styles.syncWarningText}>
             ⚠️ No se pudo cargar los técnicos asignados desde el servidor. Mostrando datos locales, posiblemente sin asignaciones. Verifica tu conexión.
           </Text>
-          <TouchableOpacity style={styles.syncRetryButton} onPress={loadData}>
+          <TouchableOpacity style={styles.syncRetryButton} onPress={() => loadData()}>
             <Text style={styles.syncRetryButtonText}>Reintentar</Text>
           </TouchableOpacity>
         </View>

@@ -49,6 +49,7 @@ import {
   subirPdfSuelos,
 } from '../../services/analisisSuelos.service';
 import { abrirInformeSuelosGuardado, generarYAbrirInformeSuelos } from '../../services/analisisSuelosPdf.service';
+import { useAutoRefresh } from '../../hooks/useAutoRefresh';
 
 const ACTIVIDAD_ID = 'analisis_suelos';
 
@@ -146,7 +147,7 @@ const AnalisisSuelosScreen: React.FC<any> = ({ navigation, route }) => {
     });
   }, [navigation, revisar, bajandoMatriz, descargarMatriz]);
 
-  const cargar = useCallback(async (esRefresh = false) => {
+  const cargar = useCallback(async (esRefresh = false, silencioso = false) => {
     try {
       if (esRefresh) setRefrescando(true);
       if (revisar) {
@@ -158,7 +159,7 @@ const AnalisisSuelosScreen: React.FC<any> = ({ navigation, route }) => {
         setBeneficiarios(await listarMisBeneficiariosSuelos());
       }
     } catch (e) {
-      avisar('No se pudo cargar', mensajeError(e, 'Inténtalo de nuevo.'));
+      if (!silencioso) avisar('No se pudo cargar', mensajeError(e, 'Inténtalo de nuevo.'));
     } finally {
       setCargando(false);
       setRefrescando(false);
@@ -167,6 +168,8 @@ const AnalisisSuelosScreen: React.FC<any> = ({ navigation, route }) => {
   }, [revisar]);
 
   useFocusEffect(useCallback(() => { cargar(); }, [cargar]));
+  // Recarga automática silenciosa (volver a la app/pestaña, red recuperada, periódica).
+  useAutoRefresh(() => cargar(false, true));
 
   // Solo el técnico (modo 'ejecutar') llega a la Visita 1 tocando al
   // beneficiario; en la revisión la tarjeta no navega. Si aún no la hizo, no pasa nada.

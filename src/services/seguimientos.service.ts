@@ -80,7 +80,10 @@ export interface NuevoSeguimiento {
 export const fetchSeguimientosConEstado = async (): Promise<{ seguimientos: Seguimiento[]; ok: boolean }> => {
   try {
     const response = await apiClient.get('/api/seguimientos');
-    return { seguimientos: response.data?.seguimientos || [], ok: true };
+    // `ok` solo con una lista real: quien llama purga lo local que no venga
+    // en ella, así que una respuesta sin lista NO debe leerse como "vacío".
+    const lista = response.data?.seguimientos;
+    return { seguimientos: Array.isArray(lista) ? lista : [], ok: Array.isArray(lista) };
   } catch (error) {
     if (isOfflineError(error)) {
       console.warn('[Seguimientos] Offline — sin listado de seguimientos');

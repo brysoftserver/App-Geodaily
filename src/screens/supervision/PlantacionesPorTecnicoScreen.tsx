@@ -24,6 +24,7 @@ import { useFocusEffect } from '@react-navigation/native';
 import { COLORS, FONTS, SPACING, BORDER_RADIUS, SHADOWS } from '../../theme';
 import { useSyncMapData } from '../../hooks/useSyncMapData';
 import { PLANTAS_OPCIONES, getIconoEspecie } from '../../utils/constants';
+import { useAutoRefresh } from '../../hooks/useAutoRefresh';
 
 type PlantacionesPorTecnicoScreenProps = {
   navigation: NativeStackNavigationProp<Record<string, any>>;
@@ -87,6 +88,8 @@ const PlantacionesPorTecnicoScreen: React.FC<PlantacionesPorTecnicoScreenProps> 
 
   useEffect(() => { fetchAllPlantaciones(); }, [fetchAllPlantaciones]);
   useFocusEffect(useCallback(() => { fetchAllPlantaciones(); }, [fetchAllPlantaciones]));
+  // Recarga automática (volver a la app/pestaña, red recuperada, periódica).
+  useAutoRefresh(fetchAllPlantaciones);
 
   // --- Nivel 1: agrupar por especie (siempre las 3 opciones, aunque estén en 0) ---
   const especies = useMemo<EspecieAgrupada[]>(() => {

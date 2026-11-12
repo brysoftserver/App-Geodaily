@@ -24,7 +24,7 @@ import { COLORS, FONTS, SPACING, BORDER_RADIUS, SHADOWS } from '../theme';
 import { useAuth } from '../store/AuthContext';
 import { useSync } from '../store/SyncContext';
 import {
-  fetchFormulariosDelServidor,
+  fetchFormulariosDelServidorConEstado,
   fetchVisitasProgramadasDelServidor,
   eliminarVisitaProgramadaDelServidor,
   eliminarFormularioDelServidor,
@@ -45,6 +45,8 @@ import CronogramaPersonalModal, {
 import { getBeneficiarios, fetchBeneficiariosDelServidor } from '../services/beneficiariosDB.service';
 import { BeneficiarioDB } from '../types';
 import { tituloVisitaTecnica } from '../utils/visitaTecnica';
+import { useAutoRefresh } from '../hooks/useAutoRefresh';
+import AvisoDatosGuardados from '../components/AvisoDatosGuardados';
 
 // Español
 LocaleConfig.locales['es'] = {
@@ -85,6 +87,10 @@ const CalendarioGlobalScreen: React.FC<CalendarioGlobalScreenProps> = ({ navigat
    */
   const [todasLasVisitas, setTodasLasVisitas] = useState<Formulario[]>([]);
   const [visitasProgramadas, setVisitasProgramadas] = useState<VisitaProgramada[]>([]);
+  const hayVisitasRef = useRef(false);
+  hayVisitasRef.current = todasLasVisitas.length > 0;
+  const hayProgramadasRef = useRef(false);
+  hayProgramadasRef.current = visitasProgramadas.length > 0;
   const [loadingCal, setLoadingCal] = useState(true);
 
   // Modal para crear visita (todos los roles)
@@ -125,15 +131,19 @@ const CalendarioGlobalScreen: React.FC<CalendarioGlobalScreenProps> = ({ navigat
   // ================================================================
   // CARGA DE DATOS
   // ================================================================
-  const loadCalendarData = useCallback(async () => {
+  const loadCalendarData = useCallback(async (silencioso = false) => {
     lastLoadRef.current = Date.now();
     try {
       // vista=calendario: el backend ignora "solo mis formularios" (técnico)
       // y la jerarquía de aprobación (interventor) — todos ven lo mismo.
-      const [locales, servidor] = await Promise.all([
+      const [locales, respuesta] = await Promise.all([
         getFormulariosLocales(),
-        fetchFormulariosDelServidor({ vista: 'calendario' }),
+        fetchFormulariosDelServidorConEstado({ vista: 'calendario' }),
       ]);
+      const servidor = respuesta.formularios;
+      // Refresco automático sin respuesta del servidor: se conserva lo que
+      // ya se ve (antes se reemplazaba por la copia local, vacía en web).
+      if (silencioso && !respuesta.ok && hayVisitasRef.current) return;
 
       const mapa = new Map<string, any>();
       for (const f of locales) mapa.set(f.id, f);
@@ -145,12 +155,15 @@ const CalendarioGlobalScreen: React.FC<CalendarioGlobalScreenProps> = ({ navigat
     }
   }, []);
 
-  const loadVisitas = useCallback(async () => {
+  const loadVisitas = useCallback(async (silencioso = false) => {
     try {
       const [locales, servidor] = await Promise.all([
         getVisitasProgramadas(),
         fetchVisitasProgramadasDelServidor(),
       ]);
+      // Igual que arriba: si en el refresco automático no llegó nada del
+      // servidor, no se reemplaza lo que ya está en pantalla.
+      if (silencioso && servidor.length === 0 && hayProgramadasRef.current) return;
       const mapa = new Map<string, VisitaProgramada>();
       for (const v of locales) mapa.set(v.id, v);
       for (const v of servidor) mapa.set(v.id, { ...v, sincronizado: true });
@@ -186,17 +199,13 @@ const CalendarioGlobalScreen: React.FC<CalendarioGlobalScreenProps> = ({ navigat
     if (cargandoRef.current) return;
     cargandoRef.current = true;
     try {
-      await Promise.all([loadCalendarData(), loadVisitas()]);
+      await Promise.all([loadCalendarData(true), loadVisitas(true)]);
     } finally {
       cargandoRef.current = false;
     }
   }, [loadCalendarData, loadVisitas]);
 
-  // Refresco automático: al entrar a la pantalla y luego cada 30 s mientras
-  // siga visible. Antes solo recargaba al abrir/volver a la pantalla, así
-  // que un coordinador o interventor que dejara el calendario abierto NO veía
-  // las visitas que los técnicos iban programando hasta salir y entrar de
-  // nuevo. El intervalo se limpia al perder el foco, sin fugas.
+  // Refresco al entrar a la pantalla (el periódico va con useAutoRefresh).
   useFocusEffect(
     useCallback(() => {
       // Tick inmediato al ganar el foco — salvo si acabamos de cargar, para
@@ -205,13 +214,13 @@ const CalendarioGlobalScreen: React.FC<CalendarioGlobalScreenProps> = ({ navigat
         refrescarCalendario();
       }
 
-      const intervalo = setInterval(() => {
-        refrescarCalendario();
-      }, 30000);
-
-      return () => clearInterval(intervalo);
     }, [refrescarCalendario])
   );
+
+  // Refresco automático: al volver a la app/pestaña, al recuperar la red y
+  // periódicamente mientras está visible (antes: cada 30 s fijo, también
+  // sin red). Sin conexión no se intenta y queda lo que ya se ve.
+  useAutoRefresh(refrescarCalendario);
 
   // ================================================================
   // SINCRONIZACIÓN MANUAL (botón arriba a la derecha del calendario)
@@ -731,6 +740,7 @@ const CalendarioGlobalScreen: React.FC<CalendarioGlobalScreenProps> = ({ navigat
   return (
     <SafeAreaView style={styles.safeContainer} edges={['top']}>
       <View style={styles.container}>
+        <AvisoDatosGuardados />
         <ScrollView contentContainerStyle={{ paddingBottom: insets.bottom + SPACING.xxl }}>
           {loadingCal ? (
             <View style={styles.loadingCal}>

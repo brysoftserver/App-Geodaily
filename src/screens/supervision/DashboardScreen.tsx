@@ -2,7 +2,7 @@
 // GEODAILY — Dashboard de Supervisión / Interventoría
 // ============================================================
 
-import React, { useMemo, useState, useEffect, useCallback, useRef } from 'react';
+import React, { useMemo, useState, useEffect, useCallback } from 'react';
 import { View, Text, StyleSheet, ScrollView, RefreshControl } from 'react-native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useFocusEffect } from '@react-navigation/native';
@@ -10,7 +10,9 @@ import { COLORS, FONTS, SPACING, BORDER_RADIUS, SHADOWS, API_CONFIG } from '../.
 import { useForm } from '../../store/FormContext';
 import { useAuth } from '../../store/AuthContext';
 import { getFormulariosLocales } from '../../services/database';
-import { fetchFormulariosDelServidor } from '../../services/formularios.service';
+import { fetchFormulariosDelServidorConEstado } from '../../services/formularios.service';
+import AvisoDatosGuardados from '../../components/AvisoDatosGuardados';
+import { useAutoRefresh } from '../../hooks/useAutoRefresh';
 import { useSyncMapData } from '../../hooks/useSyncMapData';
 import { Formulario } from '../../types';
 import { normalizarVereda } from '../../utils/corregimientos';
@@ -24,16 +26,12 @@ type DashboardScreenProps = {
   navigation: NativeStackNavigationProp<Record<string, any>>;
 };
 
-/** Intervalo de refresco silencioso mientras el dashboard está en pantalla (aprox. "tiempo real" sin infraestructura de sockets). */
-const INTERVALO_AUTOREFRESH_MS = 30000;
-
 const DashboardScreen: React.FC<DashboardScreenProps> = ({ navigation }) => {
   const { formularios, cargarFormularios } = useForm();
   const { user, isInterventor, isAdmin, puedeEliminarFormulario } = useAuth();
   const [loadingDashboard, setLoadingDashboard] = useState(true);
   const [refreshingDashboard, setRefreshingDashboard] = useState(false);
   const [dashboardError, setDashboardError] = useState<string | null>(null);
-  const enFocoRef = useRef(false);
 
   // Datos reales de terreno (mediciones GPS + plantaciones) para las tarjetas
   // de hectáreas medidas y plantas sembradas.
@@ -47,10 +45,14 @@ const DashboardScreen: React.FC<DashboardScreenProps> = ({ navigation }) => {
     let servidorCount = 0;
     let localesCount = 0;
     try {
-      const [locales, servidor] = await Promise.all([
+      const [locales, respuesta] = await Promise.all([
         getFormulariosLocales(),
-        fetchFormulariosDelServidor(),
+        fetchFormulariosDelServidorConEstado(),
       ]);
+      const servidor = respuesta.formularios;
+      // Recarga automática sin respuesta del servidor: se conserva lo que
+      // ya se ve (antes se reemplazaba por la copia local, vacía en web).
+      if (silencioso && !respuesta.ok) return;
       localesCount = locales.length;
       servidorCount = servidor.length;
 
@@ -91,22 +93,19 @@ const DashboardScreen: React.FC<DashboardScreenProps> = ({ navigation }) => {
     loadTerreno();
   }, [loadTerreno]);
 
-  // Recargar al enfocar la pantalla + poll silencioso mientras está enfocada
+  // Recargar al enfocar la pantalla.
   useFocusEffect(
     useCallback(() => {
-      enFocoRef.current = true;
       loadDashboardData();
-
-      const intervalo = setInterval(() => {
-        if (enFocoRef.current) loadDashboardData(true);
-      }, INTERVALO_AUTOREFRESH_MS);
-
-      return () => {
-        enFocoRef.current = false;
-        clearInterval(intervalo);
-      };
     }, [loadDashboardData])
   );
+
+  // Recarga automática silenciosa: al volver a la app/pestaña, al recuperar
+  // la red y periódicamente mientras está visible. Antes era un poll fijo de
+  // 30 s que también corría sin red y descargaba todo aunque fallara.
+  useAutoRefresh(async () => {
+    await Promise.all([loadDashboardData(true), loadTerreno()]);
+  });
 
   const irADetalle = useCallback(
     (formulario: Formulario) => {
@@ -149,6 +148,8 @@ const DashboardScreen: React.FC<DashboardScreenProps> = ({ navigation }) => {
   }
 
   return (
+    <View style={{ flex: 1 }}>
+    <AvisoDatosGuardados />
     <ScrollView
       style={styles.container}
       contentContainerStyle={styles.content}
@@ -246,6 +247,7 @@ const DashboardScreen: React.FC<DashboardScreenProps> = ({ navigation }) => {
       {/* 4. Últimas actividades (clickeable) */}
       <ActividadesRecientes formularios={formularios} onSeleccionar={irADetalle} />
     </ScrollView>
+    </View>
   );
 };
 

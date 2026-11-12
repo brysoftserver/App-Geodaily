@@ -38,6 +38,7 @@ import {
   etiquetaVisitaBitacora,
   obtenerFichaBitacora,
 } from '../../services/bitacora.service';
+import { useAutoRefresh } from '../../hooks/useAutoRefresh';
 
 const mensajeError = (e: any, porDefecto: string) =>
   e?.response?.data?.mensaje || (e?.message?.includes('Network') ? 'Sin conexión. Verifica tu internet.' : porDefecto);
@@ -86,12 +87,12 @@ const BitacoraBeneficiarioScreen: React.FC<any> = ({ navigation, route }) => {
     });
   }, [navigation, ficha, generando, generarInforme]);
 
-  const cargar = useCallback(async (esRefresh = false) => {
+  const cargar = useCallback(async (esRefresh = false, silencioso = false) => {
     try {
       if (esRefresh) setRefrescando(true);
       setFicha(await obtenerFichaBitacora(item));
     } catch (e) {
-      avisar('No se pudo cargar', mensajeError(e, 'Inténtalo de nuevo.'));
+      if (!silencioso) avisar('No se pudo cargar', mensajeError(e, 'Inténtalo de nuevo.'));
     } finally {
       setCargando(false);
       setRefrescando(false);
@@ -99,6 +100,8 @@ const BitacoraBeneficiarioScreen: React.FC<any> = ({ navigation, route }) => {
   }, [item]);
 
   useFocusEffect(useCallback(() => { cargar(); }, [cargar]));
+  // Recarga automática silenciosa (volver a la app/pestaña, red recuperada, periódica).
+  useAutoRefresh(() => cargar(false, true));
 
   const abrirVisita = async (v: BitacoraVisita) => {
     if (abriendoVisita) return;

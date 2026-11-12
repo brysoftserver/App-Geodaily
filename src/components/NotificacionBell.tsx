@@ -20,6 +20,7 @@ import {
 } from '../services/notificaciones.service';
 import { fetchFormularioDelServidor } from '../services/formularios.service';
 import ActaEntregaRevision, { ActaARevisar } from './actividades/ActaEntregaRevision';
+import { useAutoRefresh } from '../hooks/useAutoRefresh';
 
 const REFRESCO_MS = 60000;
 
@@ -58,6 +59,9 @@ const NotificacionBell: React.FC<NotificacionBellProps> = ({ formularioDetailScr
   }, [cargarContador]);
 
   useFocusEffect(useCallback(() => { cargarContador(); }, [cargarContador]));
+  // Al volver a la app/pestaña o recuperar la red (el intervalo de arriba
+  // sigue haciendo el refresco periódico).
+  useAutoRefresh(cargarContador, { intervaloMs: null });
 
   const abrirBandeja = useCallback(async () => {
     setVisible(true);

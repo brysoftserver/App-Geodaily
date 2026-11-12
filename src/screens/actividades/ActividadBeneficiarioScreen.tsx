@@ -58,6 +58,7 @@ import {
 } from '../../services/actividadesEvidencias.service';
 import { actasLocalesDeActividad } from '../../services/estadoActaLocal';
 import { esFirmaDibujada, presentacionActa, TonoActa } from '../../utils/estadoActa';
+import { useAutoRefresh } from '../../hooks/useAutoRefresh';
 
 const COLOR_TONO: Record<TonoActa, string> = {
   gris: COLORS.textSecondary,
@@ -139,7 +140,7 @@ const ActividadBeneficiarioScreen: React.FC<any> = ({ navigation, route }) => {
     navigation.setOptions({ title: beneficiario?.nombre ?? 'Beneficiario' });
   }, [navigation, beneficiario?.nombre]);
 
-  const cargar = useCallback(async (esRefresh = false) => {
+  const cargar = useCallback(async (esRefresh = false, silencioso = false) => {
     try {
       if (esRefresh) setRefrescando(true);
       const evidencia = await obtenerEvidenciaBeneficiario(actividadId, beneficiario.item);
@@ -169,7 +170,7 @@ const ActividadBeneficiarioScreen: React.FC<any> = ({ navigation, route }) => {
         });
       }
     } catch (e) {
-      avisar('No se pudo cargar', mensajeError(e, 'Inténtalo de nuevo.'));
+      if (!silencioso) avisar('No se pudo cargar', mensajeError(e, 'Inténtalo de nuevo.'));
     } finally {
       setCargando(false);
       setRefrescando(false);
@@ -178,6 +179,8 @@ const ActividadBeneficiarioScreen: React.FC<any> = ({ navigation, route }) => {
 
   // Recarga al volver del acta recién diligenciada.
   useFocusEffect(useCallback(() => { cargar(); }, [cargar]));
+  // Recarga automática silenciosa (volver a la app/pestaña, red recuperada, periódica).
+  useAutoRefresh(() => cargar(false, true));
 
   // ─── Acta ───────────────────────────────────────────────
   const diligenciarActa = () => {

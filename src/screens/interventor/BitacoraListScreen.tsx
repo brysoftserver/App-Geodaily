@@ -23,6 +23,7 @@ import { avisar } from '../../utils/dialogos';
 import { useAuth } from '../../store/AuthContext';
 import { BitacoraResumen, listarBitacora } from '../../services/bitacora.service';
 import { generarYAbrirInformeGeneral } from '../../services/bitacoraPdf.service';
+import { useAutoRefresh } from '../../hooks/useAutoRefresh';
 
 const sinTildes = (t: string) => t.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
 
@@ -35,12 +36,12 @@ const BitacoraListScreen: React.FC<any> = ({ navigation }) => {
   const [refrescando, setRefrescando] = useState(false);
   const [busqueda, setBusqueda] = useState('');
 
-  const cargar = useCallback(async (esRefresh = false) => {
+  const cargar = useCallback(async (esRefresh = false, silencioso = false) => {
     try {
       if (esRefresh) setRefrescando(true);
       setLista(await listarBitacora());
     } catch (e: any) {
-      avisar(
+      if (!silencioso) avisar(
         'No se pudo cargar',
         e?.response?.data?.mensaje || (e?.message?.includes('Network') ? 'Sin conexión. Verifica tu internet.' : 'Inténtalo de nuevo.')
       );
@@ -51,6 +52,8 @@ const BitacoraListScreen: React.FC<any> = ({ navigation }) => {
   }, []);
 
   useFocusEffect(useCallback(() => { cargar(); }, [cargar]));
+  // Recarga automática silenciosa (volver a la app/pestaña, red recuperada, periódica).
+  useAutoRefresh(() => cargar(false, true));
 
   // Botón del encabezado: PDF con todos los beneficiarios (membrete de interventoría).
   const generarInforme = useCallback(async () => {

@@ -15,10 +15,12 @@ import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { COLORS, FONTS, SPACING, BORDER_RADIUS, SHADOWS } from '../../theme';
 import { useForm } from '../../store/FormContext';
 import { getFormulariosLocales } from '../../services/database';
-import { fetchFormulariosDelServidor } from '../../services/formularios.service';
+import { fetchFormulariosDelServidorConEstado } from '../../services/formularios.service';
 import FilterBar from '../../components/FilterBar';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
+import { useAutoRefresh } from '../../hooks/useAutoRefresh';
+import { useFocusEffect } from '@react-navigation/native';
 
 type ConsolidadoProps = {
   navigation: NativeStackNavigationProp<Record<string, any>>;
@@ -36,12 +38,15 @@ const ConsolidadoScreen: React.FC<ConsolidadoProps> = ({ navigation: _navigation
   // Cargar datos propios (local + servidor) — sin esto la pantalla quedaba
   // vacía si el gerente entraba directo desde el menú sin pasar antes por
   // el Dashboard (que era quien llenaba el contexto).
-  const loadData = useCallback(async () => {
+  const loadData = useCallback(async (silencioso = false) => {
     try {
-      const [locales, servidor] = await Promise.all([
+      const [locales, respuesta] = await Promise.all([
         getFormulariosLocales(),
-        fetchFormulariosDelServidor(),
+        fetchFormulariosDelServidorConEstado(),
       ]);
+      const servidor = respuesta.formularios;
+      // Recarga automática sin respuesta del servidor: se conserva lo que ya se ve.
+      if (silencioso && !respuesta.ok) return;
       const mapa = new Map<string, (typeof locales)[number]>();
       for (const f of locales) mapa.set(f.id, f);
       for (const f of servidor) mapa.set(f.id, { ...f, sincronizado: true });
@@ -51,9 +56,13 @@ const ConsolidadoScreen: React.FC<ConsolidadoProps> = ({ navigation: _navigation
     }
   }, [cargarFormularios]);
 
-  useEffect(() => {
-    loadData();
-  }, [loadData]);
+  // Al entrar a la pantalla (antes solo al montar) + recarga automática.
+  useFocusEffect(
+    useCallback(() => {
+      loadData();
+    }, [loadData])
+  );
+  useAutoRefresh(() => loadData(true));
 
   const filteredForms = useMemo(() => {
     if (filter === 'all') return formularios;

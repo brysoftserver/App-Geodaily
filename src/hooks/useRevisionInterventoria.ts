@@ -9,6 +9,7 @@
 import { useCallback, useState } from 'react';
 import { useFocusEffect } from '@react-navigation/native';
 import { useAuth } from '../store/AuthContext';
+import { useAutoRefresh } from './useAutoRefresh';
 import { avisar, confirmar } from '../utils/dialogos';
 import {
   ROLES_REVISAN_INTERVENTORIA,
@@ -38,6 +39,8 @@ export function useRevisionInterventoria(actividad: string, activo = true) {
   }, [actividad, activo]);
 
   useFocusEffect(useCallback(() => { recargar(); }, [recargar]));
+  // OK que marquen otros (admin/interventor) aparecen sin salir de la pantalla.
+  useAutoRefresh(recargar, { pausado: !activo });
 
   const estaRevisado = useCallback((referencia: string | number) => !!revisiones[String(referencia)], [revisiones]);
 

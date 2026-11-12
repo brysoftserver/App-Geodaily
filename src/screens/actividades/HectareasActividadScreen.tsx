@@ -43,6 +43,7 @@ import {
 import { actasPorActividadServidor } from '../../services/otrosFormatos.service';
 import { actasCompletadasEnTelefonoPorCedula } from '../../services/estadoActaLocal';
 import { ActaSegunTelefono, presentacionActa, resumirActas, TonoActa, unirActasBeneficiario } from '../../utils/estadoActa';
+import { useAutoRefresh } from '../../hooks/useAutoRefresh';
 
 const COLOR_TONO_ACTA: Record<TonoActa, string> = {
   gris: COLORS.textSecondary,
@@ -95,7 +96,7 @@ const HectareasActividadScreen: React.FC<any> = ({ navigation, route }) => {
     });
   }, [navigation, modo, nombreActividad]);
 
-  const cargar = useCallback(async (esRefresh = false) => {
+  const cargar = useCallback(async (esRefresh = false, silencioso = false) => {
     try {
       if (esRefresh) setRefrescando(true);
       const [r, lista] = await Promise.all([
@@ -107,7 +108,7 @@ const HectareasActividadScreen: React.FC<any> = ({ navigation, route }) => {
       if (esRefresh) revision.recargar();
       void cargarActas();
     } catch (e) {
-      avisar('No se pudo cargar', mensajeError(e, 'Inténtalo de nuevo.'));
+      if (!silencioso) avisar('No se pudo cargar', mensajeError(e, 'Inténtalo de nuevo.'));
     } finally {
       setCargando(false);
       setRefrescando(false);
@@ -116,6 +117,8 @@ const HectareasActividadScreen: React.FC<any> = ({ navigation, route }) => {
   }, [actividadId, revisar, cargarActas]);
 
   useFocusEffect(useCallback(() => { cargar(); }, [cargar]));
+  // Recarga automática silenciosa (volver a la app/pestaña, red recuperada, periódica).
+  useAutoRefresh(() => cargar(false, true));
 
   // Abre el panel del beneficiario en esta actividad (no navega a ninguna visita).
   const abrirBeneficiario = (b: BeneficiarioHectareas) => {

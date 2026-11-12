@@ -56,6 +56,7 @@ import {
   subirArchivoEca,
 } from '../../services/fortalecimiento.service';
 import { abrirPdf } from '../../services/informeTecnicoPdf.service';
+import { useAutoRefresh } from '../../hooks/useAutoRefresh';
 
 type Fuente = { uri: string; headers?: Record<string, string> };
 
@@ -250,12 +251,12 @@ const SeccionesGrupo: React.FC<{ eca: number; grupo: number; revisar: boolean }>
   const [visorFoto, setVisorFoto] = useState<{ archivo: ArchivoFortalecimiento; fuente: Fuente } | null>(null);
   const [visorPdf, setVisorPdf] = useState<{ uri: string; titulo: string; key: string } | null>(null);
 
-  const cargar = useCallback(async (esRefresh = false) => {
+  const cargar = useCallback(async (esRefresh = false, silencioso = false) => {
     try {
       if (esRefresh) setRefrescando(true);
       setData(await obtenerArchivosGrupoEca(eca, grupo));
     } catch (e) {
-      avisar('No se pudo cargar', mensajeError(e, 'Inténtalo de nuevo.'));
+      if (!silencioso) avisar('No se pudo cargar', mensajeError(e, 'Inténtalo de nuevo.'));
     } finally {
       setCargando(false);
       setRefrescando(false);
@@ -263,6 +264,8 @@ const SeccionesGrupo: React.FC<{ eca: number; grupo: number; revisar: boolean }>
   }, [eca, grupo]);
 
   useFocusEffect(useCallback(() => { cargar(); }, [cargar]));
+  // Recarga automática silenciosa (volver a la app/pestaña, red recuperada, periódica).
+  useAutoRefresh(() => cargar(false, true));
 
   // ─── Subir ──────────────────────────────────────────────
   const elegirArchivos = async (admite: 'pdf' | 'pdf_o_foto' | 'foto') => {

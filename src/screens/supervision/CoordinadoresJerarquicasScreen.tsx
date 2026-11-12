@@ -33,6 +33,8 @@ import { useAuth } from '../../store/AuthContext';
 import { SeguimientoLocal, getSeguimientosLocales, mergeSeguimientosDelServidor, purgarSeguimientosAusentes, eliminarSeguimientoLocal } from '../../services/database';
 import { fetchSeguimientosConEstado, eliminarSeguimiento } from '../../services/seguimientos.service';
 import LoadingSpinner from '../../components/LoadingSpinner';
+import { useAutoRefresh } from '../../hooks/useAutoRefresh';
+import AvisoDatosGuardados from '../../components/AvisoDatosGuardados';
 
 type CoordinadoresJerarquicasScreenProps = {
   navigation: NativeStackNavigationProp<Record<string, any>>;
@@ -190,6 +192,20 @@ const CoordinadoresJerarquicasScreen: React.FC<CoordinadoresJerarquicasScreenPro
       loadData();
     }, [loadData])
   );
+
+  // Recarga automática (volver a la app/pestaña, red recuperada, periódica).
+  useAutoRefresh(loadData, { pausado: !!eliminandoId });
+
+  // El nivel "seguimientos" guarda el autor que se tocó: se reemplaza por su
+  // versión recién cargada para que muestre los seguimientos nuevos. Si el
+  // autor no aparece en la recarga, se deja el que estaba.
+  useEffect(() => {
+    if (!autorSeleccionado) return;
+    const fresco = autores.find((a) => a.id === autorSeleccionado.id);
+    if (fresco && fresco !== autorSeleccionado) setAutorSeleccionado(fresco);
+    // Solo debe correr cuando llegan datos nuevos.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autores]);
 
   // Mantener ref sincronizada con estado nivel
   useEffect(() => {
@@ -412,6 +428,7 @@ const CoordinadoresJerarquicasScreen: React.FC<CoordinadoresJerarquicasScreenPro
 
   return (
     <View style={styles.container}>
+      <AvisoDatosGuardados />
       {/* Header resumen */}
       <View style={styles.summaryBar}>
         <View style={styles.summaryItem}>

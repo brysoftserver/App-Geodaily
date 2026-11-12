@@ -17,9 +17,10 @@ import { useFocusEffect } from '@react-navigation/native';
 import { COLORS, FONTS, SPACING, BORDER_RADIUS, SHADOWS, API_CONFIG } from '../../theme';
 import { useForm } from '../../store/FormContext';
 import { getFormulariosLocales } from '../../services/database';
-import { fetchFormulariosDelServidor } from '../../services/formularios.service';
+import { fetchFormulariosDelServidorConEstado } from '../../services/formularios.service';
 import { Formulario } from '../../types';
 import { formatFecha } from '../../utils/formatters';
+import { useAutoRefresh } from '../../hooks/useAutoRefresh';
 
 type PerfilTecnicosProps = {
   navigation: NativeStackNavigationProp<Record<string, any>>;
@@ -33,13 +34,16 @@ const PerfilTecnicosScreen: React.FC<PerfilTecnicosProps> = ({ navigation }) => 
   const [perfilError, setPerfilError] = useState<string | null>(null);
 
   // Cargar datos del servidor + local
-  const loadPerfilData = useCallback(async () => {
-    setPerfilError(null);
+  const loadPerfilData = useCallback(async (silencioso = false) => {
+    if (!silencioso) setPerfilError(null);
     try {
-      const [servidor, locales] = await Promise.all([
-        fetchFormulariosDelServidor(),
+      const [respuesta, locales] = await Promise.all([
+        fetchFormulariosDelServidorConEstado(),
         getFormulariosLocales(),
       ]);
+      const servidor = respuesta.formularios;
+      // Recarga automática sin respuesta del servidor: se conserva lo que ya se ve.
+      if (silencioso && !respuesta.ok) return;
       const mapa = new Map<string, any>();
       for (const f of locales) mapa.set(f.id, f);
       for (const f of servidor) mapa.set(f.id, { ...f, sincronizado: true });
@@ -63,6 +67,8 @@ const PerfilTecnicosScreen: React.FC<PerfilTecnicosProps> = ({ navigation }) => 
 
   useEffect(() => { loadPerfilData(); }, [loadPerfilData]);
   useFocusEffect(useCallback(() => { loadPerfilData(); }, [loadPerfilData]));
+  // Recarga automática silenciosa (volver a la app/pestaña, red recuperada, periódica).
+  useAutoRefresh(() => loadPerfilData(true));
 
   // Agrupar por técnico
   const tecnicosMap = useMemo(() => {

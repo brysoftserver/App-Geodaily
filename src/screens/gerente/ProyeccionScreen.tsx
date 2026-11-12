@@ -16,8 +16,9 @@ import { BarChart } from 'react-native-chart-kit';
 import { COLORS, FONTS, SPACING, BORDER_RADIUS, SHADOWS, API_CONFIG } from '../../theme';
 import { Formulario } from '../../types';
 import { getFormulariosLocales, getMediciones, getPlantaciones } from '../../services/database';
-import { fetchFormulariosDelServidor } from '../../services/formularios.service';
+import { fetchFormulariosDelServidorConEstado } from '../../services/formularios.service';
 import { useAuth } from '../../store/AuthContext';
+import { useAutoRefresh } from '../../hooks/useAutoRefresh';
 
 type ProyeccionProps = {
   navigation: NativeStackNavigationProp<Record<string, any>>;
@@ -38,12 +39,15 @@ const ProyeccionScreen: React.FC<ProyeccionProps> = ({ navigation: _navigation }
   const [plantaciones, setPlantaciones] = useState<Record<string, any>[]>([]);
 
   // Cargar formularios reales (local + servidor)
-  const loadData = useCallback(async () => {
+  const loadData = useCallback(async (silencioso = false) => {
     try {
-      const [locales, servidor] = await Promise.all([
+      const [locales, respuesta] = await Promise.all([
         getFormulariosLocales(),
-        fetchFormulariosDelServidor(),
+        fetchFormulariosDelServidorConEstado(),
       ]);
+      const servidor = respuesta.formularios;
+      // Recarga automática sin respuesta del servidor: se conserva lo que ya se ve.
+      if (silencioso && !respuesta.ok) return;
       const mapa = new Map<string, Formulario>();
       for (const f of locales) mapa.set(f.id, f);
       for (const f of servidor) mapa.set(f.id, f);
@@ -110,6 +114,10 @@ const ProyeccionScreen: React.FC<ProyeccionProps> = ({ navigation: _navigation }
     loadData();
     loadTerreno();
   }, [loadData, loadTerreno]);
+
+  // Recarga automática silenciosa de los formularios (volver a la app/pestaña,
+  // red recuperada, periódica).
+  useAutoRefresh(() => loadData(true));
 
   // Área REAL registrada: hectáreas reportadas en el paso sociodemográfico,
   // contando una sola vez a cada beneficiario (por cédula) aunque tenga
