@@ -17,6 +17,7 @@ import React, {
   useMemo,
 } from 'react';
 import NetInfo from '@react-native-community/netinfo';
+import { AppState } from 'react-native';
 import { useAuth } from './AuthContext';
 import { cargarBorradores, sincronizarBorradoresConServidor } from './FormDraftStore';
 import { SyncStatus, Formulario } from '../types';
@@ -142,7 +143,7 @@ function syncReducer(state: SyncState, action: SyncAction): SyncState {
 
 interface SyncContextType extends SyncState {
   syncNow: () => Promise<void>;
-  checkPending: () => Promise<void>;
+  checkPending: () => Promise<number>;
   /** Devuelve el tiempo de espera recomendado (segundos) para un formulario */
   getBackoffSeconds: (formId: string) => Promise<number>;
   /** Reintento manual: reinicia el contador de intentos de un formulario y relanza el sync */
@@ -1147,7 +1148,7 @@ export const SyncProvider: React.FC<{ children: React.ReactNode }> = ({
   // checkPending — contar todos los items pendientes
   // ------------------------------------------------------------------
 
-  const checkPending = useCallback(async () => {
+  const checkPending = useCallback(async (): Promise<number> => {
     try {
       const [forms, plantas, mediciones, tracking, visitas, documentos, evidencias, seguimientos, otrosFormatos] = await Promise.all([
         getPendingSyncForms(),
@@ -1165,8 +1166,10 @@ export const SyncProvider: React.FC<{ children: React.ReactNode }> = ({
       const entregasAct = await getEntregasNoSincronizadas().catch(() => []);
       const total = forms.length + plantas.length + mediciones.length + tracking.length + visitas.length + documentos.length + evidencias.fotos.length + evidencias.videos.length + seguimientos.length + otrosFormatos.length + verificaciones.length + entregasAct.length;
       dispatch({ type: 'SET_PENDING', count: total });
+      return total;
     } catch {
       // Ignorar errores al verificar pendientes
+      return 0;
     }
   }, []);
 
@@ -1498,6 +1501,40 @@ export const SyncProvider: React.FC<{ children: React.ReactNode }> = ({
 
     return () => unsubscribe();
   }, [syncNow, sincronizarBorradoresLocales]);
+
+  // ------------------------------------------------------------------
+  // Efecto: subir lo pendiente al VOLVER a la app.
+  // Con la app en segundo plano el sistema congela los reintentos (timers
+  // de JS). Si el técnico guardó algo con mala señal y luego vuelve a la app
+  // con red, antes había que esperar al siguiente reintento o a reabrir la
+  // app para que subiera. Mismo `syncNow` de siempre (con su candado), solo
+  // si hay red y algo pendiente, y como mucho una vez cada 30 s.
+  // ------------------------------------------------------------------
+
+  const ultimoSyncAlVolverRef = useRef(0);
+  useEffect(() => {
+    if (!user?.id) return;
+    const sub = AppState.addEventListener('change', (estado) => {
+      if (estado !== 'active') return;
+      if (Date.now() - ultimoSyncAlVolverRef.current < 30_000) return;
+      ultimoSyncAlVolverRef.current = Date.now();
+      void (async () => {
+        try {
+          const red = await NetInfo.fetch();
+          if (!red.isConnected || red.isInternetReachable === false) return;
+          const pendientes = await checkPending();
+          if (pendientes > 0) {
+            console.log(`[Sync] App de vuelta en primer plano con ${pendientes} pendiente(s) — sincronizando...`);
+            syncNow().catch(() => { /* la cola reintenta */ });
+          }
+          void sincronizarBorradoresLocales();
+        } catch {
+          // Si algo falla aquí, los reintentos normales siguen funcionando.
+        }
+      })();
+    });
+    return () => sub.remove();
+  }, [user?.id, syncNow, checkPending, sincronizarBorradoresLocales]);
 
   // Limpiar al desmontar
   useEffect(() => {
