@@ -5,6 +5,7 @@
 
 const express = require('express');
 const cors = require('cors');
+const compression = require('compression');
 const path = require('path');
 const fs = require('fs');
 
@@ -67,6 +68,19 @@ const corsOptions = {
   credentials: true,
 };
 app.use(cors(corsOptions));
+
+// --- Compresión de respuestas JSON ---
+// GET /api/formularios pesa ~5 MB. Sin comprimir, cada recarga de listas
+// tardaba 2-9 s en viajar por el túnel (y más en datos móviles), y con el
+// timeout de 15 s del cliente la app terminaba mostrando datos viejos.
+// SOLO se comprime JSON: fotos, videos (con Range), PDF y archivos van tal
+// cual. Las subidas no se tocan: esto solo afecta lo que el servidor envía.
+// Axios (app y navegador) descomprime solo.
+app.use(compression({
+  threshold: 1024,
+  filter: (req, res) => /application\/json/i.test(String(res.getHeader('Content-Type') || '')),
+}));
+
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
