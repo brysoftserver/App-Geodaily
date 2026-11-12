@@ -6,6 +6,8 @@
 //   2. Evidencia Fotográfica del Antes de la Actividad       (máx. 3 fotos)
 //   3. Evidencia Fotográfica del Durante la Actividad        (máx. 3 fotos)
 //   4. Evidencia Fotográfica del Después de la Actividad     (máx. 3 fotos)
+//   5. (Solo Preparación del Terreno, en revisión) Captura de la medición:
+//      polígono(s) de la Visita Técnica 2 del beneficiario, solo lectura.
 // El técnico (modo 'ejecutar') diligencia y sube. En modo 'revisar' solo el
 // admin puede subir, quitar o reemplazar fotos y actas (PDF); los demás roles
 // ven lo que subió el técnico en solo lectura.
@@ -59,6 +61,7 @@ import {
 import { actasLocalesDeActividad } from '../../services/estadoActaLocal';
 import { esFirmaDibujada, presentacionActa, TonoActa } from '../../utils/estadoActa';
 import { useAutoRefresh } from '../../hooks/useAutoRefresh';
+import MedicionCaptura from '../../components/MedicionCaptura';
 
 const COLOR_TONO: Record<TonoActa, string> = {
   gris: COLORS.textSecondary,
@@ -579,6 +582,35 @@ const ActividadBeneficiarioScreen: React.FC<any> = ({ navigation, route }) => {
     );
   };
 
+  // Polígonos de la Visita 2: solo en la revisión y si el servidor los envía.
+  const visita2 = modo === 'revisar' ? data?.visita2 ?? null : null;
+  const poligonosV2 = visita2?.poligonos ?? [];
+  const totalHaV2 = Math.round(poligonosV2.reduce((acc, m) => acc + (Number(m.area_hectareas) || 0), 0) * 100) / 100;
+  const segmentoPoligonosV2 = visita2
+    ? seccion(
+        'Captura de la medición',
+        <View style={{ gap: SPACING.sm }}>
+          {poligonosV2.length === 0 ? (
+            <Text style={styles.vacio}>
+              {visita2.formularioId
+                ? 'La Visita 2 de este beneficiario no tiene polígonos registrados.'
+                : 'Este beneficiario aún no tiene la Visita 2 completada.'}
+            </Text>
+          ) : (
+            poligonosV2.map((m, idx) => (
+              <View key={`poligono-v2-${idx}`}>
+                {poligonosV2.length > 1 && <Text style={styles.subtituloPoligono}>Polígono {idx + 1}</Text>}
+                <MedicionCaptura medicion={m} altura={200} mostrarAcciones />
+              </View>
+            ))
+          )}
+        </View>,
+        poligonosV2.length > 1
+          ? `${poligonosV2.length} polígonos · ${totalHaV2.toLocaleString('es-CO', { maximumFractionDigits: 2 })} ha`
+          : 'Visita 2'
+      )
+    : null;
+
   return (
     <View style={styles.container}>
       {cargando ? (
@@ -595,6 +627,7 @@ const ActividadBeneficiarioScreen: React.FC<any> = ({ navigation, route }) => {
           </View>
           {segmentoActa}
           {MOMENTOS_EVIDENCIA.map((m) => <React.Fragment key={m.id}>{segmentoFotos(m.id, m.titulo)}</React.Fragment>)}
+          {segmentoPoligonosV2}
         </ScrollView>
       )}
 
@@ -678,6 +711,7 @@ const styles = StyleSheet.create({
   segmentoCabecera: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: SPACING.sm },
   segmentoTitulo: { flex: 1, fontSize: FONTS.sizes.md, fontWeight: FONTS.weights.bold, color: COLORS.textPrimary },
   contador: { fontSize: FONTS.sizes.sm, fontWeight: FONTS.weights.semibold, color: COLORS.textSecondary, marginLeft: SPACING.sm },
+  subtituloPoligono: { fontSize: FONTS.sizes.sm, fontWeight: FONTS.weights.semibold, color: COLORS.textSecondary, marginBottom: SPACING.xs },
   vacio: { fontSize: FONTS.sizes.sm, color: COLORS.textSecondary, marginBottom: SPACING.sm },
   fila: { flexDirection: 'row', gap: SPACING.sm, marginBottom: SPACING.sm, flexWrap: 'wrap' },
   miniatura: { width: TAM_MINIATURA, height: TAM_MINIATURA, borderRadius: BORDER_RADIUS.md, backgroundColor: COLORS.background, overflow: 'hidden', alignItems: 'center', justifyContent: 'center' },

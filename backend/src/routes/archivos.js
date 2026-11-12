@@ -25,13 +25,33 @@ const router = express.Router();
 const ROLES_COORDINACION = ['coordinador', 'interventor', 'gerente', 'admin'];
 
 /**
+ * ¿Es una visita con AUTORÍA FIJA de un beneficiario asignado HOY a este
+ * técnico? (reasignación «solo pendientes»: la hizo y firmó el técnico
+ * anterior). El técnico nuevo puede VER sus evidencias y firmas — solo
+ * lectura; borrar/agregar sigue exigiendo ser el dueño.
+ */
+async function esVisitaHeredadaVisible(formularioId, usuarioId) {
+  if (!formularioId || !usuarioId) return false;
+  const fila = await db.queryOne(
+    `SELECT 1 FROM formularios f
+      WHERE f.id = $1 AND f.autoria_fija
+        AND regexp_replace(COALESCE(f.beneficiario_json->>'cedula', ''), '[^0-9A-Za-z]', '', 'g') IN (
+              SELECT regexp_replace(COALESCE(cedula, ''), '[^0-9A-Za-z]', '', 'g')
+                FROM beneficiarios
+               WHERE tecnico_asignado_id = $2 AND cedula IS NOT NULL)`,
+    [String(formularioId), usuarioId]
+  );
+  return !!fila;
+}
+
+/**
  * GET /api/archivos/:id/contenido
  * Devuelve el binario de la evidencia (foto, video, firma, documento).
  */
 router.get('/:id/contenido', authenticateTokenOrQuery, async (req, res) => {
   try {
     const archivo = await db.queryOne(
-      'SELECT id, usuario_id, tipo, filename, mimetype, minio_path, metadata_json FROM archivos WHERE id = $1',
+      'SELECT id, usuario_id, tipo, filename, mimetype, minio_path, metadata_json, formulario_id FROM archivos WHERE id = $1',
       [req.params.id]
     );
 
@@ -47,7 +67,10 @@ router.get('/:id/contenido', authenticateTokenOrQuery, async (req, res) => {
     const esPropio = archivo.usuario_id === req.user.id;
     const esCoordinacion = ROLES_COORDINACION.includes(req.user.rol);
     const esDocumentoDeFinca = archivo.tipo === 'other' && !!archivo.metadata_json?.beneficiario_cedula;
-    if (!esPropio && !esCoordinacion && !esDocumentoDeFinca) {
+    if (
+      !esPropio && !esCoordinacion && !esDocumentoDeFinca &&
+      !(await esVisitaHeredadaVisible(archivo.formulario_id || archivo.metadata_json?.formulario_id, req.user.id))
+    ) {
       return res.status(403).json({ estado: 'error', mensaje: 'No autorizado' });
     }
 
@@ -181,7 +204,7 @@ router.get('/formulario/:formularioId', authenticateToken, async (req, res) => {
       FROM archivos
       WHERE (formulario_id = $1 OR metadata_json->>'formulario_id' = $1)`;
 
-    if (!esCoordinacion) {
+    if (!esCoordinacion && !(await esVisitaHeredadaVisible(req.params.formularioId, req.user.id))) {
       params.push(req.user.id);
       sql += ` AND usuario_id = $${params.length}`;
     }

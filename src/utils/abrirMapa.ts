@@ -59,12 +59,38 @@ export const urlGoogleMaps = (punto: PuntoMapa): string =>
  * `/maps/embed?…`, que no dispara el selector de apps de Android.
  */
 export const urlGoogleMapsVisor = (punto: PuntoMapa): string =>
-  `https://maps.google.com/maps?q=${punto.latitud},${punto.longitud}&z=17&output=embed&hl=es`;
+  `https://maps.google.com/maps?q=${punto.latitud},${punto.longitud}&z=17&t=k&output=embed&hl=es`;
+
+const escaparHtml = (t: string) =>
+  t.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+
+/** Página mínima que muestra el visor de Google Maps dentro de un iframe. */
+const paginaVisorMapa = (punto: PuntoMapa): string => {
+  const coords = `${punto.latitud}, ${punto.longitud}`;
+  const visor = escaparHtml(urlGoogleMapsVisor(punto));
+  const busqueda = escaparHtml(
+    `https://www.google.com/maps/search/?api=1&query=${punto.latitud},${punto.longitud}`
+  );
+  return `<!doctype html><html lang="es"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Ubicación ${escaparHtml(coords)}</title>
+<style>
+html,body{margin:0;height:100%;font-family:system-ui,sans-serif;background:#fff}
+body{display:flex;flex-direction:column}
+header{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:8px 12px;background:#1b5e20;color:#fff;font-size:14px}
+header a{color:#fff;font-weight:600;white-space:nowrap}
+iframe{flex:1;width:100%;border:0}
+</style></head><body>
+<header><span>📍 ${escaparHtml(coords)}</span><a href="${busqueda}" target="_blank" rel="noopener">Abrir en Google Maps</a></header>
+<iframe src="${visor}" allowfullscreen loading="eager" referrerpolicy="no-referrer-when-downgrade"></iframe>
+</body></html>`;
+};
 
 /**
  * Abre la coordenada en Google Maps.
  *
- * - Web: pestaña nueva con el visor embed (sin diálogo "Abrir con").
+ * - Web: pestaña nueva con una página propia que muestra el visor embed
+ *   dentro de un iframe (sin diálogo "Abrir con").
  *   `window.open` se ejecuta de forma SÍNCRONA, en el mismo gesto del
  *   usuario; si se llamara después de un `await` el navegador la
  *   bloquearía como ventana emergente.
@@ -82,7 +108,17 @@ export const abrirMapaEnGoogle = (
 
   if (Platform.OS === 'web') {
     try {
-      const ventana = window.open(urlGoogleMapsVisor(punto), '_blank', 'noopener,noreferrer');
+      // Google ya NO deja abrir `/maps/embed` directamente en una pestaña
+      // ("The Google Maps Embed API must be used in an iframe"). Por eso se
+      // abre una página propia (Blob, generada aquí mismo) que contiene el
+      // visor dentro de un <iframe>. Todo es síncrono: sigue siendo el mismo
+      // gesto del usuario y el navegador no lo bloquea.
+      const html = paginaVisorMapa(punto);
+      const blobUrl = URL.createObjectURL(new Blob([html], { type: 'text/html;charset=utf-8' }));
+      const ventana = window.open(blobUrl, '_blank');
+      if (ventana) {
+        try { ventana.opener = null; } catch { /* sin acceso: no importa */ }
+      }
       return Promise.resolve(!!ventana);
     } catch {
       return Promise.resolve(false);

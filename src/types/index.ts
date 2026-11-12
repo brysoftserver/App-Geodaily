@@ -344,6 +344,12 @@ export interface BeneficiarioDB {
   cedula: string;
   tecnico_asignado_id?: string | null;
   tecnico_asignado_nombre?: string | null;
+  /**
+   * Técnico que lo tenía antes de una reasignación «solo pendientes»: sus
+   * visitas siguen a su nombre (autoría fija) y el técnico actual hace lo
+   * que falta. Solo llega del servidor (no se guarda en el espejo SQLite).
+   */
+  tecnico_anterior_id?: string | null;
   departamento?: string | null;
   municipio?: string | null;
   telefono?: string | null;

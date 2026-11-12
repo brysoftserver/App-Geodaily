@@ -500,12 +500,20 @@ export const getBeneficiarioByCedula = async (cedula: string): Promise<Beneficia
 export const assignTecnicoToBeneficiario = async (
   item: number,
   tecnicoId: string,
-  tecnicoNombre: string
+  tecnicoNombre: string,
+  /**
+   * 'solo_pendientes': lo ya diligenciado y firmado por el técnico anterior
+   * se queda a su nombre (el nuevo lo ve en solo lectura y hace lo que
+   * falta). Sin modo: se traslada todo al técnico nuevo (comportamiento
+   * de siempre).
+   */
+  modo?: 'solo_pendientes'
 ): Promise<void> => {
   try {
     await apiClient.put(`${API_CONFIG.ENDPOINTS.BENEFICIARIOS}/${item}/asignacion`, {
       tecnico_id: tecnicoId,
       tecnico_nombre: tecnicoNombre,
+      ...(modo ? { modo } : {}),
     });
   } catch (error) {
     throw errorLegible(error, 'asignar el técnico');

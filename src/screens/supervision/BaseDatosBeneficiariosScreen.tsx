@@ -3,7 +3,7 @@
 // Roles: Coordinador, Interventor, Gerente, Admin
 // ============================================================
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import {
   View,
   Text,
@@ -36,6 +36,26 @@ const ITEM_COLORS = ['#FFFFFF', '#F5F5F5'];
 const COL_W = { item: 60, correg: 180, vereda: 170, nombre: 300, cedula: 150, tecnico: 190 };
 const TABLE_WIDTH = COL_W.item + COL_W.correg + COL_W.vereda + COL_W.nombre + COL_W.cedula + COL_W.tecnico;
 
+// --- Filtro/orden por columna (estilo Excel) ---
+type ColKey = 'item' | 'corregimiento' | 'vereda' | 'nombre_completo' | 'cedula' | 'tecnico';
+const SIN_ASIGNAR = '(Sin asignar)';
+const VACIO = '(Vacío)';
+const COLUMNAS: { key: ColKey; label: string; width: number }[] = [
+  { key: 'item', label: '#', width: COL_W.item },
+  { key: 'corregimiento', label: 'Corregimiento', width: COL_W.correg },
+  { key: 'vereda', label: 'Vereda', width: COL_W.vereda },
+  { key: 'nombre_completo', label: 'Nombre Completo', width: COL_W.nombre },
+  { key: 'cedula', label: 'Cédula', width: COL_W.cedula },
+  { key: 'tecnico', label: 'Técnico', width: COL_W.tecnico },
+];
+const valorColumna = (b: BeneficiarioDB, key: ColKey): string => {
+  if (key === 'tecnico') return (b.tecnico_asignado_nombre || '').trim() || SIN_ASIGNAR;
+  if (key === 'item') return String(b.item);
+  return String(b[key] ?? '').trim() || VACIO;
+};
+const compararTexto = (a: string, b: string) =>
+  a.localeCompare(b, 'es', { numeric: true, sensitivity: 'base' });
+
 const BaseDatosBeneficiariosScreen: React.FC<Props> = ({ navigation }) => {
   const insets = useSafeAreaInsets();
   const [beneficiarios, setBeneficiarios] = useState<BeneficiarioDB[]>([]);
@@ -46,6 +66,9 @@ const BaseDatosBeneficiariosScreen: React.FC<Props> = ({ navigation }) => {
   // Modal de asignación
   const [assignModalVisible, setAssignModalVisible] = useState(false);
   const [selectedBeneficiario, setSelectedBeneficiario] = useState<BeneficiarioDB | null>(null);
+  // Reasignación «solo pendientes»: lo que ya hizo y firmó el técnico
+  // anterior se queda a su nombre; el nuevo solo hace lo que falta.
+  const [conservarAutoria, setConservarAutoria] = useState(false);
 
   // Modal de editar beneficiario (no incluye cédula: no es editable)
   const [editModalVisible, setEditModalVisible] = useState(false);
@@ -63,6 +86,13 @@ const BaseDatosBeneficiariosScreen: React.FC<Props> = ({ navigation }) => {
 
   // Búsqueda
   const [search, setSearch] = useState('');
+
+  // Orden y filtros por columna
+  const [orden, setOrden] = useState<{ key: ColKey; dir: 'asc' | 'desc' } | null>(null);
+  const [filtrosCol, setFiltrosCol] = useState<Partial<Record<ColKey, string[]>>>({});
+  const [colModal, setColModal] = useState<ColKey | null>(null);
+  const [colModalBusqueda, setColModalBusqueda] = useState('');
+  const [colModalSel, setColModalSel] = useState<Set<string>>(new Set());
 
   const loadData = useCallback(async (silencioso = false) => {
     if (!silencioso) setLoading(true);
@@ -116,22 +146,28 @@ const BaseDatosBeneficiariosScreen: React.FC<Props> = ({ navigation }) => {
     async () => {
       await Promise.all([loadData(true), loadTecnicos()]);
     },
-    { intervaloMs: null, pausado: assignModalVisible || editModalVisible || createModalVisible }
+    { intervaloMs: null, pausado: assignModalVisible || editModalVisible || createModalVisible || colModal !== null }
   );
 
   // --- ASIGNAR TÉCNICO ---
   const handleAssign = (beneficiario: BeneficiarioDB) => {
     setSelectedBeneficiario(beneficiario);
+    setConservarAutoria(false);
     setAssignModalVisible(true);
   };
 
   const confirmAssign = async (tecnico: UsuarioBackend) => {
     if (!selectedBeneficiario) return;
+    const soloPendientes =
+      conservarAutoria &&
+      !!selectedBeneficiario.tecnico_asignado_id &&
+      selectedBeneficiario.tecnico_asignado_id !== tecnico.id;
     try {
       await BeneficiariosDB.assignTecnicoToBeneficiario(
         selectedBeneficiario.item,
         tecnico.id,
-        tecnico.nombre
+        tecnico.nombre,
+        soloPendientes ? 'solo_pendientes' : undefined
       );
       setAssignModalVisible(false);
       setSelectedBeneficiario(null);
@@ -266,7 +302,7 @@ const BaseDatosBeneficiariosScreen: React.FC<Props> = ({ navigation }) => {
   };
 
   // --- FILTRO ---
-  const filtered = beneficiarios.filter(b => {
+  const coincideBusqueda = useCallback((b: BeneficiarioDB) => {
     if (!search.trim()) return true;
     const q = search.toLowerCase();
     return (
@@ -274,9 +310,104 @@ const BaseDatosBeneficiariosScreen: React.FC<Props> = ({ navigation }) => {
       b.corregimiento.toLowerCase().includes(q) ||
       b.vereda.toLowerCase().includes(q) ||
       b.cedula.includes(q) ||
-      b.item.toString().includes(q)
+      b.item.toString().includes(q) ||
+      (b.tecnico_asignado_nombre || '').toLowerCase().includes(q)
     );
-  });
+  }, [search]);
+
+  // Cumple los filtros de columna, opcionalmente ignorando una columna
+  // (para listar en el modal los valores disponibles de esa columna).
+  const cumpleFiltrosCol = useCallback((b: BeneficiarioDB, ignorar?: ColKey) => {
+    for (const col of COLUMNAS) {
+      if (col.key === ignorar) continue;
+      const permitidos = filtrosCol[col.key];
+      if (permitidos && !permitidos.includes(valorColumna(b, col.key))) return false;
+    }
+    return true;
+  }, [filtrosCol]);
+
+  const filtered = useMemo(() => {
+    const lista = beneficiarios.filter(b => coincideBusqueda(b) && cumpleFiltrosCol(b));
+    if (orden) {
+      const signo = orden.dir === 'asc' ? 1 : -1;
+      lista.sort((a, b) => {
+        if (orden.key === 'item') return (a.item - b.item) * signo;
+        const va = valorColumna(a, orden.key);
+        const vb = valorColumna(b, orden.key);
+        // Los vacíos / sin asignar siempre al final
+        const ea = va === SIN_ASIGNAR || va === VACIO;
+        const eb = vb === SIN_ASIGNAR || vb === VACIO;
+        if (ea !== eb) return ea ? 1 : -1;
+        return compararTexto(va, vb) * signo;
+      });
+    }
+    return lista;
+  }, [beneficiarios, coincideBusqueda, cumpleFiltrosCol, orden]);
+
+  const hayFiltrosCol = Object.keys(filtrosCol).length > 0;
+
+  // Valores distintos (con conteo) de la columna abierta en el modal
+  const valoresColModal = useMemo(() => {
+    if (!colModal) return [] as { valor: string; n: number }[];
+    const conteo = new Map<string, number>();
+    for (const b of beneficiarios) {
+      if (!coincideBusqueda(b) || !cumpleFiltrosCol(b, colModal)) continue;
+      const v = valorColumna(b, colModal);
+      conteo.set(v, (conteo.get(v) || 0) + 1);
+    }
+    // Mantener visibles los valores ya seleccionados aunque no tengan filas
+    for (const v of filtrosCol[colModal] || []) if (!conteo.has(v)) conteo.set(v, 0);
+    return Array.from(conteo, ([valor, n]) => ({ valor, n })).sort((a, b) => {
+      const ea = a.valor === SIN_ASIGNAR || a.valor === VACIO;
+      const eb = b.valor === SIN_ASIGNAR || b.valor === VACIO;
+      if (ea !== eb) return ea ? -1 : 1; // "(Sin asignar)" arriba, fácil de encontrar
+      return compararTexto(a.valor, b.valor);
+    });
+  }, [colModal, beneficiarios, coincideBusqueda, cumpleFiltrosCol, filtrosCol]);
+
+  const valoresColModalVisibles = useMemo(() => {
+    const q = colModalBusqueda.trim().toLowerCase();
+    return q ? valoresColModal.filter(v => v.valor.toLowerCase().includes(q)) : valoresColModal;
+  }, [valoresColModal, colModalBusqueda]);
+
+  const abrirFiltroColumna = (key: ColKey) => {
+    setColModal(key);
+    setColModalBusqueda('');
+    const actuales = filtrosCol[key];
+    setColModalSel(new Set(actuales ?? []));
+  };
+
+  // Selección vacía en el modal = sin filtro (mostrar todo)
+  const aplicarFiltroColumna = () => {
+    if (!colModal) return;
+    setFiltrosCol(prev => {
+      const next = { ...prev };
+      if (colModalSel.size === 0) delete next[colModal];
+      else next[colModal] = Array.from(colModalSel);
+      return next;
+    });
+    setColModal(null);
+  };
+
+  const ordenarColumna = (dir: 'asc' | 'desc') => {
+    if (!colModal) return;
+    setOrden({ key: colModal, dir });
+    aplicarFiltroColumna();
+  };
+
+  const toggleValorModal = (valor: string) => {
+    setColModalSel(prev => {
+      const next = new Set(prev);
+      if (next.has(valor)) next.delete(valor);
+      else next.add(valor);
+      return next;
+    });
+  };
+
+  const limpiarTodo = () => {
+    setFiltrosCol({});
+    setOrden(null);
+  };
 
   // --- RENDER ITEM ---
   const renderItem = ({ item, index }: { item: BeneficiarioDB; index: number }) => {
@@ -371,14 +502,27 @@ const BaseDatosBeneficiariosScreen: React.FC<Props> = ({ navigation }) => {
       {/* Tabla con scroll horizontal para columnas anchas */}
       <ScrollView horizontal style={styles.tableScroll} showsHorizontalScrollIndicator={true}>
         <View style={styles.tableContainer}>
-          {/* Cabecera de columnas */}
+          {/* Cabecera de columnas — tocar para ordenar A-Z / filtrar */}
           <View style={styles.headerRow}>
-            <Text style={[styles.headerText, styles.colItem]}>#</Text>
-            <Text style={[styles.headerText, styles.colCorreg]}>Corregimiento</Text>
-            <Text style={[styles.headerText, styles.colVereda]}>Vereda</Text>
-            <Text style={[styles.headerText, styles.colNombre]}>Nombre Completo</Text>
-            <Text style={[styles.headerText, styles.colCedula]}>Cédula</Text>
-            <Text style={[styles.headerText, styles.colTecnico]}>Técnico</Text>
+            {COLUMNAS.map(col => {
+              const filtrada = !!filtrosCol[col.key];
+              const flecha = orden?.key === col.key ? (orden.dir === 'asc' ? ' ▲' : ' ▼') : '';
+              return (
+                <TouchableOpacity
+                  key={col.key}
+                  style={[styles.headerCell, { width: col.width }, filtrada && styles.headerCellActiva]}
+                  onPress={() => abrirFiltroColumna(col.key)}
+                  activeOpacity={0.7}
+                >
+                  <Text style={styles.headerText} numberOfLines={1}>
+                    {col.label}{flecha}
+                  </Text>
+                  <Text style={[styles.headerIcono, filtrada && styles.headerIconoActivo]}>
+                    {filtrada ? '▾ ●' : '▾'}
+                  </Text>
+                </TouchableOpacity>
+              );
+            })}
           </View>
 
           {/* Lista */}
@@ -397,7 +541,7 @@ const BaseDatosBeneficiariosScreen: React.FC<Props> = ({ navigation }) => {
               ListEmptyComponent={
                 <View style={[styles.center, { width: TABLE_WIDTH }]}>
                   <Text style={styles.emptyText}>
-                    {search.trim()
+                    {search.trim() || hayFiltrosCol
                       ? 'No se encontraron beneficiarios con ese filtro'
                       : 'No hay beneficiarios registrados'}
                   </Text>
@@ -410,12 +554,111 @@ const BaseDatosBeneficiariosScreen: React.FC<Props> = ({ navigation }) => {
 
       {/* Footer con padding para que no quede detrás de la navegación */}
       <View style={{ paddingBottom: insets.bottom }}>
+        {(hayFiltrosCol || orden) && (
+          <TouchableOpacity style={styles.limpiarFiltrosBar} onPress={limpiarTodo}>
+            <Text style={styles.limpiarFiltrosText}>
+              {hayFiltrosCol ? `Filtros activos (${Object.keys(filtrosCol).length})` : 'Orden aplicado'}
+              {'  •  '}Quitar filtros y orden ✕
+            </Text>
+          </TouchableOpacity>
+        )}
         <Text style={styles.footerText}>
-          Total: {filtered.length} beneficiarios
+          Total: {filtered.length}{filtered.length !== beneficiarios.length ? ` de ${beneficiarios.length}` : ''} beneficiarios
+          {'  •  '}Toque un encabezado para ordenar/filtrar
           {'  •  '}Toque para asignar técnico
           {'  •  '}Mantener presionado para eliminar
         </Text>
       </View>
+
+      {/* MODAL — Ordenar / filtrar columna */}
+      <Modal
+        visible={colModal !== null}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setColModal(null)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <Text style={styles.modalTitle}>
+              {COLUMNAS.find(c => c.key === colModal)?.label}
+            </Text>
+
+            <View style={styles.ordenRow}>
+              <TouchableOpacity
+                style={[styles.ordenBtn, orden?.key === colModal && orden?.dir === 'asc' && styles.ordenBtnActivo]}
+                onPress={() => ordenarColumna('asc')}
+              >
+                <Text style={[styles.ordenBtnText, orden?.key === colModal && orden?.dir === 'asc' && styles.ordenBtnTextActivo]}>
+                  Ordenar A → Z
+                </Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.ordenBtn, orden?.key === colModal && orden?.dir === 'desc' && styles.ordenBtnActivo]}
+                onPress={() => ordenarColumna('desc')}
+              >
+                <Text style={[styles.ordenBtnText, orden?.key === colModal && orden?.dir === 'desc' && styles.ordenBtnTextActivo]}>
+                  Ordenar Z → A
+                </Text>
+              </TouchableOpacity>
+            </View>
+
+            <Text style={styles.sectionLabel}>Mostrar solo:</Text>
+            <TextInput
+              style={styles.input}
+              placeholder="Buscar valor..."
+              placeholderTextColor={COLORS.textLight}
+              value={colModalBusqueda}
+              onChangeText={setColModalBusqueda}
+            />
+            <View style={styles.selRow}>
+              <TouchableOpacity
+                onPress={() =>
+                  setColModalSel(prev => {
+                    const next = new Set(prev);
+                    valoresColModalVisibles.forEach(v => next.add(v.valor));
+                    return next;
+                  })
+                }
+              >
+                <Text style={styles.selLink}>Marcar visibles</Text>
+              </TouchableOpacity>
+              <TouchableOpacity onPress={() => setColModalSel(new Set())}>
+                <Text style={styles.selLink}>Desmarcar todo (ver todos)</Text>
+              </TouchableOpacity>
+            </View>
+            <FlatList
+              data={valoresColModalVisibles}
+              keyExtractor={(v) => v.valor}
+              style={styles.tecnicoList}
+              keyboardShouldPersistTaps="handled"
+              renderItem={({ item: v }) => {
+                const marcado = colModalSel.has(v.valor);
+                return (
+                  <TouchableOpacity style={styles.valorItem} onPress={() => toggleValorModal(v.valor)}>
+                    <View style={[styles.checkbox, marcado && styles.checkboxOn]}>
+                      {marcado && <Text style={styles.checkboxTick}>✓</Text>}
+                    </View>
+                    <Text style={styles.valorText} numberOfLines={1}>{v.valor}</Text>
+                    <Text style={styles.valorCount}>{v.n}</Text>
+                  </TouchableOpacity>
+                );
+              }}
+              ListEmptyComponent={<Text style={styles.emptyText}>Sin valores</Text>}
+            />
+
+            <View style={styles.modalButtons}>
+              <TouchableOpacity style={styles.cancelButton} onPress={() => setColModal(null)}>
+                <Text style={styles.cancelButtonText}>Cancelar</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.saveButton} onPress={aplicarFiltroColumna}>
+                <Text style={styles.saveButtonText}>
+                  {colModalSel.size ? `Aplicar (${colModalSel.size})` : 'Ver todos'}
+                </Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
 
       {/* MODAL — Asignar técnico */}
       <Modal
@@ -451,6 +694,24 @@ const BaseDatosBeneficiariosScreen: React.FC<Props> = ({ navigation }) => {
               >
                 <Text style={styles.unassignButtonText}>
                   ❌ Desasignar: {selectedBeneficiario.tecnico_asignado_nombre}
+                </Text>
+              </TouchableOpacity>
+            )}
+
+            {selectedBeneficiario?.tecnico_asignado_nombre && (
+              <TouchableOpacity
+                style={[styles.conservarAutoria, conservarAutoria && styles.conservarAutoriaActiva]}
+                onPress={() => setConservarAutoria((v) => !v)}
+                accessibilityRole="checkbox"
+                accessibilityState={{ checked: conservarAutoria }}
+              >
+                <Text style={styles.conservarAutoriaTitulo}>
+                  {conservarAutoria ? '☑' : '☐'} Conservar los formularios de {selectedBeneficiario.tecnico_asignado_nombre}
+                </Text>
+                <Text style={styles.conservarAutoriaTexto}>
+                  {conservarAutoria
+                    ? 'Solo lo que falta: las visitas ya hechas siguen a su nombre y con sus firmas (el técnico nuevo las ve en solo lectura). Los borradores pasan al técnico nuevo.'
+                    : 'Sin marcar: TODO (visitas, firmas, archivos y borradores) pasa al técnico nuevo.'}
                 </Text>
               </TouchableOpacity>
             )}
@@ -705,6 +966,106 @@ const styles = StyleSheet.create({
     fontWeight: FONTS.weights.bold,
     color: '#fff',
     textAlign: 'center',
+    flexShrink: 1,
+  },
+  headerCell: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 4,
+    gap: 4,
+  },
+  headerCellActiva: {
+    backgroundColor: 'rgba(255,255,255,0.18)',
+    borderRadius: BORDER_RADIUS.sm,
+  },
+  headerIcono: {
+    fontSize: 10,
+    color: 'rgba(255,255,255,0.75)',
+  },
+  headerIconoActivo: {
+    color: '#FFEB3B',
+  },
+  limpiarFiltrosBar: {
+    backgroundColor: '#FFF8E1',
+    paddingVertical: SPACING.xs,
+    alignItems: 'center',
+  },
+  limpiarFiltrosText: {
+    fontSize: FONTS.sizes.xs,
+    color: '#7A4F01',
+    fontWeight: FONTS.weights.semibold,
+  },
+  ordenRow: {
+    flexDirection: 'row',
+    gap: SPACING.sm,
+    marginTop: SPACING.sm,
+  },
+  ordenBtn: {
+    flex: 1,
+    padding: SPACING.md,
+    borderRadius: BORDER_RADIUS.sm,
+    borderWidth: 1,
+    borderColor: COLORS.primary,
+    alignItems: 'center',
+  },
+  ordenBtnActivo: {
+    backgroundColor: COLORS.primary,
+  },
+  ordenBtnText: {
+    fontSize: FONTS.sizes.md,
+    fontWeight: FONTS.weights.semibold,
+    color: COLORS.primary,
+  },
+  ordenBtnTextActivo: {
+    color: '#fff',
+  },
+  selRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginVertical: SPACING.sm,
+  },
+  selLink: {
+    fontSize: FONTS.sizes.sm,
+    color: COLORS.primary,
+    fontWeight: FONTS.weights.semibold,
+  },
+  valorItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: SPACING.sm,
+    paddingHorizontal: SPACING.xs,
+    borderBottomWidth: 0.5,
+    borderBottomColor: COLORS.divider,
+    gap: SPACING.sm,
+  },
+  checkbox: {
+    width: 22,
+    height: 22,
+    borderRadius: 4,
+    borderWidth: 2,
+    borderColor: COLORS.border,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  checkboxOn: {
+    backgroundColor: COLORS.primary,
+    borderColor: COLORS.primary,
+  },
+  checkboxTick: {
+    color: '#fff',
+    fontSize: 14,
+    fontWeight: FONTS.weights.bold,
+    lineHeight: 16,
+  },
+  valorText: {
+    flex: 1,
+    fontSize: FONTS.sizes.md,
+    color: COLORS.textPrimary,
+  },
+  valorCount: {
+    fontSize: FONTS.sizes.sm,
+    color: COLORS.textLight,
   },
   // Columnas con ancho fijo (scroll horizontal)
   colItem: { width: COL_W.item, alignItems: 'center', paddingHorizontal: 2 },
@@ -816,6 +1177,26 @@ const styles = StyleSheet.create({
     color: COLORS.primary,
     fontWeight: FONTS.weights.medium,
     fontSize: FONTS.sizes.md,
+  },
+  conservarAutoria: {
+    borderWidth: 1,
+    borderColor: COLORS.divider,
+    borderRadius: BORDER_RADIUS.sm,
+    padding: SPACING.md,
+    marginBottom: SPACING.sm,
+  },
+  conservarAutoriaActiva: {
+    borderColor: COLORS.info,
+    backgroundColor: COLORS.info + '12',
+  },
+  conservarAutoriaTitulo: {
+    fontWeight: FONTS.weights.semibold,
+    color: COLORS.textPrimary,
+    marginBottom: 4,
+  },
+  conservarAutoriaTexto: {
+    fontSize: FONTS.sizes.sm,
+    color: COLORS.textSecondary,
   },
   unassignButton: {
     backgroundColor: COLORS.error + '15',

@@ -530,6 +530,36 @@ async function initSchema() {
     console.error('[DB] Error creando índice idx_visitas_programadas_fecha:', err.message);
   }
 
+  // Reasignación «solo pendientes» (ver lib/reasignacionSoloPendientes.js):
+  //  - formularios.autoria_fija: la visita la hizo y firmó el técnico
+  //    anterior; nadie la cambia de dueño ni la corrige salvo admin/coordinador.
+  //  - beneficiarios.tecnico_anterior_id: técnico que tenía el beneficiario
+  //    antes, para que una visita suya que llegue tarde quede a su nombre.
+  //  - update_updated_at(): el trigger de formularios/usuarios pone NOW() en
+  //    cada UPDATE. Con `SET LOCAL geodaily.conservar_updated_at = 'on'`
+  //    (solo dentro de esa transacción) no toca la fecha: marcar la autoría
+  //    de una visita firmada no es "modificarla". Sin el flag, igual que antes.
+  for (const sql of [
+    `ALTER TABLE formularios ADD COLUMN IF NOT EXISTS autoria_fija BOOLEAN NOT NULL DEFAULT FALSE`,
+    `ALTER TABLE beneficiarios ADD COLUMN IF NOT EXISTS tecnico_anterior_id TEXT`,
+    `CREATE OR REPLACE FUNCTION public.update_updated_at() RETURNS trigger
+       LANGUAGE plpgsql AS $fn$
+     BEGIN
+       IF COALESCE(current_setting('geodaily.conservar_updated_at', true), '') = 'on' THEN
+         RETURN NEW;
+       END IF;
+       NEW.updated_at = NOW();
+       RETURN NEW;
+     END;
+     $fn$`,
+  ]) {
+    try {
+      await query(sql);
+    } catch (err) {
+      console.error('[DB] Error en migración de autoría fija:', err.message);
+    }
+  }
+
   // Migración: vincular las evidencias (fotos/videos) a su formulario.
   // Sin esta columna no se pueden recuperar las evidencias de una visita
   // desde otro dispositivo — la app solo guarda la ruta local del teléfono

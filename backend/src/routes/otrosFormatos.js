@@ -24,6 +24,7 @@ const { authenticateToken } = require('../middleware/auth');
 const db = require('../database');
 const { crearNotificacion } = require('./notificaciones');
 const { debeAvisarActa, avisarActaCompletada } = require('../lib/avisoActaCompletada');
+const { firmasVisita2, completarConFirmasVisita2 } = require('../lib/firmasVisita2');
 const router = express.Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 25 * 1024 * 1024 } });
 
@@ -172,6 +173,16 @@ router.post('/sync', authenticateToken, async (req, res) => {
             interventoriaCargo: dbor.interventoriaCargo || datos.interventoriaCargo || '',
           };
           console.log(`[OtrosFormatos] ${f.id}: se tomó la firma de interventoría del borrador del servidor`);
+        }
+      }
+
+      // Preparación del Terreno: las firmas del técnico y del beneficiario que
+      // falten se toman de la Visita 2 (también actas completadas antes).
+      if (tipo === TIPO_MULTIPLE) {
+        const r = await completarConFirmasVisita2(datos, cedula);
+        if (r.cambio) {
+          datos = r.datos;
+          console.log(`[OtrosFormatos] ${f.id}: firmas faltantes tomadas de la Visita 2`);
         }
       }
 
@@ -492,6 +503,22 @@ router.post('/actas/por-actividad', authenticateToken, async (req, res) => {
   } catch (error) {
     console.error('[OtrosFormatos] Error en actas por actividad:', error);
     res.status(500).json({ estado: 'error', mensaje: 'Error al consultar las actas' });
+  }
+});
+
+// GET /api/otros-formatos/firmas-visita2/:cedula — firmas (data URI) del
+// técnico y del beneficiario en la Visita 2 de esa cédula. El Acta de Entrega
+// de Preparación del Terreno las toma para los campos de firma vacíos.
+router.get('/firmas-visita2/:cedula', authenticateToken, async (req, res) => {
+  try {
+    const r = await firmasVisita2(req.params.cedula);
+    res.json({
+      estado: 'ok',
+      firmas: r ? { formularioId: r.formularioId, firmaBeneficiario: r.firmaBeneficiario, firmaTecnico: r.firmaTecnico } : null,
+    });
+  } catch (error) {
+    console.error('[OtrosFormatos] Error leyendo firmas de la Visita 2:', error);
+    res.status(500).json({ estado: 'error', mensaje: 'Error al obtener las firmas de la Visita 2' });
   }
 });
 

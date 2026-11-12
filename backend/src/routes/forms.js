@@ -41,6 +41,26 @@ const router = express.Router();
  * @param {string|undefined} cedula
  * @returns {Promise<string|null>}
  */
+/**
+ * Técnico que tenía el beneficiario antes de una reasignación «solo
+ * pendientes» (beneficiarios.tecnico_anterior_id). Una visita suya que llegue
+ * tarde conserva su autoría (ver lib/atribucion.js). null si no hay uno solo.
+ */
+async function tecnicoAnteriorDelBeneficiario(cedula) {
+  if (!cedula || typeof cedula !== 'string' || !cedula.trim()) return null;
+  try {
+    const filas = await db.queryAll(
+      `SELECT DISTINCT tecnico_anterior_id FROM beneficiarios
+        WHERE TRIM(cedula) = TRIM($1) AND tecnico_anterior_id IS NOT NULL`,
+      [cedula.trim()]
+    );
+    return filas.length === 1 ? filas[0].tecnico_anterior_id : null;
+  } catch (error) {
+    console.warn('[Forms] No se pudo resolver el técnico anterior del beneficiario:', error.message);
+    return null;
+  }
+}
+
 async function tecnicoVigenteDelBeneficiario(cedula) {
   if (!cedula || typeof cedula !== 'string' || !cedula.trim()) return null;
   try {
@@ -286,7 +306,8 @@ async function guardarFormularioHandler(req, res) {
       // segundo supervisor reescribiera el responsable con sus propios datos.
       `SELECT id, usuario_id, tipo,
               COALESCE(NULLIF(tecnico_json->>'usuario_id', ''), usuario_id) AS dueno_efectivo,
-              tecnico_json, actividad_json, caracterizacion_nueva_json, updated_at
+              tecnico_json, actividad_json, caracterizacion_nueva_json, updated_at,
+              autoria_fija
          FROM formularios WHERE id = $1`,
       [formulario.id]
     );
@@ -328,12 +349,22 @@ async function guardarFormularioHandler(req, res) {
     // El resto del contenido (fotos, clima, coordenadas) se sigue guardando
     // normal: aquí solo se decide a nombre de quién queda.
     const tecnicoVigente = await tecnicoVigenteDelBeneficiario(beneficiario?.cedula);
-    const { usuarioId: usuarioIdParaGuardar, usarSnapshotDelPayload } = resolverAtribucionFormulario({
+    const tecnicoAnterior = existente ? null : await tecnicoAnteriorDelBeneficiario(beneficiario?.cedula);
+    const {
+      usuarioId: usuarioIdParaGuardar,
+      usarSnapshotDelPayload,
+      autoriaFija: autoriaFijaParaGuardar,
+    } = resolverAtribucionFormulario({
       tecnicoVigente,
       tecnicoDelSnapshot: tecnico?.usuario_id || null,
       usuarioSolicitante: req.user.id,
       usuarioExistente: existente ? existente.dueno_efectivo : null,
+      existenteConAutoriaFija: !!existente?.autoria_fija,
+      tecnicoAnterior,
     });
+    if (autoriaFijaParaGuardar && usuarioIdParaGuardar !== req.user.id) {
+      console.warn(`[Forms] 🔒 Formulario ${formulario.id}: autoría fija de ${usuarioIdParaGuardar} — se conserva aunque lo sincronizó ${req.user.id}`);
+    }
     const tecnicoJsonParaGuardar = usarSnapshotDelPayload
       ? JSON.stringify(tecnico)
       : await snapshotTecnicoJson(usuarioIdParaGuardar, tecnico);
@@ -446,9 +477,9 @@ async function guardarFormularioHandler(req, res) {
            sociodemografico_json, caracterizacion_nueva_json,
            coordenadas_json, georeferencia_json, clima_json,
            fotos_json, firma_beneficiario, firma_tecnico,
-           huella_beneficiario, pdf_url, sincronizado, created_at)
+           huella_beneficiario, pdf_url, sincronizado, created_at, autoria_fija)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, TRUE,
-                 COALESCE($17::timestamp, NOW()))`,
+                 COALESCE($17::timestamp, NOW()), $18)`,
         [
           formulario.id,
           formulario.tipo,
@@ -472,6 +503,9 @@ async function guardarFormularioHandler(req, res) {
           // COALESCE en el SQL: pasar null ANULABA el DEFAULT now() y dejaba
           // formularios sin fecha, rompiendo el orden y los conteos.
           formulario.created_at ? new Date(formulario.created_at) : null,
+          // Visita del técnico anterior que llegó tarde (reasignación «solo
+          // pendientes»): nace con su autoría fija.
+          !!autoriaFijaParaGuardar,
         ]
       );
     }
@@ -580,7 +614,17 @@ router.get('/', authenticateToken, async (req, res) => {
     if (!esVistaCalendario) {
       // Filtro por rol: si es técnico, solo ve sus formularios
       if (req.user.rol === 'tecnico') {
-        sql += ` AND usuario_id = $${paramIdx++}`;
+        // Además de las suyas, las visitas con AUTORÍA FIJA de los
+        // beneficiarios que tiene asignados hoy (reasignación «solo
+        // pendientes»): las hizo y firmó el técnico anterior, siguen a su
+        // nombre y el técnico nuevo las recibe en solo lectura. Así su app
+        // sabe que esa visita ya existe y no lo deja repetirla.
+        sql += ` AND (usuario_id = $${paramIdx}
+                  OR (autoria_fija AND regexp_replace(COALESCE(beneficiario_json->>'cedula', ''), '[^0-9A-Za-z]', '', 'g') IN (
+                        SELECT regexp_replace(COALESCE(cedula, ''), '[^0-9A-Za-z]', '', 'g')
+                          FROM beneficiarios
+                         WHERE tecnico_asignado_id = $${paramIdx} AND cedula IS NOT NULL)))`;
+        paramIdx++;
         params.push(req.user.id);
       }
 
@@ -639,8 +683,14 @@ router.get('/:id', authenticateToken, async (req, res) => {
     const params = [req.params.id];
 
     // Filtro por rol: si es técnico, solo puede ver sus propios formularios
+    // (o una visita con AUTORÍA FIJA de un beneficiario que tiene asignado
+    // hoy, en solo lectura — mismo criterio que el listado).
     if (req.user.rol === 'tecnico') {
-      sql += ' AND usuario_id = $2';
+      sql += ` AND (usuario_id = $2
+                OR (autoria_fija AND regexp_replace(COALESCE(beneficiario_json->>'cedula', ''), '[^0-9A-Za-z]', '', 'g') IN (
+                      SELECT regexp_replace(COALESCE(cedula, ''), '[^0-9A-Za-z]', '', 'g')
+                        FROM beneficiarios
+                       WHERE tecnico_asignado_id = $2 AND cedula IS NOT NULL)))`;
       params.push(req.user.id);
     }
 
@@ -792,7 +842,7 @@ router.patch('/:id/respuesta', authenticateToken, async (req, res) => {
       // contra la columna dejaba fuera a los formularios creados "a nombre
       // de" un técnico por un supervisor/interventor/admin, donde la columna
       // guarda al creador y el snapshot al responsable real de la visita.
-      `SELECT f.caracterizacion_nueva_json,
+      `SELECT f.caracterizacion_nueva_json, f.autoria_fija,
               COALESCE(NULLIF(f.tecnico_json->>'usuario_id', ''), f.usuario_id) AS usuario_id,
               -- Técnico asignado HOY al beneficiario (por cédula, la única
               -- llave que los une). CASE + COUNT(DISTINCT) deja NULL cuando
@@ -825,6 +875,9 @@ router.patch('/:id/respuesta', authenticateToken, async (req, res) => {
         usuarioSolicitante: req.user.id,
         duenoDelFormulario: form.usuario_id,
         tecnicoVigente: form.tecnico_vigente,
+        // Autoría fija: visita firmada por el técnico anterior; la ajusta
+        // un admin o el coordinador, no el técnico nuevo.
+        autoriaFija: !!form.autoria_fija,
       });
       if (!puedeCorregirHeredado) {
         return res.status(403).json({ estado: 'error', mensaje: 'Solo puedes completar tus propios formularios' });

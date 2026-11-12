@@ -221,6 +221,7 @@ router.post('/guardar-en-formulario', authenticateToken, async (req, res) => {
       `SELECT COALESCE(NULLIF(tecnico_json->>'usuario_id', ''), usuario_id) AS usuario_id,
               firma_beneficiario,
               firma_tecnico,
+              autoria_fija,
               (SELECT CASE WHEN COUNT(DISTINCT b.tecnico_asignado_id) = 1
                            THEN MIN(b.tecnico_asignado_id) END
                  FROM beneficiarios b
@@ -240,6 +241,8 @@ router.post('/guardar-en-formulario', authenticateToken, async (req, res) => {
         usuarioSolicitante: req.user.id,
         duenoDelFormulario: propietario.usuario_id,
         tecnicoVigente: propietario.tecnico_vigente,
+        // Autoría fija: la firma del técnico anterior no la cambia el nuevo.
+        autoriaFija: !!propietario.autoria_fija,
       });
     if (!esCoordinacion && !esDueno && !esTecnicoVigente) {
       return res.status(403).json({

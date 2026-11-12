@@ -225,6 +225,49 @@ router.get('/matriz-excel', authenticateTokenOrQuery, async (req, res) => {
   }
 });
 
+// GET /api/analisis-suelos/informe-genetics-pdf — superiores: descarga el
+// informe del laboratorio (Genetics VGA S.A.). Vive en la raíz de
+// resultado_estudio_suelos/; se toma el PDF más reciente cuyo nombre
+// contenga "Genetics" (basta con dejar ahí una versión nueva).
+const CARPETA_ESTUDIO_SUELOS = path.join(__dirname, '..', '..', '..', 'resultado_estudio_suelos');
+
+function archivoInformeGenetics() {
+  let elegido = null;
+  let nombres = [];
+  try { nombres = fs.readdirSync(CARPETA_ESTUDIO_SUELOS); } catch { return null; }
+  for (const n of nombres) {
+    if (!/\.pdf$/i.test(n) || !/genetics/i.test(n)) continue;
+    const ruta = path.join(CARPETA_ESTUDIO_SUELOS, n);
+    const st = fs.statSync(ruta);
+    if (!st.isFile()) continue;
+    if (!elegido || st.mtimeMs > elegido.mtimeMs) elegido = { ruta, nombre: n, size: st.size, mtimeMs: st.mtimeMs };
+  }
+  return elegido;
+}
+
+router.get('/informe-genetics-pdf', authenticateTokenOrQuery, async (req, res) => {
+  try {
+    if (!esSuperior(req.user)) {
+      return res.status(403).json({ estado: 'error', mensaje: 'No autorizado' });
+    }
+    const archivo = archivoInformeGenetics();
+    if (!archivo) return res.status(404).json({ estado: 'error', mensaje: 'El informe aún no está disponible' });
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Length', archivo.size);
+    res.setHeader('Cache-Control', 'private, no-cache');
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename="informe_genetics_estudio_suelos.pdf"; filename*=UTF-8''${encodeURIComponent(archivo.nombre)}`
+    );
+    const stream = fs.createReadStream(archivo.ruta);
+    stream.on('error', () => (res.headersSent ? res.end() : res.status(500).end()));
+    stream.pipe(res);
+  } catch (error) {
+    console.error('[AnalisisSuelos] Error al descargar el informe Genetics:', error);
+    if (!res.headersSent) res.status(500).json({ estado: 'error', mensaje: 'Error al descargar el informe' });
+  }
+});
+
 // GET /api/analisis-suelos/tecnico/:usuario — superiores: beneficiarios de un técnico
 router.get('/tecnico/:usuario', authenticateToken, async (req, res) => {
   try {

@@ -153,7 +153,12 @@ const BeneficiariosListScreen: React.FC<BeneficiariosListScreenProps> = ({ navig
       const cedulaTecnico = (user as any)?.cedula || '';
       const fusionados = Array.from(mapaFusion.values()).filter((f) => {
         if (!cedulaTecnico) return true; // fallback: mostrar todos
-        return f.tecnico?.cedula === cedulaTecnico;
+        if (f.tecnico?.cedula === cedulaTecnico) return true;
+        // Visitas del técnico ANTERIOR (reasignación «solo pendientes»): el
+        // servidor solo se las manda al técnico si son de sus beneficiarios
+        // de hoy. Siguen a nombre del anterior y se muestran para que se vea
+        // qué visita ya está hecha (el detalle las abre en solo lectura).
+        return !!f.usuario_id && !!user?.id && f.usuario_id !== user.id;
       });
 
       // Ver si hay al menos algunos datos que mostrar

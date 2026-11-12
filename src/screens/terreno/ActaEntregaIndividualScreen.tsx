@@ -47,6 +47,8 @@ import {
   republicarActaSiCambio,
   obtenerActaServidor,
   subirBorradorActa,
+  obtenerFirmasVisita2,
+  ACTIVIDADES_FIRMAS_VISITA_2,
 } from '../../services/otrosFormatos.service';
 import { avisar, confirmar } from '../../utils/dialogos';
 import { abrirVentanaDeCarga, imprimirHtmlEnVentana } from '../../utils/printWeb';
@@ -205,6 +207,22 @@ const ActaEntregaIndividualScreen: React.FC<Props> = ({ route, navigation }) => 
           setFirmaBeneficiario(g.firmaBeneficiario ?? null);
           setFirmaTecnico(g.firmaTecnico ?? null);
           setFirmaInterventoria(g.firmaInterventoria ?? null);
+        }
+        // Preparación del Terreno: las firmas del técnico y del beneficiario
+        // vienen de la Visita 2 (también en actas ya completadas), solo en los
+        // campos vacíos (una firma ya puesta no se toca). Sin Visita 2 o sin
+        // red, los campos quedan para firmar a mano.
+        if (
+          beneficiario?.cedula &&
+          actividadId &&
+          ACTIVIDADES_FIRMAS_VISITA_2.includes(actividadId) &&
+          (!g?.firmaBeneficiario || !g?.firmaTecnico)
+        ) {
+          // Sin await: el acta se abre ya y las firmas llegan cuando respondan.
+          void obtenerFirmasVisita2(beneficiario.cedula).then((v2) => {
+            if (v2?.firmaBeneficiario) setFirmaBeneficiario((actual) => actual || v2.firmaBeneficiario);
+            if (v2?.firmaTecnico) setFirmaTecnico((actual) => actual || v2.firmaTecnico);
+          });
         }
       } catch (e) {
         console.warn('[ActaEntregaIndividual] Error al cargar borrador:', e);

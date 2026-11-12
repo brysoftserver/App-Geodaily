@@ -41,6 +41,7 @@ import {
   fechaDMAaISO,
 } from '../../services/formularios.service';
 import { fetchBeneficiariosDelServidor } from '../../services/beneficiariosDB.service';
+import { padronDelTecnico, trasladadoA, visitasHeredadas } from '../../utils/padronTecnico';
 import { fetchResumenRevisiones, EstadoRevision } from '../../services/revisiones.service';
 import LoadingSpinner from '../../components/LoadingSpinner';
 import AvisoDatosGuardados from '../../components/AvisoDatosGuardados';
@@ -132,6 +133,13 @@ interface TecnicoAgrupado {
   totalVisitas: number;
   totalBeneficiarios: number;
   beneficiarios: BeneficiarioAgrupado[];
+  /**
+   * Ids de visitas HEREDADAS: las hizo el técnico anterior a beneficiarios
+   * que hoy tiene este técnico (reasignación «solo pendientes»). Siguen a
+   * nombre del anterior; aquí cuentan para el avance del beneficiario pero
+   * no como trabajo propio (ni en totalVisitas, ni en su PDF, ni en la bandeja).
+   */
+  heredadas: Set<string>;
 }
 
 /** Progreso de una visita numerada (1..12) sobre los beneficiarios ASIGNADOS actualmente al técnico. */
@@ -139,12 +147,16 @@ interface VisitaStat {
   numero: number;
   completados: number;
   total: number;
+  /** De `completados`, cuántos los hizo el técnico anterior (visitas heredadas). */
+  delAnterior: number;
 }
 
 interface TecnicoConEstadisticas extends TecnicoAgrupado {
   /** Total de beneficiarios asignados vigente (tabla beneficiarios), no el histórico de formularios. */
   totalBeneficiariosAsignados: number;
   visitasStats: VisitaStat[];
+  /** Técnico retirado: a quién se trasladaron sus beneficiarios (la tarjeta es histórica). */
+  trasladadoA: string | null;
 }
 
 /**
@@ -297,6 +309,7 @@ const VisitasJerarquicasScreen: React.FC<VisitasJerarquicasScreenProps> = ({ nav
             totalVisitas: 0,
             totalBeneficiarios: 0,
             beneficiarios: [],
+            heredadas: new Set<string>(),
           });
         }
 
@@ -344,6 +357,58 @@ const VisitasJerarquicasScreen: React.FC<VisitasJerarquicasScreenProps> = ({ nav
       }
     }
 
+    // ─── Reasignación «solo pendientes» ───
+    // a) Técnico con beneficiarios asignados pero sin visitas propias todavía
+    //    (el que recibió los beneficiarios de uno que se retiró): también
+    //    lleva tarjeta. Antes las tarjetas salían solo de los formularios.
+    const grupoPorUsuario = new Map<string, TecnicoAgrupado>();
+    for (const g of mapa.values()) if (g.usuarioId) grupoPorUsuario.set(g.usuarioId, g);
+    // Solo para quien RECIBIÓ beneficiarios trasladados (tecnico_anterior_id):
+    // el resto del listado se comporta igual que antes (p. ej. el técnico de
+    // pruebas con un beneficiario asignado no aparece).
+    for (const b of beneficiariosAsignados) {
+      const uid = b.tecnico_asignado_id;
+      if (!uid || !b.tecnico_anterior_id || b.tecnico_anterior_id === uid || grupoPorUsuario.has(uid)) continue;
+      const nuevo: TecnicoAgrupado = {
+        id: `usuario:${uid}`,
+        nombre: b.tecnico_asignado_nombre || 'Técnico',
+        cedula: '',
+        telefono: '',
+        email: '',
+        usuarioId: uid,
+        totalVisitas: 0,
+        totalBeneficiarios: 0,
+        beneficiarios: [],
+        heredadas: new Set<string>(),
+      };
+      mapa.set(nuevo.id, nuevo);
+      grupoPorUsuario.set(uid, nuevo);
+    }
+    // b) Visitas que hizo el técnico anterior a beneficiarios que hoy tiene
+    //    otro: se muestran también bajo el técnico actual, marcadas como
+    //    heredadas (siguen a nombre del anterior).
+    for (const h of visitasHeredadas(beneficiariosAsignados, formularios)) {
+      const grupo = grupoPorUsuario.get(h.tecnicoActualId);
+      if (!grupo || grupo.heredadas.has(h.formulario.id)) continue;
+      grupo.heredadas.add(h.formulario.id);
+      const benef = h.formulario.beneficiario;
+      const benefKey = benef?.cedula || benef?.nombre || h.beneficiario.cedula;
+      let benefGrupo = grupo.beneficiarios.find((b) => (b.cedula || b.nombre) === benefKey);
+      if (!benefGrupo) {
+        benefGrupo = {
+          nombre: h.beneficiario.nombre_completo || benef?.nombre || 'Sin nombre',
+          cedula: benef?.cedula || h.beneficiario.cedula || '',
+          telefono: benef?.telefono || '',
+          municipio: benef?.municipio || '',
+          vereda: benef?.vereda || h.beneficiario.vereda || '',
+          finca: benef?.finca || '',
+          visitas: [],
+        };
+        grupo.beneficiarios.push(benefGrupo);
+      }
+      benefGrupo.visitas.push(h.formulario);
+    }
+
     // Ordenar: técnicos por nombre, beneficiarios por nombre, visitas por fecha
     for (const tec of mapa.values()) {
       tec.totalBeneficiarios = tec.beneficiarios.length;
@@ -369,9 +434,9 @@ const VisitasJerarquicasScreen: React.FC<VisitasJerarquicasScreenProps> = ({ nav
     const huboCargaDeAsignacion = beneficiariosAsignados.length > 0;
 
     return tecnicos.map((tec) => {
-      const asignados = tec.usuarioId
-        ? beneficiariosAsignados.filter((b) => b.tecnico_asignado_id === tec.usuarioId)
-        : [];
+      // Asignados hoy + los que tuvo y se trasladaron conservando la autoría
+      // (técnico retirado: su tarjeta queda como histórico, no en 0/0).
+      const asignados = padronDelTecnico(beneficiariosAsignados, tec.usuarioId);
 
       // Rondas DISTINTAS que este técnico ya le hizo a cada beneficiario (por
       // cédula) — tec.beneficiarios ya viene filtrado por técnico. Se guarda
@@ -381,14 +446,25 @@ const VisitasJerarquicasScreen: React.FC<VisitasJerarquicasScreenProps> = ({ nav
       // metía también en Visita 2 y 3, inflando el contador).
       const numerosPorCedula = new Map<string, Set<number>>();
       const numerosPorNombre = new Map<string, Set<number>>();
+      // Solo las rondas PROPIAS (sin las heredadas del técnico anterior), para
+      // desglosar cuántas del avance hizo el anterior.
+      const propiasPorCedula = new Map<string, Set<number>>();
+      const propiasPorNombre = new Map<string, Set<number>>();
       for (const b of tec.beneficiarios) {
         const numeros = new Set(numerosVisitaDeFormularios(b.visitas));
         if (b.cedula) numerosPorCedula.set(b.cedula, numeros);
         if (b.nombre) numerosPorNombre.set(b.nombre, numeros);
+        if (tec.heredadas.size > 0) {
+          const propias = new Set(numerosVisitaDeFormularios(b.visitas.filter((v) => !tec.heredadas.has(v.id))));
+          if (b.cedula) propiasPorCedula.set(b.cedula, propias);
+          if (b.nombre) propiasPorNombre.set(b.nombre, propias);
+        }
       }
 
       const rondasDeAsignado = (b: BeneficiarioDB): Set<number> =>
         numerosPorCedula.get(b.cedula) || numerosPorNombre.get(b.nombre_completo) || new Set<number>();
+      const rondasPropiasDeAsignado = (b: BeneficiarioDB): Set<number> =>
+        propiasPorCedula.get(b.cedula) || propiasPorNombre.get(b.nombre_completo) || new Set<number>();
       const rondasDeGrupo = (b: BeneficiarioAgrupado): Set<number> =>
         (b.cedula ? numerosPorCedula.get(b.cedula) : undefined) ||
         (b.nombre ? numerosPorNombre.get(b.nombre) : undefined) ||
@@ -403,10 +479,18 @@ const VisitasJerarquicasScreen: React.FC<VisitasJerarquicasScreenProps> = ({ nav
         const completados = huboCargaDeAsignacion
           ? asignados.filter((b) => rondasDeAsignado(b).has(n)).length
           : tec.beneficiarios.filter((b) => rondasDeGrupo(b).has(n)).length;
-        visitasStats.push({ numero: n, completados, total: totalBeneficiariosAsignados });
+        const delAnterior = huboCargaDeAsignacion && tec.heredadas.size > 0
+          ? asignados.filter((b) => rondasDeAsignado(b).has(n) && !rondasPropiasDeAsignado(b).has(n)).length
+          : 0;
+        visitasStats.push({ numero: n, completados, total: totalBeneficiariosAsignados, delAnterior });
       }
 
-      return { ...tec, totalBeneficiariosAsignados, visitasStats };
+      return {
+        ...tec,
+        totalBeneficiariosAsignados,
+        visitasStats,
+        trasladadoA: trasladadoA(beneficiariosAsignados, tec.usuarioId),
+      };
     });
   }, [tecnicos, beneficiariosAsignados]);
 
@@ -432,14 +516,15 @@ const VisitasJerarquicasScreen: React.FC<VisitasJerarquicasScreenProps> = ({ nav
         tec.beneficiarios.forEach((b) => {
           if (b.cedula) visitasPorCedula.set(b.cedula, b);
         });
-        return beneficiariosAsignados
-          .filter((b) => b.tecnico_asignado_id === tec.usuarioId)
+        // El informe del técnico es SU trabajo: las visitas heredadas del
+        // técnico anterior salen en el informe del anterior, no aquí.
+        return padronDelTecnico(beneficiariosAsignados, tec.usuarioId)
           .map((b) => ({
             nombre: b.nombre_completo,
             cedula: b.cedula,
             vereda: b.vereda,
             municipio: b.municipio || '',
-            visitas: visitasPorCedula.get(b.cedula)?.visitas || [],
+            visitas: (visitasPorCedula.get(b.cedula)?.visitas || []).filter((v) => !tec.heredadas.has(v.id)),
           }));
       }
       return tec.beneficiarios.map((b) => ({
@@ -447,7 +532,7 @@ const VisitasJerarquicasScreen: React.FC<VisitasJerarquicasScreenProps> = ({ nav
         cedula: b.cedula,
         vereda: b.vereda,
         municipio: b.municipio,
-        visitas: b.visitas,
+        visitas: b.visitas.filter((v) => !tec.heredadas.has(v.id)),
       }));
     },
     [beneficiariosAsignados]
@@ -462,9 +547,7 @@ const VisitasJerarquicasScreen: React.FC<VisitasJerarquicasScreenProps> = ({ nav
    */
   const beneficiariosDeVisita = useCallback(
     (tec: TecnicoConEstadisticas, numero: number): BeneficiarioAgrupado[] => {
-      const asignados = tec.usuarioId
-        ? beneficiariosAsignados.filter((b) => b.tecnico_asignado_id === tec.usuarioId)
-        : [];
+      const asignados = padronDelTecnico(beneficiariosAsignados, tec.usuarioId);
 
       // Sin padrón cargado: se degrada al histórico de formularios del técnico
       // (mismo criterio que `tecnicosConStats`).
@@ -924,9 +1007,21 @@ const VisitasJerarquicasScreen: React.FC<VisitasJerarquicasScreenProps> = ({ nav
         </View>
         <View style={styles.cardInfo}>
           <Text style={styles.cardTitle}>{item.nombre}</Text>
-          <Text style={styles.cardSubtitle}>
-            📍 {item.cedula || 'Sin cédula'} {item.telefono ? `· ${item.telefono}` : ''}
-          </Text>
+          {(item.cedula || item.telefono) ? (
+            <Text style={styles.cardSubtitle}>
+              📍 {item.cedula || 'Sin cédula'} {item.telefono ? `· ${item.telefono}` : ''}
+            </Text>
+          ) : null}
+          {item.trasladadoA ? (
+            <Text style={styles.tarjetaHistorico}>
+              🗂 Histórico · beneficiarios trasladados a {item.trasladadoA}
+            </Text>
+          ) : null}
+          {item.heredadas.size > 0 ? (
+            <Text style={styles.tarjetaHeredadas}>
+              Incluye {item.heredadas.size} visita(s) del técnico anterior (solo lectura)
+            </Text>
+          ) : null}
         </View>
         <View style={styles.cardHeaderAcciones}>
           <BotonPdfTecnico
@@ -943,7 +1038,11 @@ const VisitasJerarquicasScreen: React.FC<VisitasJerarquicasScreenProps> = ({ nav
       </View>
 
       {(() => {
-        const visitas = item.beneficiarios.flatMap((b) => b.visitas);
+        // Solo lo propio: las correcciones pendientes de visitas heredadas
+        // son del técnico anterior (las ajusta admin/coordinador).
+        const visitas = item.beneficiarios
+          .flatMap((b) => b.visitas)
+          .filter((v) => !item.heredadas.has(v.id));
         const n = contarPorVerificar(visitas);
         const m = contarSinCerrar(visitas);
         return n + m > 0 ? (
@@ -969,6 +1068,9 @@ const VisitasJerarquicasScreen: React.FC<VisitasJerarquicasScreenProps> = ({ nav
             <Text style={styles.visitaGridValue}>
               {stat.completados}/{stat.total}
             </Text>
+            {stat.delAnterior > 0 ? (
+              <Text style={styles.visitaGridAnterior}>{stat.delAnterior} del técnico anterior</Text>
+            ) : null}
           </TouchableOpacity>
         ))}
       </View>
@@ -1045,6 +1147,12 @@ const VisitasJerarquicasScreen: React.FC<VisitasJerarquicasScreenProps> = ({ nav
           })}
         </Text>
       </View>
+
+      {tecnicoSeleccionado?.heredadas.has(item.id) && (
+        <Text style={styles.visitaHeredada}>
+          🔒 Técnico anterior: {item.tecnico?.nombre || 'otro técnico'}
+        </Text>
+      )}
 
       {categoriaDe(item) && (
         <View style={styles.porVerificarBadge}>
@@ -1444,7 +1552,16 @@ const VisitasJerarquicasScreen: React.FC<VisitasJerarquicasScreenProps> = ({ nav
   // --- Estadísticas generales ---
   const totalVisitas = formularios.length;
   const totalTecnicos = tecnicos.length;
-  const totalBeneficiarios = tecnicos.reduce((sum, t) => sum + t.totalBeneficiarios, 0);
+  // Sin contar dos veces los beneficiarios trasladados: los que solo tienen
+  // visitas heredadas ya cuentan en la tarjeta del técnico anterior.
+  const totalBeneficiarios = tecnicos.reduce(
+    (sum, t) =>
+      sum +
+      (t.heredadas.size === 0
+        ? t.totalBeneficiarios
+        : t.beneficiarios.filter((b) => b.visitas.some((v) => !t.heredadas.has(v.id))).length),
+    0
+  );
 
   return (
     <View style={styles.container}>
@@ -1965,6 +2082,29 @@ const styles = StyleSheet.create({
     fontWeight: FONTS.weights.bold,
     color: COLORS.primary,
     marginTop: 1,
+  },
+  visitaGridAnterior: {
+    fontSize: 10,
+    color: COLORS.info,
+    marginTop: 1,
+    textAlign: 'center',
+  },
+  tarjetaHistorico: {
+    fontSize: FONTS.sizes.xs,
+    color: COLORS.warning,
+    fontWeight: FONTS.weights.semibold,
+    marginTop: 2,
+  },
+  tarjetaHeredadas: {
+    fontSize: FONTS.sizes.xs,
+    color: COLORS.info,
+    marginTop: 2,
+  },
+  visitaHeredada: {
+    fontSize: FONTS.sizes.xs,
+    color: COLORS.info,
+    fontWeight: FONTS.weights.semibold,
+    marginTop: SPACING.xs,
   },
 
   // --- Visita card (nivel 3) ---

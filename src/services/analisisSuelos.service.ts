@@ -261,6 +261,20 @@ export const descargarMatrizExcelSuelos = async (): Promise<string> => {
   return uri;
 };
 
+/** Informe del laboratorio Genetics VGA (PDF). Igual que la matriz: web = URL con token, nativo = archivo en caché. */
+export const descargarInformeGeneticsSuelos = async (): Promise<string> => {
+  const url = `${API_CONFIG.BASE_URL}${ENDPOINT}/informe-genetics-pdf`;
+  const token = await getApiAuthToken();
+  if (Platform.OS === 'web') return token ? `${url}?token=${encodeURIComponent(token)}` : url;
+  const destino = `${FileSystem.cacheDirectory}Informe_Genetics_VGA_Estudio_de_Suelos.pdf`;
+  const { uri, status } = await FileSystem.downloadAsync(url, destino, {
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+  });
+  if (status === 404) throw new Error('El informe aún no está disponible.');
+  if (status !== 200) throw new Error(`Descarga fallida (${status})`);
+  return uri;
+};
+
 /**
  * Genera un informe nuevo (datos de cada predio + análisis global con IA).
  * Queda guardado en el servidor. `tecnico` ausente = todos (solo superiores).

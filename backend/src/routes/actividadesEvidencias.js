@@ -21,6 +21,11 @@ const db = require('../database');
 const { quitarRevision } = require('../lib/revisionInterventoria');
 const storage = require('../storage');
 const { sqlNoEsPrueba } = require('../lib/usuariosPrueba');
+const { sqlCedulaNormalizada, normalizarCedula } = require('../lib/visitas');
+const { poligonosParaMostrar } = require('../lib/poligonosVisita');
+
+/** Actividades que muestran, al final del panel, los polígonos de la Visita 2. */
+const ACTIVIDADES_CON_POLIGONOS_V2 = new Set(['preparacion_terreno']);
 
 const router = express.Router();
 
@@ -278,7 +283,30 @@ router.get('/:actividad/:item', authenticateToken, async (req, res) => {
       };
     });
 
-    res.json({ estado: 'ok', maxPorMomento: MAX_FOTOS_POR_MOMENTO, actas, fotos });
+    // Preparación del terreno: polígonos de la Visita Técnica 2 (solo lectura).
+    // Si esta consulta falla, el acta y las fotos se siguen devolviendo.
+    let visita2 = null;
+    if (ACTIVIDADES_CON_POLIGONOS_V2.has(req.params.actividad)) {
+      try {
+        const f = await db.queryOne(
+          `SELECT id, created_at, actividad_json
+           FROM formularios
+           WHERE tipo = 'visita_tecnica'
+             AND actividad_json->>'visita_numero' = '2'
+             AND ${sqlCedulaNormalizada("beneficiario_json->>'cedula'")} = $1
+           ORDER BY created_at DESC
+           LIMIT 1`,
+          [normalizarCedula(b.cedula)]
+        );
+        visita2 = f
+          ? { formularioId: f.id, fecha: f.created_at, poligonos: poligonosParaMostrar(f.actividad_json) }
+          : { formularioId: null, fecha: null, poligonos: [] };
+      } catch (e) {
+        console.error('[ActividadEvidencias] Error leyendo polígonos de la visita 2:', e);
+      }
+    }
+
+    res.json({ estado: 'ok', maxPorMomento: MAX_FOTOS_POR_MOMENTO, actas, fotos, visita2 });
   } catch (error) {
     console.error('[ActividadEvidencias] Error listando:', error);
     res.status(500).json({ estado: 'error', mensaje: 'Error al cargar la evidencia' });

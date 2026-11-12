@@ -91,13 +91,34 @@ const resolverAtribucionFormulario = ({
   tecnicoDelSnapshot = null,
   usuarioSolicitante,
   usuarioExistente = null,
+  existenteConAutoriaFija = false,
+  tecnicoAnterior = null,
 }) => {
+  // AUTORÍA FIJA (reasignación «solo pendientes»): la visita la hizo y la
+  // firmó el técnico anterior y es un documento legalizado. Nada la cambia
+  // de dueño: ni el técnico vigente ni la copia de un dispositivo.
+  if (existenteConAutoriaFija && usuarioExistente) {
+    return {
+      usuarioId: usuarioExistente,
+      usarSnapshotDelPayload: !!tecnicoDelSnapshot && tecnicoDelSnapshot === usuarioExistente,
+      autoriaFija: true,
+    };
+  }
+  // Visita del técnico anterior que llega TARDE (su teléfono no la había
+  // subido cuando se reasignó el beneficiario en modo «solo pendientes»): es
+  // suya, no del técnico nuevo. Solo para filas nuevas — una que ya existe
+  // sin autoría fija se sigue resolviendo como siempre.
+  if (!usuarioExistente && tecnicoAnterior && tecnicoDelSnapshot === tecnicoAnterior) {
+    return { usuarioId: tecnicoAnterior, usarSnapshotDelPayload: true, autoriaFija: true };
+  }
+
   const usuarioId =
     tecnicoVigente || usuarioExistente || tecnicoDelSnapshot || usuarioSolicitante;
 
   return {
     usuarioId,
     usarSnapshotDelPayload: !!tecnicoDelSnapshot && tecnicoDelSnapshot === usuarioId,
+    autoriaFija: false,
   };
 };
 
@@ -108,13 +129,19 @@ const resolverAtribucionFormulario = ({
  * Sí, cuando el formulario quedó con la atribución vieja pero el beneficiario
  * está asignado HOY a él y esa asignación es inequívoca.
  *
+ * Nunca cuando el formulario tiene AUTORÍA FIJA: lo hizo y firmó el técnico
+ * anterior (reasignación «solo pendientes»); el técnico nuevo solo lo ve, y
+ * los ajustes los hace un admin o el coordinador.
+ *
  * @returns {boolean}
  */
 const esTecnicoVigenteDelFormulario = ({
   usuarioSolicitante,
   duenoDelFormulario,
   tecnicoVigente = null,
+  autoriaFija = false,
 }) =>
+  !autoriaFija &&
   !!usuarioSolicitante &&
   duenoDelFormulario !== usuarioSolicitante &&
   !!tecnicoVigente &&

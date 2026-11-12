@@ -200,3 +200,51 @@ test('esTecnicoVigenteDelFormulario: falso cuando el solicitante ya es el dueño
     false
   );
 });
+
+// ─── Autoría fija (reasignación «solo pendientes», caso Miller → Suárez) ───
+
+test('autoría fija: el técnico vigente NO se queda con la visita del anterior', () => {
+  const r = resolverAtribucionFormulario({
+    tecnicoVigente: 'tec-013',
+    tecnicoDelSnapshot: 'tec-013',
+    usuarioSolicitante: 'tec-013',
+    usuarioExistente: 'tec-006',
+    existenteConAutoriaFija: true,
+  });
+  assert.equal(r.usuarioId, 'tec-006');
+  assert.equal(r.autoriaFija, true);
+  assert.equal(r.usarSnapshotDelPayload, false);
+});
+
+test('autoría fija: visita del técnico anterior que llega tarde queda a su nombre', () => {
+  const r = resolverAtribucionFormulario({
+    tecnicoVigente: 'tec-013',
+    tecnicoDelSnapshot: 'tec-006',
+    usuarioSolicitante: 'tec-006',
+    tecnicoAnterior: 'tec-006',
+  });
+  assert.deepEqual(r, { usuarioId: 'tec-006', usarSnapshotDelPayload: true, autoriaFija: true });
+});
+
+test('autoría fija: la visita nueva del técnico vigente es suya', () => {
+  const r = resolverAtribucionFormulario({
+    tecnicoVigente: 'tec-013',
+    tecnicoDelSnapshot: 'tec-013',
+    usuarioSolicitante: 'tec-013',
+    tecnicoAnterior: 'tec-006',
+  });
+  assert.equal(r.usuarioId, 'tec-013');
+  assert.equal(r.autoriaFija, false);
+});
+
+test('autoría fija: el técnico vigente no puede corregir ni firmar la visita del anterior', () => {
+  assert.equal(
+    esTecnicoVigenteDelFormulario({
+      usuarioSolicitante: 'tec-013',
+      duenoDelFormulario: 'tec-006',
+      tecnicoVigente: 'tec-013',
+      autoriaFija: true,
+    }),
+    false
+  );
+});

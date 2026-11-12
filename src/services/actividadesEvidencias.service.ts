@@ -49,15 +49,36 @@ export interface ActaDeActividad {
   observaciones: ObservacionActa[];
 }
 
+/** Polígono (medición) de la Visita Técnica 2, listo para pintar con MedicionCaptura. */
+export interface PoligonoVisita2 {
+  nombre?: string | null;
+  area_hectareas?: number;
+  area_metros2?: number;
+  perimetro_metros?: number;
+  puntos: { latitud: number; longitud: number }[];
+  created_at?: string;
+}
+
 export interface EvidenciaBeneficiario {
   maxPorMomento: number;
   actas: ActaDeActividad[];
   fotos: Record<MomentoEvidencia, FotoEvidencia[]>;
+  /**
+   * Solo en Preparación del Terreno: polígonos de la Visita 2 del beneficiario.
+   * null = la actividad no los usa (o el servidor aún no los envía).
+   */
+  visita2?: { formularioId: string | null; fecha: string | null; poligonos: PoligonoVisita2[] } | null;
 }
 
 export const obtenerEvidenciaBeneficiario = async (actividad: string, item: number): Promise<EvidenciaBeneficiario> => {
   const r = await apiClient.get(`${ENDPOINT}/${actividad}/${item}`);
-  return { maxPorMomento: r.data.maxPorMomento ?? 3, actas: r.data.actas, fotos: r.data.fotos };
+  const v2 = r.data.visita2;
+  return {
+    maxPorMomento: r.data.maxPorMomento ?? 3,
+    actas: r.data.actas,
+    fotos: r.data.fotos,
+    visita2: v2 && typeof v2 === 'object' ? { ...v2, poligonos: Array.isArray(v2.poligonos) ? v2.poligonos : [] } : null,
+  };
 };
 
 /** Beneficiario con su avance (fotos y actas) en una actividad o subactividad. */

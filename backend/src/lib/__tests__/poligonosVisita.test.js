@@ -102,3 +102,21 @@ test('selección múltiple: agrega marcadas, quita desmarcadas y conserva KML y 
   const r = aplicarSeleccion(existentes, ['a', 'b', 'c', 'd'], [med('d'), med('a'), med('c')]);
   assert.deepEqual(r.map((m) => m.id), ['a', 'kml-1', 'fuera-del-filtro', 'd', 'c']);
 });
+
+test('para mostrar: mediciones adjuntas con sus métricas', () => {
+  const { poligonosParaMostrar } = require('../poligonosVisita');
+  const r = poligonosParaMostrar(JSON.stringify({ mediciones_historial: [med('a', { perimetro_metros: 622 }), med('b')] }));
+  assert.equal(r.length, 2);
+  assert.equal(r[0].nombre, 'a');
+  assert.equal(r[0].perimetro_metros, 622);
+  assert.equal(r[0].puntos.length, 4);
+});
+
+test('para mostrar: sin mediciones usa el polígono del ítem 4; sin nada, lista vacía', () => {
+  const { poligonosParaMostrar } = require('../poligonosVisita');
+  const r = poligonosParaMostrar({ poligono: cuadrado(2.0, -75.0), area_intervencion: '2,5' });
+  assert.equal(r.length, 1);
+  assert.equal(r[0].area_hectareas, 2.5);
+  assert.deepEqual(poligonosParaMostrar({ poligono: cuadrado(2.0, -75.0).slice(0, 2) }), []);
+  assert.deepEqual(poligonosParaMostrar(null), []);
+});

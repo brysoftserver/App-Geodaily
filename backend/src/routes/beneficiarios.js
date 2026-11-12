@@ -10,6 +10,7 @@ const express = require('express');
 const { authenticateToken } = require('../middleware/auth');
 const db = require('../database');
 const storage = require('../storage');
+const { reasignarSoloPendientes } = require('../lib/reasignacionSoloPendientes');
 const router = express.Router();
 
 // Solo roles de coordinación pueden modificar la base (el técnico la consulta)
@@ -38,7 +39,28 @@ router.put('/:item/asignacion', authenticateToken, async (req, res) => {
       return res.status(403).json({ estado: 'error', mensaje: 'No autorizado para asignar beneficiarios' });
     }
     const item = parseInt(req.params.item, 10);
-    const { tecnico_id, tecnico_nombre } = req.body;
+    const { tecnico_id, tecnico_nombre, modo } = req.body;
+
+    // Modo «solo pendientes»: el beneficiario pasa al técnico nuevo pero lo
+    // ya diligenciado y firmado por el anterior se conserva a su nombre
+    // (ver lib/reasignacionSoloPendientes.js). No se mueve nada en MinIO.
+    if (modo === 'solo_pendientes') {
+      if (!tecnico_id) {
+        return res.status(400).json({ estado: 'error', mensaje: 'El modo «solo pendientes» requiere un técnico' });
+      }
+      try {
+        const resumen = await reasignarSoloPendientes(db.pool, {
+          item,
+          tecnicoId: tecnico_id,
+          tecnicoNombre: tecnico_nombre,
+        });
+        console.log(`[Beneficiarios] Item ${item} asignado a ${tecnico_nombre} (solo pendientes) por ${req.user.usuario}: ${resumen.formulariosConservados} formulario(s) conservado(s) a nombre de ${resumen.tecnicoAnterior || 'su técnico'}, ${resumen.borradoresTrasladados} borrador(es) trasladado(s)`);
+        return res.json({ estado: 'ok', mensaje: 'Técnico asignado (solo pendientes)', resumen });
+      } catch (err) {
+        if (err.status === 404) return res.status(404).json({ estado: 'error', mensaje: err.message });
+        throw err;
+      }
+    }
 
     // Se trae el técnico VIEJO (si tenía) antes del UPDATE de abajo, que lo
     // sobreescribe — se necesita para saber de dónde mover los archivos
@@ -135,6 +157,9 @@ router.put('/:item/asignacion', authenticateToken, async (req, res) => {
                 `UPDATE formularios
                  SET usuario_id = $1, tecnico_json = $2::jsonb, updated_at = NOW()
                  WHERE TRIM(beneficiario_json->>'cedula') = $3
+                   -- Autoría fija (reasignación «solo pendientes»): la visita
+                   -- la firmó otro técnico y no cambia de dueño nunca.
+                   AND NOT autoria_fija
                  RETURNING id`,
                 [tecnico_id, nuevoTecnicoJson, benefData.cedula.trim()]
               );
@@ -190,6 +215,7 @@ router.put('/:item/asignacion', authenticateToken, async (req, res) => {
                      ),
                      updated_at = NOW()
                  WHERE TRIM(beneficiario_json->>'cedula') = $3
+                   AND NOT autoria_fija
                    AND tipo = 'caracterizacion'
                    AND caracterizacion_nueva_json IS NOT NULL`,
                 [tecData.nombre, tecData.cedula || '', benefData.cedula.trim()]
@@ -222,6 +248,13 @@ router.put('/:item/asignacion', authenticateToken, async (req, res) => {
                          formulario_id = ANY($2::text[])
                          OR (metadata_json->>'beneficiario_item')::int = $3
                          OR metadata_json->>'formulario_id' = ANY($2::text[])
+                       )
+                       -- Archivos de visitas con autoría fija: se quedan en
+                       -- la carpeta del técnico que las hizo.
+                       AND NOT EXISTS (
+                         SELECT 1 FROM formularios f
+                          WHERE f.autoria_fija
+                            AND (f.id = archivos.formulario_id OR f.id = archivos.metadata_json->>'formulario_id')
                        )`,
                     [existente.tecnico_viejo_id, formIds, item]
                   );

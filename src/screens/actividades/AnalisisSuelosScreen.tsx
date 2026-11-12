@@ -37,6 +37,7 @@ import { BotonOkInterventoria, ESTILO_CARD_REVISADA, EtiquetaRevisado } from '..
 import { useRevisionInterventoria } from '../../hooks/useRevisionInterventoria';
 import {
   BeneficiarioSuelos,
+  descargarInformeGeneticsSuelos,
   descargarMatrizExcelSuelos,
   descargarPdfSuelos,
   eliminarInformeSuelos,
@@ -64,6 +65,16 @@ const IconoExcel: React.FC<{ size?: number }> = ({ size = 22 }) => (
     <Path d="M14 16h8v4a2 2 0 0 1-2 2h-6z" fill="#185C37" />
     <Rect x="2" y="6" width="12" height="12" rx="1.5" fill="#107C41" />
     <Path d="M5 8.5h2.1l1.4 2.4 1.4-2.4H12l-2.4 3.5 2.4 3.5H9.9l-1.4-2.4-1.4 2.4H5l2.4-3.5z" fill="#fff" />
+  </Svg>
+);
+
+/** Icono de PDF (hoja roja con la etiqueta PDF), dibujado en SVG. */
+const IconoPdf: React.FC<{ size?: number }> = ({ size = 22 }) => (
+  <Svg width={size} height={size} viewBox="0 0 24 24">
+    <Path d="M6 2h9l5 5v13a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2z" fill="#E5252A" />
+    <Path d="M15 2v5h5z" fill="#F58A8C" />
+    <Rect x="2" y="11" width="16" height="7" rx="1.2" fill="#B30B00" />
+    <Path d="M4.2 16.6v-4.2h1.6c.9 0 1.4.5 1.4 1.3s-.5 1.3-1.4 1.3h-.6v1.6zm1-2.4h.5c.4 0 .5-.2.5-.5s-.1-.5-.5-.5h-.5zM8 16.6v-4.2h1.4c1.3 0 2 .8 2 2.1s-.7 2.1-2 2.1zm1-.8h.3c.7 0 1-.5 1-1.3s-.3-1.3-1-1.3H9zM12.2 16.6v-4.2h2.7v.8h-1.7v.9h1.5v.8h-1.5v1.7z" fill="#fff" />
   </Svg>
 );
 
@@ -98,6 +109,7 @@ const AnalisisSuelosScreen: React.FC<any> = ({ navigation, route }) => {
   const [generando, setGenerando] = useState(false);
   const [visor, setVisor] = useState<{ uri: string; titulo: string; key: string } | null>(null);
   const [bajandoMatriz, setBajandoMatriz] = useState(false);
+  const [bajandoGenetics, setBajandoGenetics] = useState(false);
 
   // Matriz consolidada de resultados (Excel). Web: descarga directa del
   // navegador. Nativo: se baja a caché y se abre el menú de compartir/abrir.
@@ -127,25 +139,64 @@ const AnalisisSuelosScreen: React.FC<any> = ({ navigation, route }) => {
     }
   }, [bajandoMatriz]);
 
+  // Informe del laboratorio Genetics VGA (PDF), mismo flujo que la matriz.
+  const descargarGenetics = useCallback(async () => {
+    if (bajandoGenetics) return;
+    setBajandoGenetics(true);
+    try {
+      const uri = await descargarInformeGeneticsSuelos();
+      if (Platform.OS === 'web') {
+        const a = document.createElement('a');
+        a.href = uri;
+        a.download = 'Informe Genetics VGA S.A - Estudio de Suelos.pdf';
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        return;
+      }
+      await Sharing.shareAsync(uri, {
+        mimeType: 'application/pdf',
+        UTI: 'com.adobe.pdf',
+        dialogTitle: 'Informe Genetics VGA - Estudio de Suelos',
+      });
+    } catch (e) {
+      avisar('No se pudo descargar', mensajeError(e, 'Inténtalo de nuevo.'));
+    } finally {
+      setBajandoGenetics(false);
+    }
+  }, [bajandoGenetics]);
+
   useLayoutEffect(() => {
     navigation.setOptions({
       title: revisar ? 'Revisar Análisis de Suelos' : 'Análisis de Suelos',
       headerRight: revisar
         ? () => (
-            <TouchableOpacity
-              style={[styles.btnExcel, bajandoMatriz && { opacity: 0.6 }]}
-              onPress={descargarMatriz}
-              disabled={bajandoMatriz}
-              activeOpacity={0.8}
-              accessibilityLabel="Descargar matriz resultado de estudio de suelos"
-            >
-              {bajandoMatriz ? <ActivityIndicator size="small" color="#107C41" /> : <IconoExcel />}
-              <Text style={styles.btnExcelTxt} numberOfLines={2}>Matriz resultado de estudio de suelos</Text>
-            </TouchableOpacity>
+            <View style={styles.descargasHeader}>
+              <TouchableOpacity
+                style={[styles.btnExcel, bajandoMatriz && { opacity: 0.6 }]}
+                onPress={descargarMatriz}
+                disabled={bajandoMatriz}
+                activeOpacity={0.8}
+                accessibilityLabel="Descargar matriz resultado de estudio de suelos"
+              >
+                {bajandoMatriz ? <ActivityIndicator size="small" color="#107C41" /> : <IconoExcel size={18} />}
+                <Text style={styles.btnExcelTxt} numberOfLines={1}>Matriz resultado de estudio de suelos</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.btnPdfHeader, bajandoGenetics && { opacity: 0.6 }]}
+                onPress={descargarGenetics}
+                disabled={bajandoGenetics}
+                activeOpacity={0.8}
+                accessibilityLabel="Descargar Informe Genetics VGA - Estudio de Suelos"
+              >
+                {bajandoGenetics ? <ActivityIndicator size="small" color="#B30B00" /> : <IconoPdf size={18} />}
+                <Text style={styles.btnPdfHeaderTxt} numberOfLines={1}>Informe Genetics VGA - Estudio de Suelos</Text>
+              </TouchableOpacity>
+            </View>
           )
         : undefined,
     });
-  }, [navigation, revisar, bajandoMatriz, descargarMatriz]);
+  }, [navigation, revisar, bajandoMatriz, descargarMatriz, bajandoGenetics, descargarGenetics]);
 
   const cargar = useCallback(async (esRefresh = false, silencioso = false) => {
     try {
@@ -538,8 +589,11 @@ const styles = StyleSheet.create({
   filaSeccion: { flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: SPACING.sm },
   busqueda: { flexGrow: 1, flexBasis: 220, marginLeft: 'auto', maxWidth: 420, borderWidth: 1, borderColor: COLORS.border, borderRadius: BORDER_RADIUS.md, backgroundColor: COLORS.surface, paddingHorizontal: SPACING.md, paddingVertical: Platform.OS === 'web' ? SPACING.sm : 6, fontSize: FONTS.sizes.sm, color: COLORS.textPrimary, marginTop: SPACING.md, marginBottom: SPACING.sm },
   vacio: { textAlign: 'center', color: COLORS.textSecondary, padding: SPACING.md },
-  btnExcel: { flexDirection: 'row', alignItems: 'center', gap: 6, marginRight: SPACING.md, paddingVertical: 6, paddingHorizontal: SPACING.sm, borderRadius: BORDER_RADIUS.md, borderWidth: 1, borderColor: '#107C41', backgroundColor: '#E8F5EC', maxWidth: 230 },
-  btnExcelTxt: { color: '#107C41', fontWeight: FONTS.weights.semibold, fontSize: FONTS.sizes.sm, flexShrink: 1 },
+  descargasHeader: { marginRight: SPACING.md, gap: 4, alignItems: 'stretch', maxWidth: 270 },
+  btnExcel: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingVertical: 3, paddingHorizontal: SPACING.sm, borderRadius: BORDER_RADIUS.md, borderWidth: 1, borderColor: '#107C41', backgroundColor: '#E8F5EC' },
+  btnExcelTxt: { color: '#107C41', fontWeight: FONTS.weights.semibold, fontSize: 11, flexShrink: 1 },
+  btnPdfHeader: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingVertical: 3, paddingHorizontal: SPACING.sm, borderRadius: BORDER_RADIUS.md, borderWidth: 1, borderColor: '#B30B00', backgroundColor: '#FDECEC' },
+  btnPdfHeaderTxt: { color: '#B30B00', fontWeight: FONTS.weights.semibold, fontSize: 11, flexShrink: 1 },
   btnInforme: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', backgroundColor: COLORS.primary, borderRadius: BORDER_RADIUS.md, paddingVertical: SPACING.md, marginBottom: SPACING.xs },
   btnInformeTxt: { color: '#fff', fontWeight: FONTS.weights.semibold, fontSize: FONTS.sizes.md },
   filaInforme: { flexDirection: 'row', alignItems: 'stretch', gap: SPACING.sm, marginBottom: SPACING.xs },

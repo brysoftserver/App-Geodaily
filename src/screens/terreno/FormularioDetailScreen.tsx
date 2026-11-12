@@ -3131,6 +3131,19 @@ const FormularioDetailScreen: React.FC<FormularioDetailScreenProps> = ({ route, 
           />
         )}
 
+        {/* Visita del técnico ANTERIOR (reasignación «solo pendientes»): el
+            técnico nuevo la ve como referencia, pero sigue a nombre de quien
+            la hizo y firmó. Los ajustes los hace el admin o el coordinador. */}
+        {rolActual === 'tecnico' && !!usuarioActual?.id && !!duenoFormulario && duenoFormulario !== usuarioActual.id && (
+          <View style={styles.avisoVisitaHeredada}>
+            <Text style={styles.avisoVisitaHeredadaTitulo}>🔒 Visita del técnico anterior — solo lectura</Text>
+            <Text style={styles.avisoVisitaHeredadaTexto}>
+              La realizó y firmó {formulario.tecnico?.nombre || 'otro técnico'}. Sigue a su nombre: no se puede
+              editar ni cambiar firmas. Si necesita un ajuste, pídelo al administrador o al coordinador.
+            </Text>
+          </View>
+        )}
+
         {/* Estado del formulario */}
         <View style={styles.statusBar}>
           <Text style={styles.statusTipo}>
@@ -4139,6 +4152,24 @@ const styles = StyleSheet.create({
   },
   content: {
     padding: SPACING.md,
+  },
+  avisoVisitaHeredada: {
+    backgroundColor: '#E3F2FD',
+    borderLeftWidth: 4,
+    borderLeftColor: COLORS.info,
+    borderRadius: 8,
+    padding: SPACING.md,
+    marginBottom: SPACING.md,
+  },
+  avisoVisitaHeredadaTitulo: {
+    fontWeight: '700',
+    color: COLORS.info,
+    marginBottom: 4,
+  },
+  avisoVisitaHeredadaTexto: {
+    color: '#0D2F5C',
+    fontSize: 13,
+    lineHeight: 18,
   },
   /** Envuelve el formulario de Seguimiento incrustado al final del detalle en modo campo. */
   seccionSeguimientoCampo: {

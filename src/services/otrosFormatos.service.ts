@@ -975,6 +975,33 @@ export const obtenerActaServidor = async (cedula: string, instancia: string): Pr
   }
 };
 
+/** Actividades cuyas Actas de Entrega toman las firmas de la Visita 2. */
+export const ACTIVIDADES_FIRMAS_VISITA_2 = ['preparacion_terreno'];
+
+export interface FirmasVisita2 {
+  firmaBeneficiario: string | null;
+  firmaTecnico: string | null;
+}
+
+/**
+ * Firmas (data URI) del técnico y del beneficiario en la Visita 2 de la
+ * cédula. null si no tiene Visita 2 o no hay red: el acta queda para firmar a mano.
+ */
+export const obtenerFirmasVisita2 = async (cedula: string): Promise<FirmasVisita2 | null> => {
+  try {
+    const r = await apiClient.get(
+      `${API_CONFIG.ENDPOINTS.OTROS_FORMATOS}/firmas-visita2/${encodeURIComponent(cedula)}`,
+      { timeout: 20000 }
+    );
+    const f = r.data?.firmas;
+    if (!f) return null;
+    const imagen = (v: unknown) => (typeof v === 'string' && v.startsWith('data:image') ? v : null);
+    return { firmaBeneficiario: imagen(f.firmaBeneficiario), firmaTecnico: imagen(f.firmaTecnico) };
+  } catch {
+    return null;
+  }
+};
+
 /** Estado y firmas de varias actas (lista de entregas: revisores, o el técnico con las suyas). */
 export const estadoActasServidor = async (ids: string[]): Promise<Record<string, EstadoActaServidor>> => {
   if (!ids.length) return {};

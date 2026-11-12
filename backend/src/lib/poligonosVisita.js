@@ -188,6 +188,44 @@ function aplicarSeleccion(existentes, ofrecidas, elegidas) {
   return [...quedan, ...elegidas.filter((m) => !yaEstan.has(m.id))];
 }
 
+/**
+ * Polígonos de la visita 2 listos para mostrar (solo lectura), con el mismo
+ * criterio del Detalle del Formulario en la app: las mediciones adjuntas o,
+ * si no hay ninguna, el área del ítem 4 trazada en el mapa (≥ 3 vértices).
+ * Solo se devuelven los campos que pinta la tarjeta de la captura.
+ */
+function poligonosParaMostrar(actividadCruda) {
+  const act = aObjeto(actividadCruda);
+  const limpiar = (lista) => (Array.isArray(lista) ? lista : [])
+    .map((p) => ({ latitud: numero(p && p.latitud), longitud: numero(p && p.longitud) }))
+    .filter((p) => Number.isFinite(p.latitud) && Number.isFinite(p.longitud));
+  const aNumero = (v) => (Number.isFinite(numero(v)) ? numero(v) : undefined);
+
+  const mediciones = leerPoligonos(act)
+    .map((m) => ({
+      nombre: m.nombre || null,
+      area_hectareas: aNumero(m.area_hectareas),
+      area_metros2: aNumero(m.area_metros2),
+      perimetro_metros: aNumero(m.perimetro_metros),
+      puntos: limpiar(m.puntos),
+      created_at: m.created_at || undefined,
+    }))
+    .filter((m) => m.puntos.length > 0);
+  if (mediciones.length > 0) return mediciones;
+
+  const item4 = limpiar(act.poligono);
+  if (item4.length >= 3) {
+    const area = numero(String(act.area_intervencion ?? '').replace(',', '.'));
+    return [{
+      nombre: 'Área a intervenir (ítem 4)',
+      area_hectareas: Number.isFinite(area) ? area : 0,
+      perimetro_metros: 0,
+      puntos: item4,
+    }];
+  }
+  return [];
+}
+
 module.exports = {
   MAX_POLIGONOS,
   aplicarSeleccion,
@@ -199,4 +237,5 @@ module.exports = {
   distanciaAPoligono,
   puntoDeVisita,
   filtrarParaBeneficiario,
+  poligonosParaMostrar,
 };

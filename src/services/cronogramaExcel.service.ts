@@ -12,6 +12,31 @@ import * as Sharing from 'expo-sharing';
 import { Formulario, VisitaProgramada } from '../types';
 import { formatFecha } from '../utils/formatters';
 import { descargarBlobEnNavegador } from '../utils/webDownload';
+import { fetchResumenRevisiones, EstadoRevision } from './revisiones.service';
+import { avisar } from '../utils/dialogos';
+
+/**
+ * Si el rango no tiene visitas, avisa y devuelve `true` para NO descargar
+ * un Excel vacío (confundía: parecía que el reporte estaba dañado). Si el
+ * calendario no tiene ningún formulario cargado, lo más probable es que aún
+ * esté cargando (recién abierta la app), así que se dice eso.
+ */
+function avisarSiNoHayVisitas(
+  totalEnRango: number,
+  formulariosCargados: number,
+  sinDatosMensaje: string
+): boolean {
+  if (totalEnRango > 0) return false;
+  if (formulariosCargados === 0) {
+    avisar(
+      'Sin datos todavía',
+      'Las visitas del calendario aún se están cargando. Espera unos segundos a que aparezcan y vuelve a descargar.'
+    );
+  } else {
+    avisar('Sin visitas', sinDatosMensaje);
+  }
+  return true;
+}
 
 const MIME_XLSX = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
 
@@ -198,6 +223,236 @@ async function compartirLibroXlsx(
   await guardarXlsxEnDispositivo(wb, nombreArchivo, dialogTitle);
 }
 
+/** Columnas fijas de la hoja de detalle (antes de los bloques de visitas). */
+const COLUMNAS_BASE_DETALLE = ['Técnico', 'Beneficiario', 'Cédula', 'Vereda', 'Corregimiento', 'Ubicación'];
+/** Bloque de visitas sin número de visita (capacitaciones, sueltas). */
+const BLOQUE_OTRAS = 'otras';
+
+interface VisitaDetalle {
+  fecha: string;
+  planificada: boolean;
+  /** Qué fue la visita; solo se muestra en el bloque "Otras visitas". */
+  descripcion: string;
+  /** Solo los formularios realizados pueden tener revisión. */
+  coordinacionOk: boolean;
+  interventoriaOk: boolean;
+}
+
+interface BeneficiarioDetalle {
+  nombre: string;
+  cedula: string;
+  tecnicos: Set<string>;
+  vereda: string;
+  corregimiento: string;
+  ubicacion: string;
+  /** Visitas agrupadas por bloque: número de visita del proyecto u "otras". */
+  bloques: Map<string, VisitaDetalle[]>;
+}
+
+/**
+ * Número de visita del proyecto de un formulario. La caracterización es la
+ * Visita 1 pero se guarda como tipo, sin `visita_numero`; las visitas
+ * técnicas traen su número (2, 3…). Lo demás no tiene número.
+ */
+function numeroVisitaFormulario(form: Formulario): number | null {
+  const n = Number(form.actividad?.visita_numero);
+  if (Number.isFinite(n) && n > 0) return n;
+  if (form.tipo === 'caracterizacion') return 1;
+  return null;
+}
+
+const tituloBloque = (bloque: string) =>
+  bloque === BLOQUE_OTRAS ? 'Otras visitas' : bloque === '1' ? 'Visita 1 — Caracterización' : `Visita ${bloque}`;
+
+/**
+ * Hoja "Detalle de visitas": UNA fila por beneficiario y, hacia la derecha,
+ * un bloque por NÚMERO DE VISITA DEL PROYECTO (Visita 1 — Caracterización,
+ * Visita 2, Visita 3…), igual para todas las filas: la columna "Visita 2"
+ * siempre es la Visita 2, aunque la Visita 1 se haya hecho en otro mes (ese
+ * bloque queda vacío). Antes los bloques eran el orden dentro del rango y
+ * la Visita 2 caía bajo el título "Visita 1".
+ *
+ * Cada bloque: fecha, X si coordinación cerró la revisión, X si
+ * interventoría la cerró. "Cerró" = `'ok'` de /api/revisiones/resumen
+ * (visto bueno final, no secciones sueltas), la regla de los badges.
+ *  - Si en un bloque hay formulario realizado y visita planificada, manda
+ *    el realizado (es el que tiene revisión).
+ *  - Si hay dos formularios del mismo número, van ambas fechas y la X solo
+ *    si TODOS están cerrados.
+ *  - Solo salen los bloques que existen en el rango; lo que no tiene número
+ *    va al bloque final "Otras visitas", con su descripción.
+ */
+function construirHojaDetallePorBeneficiario(
+  tituloDetalle: string,
+  realizadas: Formulario[],
+  planificadas: VisitaProgramada[],
+  estadosRevision: Record<string, EstadoRevision>
+): XLSX.WorkSheet {
+  // Un mismo beneficiario puede venir con cédula en el formulario y sin
+  // ella en la visita planificada (o al revés): se resuelve la cédula por
+  // nombre para no partirlo en dos filas.
+  const cedulaPorNombre = new Map<string, string>();
+  const registrarCedula = (nombre?: string, cedula?: string) => {
+    const c = normalizarCedula(cedula);
+    const n = normalizarTexto(nombre);
+    if (c && n && !cedulaPorNombre.has(n)) cedulaPorNombre.set(n, c);
+  };
+  realizadas.forEach((f) => registrarCedula(f.beneficiario?.nombre, f.beneficiario?.cedula));
+  planificadas.forEach((v) => registrarCedula(v.beneficiario_nombre, v.beneficiario_cedula));
+
+  const clave = (nombre?: string, cedula?: string) => {
+    const c = normalizarCedula(cedula) || cedulaPorNombre.get(normalizarTexto(nombre)) || '';
+    return c ? `c:${c}` : `n:${normalizarTexto(nombre)}`;
+  };
+
+  const porBeneficiario = new Map<string, BeneficiarioDetalle>();
+  const bloquesUsados = new Set<string>();
+
+  const agregar = (
+    nombre: string,
+    cedula: string,
+    tecnico: string,
+    datos: { vereda?: string; corregimiento?: string; ubicacion?: string },
+    numero: number | null,
+    visita: VisitaDetalle
+  ) => {
+    const k = clave(nombre, cedula);
+    let b = porBeneficiario.get(k);
+    if (!b) {
+      b = { nombre, cedula, tecnicos: new Set(), vereda: '', corregimiento: '', ubicacion: '', bloques: new Map() };
+      porBeneficiario.set(k, b);
+    }
+    if (!b.cedula && cedula) b.cedula = cedula;
+    if (!b.vereda && datos.vereda) b.vereda = datos.vereda;
+    if (!b.corregimiento && datos.corregimiento) b.corregimiento = datos.corregimiento;
+    if (!b.ubicacion && datos.ubicacion) b.ubicacion = datos.ubicacion;
+    b.tecnicos.add(tecnico);
+    const bloque = numero ? String(numero) : BLOQUE_OTRAS;
+    bloquesUsados.add(bloque);
+    if (!b.bloques.has(bloque)) b.bloques.set(bloque, []);
+    b.bloques.get(bloque)!.push(visita);
+  };
+
+  for (const form of realizadas) {
+    const estado = estadosRevision[form.id];
+    agregar(
+      form.beneficiario?.nombre || 'Sin beneficiario',
+      form.beneficiario?.cedula || '',
+      form.tecnico?.nombre || 'Sin técnico',
+      {
+        vereda: form.beneficiario?.vereda,
+        corregimiento: form.beneficiario?.corregimiento,
+        ubicacion: form.beneficiario?.municipio,
+      },
+      numeroVisitaFormulario(form),
+      {
+        fecha: (form.created_at || '').split('T')[0],
+        planificada: false,
+        descripcion: form.tipo,
+        coordinacionOk: estado?.coordinador === 'ok',
+        interventoriaOk: estado?.interventor === 'ok',
+      }
+    );
+  }
+  for (const v of planificadas) {
+    // Visitas creadas por versiones viejas del calendario no guardaban el
+    // beneficiario ni el número aparte, solo en el título:
+    // "Visita 1 - Jair Peralta Ortíz". Se usan como respaldo para que caigan
+    // en la fila y el bloque correctos y no en una fila "Sin beneficiario".
+    const delTitulo = /^\s*Visita\s+(\d+)\s*-\s*(.+?)\s*$/i.exec(v.titulo || '');
+    const n = Number(v.actividad_numero) || (delTitulo ? Number(delTitulo[1]) : NaN);
+    agregar(
+      v.beneficiario_nombre || delTitulo?.[2] || 'Sin beneficiario',
+      v.beneficiario_cedula || '',
+      v.usuario_nombre || 'Sin técnico asignado',
+      { vereda: v.vereda, corregimiento: v.corregimiento, ubicacion: v.ubicacion },
+      Number.isFinite(n) && n > 0 ? n : null,
+      { fecha: v.fecha, planificada: true, descripcion: v.titulo, coordinacionOk: false, interventoriaOk: false }
+    );
+  }
+
+  const bloques = Array.from(bloquesUsados)
+    .filter((b) => b !== BLOQUE_OTRAS)
+    .sort((a, b) => Number(a) - Number(b));
+  if (bloquesUsados.has(BLOQUE_OTRAS)) bloques.push(BLOQUE_OTRAS);
+  if (bloques.length === 0) bloques.push('1');
+
+  /** Las 3 casillas de un bloque para un beneficiario. */
+  const celdasBloque = (bloque: string, visitas: VisitaDetalle[] = []): string[] => {
+    const realizadasBloque = visitas.filter((v) => !v.planificada);
+    const usar = (realizadasBloque.length > 0 ? realizadasBloque : visitas).sort((a, b) =>
+      a.fecha.localeCompare(b.fecha)
+    );
+    if (usar.length === 0) return ['', '', ''];
+    const fecha = usar
+      .map(
+        (v) =>
+          `${v.fecha}${bloque === BLOQUE_OTRAS ? ` — ${v.descripcion}` : ''}${v.planificada ? ' (planificada)' : ''}`
+      )
+      .join('; ');
+    return [
+      fecha,
+      usar.every((v) => v.coordinacionOk) ? 'X' : '',
+      usar.every((v) => v.interventoriaOk) ? 'X' : '',
+    ];
+  };
+
+  const filasBeneficiarios = Array.from(porBeneficiario.values())
+    .map((b) => ({ ...b, tecnico: Array.from(b.tecnicos).sort().join(', ') }))
+    .sort((a, b) => a.tecnico.localeCompare(b.tecnico) || a.nombre.localeCompare(b.nombre));
+
+  const nBase = COLUMNAS_BASE_DETALLE.length;
+  const totalColumnas = nBase + bloques.length * 3;
+
+  // Dos filas de encabezado: el título del bloque agrupando sus 3 columnas
+  // y, debajo, el nombre de cada columna.
+  const encabezadoGrupos: string[] = [...COLUMNAS_BASE_DETALLE];
+  const encabezadoColumnas: string[] = COLUMNAS_BASE_DETALLE.map(() => '');
+  for (const bloque of bloques) {
+    encabezadoGrupos.push(tituloBloque(bloque), '', '');
+    encabezadoColumnas.push(
+      bloque === BLOQUE_OTRAS ? 'Fecha / Visita' : 'Fecha',
+      'Revisión Coordinación',
+      'Revisión Interventoría'
+    );
+  }
+
+  const filas: string[][] = [
+    [tituloDetalle],
+    [],
+    encabezadoGrupos,
+    encabezadoColumnas,
+    ...filasBeneficiarios.map((b) => [
+      b.tecnico,
+      b.nombre,
+      b.cedula,
+      b.vereda,
+      b.corregimiento,
+      b.ubicacion,
+      ...bloques.flatMap((bloque) => celdasBloque(bloque, b.bloques.get(bloque))),
+    ]),
+  ];
+
+  const ws = XLSX.utils.aoa_to_sheet(filas);
+  ws['!cols'] = [
+    { wch: 28 }, { wch: 32 }, { wch: 14 }, { wch: 22 }, { wch: 22 }, { wch: 24 },
+    ...bloques.flatMap((bloque) => [
+      { wch: bloque === BLOQUE_OTRAS ? 40 : 26 },
+      { wch: 23 },
+      { wch: 23 },
+    ]),
+  ];
+  const merges: XLSX.Range[] = [{ s: { r: 0, c: 0 }, e: { r: 0, c: totalColumnas - 1 } }];
+  // Columnas fijas: su título ocupa las dos filas de encabezado.
+  for (let c = 0; c < nBase; c++) merges.push({ s: { r: 2, c }, e: { r: 3, c } });
+  bloques.forEach((_, i) => {
+    const c = nBase + i * 3;
+    merges.push({ s: { r: 2, c }, e: { r: 2, c: c + 2 } });
+  });
+  ws['!merges'] = merges;
+  return ws;
+}
+
 /**
  * Arma el libro de 2 hojas (Resumen por técnico + Detalle de visitas) que
  * comparten el reporte semanal y el mensual. Recibe ya filtradas las visitas
@@ -210,78 +465,102 @@ function construirLibroReporteVisitas(
   nombreHojaResumen: string,
   realizadas: Formulario[],
   planificadas: VisitaProgramada[],
+  /** Estado de revisión por formulario (GET /api/revisiones/resumen). */
+  estadosRevision: Record<string, EstadoRevision>,
   /** Si viene, se agrega una hoja extra "Resumen por beneficiario". */
   incluirResumenBeneficiarios = false
 ): XLSX.WorkBook {
-  const porTecnico = new Map<string, { realizadas: number; planificadas: number }>();
+  // Revisadas = formularios realizados con la revisión CERRADA por ese rol
+  // (`'ok'` de /api/revisiones/resumen, las mismas X de la hoja de detalle).
+  // Pendientes = realizadas − revisadas: las planificadas no tienen
+  // formulario, así que no cuentan para la revisión.
+  interface ResumenTecnico {
+    realizadas: number;
+    planificadas: number;
+    revisadasCoordinacion: number;
+    revisadasInterventoria: number;
+  }
+  const vacio = (): ResumenTecnico => ({
+    realizadas: 0,
+    planificadas: 0,
+    revisadasCoordinacion: 0,
+    revisadasInterventoria: 0,
+  });
+  const porTecnico = new Map<string, ResumenTecnico>();
+  const totales = vacio();
 
   for (const form of realizadas) {
     const tecnico = form.tecnico?.nombre || 'Sin técnico';
-    const datos = porTecnico.get(tecnico) || { realizadas: 0, planificadas: 0 };
+    const datos = porTecnico.get(tecnico) || vacio();
+    const estado = estadosRevision[form.id];
     datos.realizadas += 1;
+    totales.realizadas += 1;
+    if (estado?.coordinador === 'ok') {
+      datos.revisadasCoordinacion += 1;
+      totales.revisadasCoordinacion += 1;
+    }
+    if (estado?.interventor === 'ok') {
+      datos.revisadasInterventoria += 1;
+      totales.revisadasInterventoria += 1;
+    }
     porTecnico.set(tecnico, datos);
   }
   for (const visita of planificadas) {
     const tecnico = visita.usuario_nombre || 'Sin técnico asignado';
-    const datos = porTecnico.get(tecnico) || { realizadas: 0, planificadas: 0 };
+    const datos = porTecnico.get(tecnico) || vacio();
     datos.planificadas += 1;
+    totales.planificadas += 1;
     porTecnico.set(tecnico, datos);
   }
+
+  const filaResumen = (etiqueta: string, d: ResumenTecnico): (string | number)[] => [
+    etiqueta,
+    d.realizadas,
+    d.planificadas,
+    d.realizadas + d.planificadas,
+    d.revisadasCoordinacion,
+    d.revisadasInterventoria,
+    d.realizadas - d.revisadasCoordinacion,
+    d.realizadas - d.revisadasInterventoria,
+  ];
 
   const resumenFilas: (string | number)[][] = [
     [encabezadoResumen[0]],
     [encabezadoResumen[1]],
     [],
-    ['Técnico', 'Visitas realizadas', 'Visitas planificadas', 'Total'],
-    ...Array.from(porTecnico.entries()).sort(([a], [b]) => a.localeCompare(b)).map(([tecnico, datos]) => [
-      tecnico,
-      datos.realizadas,
-      datos.planificadas,
-      datos.realizadas + datos.planificadas,
-    ]),
+    [
+      'Técnico',
+      'Visitas realizadas',
+      'Visitas planificadas',
+      'Total',
+      'Revisadas Coordinación',
+      'Revisadas Interventoría',
+      'Pendientes Coordinación',
+      'Pendientes Interventoría',
+    ],
+    ...Array.from(porTecnico.entries())
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([tecnico, datos]) => filaResumen(tecnico, datos)),
     [],
-    ['TOTAL', realizadas.length, planificadas.length, realizadas.length + planificadas.length],
-  ];
-
-  const detalleFilas: (string | number)[][] = [
-    [tituloDetalle],
-    [],
-    ['Fecha', 'Estado', 'Técnico', 'Beneficiario', 'Visita', 'Vereda', 'Corregimiento', 'Ubicación'],
-    ...realizadas.map((form) => [
-      form.created_at.split('T')[0],
-      'Realizada',
-      form.tecnico?.nombre || 'Sin técnico',
-      form.beneficiario?.nombre || '',
-      form.actividad?.visita_numero ? `Visita ${form.actividad.visita_numero}` : form.tipo,
-      form.beneficiario?.vereda || '',
-      form.beneficiario?.corregimiento || '',
-      form.beneficiario?.municipio || '',
-    ]),
-    ...planificadas.map((visita) => [
-      visita.fecha,
-      'Planificada',
-      visita.usuario_nombre || 'Sin técnico asignado',
-      visita.beneficiario_nombre || '',
-      visita.actividad_numero ? `Visita ${visita.actividad_numero}` : visita.titulo,
-      visita.vereda || '',
-      visita.corregimiento || '',
-      visita.ubicacion || '',
-    ]),
+    filaResumen('TOTAL', totales),
   ];
 
   const wsResumen = XLSX.utils.aoa_to_sheet(resumenFilas);
-  wsResumen['!cols'] = [{ wch: 30 }, { wch: 20 }, { wch: 21 }, { wch: 12 }];
+  wsResumen['!cols'] = [
+    { wch: 30 }, { wch: 18 }, { wch: 20 }, { wch: 10 },
+    { wch: 23 }, { wch: 23 }, { wch: 24 }, { wch: 24 },
+  ];
   wsResumen['!merges'] = [
-    { s: { r: 0, c: 0 }, e: { r: 0, c: 3 } },
-    { s: { r: 1, c: 0 }, e: { r: 1, c: 3 } },
+    { s: { r: 0, c: 0 }, e: { r: 0, c: 7 } },
+    { s: { r: 1, c: 0 }, e: { r: 1, c: 7 } },
   ];
 
-  const wsDetalle = XLSX.utils.aoa_to_sheet(detalleFilas);
-  wsDetalle['!cols'] = [
-    { wch: 12 }, { wch: 14 }, { wch: 28 }, { wch: 30 },
-    { wch: 18 }, { wch: 24 }, { wch: 24 }, { wch: 30 },
-  ];
-  wsDetalle['!merges'] = [{ s: { r: 0, c: 0 }, e: { r: 0, c: 7 } }];
+  const wsDetalle = construirHojaDetallePorBeneficiario(
+    tituloDetalle,
+    realizadas,
+    planificadas,
+    estadosRevision
+  );
 
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, wsResumen, nombreHojaResumen);
@@ -368,12 +647,26 @@ export async function generarYCompartirReporteSemanalExcel(
       (visita) => visita.fecha >= rango.inicio && visita.fecha <= rango.fin && visita.estado === 'pendiente'
     );
 
+    if (
+      avisarSiNoHayVisitas(
+        realizadas.length + planificadas.length,
+        formularios.length,
+        `No hay visitas realizadas ni planificadas en la semana ${rango.etiqueta}.`
+      )
+    ) {
+      return;
+    }
+
+    // Sin red devuelve {}: el Excel sale igual, con las casillas de revisión vacías.
+    const estadosRevision = await fetchResumenRevisiones();
+
     const wb = construirLibroReporteVisitas(
       [`Reporte semanal de visitas — ${nombreMes}`, `Semana: ${rango.etiqueta}`],
       `Detalle de visitas — ${rango.etiqueta}`,
       'Resumen semanal',
       realizadas,
-      planificadas
+      planificadas,
+      estadosRevision
     );
 
     const nombreArchivo = `Reporte_Semanal_${nombreMes.replace(/\s+/g, '_')}_${rango.inicio}.xlsx`;
@@ -467,12 +760,31 @@ export async function generarYCompartirReporteMensualExcel(
       );
     });
 
+    const quien =
+      personas.length === 1
+        ? `${personas[0].nombre} no tiene`
+        : 'Las personas seleccionadas no tienen';
+    const deBeneficiarios = filtroBeneficiarios ? ' con los beneficiarios marcados' : '';
+    if (
+      avisarSiNoHayVisitas(
+        realizadas.length + planificadas.length,
+        formularios.length,
+        `${quien} visitas realizadas ni planificadas${deBeneficiarios} en ${nombreMes}.`
+      )
+    ) {
+      return;
+    }
+
+    // Sin red devuelve {}: el Excel sale igual, con las casillas de revisión vacías.
+    const estadosRevision = await fetchResumenRevisiones();
+
     const wb = construirLibroReporteVisitas(
       [`Reporte mensual de visitas — ${nombreMes}`, `Mes: ${rango.etiqueta}`],
       `Detalle de visitas — ${nombreMes}`,
       'Resumen mensual',
       realizadas,
       planificadas,
+      estadosRevision,
       !!filtroBeneficiarios
     );
 
