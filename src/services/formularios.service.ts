@@ -107,12 +107,16 @@ export const fetchVisitasProgramadasDelServidor = async (): Promise<VisitaProgra
  * offline, la eliminación local sigue aplicando pero puede reaparecer en
  * el próximo merge con el servidor hasta que se reintente online).
  */
-export const eliminarVisitaProgramadaDelServidor = async (id: string): Promise<void> => {
+export const eliminarVisitaProgramadaDelServidor = async (id: string): Promise<boolean> => {
   try {
     await apiClient.delete(`${API_CONFIG.ENDPOINTS.VISITAS_PROGRAMADAS}/${id}`);
+    return true;
   } catch (error) {
     const err = error as any;
+    // 404: ya no existe en el servidor, el objetivo (que no esté) se cumple.
+    if (err?.response?.status === 404) return true;
     console.warn('[API Forms] No se pudo eliminar visita programada en servidor:', err?.message || error);
+    return false;
   }
 };
 

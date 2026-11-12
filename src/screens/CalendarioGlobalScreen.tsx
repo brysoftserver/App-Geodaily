@@ -43,6 +43,7 @@ import CronogramaPersonalModal, {
   BeneficiarioCronograma,
 } from '../components/CronogramaPersonalModal';
 import { getBeneficiarios, fetchBeneficiariosDelServidor } from '../services/beneficiariosDB.service';
+import { avisar, confirmar } from '../utils/dialogos';
 import { BeneficiarioDB } from '../types';
 import { tituloVisitaTecnica } from '../utils/visitaTecnica';
 import { useAutoRefresh } from '../hooks/useAutoRefresh';
@@ -475,23 +476,27 @@ const CalendarioGlobalScreen: React.FC<CalendarioGlobalScreenProps> = ({ navigat
     syncNow();
   };
 
-  const handleDeletePlannedVisit = (visita: VisitaProgramada) => {
-    Alert.alert(
+  // `confirmar` y `avisar` (utils/dialogos) funcionan también en web: ahí
+  // Alert.alert no dibuja nada y la confirmación del borrado nunca aparecía.
+  const handleDeletePlannedVisit = async (visita: VisitaProgramada) => {
+    const acepta = await confirmar(
       'Eliminar visita',
       `¿Eliminar "${visita.titulo}" del ${formatFecha(visita.fecha)}?`,
-      [
-        { text: 'Cancelar', style: 'cancel' },
-        {
-          text: 'Eliminar',
-          style: 'destructive',
-          onPress: async () => {
-            setVisitasProgramadas((prev) => prev.filter((v) => v.id !== visita.id));
-            await deleteVisitaProgramadaLocal(visita.id);
-            await eliminarVisitaProgramadaDelServidor(visita.id);
-          },
-        },
-      ]
+      'Eliminar',
+      true
     );
+    if (!acepta) return;
+
+    const borradaEnServidor = await eliminarVisitaProgramadaDelServidor(visita.id);
+    // El admin borra para todos: si el servidor no la eliminó se avisa y se
+    // deja la visita en pantalla (si no, reaparecería al refrescar). El dueño
+    // conserva el borrado local aunque esté sin conexión.
+    if (!borradaEnServidor && esAdmin) {
+      avisar('No se pudo eliminar', 'La visita no se eliminó del servidor. Revisa la conexión e inténtalo de nuevo.');
+      return;
+    }
+    setVisitasProgramadas((prev) => prev.filter((v) => v.id !== visita.id));
+    await deleteVisitaProgramadaLocal(visita.id);
   };
 
   // ================================================================
@@ -915,6 +920,14 @@ const CalendarioGlobalScreen: React.FC<CalendarioGlobalScreenProps> = ({ navigat
                             onPress={() => handleMarcarComoRealizada(visita)}
                           >
                             <Text style={styles.realizadaButtonText}>Marcar como realizada</Text>
+                          </TouchableOpacity>
+                        )}
+                        {esAdmin && (
+                          <TouchableOpacity
+                            style={styles.eliminarButton}
+                            onPress={() => handleDeletePlannedVisit(visita)}
+                          >
+                            <Text style={styles.eliminarButtonText}>Eliminar</Text>
                           </TouchableOpacity>
                         )}
                       </View>
@@ -1604,6 +1617,19 @@ const styles = StyleSheet.create({
   },
   realizadaButtonText: {
     color: COLORS.success,
+    fontSize: FONTS.sizes.xs,
+    fontWeight: FONTS.weights.semibold,
+  },
+  eliminarButton: {
+    marginTop: SPACING.sm,
+    backgroundColor: COLORS.error + '15',
+    borderRadius: BORDER_RADIUS.full,
+    paddingVertical: 6,
+    paddingHorizontal: SPACING.sm,
+    alignSelf: 'flex-start',
+  },
+  eliminarButtonText: {
+    color: COLORS.error,
     fontSize: FONTS.sizes.xs,
     fontWeight: FONTS.weights.semibold,
   },
