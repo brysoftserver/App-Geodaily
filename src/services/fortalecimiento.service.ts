@@ -7,6 +7,7 @@
 
 import { Platform } from 'react-native';
 import * as FileSystem from 'expo-file-system/legacy';
+import * as Sharing from 'expo-sharing';
 import apiClient, { getApiAuthToken } from './api';
 import { API_CONFIG } from '../theme';
 import { SeccionEca } from '../data/fortalecimiento';
@@ -116,6 +117,39 @@ export const descargarExpedienteGrupo = async (eca: number, grupo: number): Prom
     throw new Error(mensaje);
   }
   return uri;
+};
+
+/**
+ * Descarga un archivo con su nombre original para guardarlo o editarlo fuera
+ * de la app (la interventoría corrige el PDF y sube la versión nueva).
+ * Nativo: lo baja a caché y abre la hoja de compartir (Archivos, Drive…).
+ * Web: el navegador lo descarga directamente.
+ */
+export const descargarArchivoFortalecimiento = async (archivo: ArchivoFortalecimiento): Promise<void> => {
+  const url = `${API_CONFIG.BASE_URL}${ENDPOINT}/archivo/${archivo.id}`;
+  const token = await getApiAuthToken();
+  const ext = archivo.tipo === 'pdf' ? '.pdf' : '.jpg';
+  const base = (archivo.nombre || `archivo_${archivo.id}`).replace(/\.[^.]*$/, '');
+  if (Platform.OS === 'web') {
+    const a = document.createElement('a');
+    a.href = `${url}?descargar=1${token ? `&token=${encodeURIComponent(token)}` : ''}`;
+    a.download = `${base}${ext}`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    return;
+  }
+  const seguro = base.replace(/[^\w\-. áéíóúÁÉÍÓÚñÑ]/g, '_').slice(0, 80) || `archivo_${archivo.id}`;
+  const carpeta = `${FileSystem.cacheDirectory}descargas_fort_${archivo.id}_${Date.now()}/`;
+  await FileSystem.makeDirectoryAsync(carpeta, { intermediates: true });
+  const { uri, status } = await FileSystem.downloadAsync(url, `${carpeta}${seguro}${ext}`, {
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+  });
+  if (status !== 200) throw new Error(`Descarga fallida (${status})`);
+  if (!(await Sharing.isAvailableAsync())) throw new Error('Este dispositivo no permite guardar o compartir archivos.');
+  await Sharing.shareAsync(uri, archivo.tipo === 'pdf'
+    ? { mimeType: 'application/pdf', UTI: 'com.adobe.pdf', dialogTitle: 'Guardar PDF' }
+    : { mimeType: 'image/jpeg', UTI: 'public.jpeg', dialogTitle: 'Guardar imagen' });
 };
 
 // ─── Informe consolidado de una ECA ─────────────────────────

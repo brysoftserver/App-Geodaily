@@ -8,7 +8,9 @@
 //   3. ECA n → 7 grupos de veredas
 //   4. Grupo → Protocolo (PDF) · Informes (PDF) ·
 //              Listado de Asistencia (PDF o foto) · Registro Fotográfico (fotos)
-// Técnicos y admin suben; todos los roles ven. Los archivos quedan en MinIO
+// Técnicos, interventores y admin suben; todos los roles ven y descargan.
+// La interventoría además elimina cualquier archivo (descarga el PDF, lo
+// corrige, borra el viejo y sube el nuevo) y marca el OK por sección. Los archivos quedan en MinIO
 // en carpetas por ECA / grupo / sección (ver backend/src/lib/fortalecimiento.js).
 // ============================================================
 
@@ -47,6 +49,7 @@ import {
   ArchivoFortalecimiento,
   ArchivosGrupoEca,
   descargarConsolidadoEca,
+  descargarArchivoFortalecimiento,
   descargarExpedienteGrupo,
   descargarPdfFortalecimiento,
   eliminarArchivoFortalecimiento,
@@ -252,6 +255,7 @@ const SeccionesGrupo: React.FC<{ eca: number; grupo: number; revisar: boolean }>
   const [visorFoto, setVisorFoto] = useState<{ archivo: ArchivoFortalecimiento; fuente: Fuente } | null>(null);
   const [visorPdf, setVisorPdf] = useState<{ uri: string; titulo: string; key: string } | null>(null);
   const [generandoPdf, setGenerandoPdf] = useState(false);
+  const [descargando, setDescargando] = useState<number | null>(null);
 
   const cargar = useCallback(async (esRefresh = false, silencioso = false) => {
     try {
@@ -359,6 +363,18 @@ const SeccionesGrupo: React.FC<{ eca: number; grupo: number; revisar: boolean }>
     }
   };
 
+  const descargar = async (archivo: ArchivoFortalecimiento) => {
+    if (descargando !== null) return;
+    setDescargando(archivo.id);
+    try {
+      await descargarArchivoFortalecimiento(archivo);
+    } catch (e: any) {
+      avisar('No se pudo descargar', mensajeError(e, e?.message || 'Inténtalo de nuevo.'));
+    } finally {
+      setDescargando(null);
+    }
+  };
+
   const eliminar = async (archivo: ArchivoFortalecimiento) => {
     if (!(await confirmar('Eliminar archivo', `¿Eliminar "${archivo.nombre || 'archivo'}"? No se puede deshacer.`, 'Eliminar', true))) return;
     try {
@@ -384,8 +400,17 @@ const SeccionesGrupo: React.FC<{ eca: number; grupo: number; revisar: boolean }>
         </View>
         {abriendoPdf === a.id ? <ActivityIndicator color={COLORS.primary} /> : null}
       </TouchableOpacity>
+      <TouchableOpacity
+        onPress={() => descargar(a)}
+        style={styles.btnDescargar}
+        disabled={descargando !== null}
+        hitSlop={8}
+        accessibilityLabel={`Descargar ${a.nombre || 'archivo'}`}
+      >
+        {descargando === a.id ? <ActivityIndicator size="small" color={COLORS.primary} /> : <Text style={styles.btnDescargarTxt}>⬇️</Text>}
+      </TouchableOpacity>
       {a.puedeEliminar && (
-        <TouchableOpacity onPress={() => eliminar(a)} style={styles.btnQuitar} hitSlop={8}>
+        <TouchableOpacity onPress={() => eliminar(a)} style={styles.btnQuitar} hitSlop={8} accessibilityLabel={`Eliminar ${a.nombre || 'archivo'}`}>
           <Text style={styles.btnQuitarTxt}>✕</Text>
         </TouchableOpacity>
       )}
@@ -497,6 +522,9 @@ const SeccionesGrupo: React.FC<{ eca: number; grupo: number; revisar: boolean }>
                   <Text style={styles.visorBtnTxt}>Eliminar</Text>
                 </TouchableOpacity>
               )}
+              <TouchableOpacity style={styles.visorBtn} onPress={() => descargar(visorFoto.archivo)} disabled={descargando !== null}>
+                {descargando === visorFoto.archivo.id ? <ActivityIndicator color="#fff" /> : <Text style={styles.visorBtnTxt}>Descargar</Text>}
+              </TouchableOpacity>
               <TouchableOpacity style={styles.visorBtn} onPress={() => setVisorFoto(null)}>
                 <Text style={styles.visorBtnTxt}>Cerrar</Text>
               </TouchableOpacity>
@@ -578,6 +606,8 @@ const styles = StyleSheet.create({
   archivoIcono: { fontSize: 28, width: 40, textAlign: 'center' },
   archivoNombre: { fontSize: FONTS.sizes.sm, fontWeight: FONTS.weights.semibold, color: COLORS.textPrimary },
   archivoMeta: { fontSize: FONTS.sizes.xs, color: COLORS.textSecondary, marginTop: 2 },
+  btnDescargar: { paddingHorizontal: SPACING.sm, paddingVertical: 4, minWidth: 36, alignItems: 'center' },
+  btnDescargarTxt: { fontSize: FONTS.sizes.lg },
   btnQuitar: { paddingHorizontal: SPACING.sm, paddingVertical: 4 },
   btnQuitarTxt: { fontSize: FONTS.sizes.md, color: COLORS.error, fontWeight: FONTS.weights.bold },
   miniatura: { width: TAM_MINIATURA, height: TAM_MINIATURA, borderRadius: BORDER_RADIUS.md, backgroundColor: COLORS.background, overflow: 'hidden', alignItems: 'center', justifyContent: 'center' },

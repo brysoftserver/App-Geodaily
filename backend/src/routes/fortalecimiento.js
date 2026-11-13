@@ -8,8 +8,9 @@
 //   registro_fotografico → foto
 // Los archivos son compartidos por grupo (no por técnico ni por beneficiario)
 // y viven en MinIO bajo actividades/Fortalecimiento_Capacidades/... (ver
-// lib/fortalecimiento.js). Todos los roles ven; técnicos y admin suben; quien
-// subió el archivo o un admin lo elimina.
+// lib/fortalecimiento.js). Todos los roles ven y descargan; técnicos,
+// interventores y admin suben; quien subió el archivo, un interventor o un
+// admin lo elimina (la interventoría descarga, corrige y reemplaza el PDF).
 // ============================================================
 
 const express = require('express');
@@ -24,7 +25,10 @@ const { generarExpedienteGrupo } = require('../lib/expedienteGrupoPdf');
 
 const router = express.Router();
 
-const ROLES_SUBEN = ['tecnico', 'admin'];
+const ROLES_SUBEN = ['tecnico', 'interventor', 'admin'];
+/** Eliminan cualquier archivo, no solo los propios. */
+const ROLES_ELIMINAN_TODO = ['interventor', 'admin'];
+const puedeEliminar = (f, user) => f.subido_por === user.id || ROLES_ELIMINAN_TODO.includes(user.rol);
 const MAX_MB = 50;
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: MAX_MB * 1024 * 1024 } });
@@ -85,7 +89,7 @@ router.get('/ecas/resumen', authenticateToken, async (_req, res) => {
   }
 });
 
-// GET /api/fortalecimiento/archivo/:id — cualquier rol (acepta ?token= para web)
+// GET /api/fortalecimiento/archivo/:id — cualquier rol (acepta ?token= para web y ?descargar=1)
 router.get('/archivo/:id', authenticateTokenOrQuery, async (req, res) => {
   try {
     const id = parseInt(req.params.id, 10);
@@ -99,7 +103,12 @@ router.get('/archivo/:id', authenticateTokenOrQuery, async (req, res) => {
     res.setHeader('Content-Type', f.mime);
     res.setHeader('Content-Length', stat.size);
     res.setHeader('Cache-Control', 'private, max-age=3600');
-    res.setHeader('Content-Disposition', `inline; filename="${encodeURIComponent(f.nombre_archivo || 'archivo')}"`);
+    const nombre = f.nombre_archivo || 'archivo';
+    const ascii = nombre.normalize('NFD').replace(/[^\x20-\x7E]/g, '').replace(/["\\]/g, '') || 'archivo';
+    res.setHeader(
+      'Content-Disposition',
+      `${req.query.descargar ? 'attachment' : 'inline'}; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(nombre)}`
+    );
     stream.on('error', () => (res.headersSent ? res.end() : res.status(500).end()));
     stream.pipe(res);
   } catch (error) {
@@ -108,15 +117,15 @@ router.get('/archivo/:id', authenticateTokenOrQuery, async (req, res) => {
   }
 });
 
-// DELETE /api/fortalecimiento/archivo/:id — quien lo subió o admin
+// DELETE /api/fortalecimiento/archivo/:id — quien lo subió, interventor o admin
 router.delete('/archivo/:id', authenticateToken, async (req, res) => {
   try {
     const id = parseInt(req.params.id, 10);
     if (!Number.isInteger(id)) return res.status(400).json({ estado: 'error', mensaje: 'Archivo inválido' });
     const f = await db.queryOne('SELECT id, storage_key, subido_por, componente, eca, grupo, seccion FROM fortalecimiento_archivos WHERE id = $1', [id]);
     if (!f) return res.status(404).json({ estado: 'error', mensaje: 'Archivo no encontrado' });
-    if (f.subido_por !== req.user.id && req.user.rol !== 'admin') {
-      return res.status(403).json({ estado: 'error', mensaje: 'Solo quien subió el archivo o un administrador puede eliminarlo' });
+    if (!puedeEliminar(f, req.user)) {
+      return res.status(403).json({ estado: 'error', mensaje: 'Solo quien subió el archivo, la interventoría o un administrador puede eliminarlo' });
     }
     await storage.deleteFile(f.storage_key);
     await db.query('DELETE FROM fortalecimiento_archivos WHERE id = $1', [f.id]);
@@ -146,7 +155,7 @@ router.get('/ecas/:eca/:grupo', authenticateToken, async (req, res) => {
     const secciones = Object.fromEntries(Object.keys(SECCIONES).map((s) => [s, []]));
     for (const f of filas) {
       if (!secciones[f.seccion]) continue;
-      secciones[f.seccion].push({ ...aArchivo(f), puedeEliminar: f.subido_por === req.user.id || req.user.rol === 'admin' });
+      secciones[f.seccion].push({ ...aArchivo(f), puedeEliminar: puedeEliminar(f, req.user) });
     }
     res.json({ estado: 'ok', puedeSubir: ROLES_SUBEN.includes(req.user.rol), secciones });
   } catch (error) {
@@ -229,7 +238,7 @@ router.post('/ecas/:eca/:grupo/:seccion', authenticateToken, upload.single('arch
       await storage.deleteFile(key).catch(() => {});
       throw e;
     }
-    console.log(`[Fortalecimiento] ✅ ${req.user.usuario} subió ${key}`);
+    console.log(`[Fortalecimiento] ✅ ${req.user.usuario} (${req.user.rol}) subió ${key}`);
     res.json({ estado: 'ok', id: fila.id });
   } catch (error) {
     console.error('[Fortalecimiento] Error al subir:', error);
