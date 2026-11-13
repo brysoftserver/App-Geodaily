@@ -20,6 +20,7 @@ const { quitarRevision } = require('../lib/revisionInterventoria');
 const storage = require('../storage');
 const { SECCIONES, ecaValida, grupoValido, prefijoSeccion } = require('../lib/fortalecimiento');
 const { generarConsolidadoEca, huella } = require('../lib/informeEcaPdf');
+const { generarExpedienteGrupo } = require('../lib/expedienteGrupoPdf');
 
 const router = express.Router();
 
@@ -151,6 +152,41 @@ router.get('/ecas/:eca/:grupo', authenticateToken, async (req, res) => {
   } catch (error) {
     console.error('[Fortalecimiento] Error listando:', error);
     res.status(500).json({ estado: 'error', mensaje: 'Error al cargar los archivos' });
+  }
+});
+
+// GET /api/fortalecimiento/ecas/:eca/:grupo/expediente — PDF con todo el grupo
+// (protocolo, informes, listado de asistencia y fotos). Acepta ?token= (web) y ?descargar=1
+router.get('/ecas/:eca/:grupo/expediente', authenticateTokenOrQuery, async (req, res) => {
+  try {
+    const u = ubicacion(req, res);
+    if (!u) return;
+    const filas = await db.queryAll(
+      `SELECT f.seccion, f.nombre_archivo, f.mime, f.storage_key, f.created_at,
+              COALESCE(us.nombre, us.usuario) AS subido_por_nombre
+       FROM fortalecimiento_archivos f
+       LEFT JOIN usuarios us ON us.id = f.subido_por
+       WHERE f.componente = 'ecas' AND f.eca = $1 AND f.grupo = $2
+       ORDER BY f.created_at ASC, f.id ASC`,
+      [u.eca, u.grupo]
+    );
+    if (!filas.length) return res.status(422).json({ estado: 'error', mensaje: 'Este grupo aún no tiene archivos.' });
+    const { pdf, paginas } = await generarExpedienteGrupo({
+      eca: u.eca,
+      grupo: u.grupo,
+      filas,
+      generadoPor: req.user?.nombre || req.user?.usuario,
+    });
+    console.log(`[Fortalecimiento] 📄 Expediente ECA ${u.eca} grupo ${u.grupo}: ${paginas} págs, ${(pdf.length / 1048576).toFixed(1)} MB`);
+    const nombre = `ECA_${u.eca}_Grupo_${u.grupo}_${new Date().toISOString().slice(0, 10)}.pdf`;
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Length', pdf.length);
+    res.setHeader('Cache-Control', 'private, no-cache');
+    res.setHeader('Content-Disposition', `${req.query.descargar ? 'attachment' : 'inline'}; filename="${nombre}"`);
+    res.end(pdf);
+  } catch (error) {
+    console.error('[Fortalecimiento] Error generando el expediente del grupo:', error);
+    if (!res.headersSent) res.status(500).json({ estado: 'error', mensaje: 'No se pudo generar el PDF del grupo' });
   }
 });
 

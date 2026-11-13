@@ -94,6 +94,30 @@ export const descargarPdfFortalecimiento = async (id: number): Promise<string> =
   return uri;
 };
 
+/**
+ * PDF con todo lo del grupo (protocolo, informes, listado de asistencia y
+ * fotos), armado por el servidor. En nativo se descarga a caché; en web se
+ * devuelve la URL con el token.
+ */
+export const descargarExpedienteGrupo = async (eca: number, grupo: number): Promise<string> => {
+  const url = `${API_CONFIG.BASE_URL}${ENDPOINT}/ecas/${eca}/${grupo}/expediente`;
+  const token = await getApiAuthToken();
+  if (Platform.OS === 'web') return token ? `${url}?token=${encodeURIComponent(token)}` : url;
+  const destino = `${FileSystem.cacheDirectory}ECA_${eca}_Grupo_${grupo}_${Date.now()}.pdf`;
+  const { uri, status } = await FileSystem.downloadAsync(url, destino, {
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+  });
+  if (status !== 200) {
+    let mensaje = `Descarga fallida (${status})`;
+    try {
+      mensaje = JSON.parse(await FileSystem.readAsStringAsync(uri))?.mensaje || mensaje;
+    } catch {}
+    await FileSystem.deleteAsync(destino, { idempotent: true });
+    throw new Error(mensaje);
+  }
+  return uri;
+};
+
 // ─── Informe consolidado de una ECA ─────────────────────────
 // El servidor lo arma con los informes de los 7 grupos (formato PM. 2 FO. 12)
 // y todas las fotos; tarda hasta un par de minutos, así que se pide y se

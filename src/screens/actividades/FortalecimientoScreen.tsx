@@ -47,6 +47,7 @@ import {
   ArchivoFortalecimiento,
   ArchivosGrupoEca,
   descargarConsolidadoEca,
+  descargarExpedienteGrupo,
   descargarPdfFortalecimiento,
   eliminarArchivoFortalecimiento,
   generarConsolidadoEca,
@@ -250,6 +251,7 @@ const SeccionesGrupo: React.FC<{ eca: number; grupo: number; revisar: boolean }>
   const [abriendoPdf, setAbriendoPdf] = useState<number | null>(null);
   const [visorFoto, setVisorFoto] = useState<{ archivo: ArchivoFortalecimiento; fuente: Fuente } | null>(null);
   const [visorPdf, setVisorPdf] = useState<{ uri: string; titulo: string; key: string } | null>(null);
+  const [generandoPdf, setGenerandoPdf] = useState(false);
 
   const cargar = useCallback(async (esRefresh = false, silencioso = false) => {
     try {
@@ -335,6 +337,28 @@ const SeccionesGrupo: React.FC<{ eca: number; grupo: number; revisar: boolean }>
     }
   };
 
+  // ─── PDF con todo el grupo ──────────────────────────────
+  const totalArchivos = SECCIONES_ECA.reduce((n, s) => n + (data?.secciones?.[s.id]?.length ?? 0), 0);
+  const generarPdfGrupo = async () => {
+    if (generandoPdf) return;
+    const ventana = Platform.OS === 'web' ? window.open('', '_blank') : null;
+    setGenerandoPdf(true);
+    try {
+      const uri = await descargarExpedienteGrupo(eca, grupo);
+      if (Platform.OS === 'web') {
+        if (ventana) ventana.location.href = uri;
+        else window.location.href = uri;
+        return;
+      }
+      setVisorPdf({ uri, titulo: `ECA ${eca} · Grupo ${grupo}`, key: `exp_${eca}_${grupo}_${Date.now()}` });
+    } catch (e: any) {
+      ventana?.close();
+      avisar('No se pudo generar el PDF', mensajeError(e, e?.message || 'Inténtalo de nuevo.'));
+    } finally {
+      setGenerandoPdf(false);
+    }
+  };
+
   const eliminar = async (archivo: ArchivoFortalecimiento) => {
     if (!(await confirmar('Eliminar archivo', `¿Eliminar "${archivo.nombre || 'archivo'}"? No se puede deshacer.`, 'Eliminar', true))) return;
     try {
@@ -381,6 +405,22 @@ const SeccionesGrupo: React.FC<{ eca: number; grupo: number; revisar: boolean }>
             <Text style={styles.etiqueta}>{`ECA ${eca} · Grupo ${grupo}`}</Text>
             <Text style={styles.veredas}>{GRUPOS_VEREDAS[grupo - 1]}</Text>
           </View>
+
+          <TouchableOpacity
+            style={[styles.btnPrimario, styles.btnPdfGrupo, (totalArchivos === 0 || generandoPdf) && styles.btnDeshabilitado]}
+            onPress={generarPdfGrupo}
+            disabled={totalArchivos === 0 || generandoPdf}
+            activeOpacity={0.8}
+            accessibilityLabel={`Generar PDF con todo el contenido de la ECA ${eca}, grupo ${grupo}`}
+          >
+            {generandoPdf ? (
+              <><ActivityIndicator size="small" color="#fff" /><Text style={styles.btnPrimarioTxt}>  Generando PDF…</Text></>
+            ) : (
+              <Text style={[styles.btnPrimarioTxt, { textAlign: 'center' }]}>
+                {totalArchivos === 0 ? '📄 Sin archivos para el PDF' : '📄 Generar PDF del grupo (protocolo, informe, asistencia y fotos)'}
+              </Text>
+            )}
+          </TouchableOpacity>
 
           {SECCIONES_ECA.map((s) => {
             const archivos = data?.secciones?.[s.id] ?? [];
@@ -530,6 +570,7 @@ const styles = StyleSheet.create({
   btnSec: { flexGrow: 1, borderWidth: 1, borderColor: COLORS.primary, borderRadius: BORDER_RADIUS.md, paddingVertical: SPACING.sm + 2, paddingHorizontal: SPACING.md, alignItems: 'center', justifyContent: 'center', backgroundColor: COLORS.surface },
   btnSecTxt: { color: COLORS.primary, fontWeight: FONTS.weights.semibold, fontSize: FONTS.sizes.sm },
   btnDeshabilitado: { opacity: 0.5 },
+  btnPdfGrupo: { flexGrow: 0, marginBottom: SPACING.xs },
   lista: { marginTop: SPACING.sm },
   grilla: { flexDirection: 'row', flexWrap: 'wrap', gap: SPACING.sm, marginTop: SPACING.sm },
   archivo: { flexDirection: 'row', alignItems: 'center', paddingVertical: SPACING.sm, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: COLORS.border },
