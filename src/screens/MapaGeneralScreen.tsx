@@ -26,6 +26,13 @@ import type { TecnicoFiltro } from '../components/mapa/MapTecnicosSelector';
 import MapToolbar from '../components/mapa/MapToolbar';
 import type { MapBaseStyle } from '../components/mapa/MapToolbar';
 import MapItemDetailCard from '../components/mapa/MapItemDetailCard';
+import MapUsoVisitaFiltro, {
+  COLOR_USO_VISITA,
+  cumpleFiltroUso,
+  usoVisitaDe,
+  type FiltroUsoVisita,
+  type UsoVisita,
+} from '../components/mapa/MapUsoVisitaFiltro';
 import MapItemList from '../components/mapa/MapItemList';
 import VeredaDetailCard from '../components/mapa/VeredaDetailCard';
 import { useAuth } from '../store/AuthContext';
@@ -109,6 +116,8 @@ const MapaGeneralScreen: React.FC<{ navigation?: Record<string, any> }> = ({ nav
   const [recentrarNonce, setRecentrarNonce] = useState(0);
   const [veredasFeatures, setVeredasFeatures] = useState<Record<string, any>[] | null>(null);
   const [selectedItem, setSelectedItem] = useState<Record<string, any> | null>(null);
+  // Filtro por uso en la Visita 2 (limpieza de polígonos sobrantes).
+  const [filtroUso, setFiltroUso] = useState<FiltroUsoVisita>('todos');
   const [selectedVereda, setSelectedVereda] = useState<Record<string, any> | null>(null);
   // Confirmación de borrado con Modal propio (Alert.alert con botones NO
   // funciona en Expo web, por eso no se usa aquí).
@@ -506,7 +515,7 @@ const MapaGeneralScreen: React.FC<{ navigation?: Record<string, any> }> = ({ nav
   // y el detalle indica de qué beneficiario / técnico / vereda / corregimiento
   // es cada uno. Además, en la vista general se filtra por los técnicos
   // seleccionados en el selector horizontal.
-  const medicionesVisibles: Record<string, any>[] = useMemo(() => {
+  const medicionesDeTecnicos: Record<string, any>[] = useMemo(() => {
     if (!capasActivas.has('mediciones')) return [];
     const base = canViewAll
       ? mediciones
@@ -518,6 +527,24 @@ const MapaGeneralScreen: React.FC<{ navigation?: Record<string, any> }> = ({ nav
       tecnicosSeleccionados.has(String(m.usuario_id))
     );
   }, [capasActivas, mediciones, canViewAll, user?.id, tecnicosSeleccionados]);
+
+  // Conteo por uso en la Visita 2 (sobre los técnicos elegidos) y filtro.
+  // Solo hay dato de uso cuando las mediciones vienen del servidor.
+  const hayUsoVisita = useMemo(() => mediciones.some((m: Record<string, any>) => usoVisitaDe(m) !== null), [mediciones]);
+  const conteoUso = useMemo(() => {
+    const c = { total: medicionesDeTecnicos.length, usados: 0, borrador: 0, noUsados: 0 };
+    medicionesDeTecnicos.forEach((m: Record<string, any>) => {
+      const uso = usoVisitaDe(m);
+      if (uso === 'visita') c.usados += 1;
+      else if (uso === 'borrador') c.borrador += 1;
+      else if (uso === 'no_usado') c.noUsados += 1;
+    });
+    return c;
+  }, [medicionesDeTecnicos]);
+  const medicionesVisibles: Record<string, any>[] = useMemo(
+    () => (canViewAll ? medicionesDeTecnicos.filter((m) => cumpleFiltroUso(m, filtroUso)) : medicionesDeTecnicos),
+    [canViewAll, medicionesDeTecnicos, filtroUso]
+  );
 
   // Alterna un técnico individual. Si al quitar uno ya no queda ninguno,
   // se apaga la bandera "Todos".
@@ -595,7 +622,7 @@ const MapaGeneralScreen: React.FC<{ navigation?: Record<string, any> }> = ({ nav
           latitud: latCentro,
           longitud: lonCentro,
           title: `${m.area_hectareas?.toFixed(2) || '?'} ha`,
-          color: '#E65100',
+          color: COLOR_USO_VISITA[usoVisitaDe(m) || 'no_usado'],
           icon: '◈',
           iconColoreado: true,
         });
@@ -639,28 +666,32 @@ const MapaGeneralScreen: React.FC<{ navigation?: Record<string, any> }> = ({ nav
               corregimiento: m.corregimiento || null,
               usuario_nombre: m.usuario_nombre || null,
             },
+            uso: (usoVisitaDe(m) || 'no_usado') as UsoVisita,
           };
         }),
     [medicionesVisibles]
   );
-  const medicionGeoLayer = useMemo(
-    () =>
-      medicionFeatures.length > 0
-        ? [
-            {
-              id: 'mediciones-area',
-              nombre: 'Polígonos medidos',
-              features: medicionFeatures,
-              fillColor: 'rgba(230, 81, 0, 0.18)',
-              strokeColor: '#E65100',
-              strokeWidth: 2,
-              strokeOpacity: 0.8,
-              fillOpacity: 0.18,
-            },
-          ]
-        : [],
-    [medicionFeatures]
-  );
+  // Una capa por uso en la Visita 2 para pintarlas de distinto color:
+  // verde = usado en visita, azul = en borrador, naranja = no usado.
+  const medicionGeoLayer = useMemo(() => {
+    const capas: { uso: UsoVisita; id: string; nombre: string }[] = [
+      { uso: 'no_usado', id: 'mediciones-area', nombre: 'Polígonos sin uso en visita' },
+      { uso: 'borrador', id: 'mediciones-area-borrador', nombre: 'Polígonos en borrador de visita' },
+      { uso: 'visita', id: 'mediciones-area-visita', nombre: 'Polígonos usados en la Visita 2' },
+    ];
+    return capas
+      .map(({ uso, id, nombre }) => ({
+        id,
+        nombre,
+        features: medicionFeatures.filter((f) => f.uso === uso).map(({ uso: _u, ...f }) => f),
+        fillColor: COLOR_USO_VISITA[uso],
+        strokeColor: COLOR_USO_VISITA[uso],
+        strokeWidth: 2,
+        strokeOpacity: 0.8,
+        fillOpacity: 0.18,
+      }))
+      .filter((c) => c.features.length > 0);
+  }, [medicionFeatures]);
 
   // Mediciones con TODOS sus vértices fuera de Colombia (datos corruptos).
   // No se dibujan en el mapa, pero tampoco se ocultan en silencio: se avisa
@@ -855,6 +886,11 @@ const MapaGeneralScreen: React.FC<{ navigation?: Record<string, any> }> = ({ nav
         />
       )}
 
+      {/* Filtro por uso en la Visita 2 — para limpiar polígonos sobrantes */}
+      {canViewAll && capasActivas.has('mediciones') && hayUsoVisita && (
+        <MapUsoVisitaFiltro filtro={filtroUso} onChange={setFiltroUso} conteo={conteoUso} />
+      )}
+
       {/* Toolbar — visible para TODOS los roles: el técnico también necesita
           el botón "📍 Mi ubicación" para volver a su posición en campo.
           El selector de mapa base solo se muestra a los roles con vista
@@ -904,7 +940,7 @@ const MapaGeneralScreen: React.FC<{ navigation?: Record<string, any> }> = ({ nav
               }
               // Al tocar un polígono medido se abre su detalle con la
               // atribución (beneficiario, técnico, vereda, corregimiento).
-              if (layerId === 'mediciones-area' && properties?.medicionId) {
+              if (layerId.startsWith('mediciones-area') && properties?.medicionId) {
                 setSelectedItem({ id: `med-${properties.medicionId}` });
                 return;
               }
@@ -1005,6 +1041,17 @@ const MapaGeneralScreen: React.FC<{ navigation?: Record<string, any> }> = ({ nav
                 ? `¿Ocultar "${confirmarEliminar?.nombre || 'esta vereda'}" del mapa para todos los usuarios? Esto no borra el dato de OpenStreetMap, solo deja de mostrarse en la app.`
                 : `¿Seguro que quieres eliminar esta ${confirmarEliminar?.tipo}? Esta acción no se puede deshacer.`}
             </Text>
+            {confirmarEliminar?.tipo === 'medición' && (() => {
+              const uso = usoVisitaDe(mediciones.find((m: Record<string, any>) => m.id === confirmarEliminar.id));
+              if (uso !== 'visita' && uso !== 'borrador') return null;
+              return (
+                <Text style={[styles.confirmarTexto, { color: COLORS.error, fontWeight: '700' }]}>
+                  {uso === 'visita'
+                    ? '⚠️ Este polígono está USADO en una Visita 2. La visita conserva su copia, pero dejará de verse en el mapa.'
+                    : '⚠️ Un técnico tiene este polígono elegido en una Visita 2 sin enviar (borrador).'}
+                </Text>
+              );
+            })()}
             <TouchableOpacity
               style={[styles.modalBtn, styles.modalBtnEliminar]}
               onPress={ejecutarEliminar}

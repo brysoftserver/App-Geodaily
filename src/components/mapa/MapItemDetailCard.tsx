@@ -6,6 +6,40 @@ import React from 'react';
 import { View, Text, TouchableOpacity, StyleSheet } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { COLORS, FONTS, SPACING, BORDER_RADIUS, SHADOWS } from '../../theme';
+import { COLOR_USO_VISITA, usoVisitaDe } from './MapUsoVisitaFiltro';
+
+const formatFecha = (value?: string): string => {
+  if (!value) return '';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '';
+  return date.toLocaleDateString('es-CO', { day: '2-digit', month: '2-digit', year: 'numeric' });
+};
+
+/** Aviso de uso del polígono en la Visita 2 (dato que manda el servidor). */
+const UsoVisitaBanner: React.FC<{ med: Record<string, any> | undefined }> = ({ med }) => {
+  const uso = usoVisitaDe(med);
+  if (!uso) return null;
+  const color = COLOR_USO_VISITA[uso];
+  const usos: Record<string, any>[] = Array.isArray(med?.visitas_uso) ? med?.visitas_uso : [];
+  const titulo =
+    uso === 'visita'
+      ? '✅ Polígono utilizado en la Visita 2'
+      : uso === 'borrador'
+        ? '📝 Elegido en una Visita 2 sin enviar (borrador)'
+        : '⚠️ No usado en ninguna visita';
+  return (
+    <View style={[styles.usoBox, { borderColor: color + '55', backgroundColor: color + '14' }]}>
+      <Text style={[styles.usoTitulo, { color }]}>{titulo}</Text>
+      {usos.map((u, i) => (
+        <Text key={`${u.formulario_id || u.borrador_id || ''}-${i}`} style={styles.usoDetalle}>
+          {[u.beneficiario_nombre || 'Beneficiario sin nombre', u.tecnico_nombre && `técnico ${u.tecnico_nombre}`, formatFecha(u.fecha)]
+            .filter(Boolean)
+            .join(' · ')}
+        </Text>
+      ))}
+    </View>
+  );
+};
 
 /** Formatear timestamp ISO a "hace X tiempo" */
 const timeAgo = (iso?: string): string => {
@@ -124,6 +158,7 @@ const MapItemDetailCard: React.FC<MapItemDetailCardProps> = ({
         return (
           <>
             <Text style={styles.title}>◈ Medición de Terreno</Text>
+            <UsoVisitaBanner med={med} />
             {!!nombre && <DetailRow label="Nombre" value={nombre} />}
             <DetailRow label="Área" value={`${area?.toFixed(2) || '?'} ha`} />
             <DetailRow label="Perímetro" value={`${perimetro?.toFixed(1) || '?'} m`} />
@@ -232,6 +267,15 @@ const styles = StyleSheet.create({
   },
   label: { fontSize: FONTS.sizes.md, color: COLORS.textSecondary },
   value: { fontSize: FONTS.sizes.md, fontWeight: FONTS.weights.semibold, color: COLORS.textPrimary },
+  usoBox: {
+    borderWidth: 1,
+    borderRadius: BORDER_RADIUS.md,
+    paddingVertical: SPACING.xs,
+    paddingHorizontal: SPACING.sm,
+    marginBottom: SPACING.sm,
+  },
+  usoTitulo: { fontSize: FONTS.sizes.md, fontWeight: FONTS.weights.bold },
+  usoDetalle: { fontSize: FONTS.sizes.sm, color: COLORS.textSecondary, marginTop: 2 },
   deleteBtn: {
     marginTop: SPACING.md,
     backgroundColor: COLORS.error + '15',

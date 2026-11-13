@@ -129,6 +129,65 @@ router.post('/sync', authenticateToken, async (req, res) => {
   }
 });
 
+// Ids de polígono referenciados en una actividad de visita (formato actual
+// `mediciones_historial` y los anteriores `medicion_historial[_2]`, también
+// dentro de visita_datos — por eso el comodín `$.**`).
+const RUTAS_IDS = [
+  'strict $.**.mediciones_historial[*].id',
+  'strict $.**.medicion_historial.id',
+  'strict $.**.medicion_historial_2.id',
+];
+const idsDe = (col) => RUTAS_IDS.map((r) => `SELECT jsonb_path_query(${col}, '${r}') #>> '{}' AS v`).join(' UNION ');
+
+/**
+ * Mapa id de medición → visitas donde se usó. `visitas` = formularios
+ * completados; `borradores` = visitas guardadas en el servidor sin enviar.
+ */
+async function usosEnVisitas() {
+  const visitas = new Map();
+  const borradores = new Map();
+  const agregar = (mapa, id, uso) => {
+    if (!id) return;
+    if (!mapa.has(id)) mapa.set(id, []);
+    mapa.get(id).push(uso);
+  };
+  const filasVisitas = await db.queryAll(
+    `SELECT DISTINCT f.id AS formulario_id, ids.v AS medicion_id, f.created_at,
+            f.beneficiario_json->>'nombre' AS beneficiario_nombre,
+            f.beneficiario_json->>'cedula' AS beneficiario_cedula,
+            u.nombre AS tecnico_nombre
+       FROM formularios f
+       LEFT JOIN usuarios u ON u.id = f.usuario_id
+       CROSS JOIN LATERAL (${idsDe('f.actividad_json')}) ids
+      WHERE f.tipo = 'visita_tecnica'`
+  );
+  filasVisitas.forEach((r) => agregar(visitas, r.medicion_id, {
+    formulario_id: r.formulario_id,
+    beneficiario_nombre: r.beneficiario_nombre || null,
+    beneficiario_cedula: r.beneficiario_cedula || null,
+    tecnico_nombre: r.tecnico_nombre || null,
+    fecha: r.created_at,
+  }));
+  const filasBorradores = await db.queryAll(
+    `SELECT DISTINCT b.id AS borrador_id, ids.v AS medicion_id, b.updated_at,
+            b.payload_json#>>'{beneficiario,nombre}' AS beneficiario_nombre,
+            b.payload_json#>>'{beneficiario,cedula}' AS beneficiario_cedula,
+            u.nombre AS tecnico_nombre
+       FROM formularios_borradores b
+       LEFT JOIN usuarios u ON u.id = b.usuario_id
+       CROSS JOIN LATERAL (${idsDe('b.payload_json')}) ids
+      WHERE b.payload_json->>'tipo' = 'visita_tecnica'`
+  );
+  filasBorradores.forEach((r) => agregar(borradores, r.medicion_id, {
+    borrador_id: r.borrador_id,
+    beneficiario_nombre: r.beneficiario_nombre || null,
+    beneficiario_cedula: r.beneficiario_cedula || null,
+    tecnico_nombre: r.tecnico_nombre || null,
+    fecha: r.updated_at,
+  }));
+  return { visitas, borradores };
+}
+
 // GET /api/mediciones — Obtener todas las mediciones
 router.get('/', authenticateToken, async (req, res) => {
   try {
@@ -150,6 +209,11 @@ router.get('/', authenticateToken, async (req, res) => {
     sql += ' ORDER BY m.created_at DESC';
 
     const lista = await db.queryAll(sql, params);
+
+    // Uso en la Visita 2: la visita guarda una COPIA del polígono (con el
+    // mismo id) en actividad_json; el mapa necesita saber cuáles se usaron
+    // para que el admin pueda limpiar los que sobran sin borrar uno usado.
+    const usos = await usosEnVisitas();
 
     // Aplanar metadata_json: la app móvil guarda ahí el nombre, el área, el
     // perímetro, los puntos y la atribución (beneficiario/vereda). Antes se
@@ -174,6 +238,10 @@ router.get('/', authenticateToken, async (req, res) => {
         vereda: meta.vereda || null,
         corregimiento: meta.corregimiento || null,
         usuario_nombre: m.usuario_nombre || meta.usuario_nombre || null,
+        // 'visita' = en una Visita 2 completada · 'borrador' = elegido en una
+        // visita aún sin enviar · null = no usado en ninguna visita.
+        uso_visita: usos.visitas.has(m.id) ? 'visita' : usos.borradores.has(m.id) ? 'borrador' : null,
+        visitas_uso: usos.visitas.get(m.id) || usos.borradores.get(m.id) || [],
       };
     });
 
